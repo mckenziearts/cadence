@@ -1,6 +1,6 @@
-// What the frame and kit pages say when a scene or a brand fails (shown in the editor's preview, read by Claude), and the
-// sample content of the kit sheet in the editor's brand panel. The frame server writes the interface language in
-// <html lang>; a language change reloads the editor and its frames.
+// What the frame and kit pages say when a scene or a brand fails (shown in the editor's preview, read by Claude), the
+// kit sheet's section titles, and the sample content of the kit sheet in the editor's brand panel. The frame server writes
+// the interface language in <html lang>; a language change reloads the editor and its frames.
 const TEXTS = {
   fr: {
     runtimeError: (scene: string) => `Erreur d’exécution · ${scene}`,
@@ -12,6 +12,8 @@ const TEXTS = {
     brandFailed: (id: string, error: string) => `Impossible de charger la marque « ${id} » : ${error}`,
     projectFailed: (id: string, error: string) => `Impossible de charger le projet « ${id} » : ${error}`,
     fontFailed: (face: string) => `La police préchargée « ${face} » ne se charge pas`,
+    sampleFailed: (name: string, error: string) => `${name} : ${error}`,
+    sections: { colors: 'Couleurs', fonts: 'Polices', components: 'Composants', extras: 'Extras' },
     sheet: {
       save: 'Enregistrer',
       cancel: 'Annuler',
@@ -38,6 +40,8 @@ const TEXTS = {
     brandFailed: (id: string, error: string) => `Could not load the brand "${id}": ${error}`,
     projectFailed: (id: string, error: string) => `Could not load the project "${id}": ${error}`,
     fontFailed: (face: string) => `The preloaded font "${face}" does not load`,
+    sampleFailed: (name: string, error: string) => `${name}: ${error}`,
+    sections: { colors: 'Colors', fonts: 'Fonts', components: 'Components', extras: 'Extras' },
     sheet: {
       save: 'Save',
       cancel: 'Cancel',
@@ -56,4 +60,5 @@ const TEXTS = {
   },
 };
 
-export const texts = TEXTS[document.documentElement.lang === 'en' ? 'en' : 'fr'];
+export const language = document.documentElement.lang === 'en' ? 'en' : 'fr';
+export const texts = TEXTS[language];

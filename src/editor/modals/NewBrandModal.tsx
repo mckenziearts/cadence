@@ -249,6 +249,9 @@ const STEPS: { id: 'copy' | 'build' | 'check' | 'ready'; statuses: BrandBuild['s
   { id: 'ready', statuses: ['done'] },
 ];
 
+/** The kit sheet once the brand is ready: laid out at the box width over this scale, so it reflows to two columns. */
+const BOARD_SCALE = 0.6;
+
 function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: BrandBuild) => void }) {
   const t = useT();
   const frameOrigin = useStore((s) => s.app?.frameOrigin ?? '');
@@ -377,7 +380,7 @@ function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: 
                 // Own origin kept (it fetches the brand); no navigation, popups or forms.
                 sandbox="allow-scripts allow-same-origin"
                 className="absolute top-0 left-0 origin-top-left border-0"
-                style={{ width: 1920, height: 360 / 0.36, transform: 'scale(0.36)' }}
+                style={{ width: `${100 / BOARD_SCALE}%`, height: `${100 / BOARD_SCALE}%`, transform: `scale(${BOARD_SCALE})` }}
               />
             </div>
             <figcaption className="text-xs text-ink-3">{t.dialogs.newBrand.progress.boardCaption}</figcaption>

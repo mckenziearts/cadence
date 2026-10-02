@@ -18,6 +18,13 @@
         animation: none !important;
         caret-color: transparent !important;
       }
+      /* Narrower than the capture (the editor's preview): an extra wider than the sheet scrolls in its own row instead
+         of widening the page. At 1920 px nothing clips, so the brand builder sees every extra whole. */
+      @media (width < 1920px) {
+        .kit-extra {
+          overflow-x: auto;
+        }
+      }
     </style>
   </head>
   <body>

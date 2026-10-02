@@ -13,7 +13,7 @@ import type { KitFontFace, KitSheetResult, KitToEditor } from '../shared/framePr
 import { uiSamples } from '../shared/kitSamples';
 import type { BrandColors } from '../shared/types';
 import { postToEditor } from './editor';
-import { texts } from './texts';
+import { language, texts } from './texts';
 
 const query = new URLSearchParams(location.search);
 const brandId = query.get('brand') ?? '';
@@ -36,7 +36,7 @@ class Guard extends Component<{ name: string; children: ReactNode }, { error: st
     return { error: message(e) };
   }
   componentDidCatch(e: unknown) {
-    problems.push(`${this.props.name} : ${message(e)}`);
+    problems.push(texts.sampleFailed(this.props.name, message(e)));
   }
   render() {
     if (this.state.error === null) return this.props.children;
@@ -57,7 +57,6 @@ function Sheet({ kit }: { kit: BrandKit }) {
     <BrandContext.Provider value={kit}>
       <main
         style={{
-          width: 1920,
           boxSizing: 'border-box',
           padding: 64,
           display: 'flex',
@@ -68,7 +67,7 @@ function Sheet({ kit }: { kit: BrandKit }) {
           fontFamily: fonts.body,
         }}
       >
-        <header style={{ display: 'flex', alignItems: 'center', gap: 56 }}>
+        <header style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 56 }}>
           <Guard name="Logo full">
             <Logo variant="full" height={72} />
           </Guard>
@@ -82,7 +81,7 @@ function Sheet({ kit }: { kit: BrandKit }) {
         </header>
 
         <section>
-          {title('Couleurs')}
+          {title(texts.sections.colors)}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20 }}>
             {(Object.keys(colors) as (keyof BrandColors)[]).map((key) => (
               <div key={key} style={{ width: 132 }}>
@@ -102,7 +101,7 @@ function Sheet({ kit }: { kit: BrandKit }) {
         </section>
 
         <section>
-          {title('Polices')}
+          {title(texts.sections.fonts)}
           <div style={{ display: 'grid', gap: 18 }}>
             <div style={{ fontFamily: fonts.display, fontSize: 64, lineHeight: 1.1 }}>{kit.copy.taglines[0] ?? kit.name}</div>
             <div style={{ fontSize: 24, maxWidth: 1200 }}>{kit.copy.features[0]?.body ?? kit.tagline}</div>
@@ -114,9 +113,17 @@ function Sheet({ kit }: { kit: BrandKit }) {
         </section>
 
         <section>
-          {title('Composants')}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 40, alignItems: 'start' }}>
-            {uiSamples(kit.ui).map(([name, element]) => (
+          {title(texts.sections.components)}
+          {/* Three columns at the capture's 1920 px, two in the editor's New brand preview, one below. */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(min(480px, 100%), 1fr))',
+              gap: 40,
+              alignItems: 'start',
+            }}
+          >
+            {uiSamples(kit.ui, language).map(([name, element]) => (
               <div key={name} style={{ display: 'grid', gap: 10, justifyItems: 'start' }}>
                 <div style={label}>{name}</div>
                 <Guard name={name}>{element}</Guard>
@@ -126,10 +133,10 @@ function Sheet({ kit }: { kit: BrandKit }) {
         </section>
 
         <section>
-          {title('Extras')}
+          {title(texts.sections.extras)}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 56, alignItems: 'flex-start' }}>
             {Object.entries(kit.extras).map(([name, { component: Extra, description }]) => (
-              <div key={name} style={{ display: 'grid', gap: 12, maxWidth: 1792 }}>
+              <div key={name} className="kit-extra" style={{ display: 'grid', gap: 12, maxWidth: '100%' }}>
                 <div style={label}>{name}</div>
                 <div style={{ fontSize: 15, color: colors.muted, maxWidth: 720 }}>{description}</div>
                 <Guard name={name}>

@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { brandProblems } from '../../server/brands/check';
 import type { BrandKit, BrandKitUi } from '../../src/shared/brandKit';
 import { uiSamples } from '../../src/shared/kitSamples';
-import type { BrandFile } from '../../src/shared/types';
+import { LANGUAGES, type BrandFile } from '../../src/shared/types';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const BRANDS_DIR = path.join(ROOT, 'brands');
@@ -73,8 +73,10 @@ for (const id of BRANDS) {
       assert.deepEqual(kit.radius, file.radius);
       for (const key of UI_KEYS) assert.equal(typeof kit.ui[key], 'function', `ui.${key}`);
 
-      for (const [name, element] of uiSamples(kit.ui)) {
-        assert.doesNotThrow(() => render(element), name);
+      for (const language of LANGUAGES) {
+        for (const [name, element] of uiSamples(kit.ui, language)) {
+          assert.doesNotThrow(() => render(element), `${name} (${language})`);
+        }
       }
       const Button = kit.ui.Button;
       const merged = render(
