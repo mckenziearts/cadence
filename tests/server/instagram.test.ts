@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { getRequestListener } from '@hono/node-server';
 import { InstagramNetwork } from '../../server/networks/instagram';
 import { rejectsWithStatus } from './helpers';
 
@@ -251,6 +252,22 @@ test('publishes a Reel: resumable container, the file streamed in 1 MiB chunks, 
   assert.deepEqual(form(published.body), { creation_id: 'c1' });
   assert.equal(link.url, `${GRAPH}/m1?fields=permalink`);
   assert.deepEqual(progress, [MIB, 2 * MIB, BIG]);
+});
+
+test("counts rupload's 200 once Hono has swapped the global Response, as in the running server", async () => {
+  const native = { Request, Response };
+  getRequestListener(() => new native.Response(null));
+  try {
+    const answer = flow();
+    // fetch keeps answering with Node's own Response, a class `instanceof Response` no longer matches.
+    const { network } = instagram((req, i) => {
+      const res = answer(req, i);
+      return new native.Response(res.body, res);
+    });
+    assert.deepEqual(await publish(network), { url: 'https://www.instagram.com/reel/DcY8KVBCml7/', visibility: 'public' });
+  } finally {
+    for (const [name, value] of Object.entries(native)) Object.defineProperty(globalThis, name, { value });
+  }
 });
 
 test('no caption sends none, and a lost link still counts as published', async () => {

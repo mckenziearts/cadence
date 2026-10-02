@@ -169,7 +169,9 @@ export class InstagramNetwork implements Network {
           duplex: 'half',
         };
         const res = await this.http(container.uri, init).catch((e: Error) => e);
-        if (res instanceof Response && res.ok) {
+        // Not `instanceof Response`: the server's Hono swaps the global Response for its own class, which fetch's
+        // answers are not.
+        if (!(res instanceof Error) && res.ok) {
           input.onProgress(input.size);
           return;
         }
