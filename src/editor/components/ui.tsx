@@ -585,6 +585,36 @@ export function Checkbox(props: {
   );
 }
 
+/** A fader: the value follows the drag, onRelease fires once the pointer, a key or the focus lets go. */
+export function Slider(props: {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  label: string;
+  onChange: (value: number) => void;
+  onRelease: () => void;
+}) {
+  const fill = ((props.value - props.min) / (props.max - props.min)) * 100;
+  return (
+    <input
+      type="range"
+      min={props.min}
+      max={props.max}
+      step={props.step}
+      value={props.value}
+      aria-label={props.label}
+      onChange={(e) => props.onChange(Number(e.target.value))}
+      onPointerUp={props.onRelease}
+      onKeyUp={props.onRelease}
+      onBlur={props.onRelease}
+      // WebKit has no part for the slot's filled side: the stylesheet inks the track up to --fill.
+      style={{ '--fill': `${fill}%` } as CSSProperties}
+      className="focus-ring w-full min-w-0 flex-1"
+    />
+  );
+}
+
 export function SectionTitle({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-2">

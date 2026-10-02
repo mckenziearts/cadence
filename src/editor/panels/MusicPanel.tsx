@@ -5,7 +5,7 @@ import { AlertTriangle, Check, Minus, Music, Pause, Play, Plus, RotateCcw, Trash
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { MusicAnalysis, MusicGridData, SnapGrid } from '../../shared/types';
 import { api, ignore } from '../api';
-import { BeatPills, Button, ConfirmButton, Segmented, SectionTitle, Tooltip, fieldBase } from '../components/ui';
+import { BeatPills, Button, ConfirmButton, Segmented, SectionTitle, Slider, Tooltip, fieldBase } from '../components/ui';
 import { useT } from '../i18n';
 import { NBSP, bytes, parseDecimal, percentShort, secs, secsLabel } from '../lib/format';
 import soundtracks from '../soundtracks/presets.json';
@@ -631,18 +631,14 @@ function Volume({ saved }: { saved: number }) {
   const volume = useStore((s) => s.volumeDraft ?? saved);
   return (
     <Row label={texts.volume}>
-      <input
-        type="range"
+      <Slider
         min={0}
         max={1}
         step={0.01}
         value={volume}
-        aria-label={texts.volumeLabel}
-        onChange={(e) => set({ volumeDraft: Number(e.target.value) })}
-        onPointerUp={saveVolume}
-        onKeyUp={saveVolume}
-        onBlur={saveVolume}
-        className="h-1.5 w-full min-w-0 flex-1"
+        label={texts.volumeLabel}
+        onChange={(value) => set({ volumeDraft: value })}
+        onRelease={saveVolume}
       />
       <span className="w-10 text-right text-xs font-semibold text-ink-2">{percentShort(Math.round(volume * 100))}</span>
     </Row>

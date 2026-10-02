@@ -243,10 +243,45 @@
   input[type='number'] {
     -moz-appearance: textfield;
   }
-  input[type='range'],
   input[type='checkbox'],
   input[type='radio'] {
     accent-color: var(--color-ink);
+  }
+  /* Faders (Slider): a square cap on a slot inked up to the value. The input is as tall as the cap: a shorter one
+     clips it. */
+  input[type='range'] {
+    appearance: none;
+    height: 14px;
+    background: transparent;
+  }
+  input[type='range']::-webkit-slider-runnable-track {
+    height: 4px;
+    background: linear-gradient(90deg, var(--color-ink) var(--fill), var(--color-track) 0);
+  }
+  input[type='range']::-webkit-slider-thumb {
+    appearance: none;
+    box-sizing: border-box;
+    width: 14px;
+    height: 14px;
+    margin-top: -5px;
+    border: 2px solid var(--color-ink);
+    background: var(--color-white);
+  }
+  input[type='range']::-moz-range-track {
+    height: 4px;
+    background: var(--color-track);
+  }
+  input[type='range']::-moz-range-progress {
+    height: 4px;
+    background: var(--color-ink);
+  }
+  input[type='range']::-moz-range-thumb {
+    box-sizing: border-box;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-ink);
+    border-radius: 0;
+    background: var(--color-white);
   }
   /* Thin, quiet scrollbars: panels scroll a lot. */
   * {
