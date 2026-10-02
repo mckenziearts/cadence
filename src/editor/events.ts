@@ -165,6 +165,11 @@ function handle(event: ServerEvent): void {
       if (event.status === 'ready') void refreshProject();
       if (event.status === 'error') toast(event.error ?? t().shell.events.musicFailed, 'error');
       return;
+    case 'voice-over':
+      if (event.projectId !== current) return;
+      set({ voiceOver: { status: event.status, error: event.error ?? null } });
+      if (event.status === 'error') toast(event.error ?? t().production.voiceOver.status.failed, 'error');
+      return;
     case 'versions':
       if (event.projectId === current) set((s) => ({ versionsTick: s.versionsTick + 1 }));
       return;

@@ -74,6 +74,10 @@ function makeProject(dir: string, ids: string[]): ProjectState {
     music: null,
     musicUrl: null,
     musicGrid: null,
+    voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
+    voiceOverUrl: null,
+    voiceOverLines: [],
+    voiceOverPending: [],
     codeGeneration: 1,
     createdAt: '2026-09-30T00:00:00.000Z',
     updatedAt: '2026-09-30T00:00:00.000Z',
@@ -692,6 +696,7 @@ test('rules and labels', () => {
     'mcp__cadence__render_frames',
     'mcp__cadence__check_seams',
     'mcp__cadence__set_scene_duration',
+    'mcp__cadence__set_voice_over',
     'mcp__cadence__save_version',
   ]);
   const project = allowRules('/r/projects/demo', null, dirs);
@@ -714,4 +719,6 @@ test('rules and labels', () => {
   );
   assert.equal(label('mcp__cadence__set_scene_duration', { seconds: 3.32 }), 'Durée réglée à 3,32 s');
   assert.equal(label('mcp__cadence__snap_cuts_to_music', { grid: 'phrase' }), 'Coupes calées sur les phrases');
+  assert.equal(label('mcp__cadence__set_voice_over', { text: 'Bonjour.' }), 'Voix off écrite et générée');
+  assert.equal(label('mcp__cadence__set_voice_over', { text: '' }), 'Voix off retirée');
 });

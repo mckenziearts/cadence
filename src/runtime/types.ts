@@ -14,6 +14,14 @@ export interface SceneInfo {
   start: number;
 }
 
+/** The scene's voice-over: what is said, and when each sentence is spoken. */
+export interface VoiceOverInfo {
+  /** '' when the scene has no voice-over. */
+  text: string;
+  /** Each sentence in scene seconds; empty until Cadence has generated the voice. */
+  lines: { text: string; start: number; end: number }[];
+}
+
 /** Props every scene component receives. Render purely from these: no state, effects or timers. */
 export interface SceneProps {
   /** Seconds since this scene started: 0 to duration. */
@@ -27,6 +35,7 @@ export interface SceneProps {
   orientation: Orientation;
   fps: number;
   music: Music;
+  voiceOver: VoiceOverInfo;
   scene: SceneInfo;
   brand: BrandKit;
 }

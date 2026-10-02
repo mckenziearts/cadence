@@ -93,7 +93,7 @@ export default {
   sidePanel: {
     label: 'Panneau latéral',
     tabsLabel: 'Panneau',
-    tabs: { scene: 'Scène', project: 'Projet', versions: 'Versions', music: 'Musique', media: 'Médias' },
+    tabs: { scene: 'Scène', project: 'Projet', versions: 'Versions', music: 'Musique', voice: 'Voix', media: 'Médias' },
     projectSettings: 'Réglages du projet',
     projectChat: 'Conversation du projet',
     noBrand: 'Sans marque',

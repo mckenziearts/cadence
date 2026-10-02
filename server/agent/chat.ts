@@ -161,6 +161,8 @@ export function activityLabel(name: string, input: Record<string, unknown>, proj
       return words.templates;
     case 'set_scene_duration':
       return words.duration(formatSeconds(Number(input.seconds) || 0));
+    case 'set_voice_over':
+      return words.voiceOver(!str(input.text).trim());
     case 'save_version':
       return words.version(str(input.label));
     case 'create_scene':

@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { ClaudeCodeProvider } from './agent/claudeCode';
 import type { CadenceConfig } from './contracts';
 import { m } from './i18n';
+import { PiperEngine } from './voiceover/piper';
 
 const run = promisify(execFile);
 
@@ -32,6 +33,7 @@ export async function runDoctor(config: CadenceConfig): Promise<boolean> {
       checkFfprobe(config.ffprobePath),
       checkChromium(),
       checkClaude(config),
+      checkPiper(config.piperPath),
     ]),
     Promise.all([
       checkPort(config.editorPort, config.host, t.editor, 'CADENCE_PORT'),
@@ -116,6 +118,14 @@ async function checkClaude(config: CadenceConfig): Promise<Check> {
   if (!status.version) return { level: 'fail', label: t.claudeMissing(config.claudePath), fix: t.claudeInstall };
   if (!status.ok) return { level: 'fail', label: t.claudeLoggedOut(status.version), fix: t.claudeLogin };
   return { level: 'ok', label: t.claudeReady(status.version, status.detail) };
+}
+
+/** Optional: only voice-overs need it. */
+async function checkPiper(bin: string): Promise<Check> {
+  const t = m().media.doctor;
+  return (await new PiperEngine(bin).check()).ok
+    ? { level: 'ok', label: t.piperReady }
+    : { level: 'warn', label: t.piperMissing(bin), fix: t.piperFix };
 }
 
 async function checkPort(port: number, host: string, role: string, variable: string): Promise<Check> {

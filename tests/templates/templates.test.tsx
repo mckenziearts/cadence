@@ -194,6 +194,7 @@ function render(
     orientation: spec.orientation,
     fps: 60,
     music: createMusic({ grid, tempo: 120, musicStart: 0, sceneStart: 0, sceneDuration: duration }),
+    voiceOver: { text: '', lines: [] },
     scene: { id: 'scene', name: 'Scène', index: 0, count: 1, start: 0 },
     brand,
   };

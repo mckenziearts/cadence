@@ -8,9 +8,11 @@ import { promisify } from 'node:util';
 import { FfmpegRenderService } from '../../server/capture/render';
 import type { ProjectStore } from '../../server/contracts';
 import { HttpError } from '../../server/util';
+import { writeWav } from '../../server/voiceover/wav';
 import type { ProjectFile, ProjectState, RenderJob, ServerEvent } from '../../src/shared/types';
 import {
   FixtureMusicService,
+  FixtureVoiceOverService,
   near,
   pixel,
   RecordingHub,
@@ -24,6 +26,7 @@ const run = promisify(execFile);
 let h: Harness;
 let hub: RecordingHub;
 let music: FixtureMusicService;
+let voiceOver: FixtureVoiceOverService;
 let renders: FfmpegRenderService;
 let id: string;
 
@@ -31,7 +34,8 @@ before(async () => {
   h = await startHarness('render');
   hub = new RecordingHub();
   music = new FixtureMusicService();
-  renders = new FfmpegRenderService({ config: h.config, store: h.store, music, hub });
+  voiceOver = new FixtureVoiceOverService();
+  renders = new FfmpegRenderService({ config: h.config, store: h.store, music, voiceOver, hub });
   id = await h.project('render');
 });
 
@@ -59,6 +63,26 @@ interface Probe {
 async function probe(file: string): Promise<Probe> {
   const { stdout } = await run('ffprobe', ['-v', 'error', '-count_frames', '-show_streams', '-show_format', '-of', 'json', file]);
   return JSON.parse(stdout) as Probe;
+}
+
+/** Loudness of the audio between two times, in dB (RMS). */
+async function rmsDb(file: string, from: number, to: number): Promise<number> {
+  const { stderr } = await run('ffmpeg', [
+    '-hide_banner',
+    '-ss',
+    String(from),
+    '-t',
+    String(to - from),
+    '-i',
+    file,
+    '-af',
+    'astats',
+    '-f',
+    'null',
+    '-',
+  ]);
+  const value = /RMS level dB: (\S+)/.exec(stderr)?.[1] ?? '-inf';
+  return value === '-inf' ? -Infinity : Number(value);
 }
 
 /** One decoded frame of the video as PNG. */
@@ -97,7 +121,7 @@ function renderingWith(onRead: (read: number, project: ProjectState) => Promise<
   const store: ProjectStore = Object.assign(Object.create(h.store) as FixtureProjectStore, {
     get: async (projectId: string) => onRead(++reads, await h.store.get(projectId)),
   });
-  return new FfmpegRenderService({ config: h.config, store, music, hub });
+  return new FfmpegRenderService({ config: h.config, store, music, voiceOver, hub });
 }
 
 describe('FfmpegRenderService', () => {
@@ -160,6 +184,78 @@ describe('FfmpegRenderService', () => {
       project.music = null;
       await writeFile(projectFile, JSON.stringify(project, null, 2));
       music.audio.delete(id);
+    }
+  });
+
+  it('mixes the voice-over, alone or over the music, which ducks while the voice speaks', async () => {
+    const dir = path.join(h.store.dir(id), 'voice-test');
+    await mkdir(dir, { recursive: true });
+    const tone = path.join(dir, 'tone.wav');
+    await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6', '-ar', '44100', tone]);
+    // The voice speaks from 1.0 to 1.5 s of a 3 s video.
+    const voice = path.join(dir, 'voice.wav');
+    const speech = new Int16Array(22050 * 2);
+    speech.fill(6000, Math.round(22050 * 1.0), Math.round(22050 * 1.5));
+    await writeFile(voice, writeWav({ sampleRate: 22050, samples: speech }));
+    const silent = path.join(dir, 'silent.wav');
+    await writeFile(silent, writeWav({ sampleRate: 22050, samples: new Int16Array(22050 * 2) }));
+    const lines = [{ sceneId: 'b', text: 'Bonjour.', start: 1, end: 1.5 }];
+    const projectFile = path.join(h.store.dir(id), 'project.json');
+    const before = await readFile(projectFile, 'utf8');
+    await setDuration('b', 2.5);
+    try {
+      voiceOver.tracks.set(id, { file: voice, lines, musicLevel: 0.3 });
+      const alone = (await renderOne({ formats: ['16:9'], quality: 'draft' })).file;
+      const stream = (await probe(alone)).streams.find((s) => s.codec_type === 'audio');
+      assert.deepEqual([stream?.codec_name, stream?.sample_rate], ['aac', '48000']);
+      assert.ok((await rmsDb(alone, 1.1, 1.4)) > -30, 'the voice is heard');
+      assert.ok((await rmsDb(alone, 0.2, 0.6)) < -60, 'and only the voice');
+
+      // A silent voice: what is left is the music, 0.3 of its level (-10.5 dB) while the voice speaks.
+      const project = JSON.parse(await readFile(projectFile, 'utf8')) as ProjectFile;
+      project.music = { file: 'voice-test/tone.wav', start: 0, volume: 1 };
+      await writeFile(projectFile, JSON.stringify(project, null, 2));
+      music.audio.set(id, tone);
+      voiceOver.tracks.set(id, { file: silent, lines, musicLevel: 0.3 });
+      const mixed = (await renderOne({ formats: ['16:9'], quality: 'draft' })).file;
+      const full = await rmsDb(mixed, 0.2, 0.6);
+      const ducked = await rmsDb(mixed, 1.1, 1.4);
+      assert.ok(Math.abs(ducked - full + 10.46) < 1, `${full} dB, then ${ducked} dB under the voice`);
+      assert.ok(Math.abs((await rmsDb(mixed, 1.9, 2.2)) - full) < 1, 'back up after the voice');
+    } finally {
+      voiceOver.tracks.delete(id);
+      music.audio.delete(id);
+      await writeFile(projectFile, before);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for the voice-over before the pages load the project, so the scenes get its sentence times', async () => {
+    // Scene a turns green once its props carry a sentence. The sentences reach the project state when sync() ends, as
+    // when Piper is still speaking as the export starts.
+    const sceneFile = h.store.sceneFile(id, 'a');
+    const code = await readFile(sceneFile, 'utf8');
+    await writeFile(
+      sceneFile,
+      `import type { SceneProps } from 'cadence';
+
+export default function A({ voiceOver }: SceneProps) {
+  return <div style={{ position: 'absolute', inset: 0, background: voiceOver.lines.length ? '#00ff00' : '#ff0000' }} />;
+}
+`,
+    );
+    const speaking = Object.assign(new FixtureVoiceOverService(), {
+      sync: async (projectId: string) => {
+        h.store.voiceOverLines.set(projectId, [{ sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4 }]);
+      },
+    });
+    try {
+      const service = new FfmpegRenderService({ config: h.config, store: h.store, music, voiceOver: speaking, hub });
+      const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' }, service);
+      assert.ok(near(pixel(await frameAt(file, 0.2), 1500, 800), [0, 255, 0], 6), 'green: scene a has its sentence');
+    } finally {
+      h.store.voiceOverLines.delete(id);
+      await writeFile(sceneFile, code);
     }
   });
 

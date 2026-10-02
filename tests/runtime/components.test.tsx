@@ -76,6 +76,7 @@ function sceneProps(format: FormatId = '16:9', t = 1): SceneProps {
     orientation: spec.orientation,
     fps: 30,
     music: createMusic({ grid: null, tempo: 120, musicStart: 0, sceneStart: 0, sceneDuration: 4 }),
+    voiceOver: { text: '', lines: [] },
     scene: { id: 'intro', name: 'Intro', index: 0, count: 3, start: 0 },
     brand,
   };

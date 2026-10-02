@@ -39,6 +39,7 @@ export default {
       music: 'Reading the music grid',
       templates: 'Listing templates',
       duration: (duration: string) => `Duration set to ${duration}`,
+      voiceOver: (cleared: boolean) => (cleared ? 'Voice-over removed' : 'Voice-over written and generated'),
       version: (label: string) => `Version "${label}"`,
       newScene: (name: string) => `New scene "${name}"`,
       duplicate: (scene: string) => `Duplicating ${scene}`,
@@ -85,6 +86,7 @@ export default {
     renderOwnScene: 'render your scene, or the whole video with wholeVideo: true.',
     checkOwnSeams: 'check the cuts of your scene.',
     setOwnDuration: 'change the duration of your scene; the project chat sets the others.',
+    setOwnVoiceOver: 'set the voice-over of your scene; the project chat sets the others.',
     badUrl: (url: string) => `Invalid URL: ${url} (only http(s) URLs can be captured).`,
   },
   mcpTokens: {

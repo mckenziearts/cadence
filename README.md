@@ -46,6 +46,8 @@ Depending on what you do:
 - `gh` or `glab` signed in, to list your GitHub or GitLab repositories when you build a brand.
 - The keys of the team's apps to publish to YouTube, LinkedIn, Instagram or TikTok (see
   [Publishing to networks](#publishing-to-networks)).
+- [Piper](https://github.com/OHF-Voice/piper1-gpl) for voice-overs: `pipx install piper-tts` (Python 3.9 or later), see
+  [Voice-over](#voice-over).
 
 ### macOS
 
@@ -116,18 +118,20 @@ language of a video's on-screen text is a separate setting of each project.
    for a campaign, "Keep bars" keeps the number of bars of each scene and puts the cuts on the track's real downbeats.
    Think in bars: at 120 BPM, a bar lasts 2 s. Durations can be typed in bars too ("2 bars"); the label turns orange
    when a cut falls off a bar.
-3. **Give references.** In Media, capture the product's pages (desktop or mobile). Claude reads these captures to rebuild
+3. **Write the voice-over, if any.** In Voice, give each scene its text: Cadence speaks it and shows when each sentence
+   starts and ends, so the scenes can be timed to it (see [Voice-over](#voice-over)).
+4. **Give references.** In Media, capture the product's pages (desktop or mobile). Claude reads these captures to rebuild
    the interface in code, sharp at every size.
-4. **Scene by scene.** Select a scene, place the playhead and ask for a precise change. The playhead position goes with
+5. **Scene by scene.** Select a scene, place the playhead and ask for a precise change. The playhead position goes with
    the message: "here" and "from now on" make sense. Examples:
    - "Hold the title one more second, then slide the card in from the right."
    - "Land the card exactly on the next downbeat."
    - "Start this scene on the last frame of the previous one, so the cut is invisible."
    - "Zoom into the bottom right corner of the card and annotate the radii 12 and 16."
-5. **Check the cuts.** The badges between scenes give the share of pixels that change at each cut, at full resolution
+6. **Check the cuts.** The badges between scenes give the share of pixels that change at each cut, at full resolution
    and in every format of the project: below 0.05%, the cut is invisible.
-6. **Present, then render.** Pick the formats, the quality (Draft, Standard, Master) and, if needed, 2× for 4K.
-7. **Publish.** On the Render page, "Publish" sends an exported video to YouTube, LinkedIn, Instagram or TikTok (see
+7. **Present, then render.** Pick the formats, the quality (Draft, Standard, Master) and, if needed, 2× for 4K.
+8. **Publish.** On the Render page, "Publish" sends an exported video to YouTube, LinkedIn, Instagram or TikTok (see
    [Publishing to networks](#publishing-to-networks)).
 
 Everything is versioned: creating the project, each exchange with Claude and each alignment of the cuts make a version,
@@ -335,6 +339,46 @@ Each campaign plays with invisible cuts, checked below 0.05%. The writing guide 
 Only use music whose license covers social networks and advertising. Never reuse the track of another video. The
 analysis assumes 3 or 4 beats per bar. 6/8 is set by hand.
 
+## Voice-over
+
+Each scene can have a voice-over: in the **Voice** tab, type what the voice says over the scene and when it starts.
+Cadence speaks it with [Piper](https://github.com/OHF-Voice/piper1-gpl), on your machine: the text never leaves it. The
+preview plays the voice with the picture, the music goes down while it speaks (to the level set under **Music under**),
+and the MP4 holds the same mix. In a chat, Claude can write a scene's voice-over and time the animations to its
+sentences.
+
+Install Piper once, then restart Cadence (`npm run doctor` tells you whether it finds it):
+
+```bash
+brew install pipx        # macOS; Debian/Ubuntu: sudo apt install pipx
+pipx install piper-tts
+```
+
+The first voice-over downloads its voice (about 60 MB) into `.cadence/voices/`, from the **Download the voice** button.
+The video's language picks the default voice; another one is a click away in the same tab.
+
+| Voice | Accent | License | In a video that sells something |
+| --- | --- | --- | --- |
+| Siwis (French default) | France | CC-BY 4.0 | yes, credit the voice in the description |
+| Gilles | France | CC0 | yes |
+| MLS 1840 | France | CC-BY 4.0 | yes, credit the voice in the description |
+| Joe (English default) | US | CC0 | yes |
+| Kristin, LJSpeech, Norman | US | public domain | yes |
+| Cori | UK | public domain | yes |
+| Alba | UK | CC-BY 4.0 | yes, credit the voice in the description |
+| Lessac | US | Blizzard 2013, research only | no |
+| Ryan | US | CC BY-NC-SA 4.0 | no |
+
+Piper's own documentation presents it as made for personal use and research. Its code license (GPL-3.0) does not
+forbid other uses, but each voice keeps the license of the recordings it learned from: the Voice tab shows it, and
+flags the two voices that are not for commercial use. Cadence runs Piper as a separate program and never ships it.
+
+- Sentences are spoken one by one and cached in `projects/<id>/.cadence/voice-over/`: changing a sentence only speaks
+  that one again, and moving a scene or its start speaks nothing again.
+- Timing is per sentence, not per word. A sentence stays inside its scene: lengthen the scene (or shorten the text)
+  when the Voice tab says the voice runs past it.
+- No subtitles yet: the on-screen text is whatever the scenes draw.
+
 ## Command line
 
 ```bash
@@ -379,6 +423,10 @@ Never expose it on a network.
 - **"The YouTube connection expired"**: the consent screen stayed in "Testing" (7 days), or access was removed in the
   Google account. Connect the channel again in the Profile.
 - **A network asks you to connect again**: LinkedIn and Instagram connections last 60 days.
+- **No voice-over, "Piper not found"**: install it (`pipx install piper-tts`), check that `piper --help` answers in a new
+  terminal, then restart Cadence. Elsewhere than on your PATH, give its path in `PIPER_PATH`.
+- **Piper fails with "phontab: No such file or directory"**: its install path is too long for espeak-ng (about 160
+  characters). Install it with pipx in its default place.
 - **Dates and numbers in renders**: they follow `CADENCE_LOCALE` (`fr-FR` by default), for example
   `CADENCE_LOCALE=en-US npm start`. The preview follows the browser's language: scenes therefore always pass an explicit
   locale.

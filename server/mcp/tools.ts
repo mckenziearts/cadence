@@ -17,8 +17,9 @@ import type {
   SeamService,
   TemplateStore,
   VersionStore,
+  VoiceOverService,
 } from '../contracts';
-import { barSeconds, projectOverview, sceneTable } from '../agent/prompts';
+import { barSeconds, projectOverview, sceneTable, voiceOverSummary } from '../agent/prompts';
 import { m } from '../i18n';
 import { HttpError, assertId, roundMs } from '../util';
 import { BRAND_TOOLS, registerBrandTools } from './brandTools';
@@ -32,6 +33,7 @@ export interface McpDeps {
   capture: CaptureService;
   seams: SeamService;
   music: MusicService;
+  voiceOver: VoiceOverService;
   assets: AssetStore;
   tokens: McpTokenIssuer;
   /** Compile a file through Vite and return the error text, or null. */
@@ -56,6 +58,7 @@ export const SCENE_TOOLS = [
   'render_frames',
   'check_seams',
   'set_scene_duration',
+  'set_voice_over',
   'save_version',
 ];
 export const PROJECT_TOOLS = [
@@ -344,6 +347,43 @@ export function createToolServer(ctx: ToolContext): McpServer {
       return text(
         `${after.id} now lasts ${after.duration.toFixed(3)} s (${barCount} bars; was ${before.duration.toFixed(3)} s). The video lasts ${next.duration.toFixed(3)} s.${cuts ? `\n${cuts}` : ''}`,
       );
+    },
+  );
+
+  tool(
+    'set_voice_over',
+    'Set what the voice-over says over a scene, from `at` seconds into it; an empty text removes it. Cadence speaks it with the project voice (Piper) and answers when each sentence starts and ends, in scene seconds: key the animations to them (props.voiceOver.lines) and keep the scene at least as long as the voice. A scene chat can only change its own scene.',
+    {
+      projectId,
+      sceneId,
+      text: z.string().max(2000).describe('What the voice says: one or more sentences, in the video language. Empty removes it.'),
+      at: z
+        .number()
+        .min(0)
+        .max(600)
+        .optional()
+        .describe('Seconds into the scene where the voice starts, e.g. 0.5. Left out, the start stays (0 for a new voice-over).'),
+    },
+    async (args) => {
+      const p = await project(args.projectId);
+      const scene = targetScene(p, args.sceneId, m().agent.mcpTools.setOwnVoiceOver);
+      const at = roundMs(args.at ?? scene.voiceOver?.at ?? 0);
+      await deps.store.updateScene(p.id, scene.id, { voiceOver: { text: args.text, at } });
+      if (!args.text.trim()) return text(`${scene.id} has no voice-over any more.`);
+      try {
+        await deps.voiceOver.sync(p.id);
+      } catch (e) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `The text is saved, but the voice could not be generated: ${errorText(e)}. The user sees why in the Voice tab; do not retry until they fix it.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      return text(voiceOverSummary(await deps.store.get(p.id), scene.id));
     },
   );
 

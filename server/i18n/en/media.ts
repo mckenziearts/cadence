@@ -63,6 +63,17 @@ export default {
       `ffmpeg could not decode ${file} (code ${code}): ${detail}`,
     encodeFailed: (file: string, detail: string | undefined) => `ffmpeg could not encode ${file}: ${detail}`,
   },
+  voiceOver: {
+    piperMissing: (bin: string) => `Piper not found (${bin}): install it with \`pipx install piper-tts\`, then restart Cadence`,
+    piperStart: (bin: string, error: string) => `Could not start Piper (${bin}): ${error}`,
+    piperFailed: (code: number, detail: string) => `Piper failed (code ${code})${detail ? `: ${detail}` : ''}`,
+    piperCount: (expected: number, got: number) => `Piper wrote ${got} file(s) for ${expected} sentence(s)`,
+    unknownVoice: (id: string) => `Unknown voice: ${id}`,
+    notDownloaded: (name: string) => `The ${name} voice is not downloaded: download it in the Voice tab`,
+    downloadFailed: (name: string, error: string) => `Could not download the ${name} voice: ${error}`,
+    corrupted: (name: string) => `The downloaded ${name} voice is corrupted (md5): try again`,
+    noTrack: 'No voice-over generated for this project',
+  },
   analyze: {
     missingFile: (file: string) => `File not found: ${file}`,
     number: (x: number, digits: number) => x.toFixed(digits),
@@ -171,6 +182,9 @@ export default {
     claudeReady: (version: string, login: string | undefined) => `Claude Code ${version}${login ? `: ${login}` : ''}`,
     claudeLoggedOut: (version: string) => `Claude Code ${version} is not logged in`,
     claudeLogin: 'Run `claude` in a terminal, then /login',
+    piperReady: 'Piper (voice-over)',
+    piperMissing: (bin: string) => `Piper not found (${bin}): no voice-over without it`,
+    piperFix: '`pipx install piper-tts` (Python 3.9 or later), or give its path in PIPER_PATH',
     portFree: (port: number, role: string) => `Port ${port} (${role}) is free`,
     portBusy: (port: number, role: string) => `Port ${port} (${role}) is already in use (Cadence may already be running)`,
     portFix: (variable: string) =>

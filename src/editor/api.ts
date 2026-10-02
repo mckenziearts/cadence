@@ -24,6 +24,7 @@ import type {
   RenderRequest,
   RepoListing,
   SceneState,
+  SceneVoiceOver,
   SeamResult,
   SendMessageInput,
   Settings,
@@ -33,6 +34,8 @@ import type {
   UsageSummary,
   VersionEntry,
   BrandFile,
+  VoiceInfo,
+  VoicesState,
 } from '../shared/types';
 import { t } from './i18n';
 import { set } from './store';
@@ -123,7 +126,7 @@ export const api = {
   saveArtDirection: (id: string, text: string) => put<{ text: string }>(`${p(id)}/art-direction`, { text }),
 
   createScene: (id: string, input: CreateSceneInput) => post<SceneState>(`${p(id)}/scenes`, input),
-  updateScene: (id: string, sceneId: string, input: { name?: string; duration?: number }) =>
+  updateScene: (id: string, sceneId: string, input: { name?: string; duration?: number; voiceOver?: SceneVoiceOver | null }) =>
     patch<ProjectState>(`${p(id)}/scenes/${sceneId}`, input),
   duplicateScene: (id: string, sceneId: string) => post<SceneState>(`${p(id)}/scenes/${sceneId}/duplicate`),
   deleteScene: (id: string, sceneId: string) => del<ProjectState>(`${p(id)}/scenes/${sceneId}`),
@@ -147,6 +150,10 @@ export const api = {
   analysis: (id: string) => get<MusicAnalysis | null>(`${p(id)}/music/analysis`, { quiet: true }),
   snap: (id: string, grid: SnapGrid, opts: { keepBars?: boolean } = {}) =>
     post<ProjectState>(`${p(id)}/music/snap`, { grid, ...opts }),
+
+  voices: () => get<VoicesState>('/api/voices', { quiet: true }),
+  downloadVoice: (voice: string) => post<VoiceInfo>(`/api/voices/${encodeURIComponent(voice)}/download`),
+  syncVoiceOver: (id: string) => post<ProjectState>(`${p(id)}/voice-over/sync`),
 
   versions: (id: string, sceneId?: string | null) => get<VersionEntry[]>(`${p(id)}/versions${q({ scene: sceneId })}`),
   saveVersion: (id: string, label: string) => post<VersionEntry | null>(`${p(id)}/versions`, { label }),

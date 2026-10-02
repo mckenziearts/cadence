@@ -15,7 +15,7 @@ import { FfmpegRenderService } from './capture/render';
 import { PixelSeamService } from './capture/seams';
 import { loadConfig } from './config';
 import type { GitHost, NetworkId } from '../src/shared/types';
-import type { AgentProvider, BrandSource, CadenceConfig, Network } from './contracts';
+import type { AgentProvider, BrandSource, CadenceConfig, Network, SpeechEngine } from './contracts';
 import { builtEditor, devEditor } from './editor';
 import { createFrameHandler } from './frames/frameServer';
 import { createVite, diagnoseFile, invalidateDirs } from './frames/vite';
@@ -37,6 +37,8 @@ import { FileTemplateStore } from './store/templates';
 import { FileVersionStore } from './store/versions';
 import { FileUsageLog } from './usage';
 import { randomToken } from './util';
+import { PiperEngine } from './voiceover/piper';
+import { LocalVoiceOverService } from './voiceover/service';
 
 export type StartOptions = Partial<CadenceConfig> & {
   quiet?: boolean;
@@ -47,6 +49,8 @@ export type StartOptions = Partial<CadenceConfig> & {
   brandSources?: Partial<Record<GitHost, BrandSource>>;
   /** Where « Publier » sends videos (tests: fakes that never reach a network). */
   networks?: Partial<Record<NetworkId, Network>>;
+  /** Who speaks voice-overs (tests: a fake that never runs Piper). */
+  speech?: SpeechEngine;
 };
 
 export interface Services {
@@ -60,6 +64,7 @@ export interface Services {
   capture: PlaywrightCapture;
   seams: PixelSeamService;
   music: LocalMusicService;
+  voiceOver: LocalVoiceOverService;
   renders: FfmpegRenderService;
   versions: FileVersionStore;
   assets: FileAssetStore;
@@ -90,6 +95,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     provider: customProvider,
     brandSources: customSources,
     networks: customNetworks,
+    speech,
     ...overrides
   } = options;
   // Scene URLs are /@fs<absolute path>, which a Windows path never matches: no scene would load.
@@ -129,7 +135,9 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     capture = new PlaywrightCapture({ config, store });
     const seams = new PixelSeamService({ store, capture, hub });
     const music = new LocalMusicService({ config, store, hub });
-    const renders = new FfmpegRenderService({ config, store, music, hub });
+    const engine = speech ?? new PiperEngine(config.piperPath);
+    const voiceOver = new LocalVoiceOverService({ config, store, brands, hub, engine });
+    const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub });
     const versions = new FileVersionStore(store);
     const assets = new FileAssetStore(store, capture);
     const tokens = new McpTokens(config);
@@ -178,6 +186,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const publisher = new Publisher({ store, renders, accounts, networks, hub });
     store.setModuleInvalidator((dirs) => invalidateDirs(viteServer, dirs));
     store.setMusicGridProvider((id) => music.grid(id));
+    store.setVoiceOverProvider(voiceOver.provider);
     store.events.on('list-changed', () => hub.send({ type: 'projects-changed' }));
     store.events.on('changed', (projectId: string) => hub.send({ type: 'project-changed', projectId }));
     store.events.on('code-changed', (projectId: string, generation: number) =>
@@ -197,6 +206,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       seams,
       renders,
       music,
+      voiceOver,
       chats,
       settings,
       usage,
@@ -208,7 +218,20 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       agentStatus: () => provider.status(),
       diagnose,
     });
-    const mcp = createMcpHandler({ config, store, brands, templates, versions, capture, seams, music, assets, tokens, diagnose });
+    const mcp = createMcpHandler({
+      config,
+      store,
+      brands,
+      templates,
+      versions,
+      capture,
+      seams,
+      music,
+      voiceOver,
+      assets,
+      tokens,
+      diagnose,
+    });
     const editorToken = randomToken();
     editorHandler = createEditorHandler({ config, editorToken, tokens, accounts, api, mcp, editor });
     frameHandler = createFrameHandler({ config, vite, store, brands });
@@ -228,6 +251,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       capture,
       seams,
       music,
+      voiceOver,
       renders,
       versions,
       assets,

@@ -22,6 +22,7 @@ import type {
   MusicSettingsPatch,
   NetworkAccount,
   NetworkId,
+  ProjectFile,
   ProjectState,
   ProjectSummary,
   ProjectTemplateMeta,
@@ -35,6 +36,7 @@ import type {
   RepoListing,
   SceneState,
   SceneTemplateMeta,
+  SceneVoiceOver,
   SeamResult,
   SendMessageInput,
   ServerEvent,
@@ -48,6 +50,9 @@ import type {
   VersionEntry,
   VersionSource,
   Visibility,
+  VoiceInfo,
+  VoiceOverLine,
+  VoicesState,
 } from '../src/shared/types';
 
 // Paths and options: server/config.ts exports `loadConfig(overrides?)`, which returns this.
@@ -71,6 +76,8 @@ export interface CadenceConfig {
   ffmpegPath: string;
   ffprobePath: string;
   claudePath: string;
+  /** Piper, for voice-overs (env PIPER_PATH): optional, each user installs it. */
+  piperPath: string;
   /** Default model/effort (env CADENCE_MODEL / CADENCE_EFFORT), overridden by settings.json. */
   defaultModel: string;
   defaultEffort: Settings['sceneEffort'];
@@ -117,7 +124,12 @@ export interface ProjectStore {
   /** Moves the folder to projects/.trash/<id>-<timestamp>. */
   remove(id: string): Promise<void>;
   createScene(id: string, input: CreateSceneInput): Promise<SceneState>;
-  updateScene(id: string, sceneId: string, patch: { name?: string; duration?: number }): Promise<ProjectState>;
+  /** `voiceOver: null` (or blank text) removes the scene's voice-over. */
+  updateScene(
+    id: string,
+    sceneId: string,
+    patch: { name?: string; duration?: number; voiceOver?: SceneVoiceOver | null },
+  ): Promise<ProjectState>;
   duplicateScene(id: string, sceneId: string): Promise<SceneState>;
   /** Moves the scene file to projects/<id>/.cadence/trash/. */
   deleteScene(id: string, sceneId: string): Promise<ProjectState>;
@@ -139,7 +151,15 @@ export interface ProjectStore {
   setModuleInvalidator(fn: (dirs: string[]) => void): void;
   /** Injected by server/index.ts: resolves the music grid for ProjectState.musicGrid. */
   setMusicGridProvider(fn: (id: string) => Promise<MusicGridData | null>): void;
+  /** Injected by server/index.ts: resolves the voice-over fields of ProjectState from what is already generated. */
+  setVoiceOverProvider(fn: VoiceOverProvider): void;
 }
+
+export type VoiceOverProvider = (
+  id: string,
+  data: ProjectFile,
+  scenes: SceneState[],
+) => Promise<Pick<ProjectState, 'voiceOver' | 'voiceOverUrl' | 'voiceOverLines' | 'voiceOverPending'>>;
 
 // server/store/brands.ts: export class FileBrandStore implements BrandStore  (constructor(config: CadenceConfig))
 
@@ -365,7 +385,7 @@ export interface SeamService {
 }
 
 // server/capture/render.ts: export class FfmpegRenderService implements RenderService
-//   constructor(deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; hub: Hub })
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; voiceOver: VoiceOverService; hub: Hub })
 
 export interface RenderService {
   /** One job per format; jobs run one at a time, frames captured by up to 4 parallel pages. */
@@ -413,6 +433,37 @@ export interface MusicService {
   context(projectId: string, sceneId?: string | null): Promise<string>;
   /** Absolute path of the selected track, or null. */
   audioPath(projectId: string): Promise<string | null>;
+}
+
+// server/voiceover/piper.ts: export class PiperEngine implements SpeechEngine  (constructor(bin: string))
+
+/** Text to speech (tests: a fake that never runs Piper). */
+export interface SpeechEngine {
+  /** The engine answers; `error` says how to install it when it does not. */
+  check(): Promise<{ ok: boolean; error?: string }>;
+  /** Speaks each sentence into the WAV file at the same index of `files`. `model` is the voice's .onnx file. */
+  speak(input: { model: string; sentences: string[]; lengthScale: number; files: string[] }): Promise<void>;
+}
+
+// server/voiceover/service.ts: export class LocalVoiceOverService implements VoiceOverService
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore; brands: BrandStore; hub: Hub; engine: SpeechEngine })
+
+export interface VoiceOverService {
+  /** Piper's state and the voices Cadence offers, with which ones are downloaded. */
+  voices(): Promise<VoicesState>;
+  /** Download a voice into <root>/.cadence/voices/ (md5 checked); resolves once both files are in place. */
+  download(id: string): Promise<VoiceInfo>;
+  /** Speak the sentences of the project not generated yet. Rejects with Piper's error (also sent to the editor). */
+  sync(projectId: string): Promise<void>;
+  /** The generated voice-over as one WAV over the video, with its sentences, or null when nothing is generated. */
+  track(projectId: string): Promise<VoiceOverTrack | null>;
+}
+
+export interface VoiceOverTrack {
+  file: string;
+  lines: VoiceOverLine[];
+  /** Music volume under the voice (VoiceOverSettings.musicLevel). */
+  musicLevel: number;
 }
 
 // server/agent/chat.ts: export class ChatManager implements ChatService
@@ -547,6 +598,7 @@ export interface ApiDeps {
   seams: SeamService;
   renders: RenderService;
   music: MusicService;
+  voiceOver: VoiceOverService;
   chats: ChatService;
   settings: SettingsStore;
   usage: UsageLog;

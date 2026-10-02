@@ -76,7 +76,28 @@ export function sceneTable(p: ProjectState, current?: string | null): string {
 
 /** get_project output and the head of every turn's context. */
 export function projectOverview(p: ProjectState): string {
-  return `${projectHeader(p)}\n\n${sceneTable(p)}`;
+  const voiceOver = voiceOverSummary(p);
+  return `${projectHeader(p)}\n\n${sceneTable(p)}${voiceOver ? `\n\n${voiceOver}` : ''}`;
+}
+
+/** The voice-over of each scene (or of `only`) and when its sentences are spoken, in scene seconds; '' when none. */
+export function voiceOverSummary(p: ProjectState, only?: string | null): string {
+  const scenes = p.scenes.filter((s) => s.voiceOver && (!only || s.id === only));
+  if (!scenes.length) return '';
+  const { voice, speed, musicLevel } = p.voiceOver;
+  const rows = scenes.map((s) => {
+    if (p.voiceOverPending.includes(s.id)) {
+      return `- ${s.id}: from ${sec(s.voiceOver!.at)} s, "${s.voiceOver!.text}" (not generated yet, so no timing)`;
+    }
+    const lines = p.voiceOverLines.filter((l) => l.sceneId === s.id);
+    const spoken = lines.map((l) => `${sec(l.start - s.start)}-${sec(l.end - s.start)} "${l.text}"`).join(' / ');
+    const over = (lines.at(-1)?.end ?? 0) - (s.start + s.duration);
+    return `- ${s.id}: ${spoken}${over > 0.05 ? `; it runs ${sec(over)} s past the end of the scene` : ''}`;
+  });
+  return [
+    `Voice-over (voice ${voice}, speed ${speed}, music at ${Math.round(musicLevel * 100)} % while it speaks), sentence times in scene seconds (props.voiceOver.lines):`,
+    ...rows,
+  ].join('\n');
 }
 
 function neighbour(s: SceneState | undefined, none: string): string {
@@ -124,6 +145,8 @@ export function buildTurnPrompt(c: TurnContext): string {
     lines.push('Brand notes and art direction: unchanged since earlier in this conversation (get_brand, art-direction.md).');
   }
   if (c.music.trim()) lines.push('', 'Music:', c.music.trim());
+  const voiceOver = voiceOverSummary(p, scene?.id);
+  if (voiceOver) lines.push('', voiceOver);
 
   const blocks = [`<cadence_context>\n${lines.join('\n')}\n</cadence_context>`];
   if (c.brief) {

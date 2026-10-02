@@ -65,10 +65,12 @@ cadence/
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
                             worker (the analysis off the server's thread), synth + soundtracks (the preset
                             soundtracks, composed in code)
+    voiceover/              piper.ts (PiperEngine: runs the user's Piper), voices.ts (the voices offered, pinned
+                            files), wav.ts, service.ts (LocalVoiceOverService)
     agent/                  types.ts, claudeCode.ts (provider), guide.ts, prompts.ts, chat.ts (ChatManager)
     mcp/                    tokens.ts (McpTokens), server.ts (createMcpHandler), tools.ts, brandTools.ts
   src/
-    shared/                 contracts (types, brandKit, frameProtocol)
+    shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks)
     runtime/                the `cadence` module scenes import (+ API.md, the reference the agent reads)
     frame/main.tsx          frame page app
     frame/kit.tsx           kit sheet app (kit.html)
@@ -172,7 +174,8 @@ so imports are fresh.
 
 ```
 projects/<id>/
-  project.json          ProjectFile (name, brand, fps, formats, tempo, language, scenes[], music)
+  project.json          ProjectFile (name, brand, fps, formats, tempo, language, scenes[] (voiceOver?), music,
+                        voiceOver)
   art-direction.md      the look every scene follows (copied from the brand, then edited)
   scenes/<scene>.tsx    one component per scene (default export)
   components/           shared components/constants for this project (relative imports)
@@ -181,7 +184,8 @@ projects/<id>/
   renders/              exported MP4s (gitignored)
   .cadence/             internal, gitignored: chats/ (project.json, scene-<id>.json, archive/), versions/,
                         thumbs/ (<scene>-<16x9>-<t>-g<run>.<gen>-<sig>.jpg), frames/ (what the agent rendered),
-                        seams.json (version 2), publications.json (Publication[], newest first), trash/
+                        seams.json (version 2), publications.json (Publication[], newest first), trash/,
+                        voice-over/ (<hash>.wav per spoken sentence, track.wav)
 ```
 
 State files (chats, `publications.json`, `<root>/.cadence/settings.json` and `accounts.json`) count as empty only when
@@ -407,6 +411,7 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images |
 | `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 % |
 | `set_scene_duration` | own scene | any | ms precision |
+| `set_voice_over` | own scene | any | text + `at` (kept when left out); speaks it, answers each sentence's start and end in scene seconds |
 | `create_scene`, `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene` | no | yes | `create_scene` takes a template id or TSX code |
 | `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns |
 | `capture_reference` | no | yes | screenshot an http(s) URL into assets/refs/ |
@@ -464,12 +469,12 @@ GET    /api/state                                  AppState
 GET    /api/events                                 SSE ServerEvent stream
 GET    /api/projects/:id                           ProjectState
 POST   /api/projects                               CreateProjectInput (language?), answers ProjectState
-PATCH  /api/projects/:id                           UpdateProjectInput (language: fr | en | null), answers ProjectState
+PATCH  /api/projects/:id                           UpdateProjectInput (language: fr | en | null, voiceOver), answers ProjectState
 DELETE /api/projects/:id                           to projects/.trash; 409 while a turn, a render or an upload of it runs
 GET    /api/projects/:id/art-direction             { text }
 PUT    /api/projects/:id/art-direction             { text }
 POST   /api/projects/:id/scenes                    CreateSceneInput, answers SceneState
-PATCH  /api/projects/:id/scenes/:sid               { name?, duration? }, answers ProjectState
+PATCH  /api/projects/:id/scenes/:sid               { name?, duration?, voiceOver? (null removes it) }, answers ProjectState
 POST   /api/projects/:id/scenes/:sid/duplicate     answers SceneState
 DELETE /api/projects/:id/scenes/:sid               answers ProjectState (409 while a turn runs)
 PUT    /api/projects/:id/order                     { ids }, answers ProjectState
@@ -486,6 +491,10 @@ DELETE /api/projects/:id/music                     answers ProjectState
 GET    /api/projects/:id/music/audio               audio stream (Range support)
 GET    /api/projects/:id/music/analysis            MusicAnalysis | null
 POST   /api/projects/:id/music/snap                { grid, keepBars? }, answers ProjectState
+GET    /api/voices                                 VoicesState (Piper's state, the voices offered and which are here)
+POST   /api/voices/:voice/download                 answers VoiceInfo once both files are in place, md5 checked
+POST   /api/projects/:id/voice-over/sync           speaks what is missing, failures included, answers ProjectState
+GET    /api/projects/:id/voice-over/audio          ?v=, the voice-over track as audio/wav
 GET    /api/projects/:id/versions                  ?scene=, answers VersionEntry[]
 POST   /api/projects/:id/versions                  { label }, answers VersionEntry | null
 POST   /api/projects/:id/versions/:vid/restore     { sceneId? }, answers VersionEntry (409 while a turn runs)
@@ -539,7 +548,8 @@ supersampling), so odd sizes are cropped, never stretched (4:5 at 0,5× = 540 ×
 with `scale=W:H:flags=lanczos`, and `setparams` tags the frames BT.709 (tv range). Once the render pages are open,
 their duration and code generation are compared with the job's; on a mismatch they reload, and a second mismatch
 fails the job (« Le projet a changé pendant le lancement du rendu »). Audio (when the project has music): track from
-`music.start`, AAC 192 k, `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length.
+`music.start`, AAC 192 k, `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length. With a
+voice-over, its track is a second input (see "Voice-over") and the audio goes through `-filter_complex`.
 Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`. Deleting one moves it to the project's
 `.cadence/trash/` (`RenderService.remove`); what the networks received stays in `publications.json`.
 
@@ -570,6 +580,34 @@ format, compared with `pixelmatch({ threshold: 0.01, includeAA: true })`. Under 
 invisible. Structural changes (duration, order, deletion, snap, formats, brand, tempo, language) re-check in the
 background once the edits settle (`recheck`: 1.5 s after the last one, one check for a burst). Only the seam dialog
 (`detail`) draws the diff image.
+
+## Voice-over
+
+A scene's `voiceOver` (`{ text, at }` in `project.json`) is spoken by Piper with the project's `voiceOver` settings
+(`voice`, `speed`, `musicLevel`; until someone picks one, the default voice of the on-screen language: `fr_FR-siwis-medium`
+or `en_US-joe-medium`). Piper (GPL-3.0) is never shipped: each user installs it (`pipx install piper-tts`), and
+`PiperEngine` runs `piper -m <voice>.onnx -d <tmp> --length-scale <1/speed>` with one sentence per line on stdin
+(`execFile`-style arguments, no shell), then renames each WAV into place in the order of Piper's monotonic file names.
+
+- Voices: `server/voiceover/voices.ts` lists the single-speaker French and English voices offered, with the license
+  of their dataset (`commercial`, `credit` for CC-BY). Downloads come from one commit of `rhasspy/piper-voices`, md5
+  checked before the file is renamed in, into `<root>/.cadence/voices/`.
+- Sentences: `Intl.Segmenter` (line breaks end one too). Each sentence's WAV is cached in
+  `projects/<id>/.cadence/voice-over/<hash>.wav`, the hash covering voice, speed and text: a retouch speaks only the
+  changed sentence, and restoring a version finds its sentences again.
+- `ProjectState` (`setVoiceOverProvider`): `voiceOver` (settings in use), `voiceOverLines` (generated sentences laid
+  one after the other from `scene.start + at`, in video seconds), `voiceOverPending` (scenes with a sentence not
+  generated; they have no line at all) and `voiceOverUrl` (the track, `?v=` changes with the lines). Computing it
+  schedules the missing sentences (400 ms after the last change); a failure goes to the editor (SSE `voice-over`) and
+  the same sentences are only retried through `POST .../voice-over/sync`. A success sends `project-changed`.
+- Track: `track.wav`, the sentences laid at their times over silence, one per project, rebuilt when its lines change.
+  The preview plays it in a second `<audio>` that follows the video clock (`src/editor/lib/voiceOver.ts`).
+- Music under the voice: `voiceSpans` merges back-to-back sentences, `duckGain` gives the music `musicLevel` inside a
+  span with 0.25 s linear ramps (`src/shared/voiceOver.ts`), in the preview and in the MP4 (`duckExpression`, a
+  `volume` expression). The render's voice branch has no `loudnorm` (it turns the digital silence between sentences
+  into garbage); the mix ends with `alimiter=limit=0.95:level=disabled` (the default auto-level would undo the ducking).
+- Scenes get `voiceOver` (`{ text, lines }` in scene seconds) in their props; the agent sets text and timing with
+  `set_voice_over` and reads the sentence times in its turn context and `get_project`.
 
 ## CLI (`npm run cadence -- <command>`)
 

@@ -36,6 +36,7 @@ export default function Anatomy({ t, duration, width, height, music, brand }: Sc
 ```
 
 - Props: `t` (scene-local seconds, 0 → `duration`), `duration`, `width` × `height` (the canvas of the current format, in CSS px), `format`, `orientation`, `fps`, `music` (beat grid in scene-local seconds), `scene` (`id`, `name`, `index`, `count`, `start`) and `brand` (the brand kit).
+- `voiceOver`: the scene's voice-over, its `text` and its `lines` (`{ text, start, end }` in scene seconds, empty until Cadence has spoken them). Key a reveal to the sentence that says it (`voiceOver.lines[1]?.start`), and draw the scene so it still works without lines.
 - **Every frame is a pure function of the props.** Frames render out of order, one at a time, in several browsers at once. Never animate with state or effects, timers, `requestAnimationFrame`, `Date.now()`, `Math.random()` (use `random(seed)`), CSS `transition` / `animation` / `@keyframes`, `<video>` or network requests.
 - Imports: `react`, `cadence`, `@brands/<brand id>` (the extras of the project's brand) and relative files inside the project (`../components/…`). Never import one scene from another.
 - Lay out on the fixed canvas with absolute positioning and derive positions from `width` and `height`; never hard-code 1920 × 1080. Animate `transform`, `opacity`, `filter`, `clip-path` and SVG attributes (`strokeDashoffset` to draw lines). CSS 3D works.
@@ -66,6 +67,13 @@ A project renders in one or more formats: 16:9 (1920 × 1080), 9:16 (1080 × 192
 - Key important moments to the grid (`music.bar(1)`, `music.beat(3)`) instead of raw seconds, so they stay locked when cuts move. Land the hits (a card landing, a word swap, a number settling, the logo) on downbeats; let secondary motion breathe between them.
 - Think in bars: 1 bar = beats per bar × 60 / BPM (2 s at 120 BPM in 4/4). Whole or half bars keep cuts on the beat; `get_music_context` lists the useful durations.
 - Use `music.pulse` sparingly (a 1–3 % scale or glow on the beat), never on everything.
+
+## Voice-over
+
+- A scene's voice-over is set with `set_voice_over` (the text, and `at`, the second where it starts); never write it in the scene's code. The tool speaks it right away and answers when each sentence starts and ends.
+- Keep the scene at least as long as its last sentence (`set_scene_duration`), or shorten the text: a sentence that runs into the next scene overlaps that scene's voice.
+- Write for the ear: short sentences, about 2.5 words per second, one idea each. The on-screen text supports the voice; it does not repeat it word for word.
+- The music ducks under the voice on its own: leave the soundtrack alone.
 
 ## Seams: invisible cuts
 
@@ -115,7 +123,7 @@ Aim for product-keynote motion: calm, precise, confident. Every frame should loo
 
 This chat belongs to one scene: `<cadence_context>` names it and gives its file.
 
-- Edit only that file. Change its length only with `set_scene_duration`. Read anything else (other scenes, `components/`, `art-direction.md`, the brand, the templates, the runtime source) without changing it.
+- Edit only that file. Change its length only with `set_scene_duration`, its voice-over only with `set_voice_over`. Read anything else (other scenes, `components/`, `art-direction.md`, the brand, the templates, the runtime source) without changing it.
 - When a request needs other files (a shared component, another scene, the art direction) or structure changes (adding, removing, reordering or renaming scenes), say so and suggest the project chat.
 - Never edit `project.json` or anything under `.cadence/`.
 
@@ -125,7 +133,7 @@ This chat belongs to one scene: `<cadence_context>` names it and gives its file.
 This chat is about the whole video: structure, pacing, consistency between scenes, music sync and art direction.
 
 - You may edit `scenes/**`, `components/**` and `art-direction.md`. The brand, the templates and the runtime source are read-only references.
-- Change structure and timing only with the tools: `create_scene` (from a template id or your own TSX), `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene`, `set_scene_duration`, `snap_cuts_to_music`. Never edit `project.json` or anything under `.cadence/`.
+- Change structure and timing only with the tools: `create_scene` (from a template id or your own TSX), `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene`, `set_scene_duration`, `snap_cuts_to_music`, and voice-overs with `set_voice_over`. Never edit `project.json` or anything under `.cadence/`.
 - `capture_reference` screenshots a web page into `assets/refs/` (Read the image to look at it); `save_version` names the current state.
 - Keep scenes consistent with the art direction and with each other; shared values live in `components/`.
 

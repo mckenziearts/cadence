@@ -17,11 +17,12 @@ interface SceneProps {
   orientation: 'landscape' | 'portrait' | 'square';   // 4:5 is portrait
   fps: number;
   music: Music;         // beat grid in scene seconds (see Music)
+  voiceOver: VoiceOverInfo;  // { text, lines: { text, start, end }[] } in scene seconds (see Voice-over)
   scene: SceneInfo;     // { id, name, index, count, start (video seconds) }
   brand: BrandKit;      // same object as useBrand()
 }
 ```
-Types exported: `SceneProps, SceneInfo, Music, MusicGrid, MusicSection, Easing, Point ({x, y}), BrandKit, FormatId,
+Types exported: `SceneProps, SceneInfo, VoiceOverInfo, Music, MusicGrid, MusicSection, Easing, Point ({x, y}), BrandKit, FormatId,
 Orientation, FormatInfo, SafeArea, Anchor, CursorKey, Stage3DPose, RGBA` and every component's `<Name>Props`.
 
 ## Time & animation
@@ -173,6 +174,14 @@ const thump = music.hasTrack ? 1 + 0.03 * music.pulse(t, { grid: 'beat', decay: 
 const click = music.snap(1.2, 'half');                                 // cursor click on a half-beat
 const cardIn = progress(t, music.beat(0), music.beat(2), ease.outExpo);
 ```
+
+## Voice-over (scene seconds)
+
+`voiceOver.text` is what the voice says over this scene ('' when nothing); `voiceOver.lines` lists its sentences with
+`start` and `end` once Cadence has spoken them (empty before: draw the scene so it still works). Key a word on screen to
+the sentence that says it: `progress(t, voiceOver.lines[0]?.start ?? 0, (voiceOver.lines[0]?.start ?? 0) + 0.4)`. The
+voice is set with the `set_voice_over` tool, never in the scene's code; keep the scene at least as long as its last
+`end`. Timing is per sentence, not per word.
 
 ## 3D stage
 

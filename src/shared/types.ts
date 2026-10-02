@@ -91,6 +91,57 @@ export interface SceneFile {
   duration: number;
   /** Scene template this scene was created from, if any (informational). */
   template?: string | null;
+  /** What the project's voice says over this scene; absent = no voice-over. */
+  voiceOver?: SceneVoiceOver;
+}
+
+/** A scene's voice-over: spoken sentence by sentence by the project's voice (Piper), from `at`. */
+export interface SceneVoiceOver {
+  text: string;
+  /** Seconds into the scene where the first sentence starts (>= 0). */
+  at: number;
+}
+
+/** The project's voice-over voice, the same for every scene. */
+export interface VoiceOverSettings {
+  /** Piper voice id, e.g. `fr_FR-siwis-medium` (see GET /api/voices). */
+  voice: string;
+  /** 1 = the voice's own pace; 1.2 speaks 20 % faster (0.5 to 2). */
+  speed: number;
+  /** Music volume while the voice speaks, as a share of its usual volume (0 to 1). */
+  musicLevel: number;
+}
+
+/** One generated sentence of a voice-over, in video seconds. */
+export interface VoiceOverLine {
+  sceneId: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
+/** A Piper voice Cadence offers (GET /api/voices). */
+export interface VoiceInfo {
+  id: string;
+  language: 'fr' | 'en';
+  /** Region of the accent, e.g. `fr_FR`, `en_US`, `en_GB`. */
+  locale: string;
+  name: string;
+  quality: 'low' | 'medium' | 'high';
+  license: string;
+  /** The license allows a video that sells something; false = personal use only. */
+  commercial: boolean;
+  /** The license asks to credit the voice's dataset (CC-BY). */
+  credit: boolean;
+  /** Size of the download in bytes. */
+  size: number;
+  installed: boolean;
+}
+
+export interface VoicesState {
+  /** Piper answers on this machine; `error` says why not. */
+  piper: { ok: boolean; error?: string };
+  voices: VoiceInfo[];
 }
 
 export interface MusicSettings {
@@ -135,6 +186,8 @@ export interface ProjectFile {
   language?: 'fr' | 'en' | null;
   scenes: SceneFile[];
   music: MusicSettings | null;
+  /** The voice-over voice; null/absent = the default voice of the video's language. */
+  voiceOver?: VoiceOverSettings | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -171,6 +224,14 @@ export interface ProjectState {
   musicUrl: string | null;
   /** Beat grid after manual overrides, in TRACK seconds; null without music or while analysing. */
   musicGrid: MusicGridData | null;
+  /** The voice-over voice in use (the language's default until one is chosen). */
+  voiceOver: VoiceOverSettings;
+  /** Every generated sentence as one track over the video (editor origin), or null while none is. */
+  voiceOverUrl: string | null;
+  /** Generated sentences, in video seconds and in order: the music ducks under them. */
+  voiceOverLines: VoiceOverLine[];
+  /** Scenes whose voice-over is not generated yet (being generated, or Piper failed). */
+  voiceOverPending: string[];
   /** Bumped whenever any code file of the project (or its brand) changes; frames re-import when it moves. */
   codeGeneration: number;
   createdAt: string;
@@ -209,6 +270,8 @@ export interface UpdateProjectInput {
   fps?: number;
   tempo?: number;
   language?: 'fr' | 'en' | null;
+  /** null = back to the default voice of the video's language. */
+  voiceOver?: VoiceOverSettings | null;
 }
 
 export interface CreateSceneInput {
@@ -736,5 +799,6 @@ export type ServerEvent =
   | { type: 'brand-build'; build: BrandBuild }
   | { type: 'seams'; projectId: string; results: SeamResult[] }
   | { type: 'music'; projectId: string; status: 'analyzing' | 'ready' | 'error'; error?: string }
+  | { type: 'voice-over'; projectId: string; status: 'speaking' | 'ready' | 'error'; error?: string }
   | { type: 'versions'; projectId: string }
   | { type: 'assets'; projectId: string };

@@ -16,9 +16,10 @@ import type {
 } from '../../shared/types';
 
 export type View = 'scenes' | 'render';
-export type Panel = 'scene' | 'project' | 'versions' | 'music' | 'media';
+export type Panel = 'scene' | 'project' | 'versions' | 'music' | 'voice' | 'media';
 export type PreviewMode = 'scene' | 'whole';
 export type MusicStatus = 'idle' | 'analyzing' | 'ready' | 'error';
+export type VoiceOverStatus = 'idle' | 'speaking' | 'ready' | 'error';
 export type ChatKind = 'scene' | 'project';
 
 export type Modal =
@@ -94,6 +95,8 @@ export interface EditorState {
   renders: { jobs: RenderJob[]; files: RenderFile[] };
   publishing: Publications;
   music: { status: MusicStatus; error: string | null };
+  /** Piper's latest run on the open project. */
+  voiceOver: { status: VoiceOverStatus; error: string | null };
   versionsTick: number;
   assetsTick: number;
   cost: number | null;
@@ -169,6 +172,7 @@ export const useStore = create<EditorState>()(() => ({
   renders: { jobs: [], files: [] },
   publishing: { jobs: [], publications: [] },
   music: { status: 'idle', error: null },
+  voiceOver: { status: 'idle', error: null },
   versionsTick: 0,
   assetsTick: 0,
   cost: null,

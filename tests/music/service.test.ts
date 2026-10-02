@@ -54,6 +54,10 @@ class FakeStore {
       duration: roundMs(start),
       musicUrl: null,
       musicGrid: music ? await this.provider(id) : null,
+      voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
+      voiceOverUrl: null,
+      voiceOverLines: [],
+      voiceOverPending: [],
       codeGeneration: 0,
     };
   }

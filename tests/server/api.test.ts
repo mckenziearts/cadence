@@ -19,6 +19,7 @@ import type {
   RenderService,
   SeamService,
   Upload,
+  VoiceOverService,
 } from '../../server/contracts';
 import { SseHub } from '../../server/hub';
 import { FileSettingsStore } from '../../server/settings';
@@ -40,10 +41,23 @@ import {
   type RepoListing,
   type SeamResult,
   type ServerEvent,
+  type VoiceInfo,
 } from '../../src/shared/types';
 import { fakeNetwork, makeRoot, type TestRoot } from './helpers';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+const SIWIS: VoiceInfo = {
+  id: 'fr_FR-siwis-medium',
+  language: 'fr',
+  locale: 'fr_FR',
+  name: 'Siwis',
+  quality: 'medium',
+  license: 'CC-BY 4.0',
+  commercial: true,
+  credit: true,
+  size: 63206169,
+  installed: false,
+};
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 4, 5, 6]);
 
 let t: TestRoot;
@@ -52,6 +66,7 @@ let app: ReturnType<typeof createApi>;
 let store: FileProjectStore;
 let calls: Record<string, unknown[]>;
 let audioFile: string | null;
+let voiceTrack: string | null;
 let hub: SseHub;
 let busy: boolean;
 let renderJobs: RenderJob[];
@@ -106,6 +121,7 @@ beforeEach(async () => {
   t = await makeRoot();
   calls = {};
   audioFile = null;
+  voiceTrack = null;
   busy = false;
   renderJobs = [job];
   const record = (name: string, value: unknown) => (calls[name] ??= []).push(value);
@@ -163,6 +179,17 @@ beforeEach(async () => {
     context: async () => '',
     audioPath: async () => audioFile,
   } satisfies MusicService;
+  const voiceOver = {
+    voices: async () => ({ piper: { ok: true }, voices: [] }),
+    download: async (voice: string) => {
+      record('downloadVoice', voice);
+      return { ...SIWIS, installed: true };
+    },
+    sync: async (id: string) => {
+      record('syncVoiceOver', id);
+    },
+    track: async () => (voiceTrack ? { file: voiceTrack, lines: [], musicLevel: 0.3 } : null),
+  } satisfies VoiceOverService;
   const chat = (key: ChatKey): ChatState => ({ key, messages: [], running: false, queued: false, totalCostUsd: 0 });
   const chats = {
     get: async (_id: string, key: ChatKey) => chat(key),
@@ -210,6 +237,7 @@ beforeEach(async () => {
     seams,
     renders,
     music,
+    voiceOver,
     chats,
     settings: new FileSettingsStore(t.config),
     usage,
@@ -421,6 +449,39 @@ test('music: upload (the file as the body), select, settings, snap, audio stream
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('accept-ranges'), 'bytes');
   assert.equal(await res.text(), '0123456789');
+});
+
+test('voice-overs: voices, download, scene text, settings, speaking on request, the track as WAV', async () => {
+  assert.deepEqual((await json('GET', '/api/voices')).body, { piper: { ok: true }, voices: [] });
+  const downloaded = await json('POST', '/api/voices/fr_FR-siwis-medium/download');
+  assert.deepEqual(downloaded.body, { ...SIWIS, installed: true });
+  assert.deepEqual(calls.downloadVoice, ['fr_FR-siwis-medium']);
+
+  const sceneId = (await store.get('demo')).scenes[0].id;
+  const scene = (text: string, at = 0) => json('PATCH', `/api/projects/demo/scenes/${sceneId}`, { voiceOver: { text, at } });
+  assert.deepEqual((await scene('Bonjour.', 0.5)).body.scenes[0].voiceOver, { text: 'Bonjour.', at: 0.5 });
+  assert.equal((await scene('x'.repeat(2001))).status, 400);
+  assert.equal((await scene('Bonjour.', -1)).status, 400);
+  const removed = await json('PATCH', `/api/projects/demo/scenes/${sceneId}`, { voiceOver: null });
+  assert.equal(removed.body.scenes[0].voiceOver, undefined);
+
+  const settings = { voice: 'en_GB-cori-medium', speed: 1.1, musicLevel: 0.4 };
+  assert.deepEqual((await json('PATCH', '/api/projects/demo', { voiceOver: settings })).body.voiceOver, settings);
+  const unknown = await json('PATCH', '/api/projects/demo', { voiceOver: { ...settings, voice: 'xx_XX-nobody-low' } });
+  assert.equal(unknown.status, 400);
+
+  const synced = await json('POST', '/api/projects/demo/voice-over/sync');
+  assert.equal(synced.body.id, 'demo');
+  assert.deepEqual(calls.syncVoiceOver, ['demo']);
+  assert.equal((await json('POST', '/api/projects/nope/voice-over/sync')).status, 404);
+
+  assert.equal((await call('GET', '/api/projects/demo/voice-over/audio')).status, 404);
+  voiceTrack = path.join(t.root, 'track.wav');
+  await fs.writeFile(voiceTrack, Buffer.from('RIFF0000WAVE'));
+  const audio = await call('GET', '/api/projects/demo/voice-over/audio?v=abc');
+  assert.equal(audio.status, 200);
+  assert.equal(audio.headers.get('content-type'), 'audio/wav');
+  assert.equal(await audio.text(), 'RIFF0000WAVE');
 });
 
 test('versions: manual save, list, restore', async () => {

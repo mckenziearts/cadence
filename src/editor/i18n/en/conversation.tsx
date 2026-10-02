@@ -89,7 +89,7 @@ export default {
   sidePanel: {
     label: 'Side panel',
     tabsLabel: 'Panel',
-    tabs: { scene: 'Scene', project: 'Project', versions: 'Versions', music: 'Music', media: 'Media' },
+    tabs: { scene: 'Scene', project: 'Project', versions: 'Versions', music: 'Music', voice: 'Voice', media: 'Media' },
     projectSettings: 'Project settings',
     projectChat: 'Project chat',
     noBrand: 'No brand',

@@ -86,4 +86,4 @@ export {
   type GrainProps,
   type VignetteProps,
 } from './chrome';
-export type { SceneProps, SceneInfo, Point, BrandKit, FormatId, Orientation } from './types';
+export type { SceneProps, SceneInfo, VoiceOverInfo, Point, BrandKit, FormatId, Orientation } from './types';

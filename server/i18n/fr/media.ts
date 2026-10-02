@@ -63,6 +63,18 @@ export default {
       `ffmpeg n’a pas pu décoder ${file} (code ${code}) : ${detail}`,
     encodeFailed: (file: string, detail: string | undefined) => `ffmpeg n’a pas pu encoder ${file} : ${detail}`,
   },
+  voiceOver: {
+    piperMissing: (bin: string) =>
+      `Piper est introuvable (${bin}) : installez-le avec \`pipx install piper-tts\`, puis redémarrez Cadence`,
+    piperStart: (bin: string, error: string) => `Impossible de lancer Piper (${bin}) : ${error}`,
+    piperFailed: (code: number, detail: string) => `Piper a échoué (code ${code})${detail ? ` : ${detail}` : ''}`,
+    piperCount: (expected: number, got: number) => `Piper a rendu ${got} fichier(s) pour ${expected} phrase(s)`,
+    unknownVoice: (id: string) => `Voix inconnue : ${id}`,
+    notDownloaded: (name: string) => `La voix ${name} n’est pas téléchargée : téléchargez-la dans l’onglet Voix`,
+    downloadFailed: (name: string, error: string) => `Téléchargement de la voix ${name} impossible : ${error}`,
+    corrupted: (name: string) => `La voix ${name} téléchargée est corrompue (md5) : réessayez`,
+    noTrack: 'Aucune voix off générée pour ce projet',
+  },
   analyze: {
     missingFile: (file: string) => `Fichier introuvable : ${file}`,
     number: (x: number, digits: number) => x.toFixed(digits).replace('.', ','),
@@ -172,6 +184,9 @@ export default {
     claudeReady: (version: string, login: string | undefined) => `Claude Code ${version}${login ? ` : ${login}` : ''}`,
     claudeLoggedOut: (version: string) => `Claude Code ${version} n'est pas connecté`,
     claudeLogin: 'Lancez `claude` dans un terminal puis /login',
+    piperReady: 'Piper (voix off)',
+    piperMissing: (bin: string) => `Piper introuvable (${bin}) : sans lui, pas de voix off`,
+    piperFix: '`pipx install piper-tts` (Python 3.9 ou plus), ou indiquez son chemin dans PIPER_PATH',
     portFree: (port: number, role: string) => `Port ${port} (${role}) libre`,
     portBusy: (port: number, role: string) => `Port ${port} (${role}) déjà utilisé (Cadence tourne peut-être déjà)`,
     portFix: (variable: string) =>

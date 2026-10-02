@@ -19,6 +19,7 @@ import type {
   SeamService,
   TemplateStore,
   VersionStore,
+  VoiceOverService,
 } from '../../server/contracts';
 import { BRAND_TOOLS } from '../../server/mcp/brandTools';
 import { createMcpHandler } from '../../server/mcp/server';
@@ -59,6 +60,10 @@ function makeProject(dir: string): ProjectState {
     music: null,
     musicUrl: null,
     musicGrid: null,
+    voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
+    voiceOverUrl: null,
+    voiceOverLines: [],
+    voiceOverPending: [],
     codeGeneration: 1,
     createdAt: '',
     updatedAt: '',
@@ -74,6 +79,7 @@ describe('MCP endpoint', () => {
   const calls: Record<string, unknown[]> = {};
   const activity: McpActivity[] = [];
   const record = (name: string, value: unknown) => (calls[name] ??= []).push(value);
+  let piperFails = false;
 
   before(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-mcp-'));
@@ -154,6 +160,21 @@ describe('MCP endpoint', () => {
         snapCuts: async (id: string, grid: string, opts: unknown) => (record('snapCuts', [id, grid, opts]), project),
       } as unknown as MusicService,
       assets: {} as AssetStore,
+      voiceOver: {
+        sync: async (id: string) => {
+          record('syncVoiceOver', id);
+          if (piperFails) throw new HttpError(500, 'Piper introuvable');
+          // What Piper gives for "Un. Deux." from 0.5 s into outro (2 s to 4 s of the video).
+          project = {
+            ...project,
+            scenes: project.scenes.map((s) => (s.id === 'outro' ? { ...s, voiceOver: { text: 'Un. Deux.', at: 0.5 } } : s)),
+            voiceOverLines: [
+              { sceneId: 'outro', text: 'Un.', start: 2.5, end: 3.4 },
+              { sceneId: 'outro', text: 'Deux.', start: 3.4, end: 4.3 },
+            ],
+          };
+        },
+      } as unknown as VoiceOverService,
       diagnose: async () => null,
     };
     const handler = createMcpHandler(deps);
@@ -180,6 +201,39 @@ describe('MCP endpoint', () => {
   }
 
   const texts = (result: Result) => result.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
+
+  test('set_voice_over: a scene chat sets its own scene, gets when each sentence is spoken, and hears why Piper failed', async () => {
+    const client = await connect(tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'outro' }));
+    try {
+      const set = await call(client, 'set_voice_over', { text: 'Un. Deux.', at: 0.5 });
+      assert.deepEqual(calls.updateScene.at(-1), ['demo', 'outro', { voiceOver: { text: 'Un. Deux.', at: 0.5 } }]);
+      assert.deepEqual(calls.syncVoiceOver.at(-1), 'demo');
+      assert.match(texts(set)[0], /^Voice-over \(voice fr_FR-siwis-medium, speed 1, music at 30 % while it speaks\)/);
+      assert.match(
+        texts(set)[0],
+        /\n- outro: 0\.500-1\.400 "Un\." \/ 1\.400-2\.300 "Deux\."; it runs 0\.300 s past the end of the scene$/,
+      );
+
+      const other = await call(client, 'set_voice_over', { sceneId: 'logo', text: 'Non.' });
+      assert.equal(other.isError, true);
+
+      piperFails = true;
+      const failed = await call(client, 'set_voice_over', { text: 'Trois.' });
+      assert.deepEqual(
+        calls.updateScene.at(-1),
+        ['demo', 'outro', { voiceOver: { text: 'Trois.', at: 0.5 } }],
+        'no at: the start stays',
+      );
+      assert.equal(failed.isError, true);
+      assert.match(texts(failed)[0], /^The text is saved, but the voice could not be generated: Piper introuvable\./);
+      piperFails = false;
+
+      const removed = await call(client, 'set_voice_over', { text: '' });
+      assert.equal(texts(removed)[0], 'outro has no voice-over any more.');
+    } finally {
+      await client.close();
+    }
+  });
 
   test('rejects requests without a valid token, from browsers, and other methods', async () => {
     const post = (headers: Record<string, string>, body = '{}') =>

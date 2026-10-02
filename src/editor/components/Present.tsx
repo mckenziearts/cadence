@@ -5,7 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../i18n';
 import { secs } from '../lib/format';
 import { frameStart, playbackTime } from '../lib/timeline';
-import { set, useStore } from '../store';
+import { duckedVolume, followVoice } from '../lib/voiceOver';
+import { get, set, useStore } from '../store';
 import { FrameView, type FrameHandle } from './FrameView';
 
 export function Present() {
@@ -17,6 +18,7 @@ export function Present() {
   const generation = useStore((s) => s.generation);
   const frame = useRef<FrameHandle>(null);
   const audio = useRef<HTMLAudioElement>(null);
+  const voice = useRef<HTMLAudioElement>(null);
   const timeRef = useRef(0);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -37,6 +39,7 @@ export function Present() {
       setTime(timeRef.current);
       frame.current?.seek(timeRef.current);
       if (audio.current && project.musicUrl) audio.current.currentTime = offset + timeRef.current;
+      if (voice.current) voice.current.currentTime = timeRef.current;
     },
     [total, offset, project.musicUrl],
   );
@@ -61,6 +64,7 @@ export function Present() {
     const a = audio.current;
     if (!playing) {
       a?.pause();
+      voice.current?.pause();
       frame.current?.seek(timeRef.current);
       return;
     }
@@ -82,6 +86,9 @@ export function Present() {
         setPlaying(false);
       }
       timeRef.current = t;
+      followVoice(voice.current, t);
+      const current = get().project ?? project;
+      if (a && current.musicUrl) a.volume = duckedVolume(current, current.music?.volume ?? 1, t);
       // Whole frames, like the editor's deck: one render per project frame, not per display refresh.
       const shown = t < total ? frameStart(t, project.fps) : total;
       if (shown !== drawn) {
@@ -95,8 +102,9 @@ export function Present() {
     return () => {
       cancelAnimationFrame(raf);
       a?.pause();
+      voice.current?.pause();
     };
-  }, [playing, total, offset, project.musicUrl, project.music?.volume, project.fps, jump]);
+  }, [playing, total, offset, project.musicUrl, project.music?.volume, project.voiceOverUrl, project.fps, jump]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -154,6 +162,7 @@ export function Present() {
         onReady={() => setReady(true)}
       />
       {project.musicUrl && <audio ref={audio} src={project.musicUrl} preload="auto" />}
+      {project.voiceOverUrl && <audio ref={voice} src={project.voiceOverUrl} preload="auto" />}
       <div
         className={clsx(
           'absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-8 pt-16 pb-6 transition-opacity duration-300',

@@ -18,9 +18,11 @@ import {
   type ProjectSummary,
   type SceneFile,
   type SceneState,
+  type SceneVoiceOver,
   type UpdateProjectInput,
+  type VoiceOverSettings,
 } from '../../src/shared/types';
-import type { BrandStore, CadenceConfig, FileEvents, ProjectStore, TemplateStore } from '../contracts';
+import type { BrandStore, CadenceConfig, FileEvents, ProjectStore, TemplateStore, VoiceOverProvider } from '../contracts';
 import { m } from '../i18n';
 import {
   HttpError,
@@ -37,6 +39,7 @@ import {
   writeFileAtomic,
   writeJsonAtomic,
 } from '../util';
+import { defaultVoiceOver } from '../voiceover/voices';
 import { DEFAULT_BRAND, FileBrandStore } from './brands';
 import { FileTemplateStore } from './templates';
 
@@ -47,6 +50,7 @@ const DEFAULT_SCENE_DURATION = 3;
 const MAX_CODE_BYTES = 1024 * 1024;
 const FPS_VALUES = [24, 30, 60];
 const WATCH_DEBOUNCE_MS = 60;
+const MAX_VOICE_OVER_CHARS = 2000;
 
 const musicSchema = z.object({
   file: z
@@ -59,6 +63,18 @@ const musicSchema = z.object({
   beatsPerBar: z.literal([3, 4, 6]).optional(),
   barOffset: z.number().int().min(0).max(5).optional(),
   gridOffset: z.number().min(-0.25).max(0.25).optional(),
+});
+
+/** Ranges only: a voice this Cadence does not offer (a newer project) fails when spoken, not when read. */
+const voiceOverSchema = z.object({
+  voice: z.string().regex(/^[a-z]{2,3}_[A-Z]{2}-\w+-\w+$/),
+  speed: z.number().min(0.5).max(2).default(1),
+  musicLevel: z.number().min(0).max(1).default(0.3),
+});
+
+const sceneVoiceOverSchema = z.object({
+  text: z.string().max(MAX_VOICE_OVER_CHARS),
+  at: z.number().min(0).max(MAX_DURATION).default(0),
 });
 
 const projectFileSchema = z.object({
@@ -76,10 +92,12 @@ const projectFileSchema = z.object({
         name: z.string().optional(),
         duration: z.number().refine(Number.isFinite),
         template: z.string().nullish(),
+        voiceOver: sceneVoiceOverSchema.optional(),
       }),
     )
     .default([]),
   music: musicSchema.nullable().default(null),
+  voiceOver: voiceOverSchema.nullable().default(null),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
 });
@@ -106,6 +124,7 @@ export class FileProjectStore implements ProjectStore {
   private codeHashes = new Map<string, string>();
   private invalidate: (dirs: string[]) => void = () => undefined;
   private musicGrid: ((id: string) => Promise<MusicGridData | null>) | null = null;
+  private voiceOver: VoiceOverProvider | null = null;
   private unwatch: (() => void) | null = null;
   private timers = new Map<string, NodeJS.Timeout>();
   private pending = new Map<string, Set<CodeKind>>();
@@ -148,6 +167,10 @@ export class FileProjectStore implements ProjectStore {
 
   setMusicGridProvider(fn: (id: string) => Promise<MusicGridData | null>): void {
     this.musicGrid = fn;
+  }
+
+  setVoiceOverProvider(fn: VoiceOverProvider): void {
+    this.voiceOver = fn;
   }
 
   generation(id: string): number {
@@ -214,6 +237,7 @@ export class FileProjectStore implements ProjectStore {
       music: data.music,
       musicUrl: data.music ? `/api/projects/${id}/music/audio?file=${encodeURIComponent(data.music.file)}` : null,
       musicGrid: data.music ? await this.resolveMusicGrid(id) : null,
+      ...(await this.resolveVoiceOver(id, data, scenes)),
       codeGeneration: this.generation(id),
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
@@ -315,6 +339,7 @@ export class FileProjectStore implements ProjectStore {
       if (patch.fps !== undefined) data.fps = parseFps(patch.fps);
       if (patch.tempo !== undefined) data.tempo = parseTempo(patch.tempo);
       if (patch.language !== undefined) data.language = parseLanguage(patch.language);
+      if (patch.voiceOver !== undefined) data.voiceOver = patch.voiceOver && parseVoiceOver(patch.voiceOver);
       return previous;
     });
     if (patch.name !== undefined || brand !== undefined || patch.formats !== undefined) this.events.emit('list-changed');
@@ -373,11 +398,20 @@ export class FileProjectStore implements ProjectStore {
     return this.sceneState(id, sceneId);
   }
 
-  async updateScene(id: string, sceneId: string, patch: { name?: string; duration?: number }): Promise<ProjectState> {
+  async updateScene(
+    id: string,
+    sceneId: string,
+    patch: { name?: string; duration?: number; voiceOver?: SceneVoiceOver | null },
+  ): Promise<ProjectState> {
     await this.mutate(id, (data) => {
       const scene = requireScene(data, sceneId);
       if (patch.name !== undefined) scene.name = requireName(patch.name, 'scene');
       if (patch.duration !== undefined) scene.duration = parseDuration(patch.duration);
+      if (patch.voiceOver !== undefined) {
+        const voiceOver = patch.voiceOver && parseSceneVoiceOver(patch.voiceOver);
+        if (voiceOver) scene.voiceOver = voiceOver;
+        else delete scene.voiceOver;
+      }
     });
     return this.get(id);
   }
@@ -525,8 +559,10 @@ export class FileProjectStore implements ProjectStore {
         name: s.name?.trim() || s.id,
         duration: clampDuration(s.duration),
         ...(s.template ? { template: s.template } : {}),
+        ...(s.voiceOver?.text.trim() ? { voiceOver: { text: s.voiceOver.text, at: s.voiceOver.at } } : {}),
       })),
       music: data.music ? { ...data.music, start: roundMs(data.music.start) } : null,
+      ...(data.voiceOver ? { voiceOver: data.voiceOver } : {}),
       createdAt: data.createdAt ?? stamp!,
       updatedAt: data.updatedAt ?? stamp!,
     };
@@ -565,6 +601,22 @@ export class FileProjectStore implements ProjectStore {
     } catch (e) {
       console.warn(m().api.projects.musicGrid(id, (e as Error).message));
       return null;
+    }
+  }
+
+  private async resolveVoiceOver(id: string, data: ProjectFile, scenes: SceneState[]) {
+    const none = {
+      voiceOver: data.voiceOver ?? defaultVoiceOver(data.language ?? 'fr'),
+      voiceOverUrl: null,
+      voiceOverLines: [],
+      voiceOverPending: [],
+    };
+    if (!this.voiceOver) return none;
+    try {
+      return await this.voiceOver(id, data, scenes);
+    } catch (e) {
+      console.warn(m().api.projects.voiceOver(id, (e as Error).message));
+      return none;
     }
   }
 
@@ -697,6 +749,20 @@ function parseTempo(value: unknown): number {
     throw new HttpError(400, m().api.projects.tempo(value));
   }
   return Math.round(value * 100) / 100;
+}
+
+function parseVoiceOver(value: unknown): VoiceOverSettings {
+  const parsed = voiceOverSchema.safeParse(value);
+  if (!parsed.success) throw new HttpError(400, m().api.projects.voiceOverSettings(formatIssues(parsed.error)));
+  return parsed.data;
+}
+
+/** null for a blank text: the scene has no voice-over. */
+function parseSceneVoiceOver(value: unknown): SceneVoiceOver | null {
+  const parsed = sceneVoiceOverSchema.safeParse(value);
+  if (!parsed.success) throw new HttpError(400, m().api.projects.sceneVoiceOver(formatIssues(parsed.error)));
+  const text = parsed.data.text.trim();
+  return text ? { text, at: roundMs(parsed.data.at) } : null;
 }
 
 /** Durations from users and the agent: positive seconds, clamped to 0.1-600 and rounded to the millisecond. */

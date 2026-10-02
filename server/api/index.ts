@@ -1,4 +1,3 @@
-// Adapted from saeedvaziry/caleb-video-editor (MIT)
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
@@ -29,6 +28,7 @@ import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
 import { HttpError, pathExists, resolveInside } from '../util';
+import { VOICES } from '../voiceover/voices';
 import { dataUrl, sendFile, sendImage } from './files';
 
 const MB = 1024 * 1024;
@@ -45,6 +45,11 @@ const fpsSchema = z.literal([24, 30, 60]);
 const languageSchema = z.enum(['fr', 'en']).nullable();
 const effortSchema = z.enum(EFFORTS);
 const modelSchema = z.string().regex(MODEL_ID_PATTERN);
+const voiceOverSchema = z.object({
+  voice: z.enum(VOICES.map((v) => v.id) as [string, ...string[]]),
+  speed: z.number().min(0.5).max(2),
+  musicLevel: z.number().min(0).max(1),
+});
 
 const schemas = {
   createProject: z.object({
@@ -63,6 +68,7 @@ const schemas = {
     fps: fpsSchema.optional(),
     tempo: z.number().min(30).max(300).optional(),
     language: languageSchema.optional(),
+    voiceOver: voiceOverSchema.nullable().optional(),
   }),
   text: z.object({ text: z.string().max(200_000) }),
   createScene: z.object({
@@ -72,7 +78,14 @@ const schemas = {
     code: z.string().max(MB).optional(),
     duration: z.number().positive().max(600).optional(),
   }),
-  updateScene: z.object({ name: z.string().min(1).max(120).optional(), duration: z.number().positive().max(600).optional() }),
+  updateScene: z.object({
+    name: z.string().min(1).max(120).optional(),
+    duration: z.number().positive().max(600).optional(),
+    voiceOver: z
+      .object({ text: z.string().max(2000), at: z.number().min(0).max(600) })
+      .nullable()
+      .optional(),
+  }),
   order: z.object({ ids: z.array(idSchema) }),
   checkSeams: z.object({ sceneId: idSchema.optional(), format: formatSchema.optional() }),
   selectMusic: z.object({ file: z.string().min(1).max(300) }),
@@ -300,6 +313,21 @@ export function createApi(deps: ApiDeps) {
     const project = await music.snapCuts(id, grid, { keepBars });
     seams.recheck(id);
     return c.json(project);
+  });
+
+  // Voice-overs
+  app.get('/voices', async (c) => c.json(await deps.voiceOver.voices()));
+  app.post('/voices/:voice/download', async (c) => c.json(await deps.voiceOver.download(c.req.param('voice'))));
+  /** Speak what is missing now, even sentences Piper failed on before (the editor's "Try again"). */
+  app.post('/projects/:id/voice-over/sync', async (c) => {
+    const id = await existingProject(c);
+    await deps.voiceOver.sync(id);
+    return c.json(await store.get(id));
+  });
+  app.get('/projects/:id/voice-over/audio', async (c) => {
+    const track = await deps.voiceOver.track(await existingProject(c));
+    if (!track) throw new HttpError(404, m().media.voiceOver.noTrack);
+    return sendFile(c, track.file, 'audio/wav');
   });
 
   // Versions

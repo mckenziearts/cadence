@@ -17,7 +17,8 @@ import {
   type RenderQuality,
   type RenderRequest,
 } from '../../src/shared/types';
-import type { CadenceConfig, Hub, MusicService, ProjectStore, RenderService } from '../contracts';
+import { DUCK_RAMP_S, voiceSpans } from '../../src/shared/voiceOver';
+import type { CadenceConfig, Hub, MusicService, ProjectStore, RenderService, VoiceOverService } from '../contracts';
 import { m } from '../i18n';
 import { assertId, formatSeconds, HttpError, nowIso, pathExists, resolveInside } from '../util';
 import { launchChromium, openFramePage, RENDER_TIMEOUT_MS, seekFrame, withTimeout, type FramePage } from './capture';
@@ -48,7 +49,15 @@ export class FfmpegRenderService implements RenderService {
   private queue: JobState[] = [];
   private running = false;
 
-  constructor(private readonly deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; hub: Hub }) {}
+  constructor(
+    private readonly deps: {
+      config: CadenceConfig;
+      store: ProjectStore;
+      music: MusicService;
+      voiceOver: VoiceOverService;
+      hub: Hub;
+    },
+  ) {}
 
   async start(projectId: string, req: RenderRequest): Promise<RenderJob[]> {
     const project = await this.deps.store.get(projectId);
@@ -180,11 +189,14 @@ export class FfmpegRenderService implements RenderService {
 
   private async run(state: JobState): Promise<void> {
     const { job, abort } = state;
-    const { config, store, music } = this.deps;
+    const { config, store, music, voiceOver } = this.deps;
     const request = job.request;
     job.status = 'rendering';
     this.emit(state, true);
     await store.syncCode(job.projectId);
+    // Sentences Piper has not spoken yet are spoken now, before the pages load the project: their times are props of
+    // the scenes. If Piper cannot, the editor already says why and the MP4 goes out with what is generated.
+    await voiceOver.sync(job.projectId).catch(() => undefined);
     let project = await store.get(job.projectId);
     let { from, total } = frameRange(project, request, job.fps);
     const preset = PRESETS[request.quality];
@@ -217,6 +229,10 @@ export class FfmpegRenderService implements RenderService {
       const audioFile = project.music ? await music.audioPath(job.projectId) : null;
       const audio =
         audioFile && project.music ? { file: audioFile, start: project.music.start + from, volume: project.music.volume } : null;
+      const track = await voiceOver.track(job.projectId);
+      const voice = track
+        ? { file: track.file, start: from, intervals: voiceSpans(track.lines, from), musicLevel: track.musicLevel }
+        : null;
       job.framesTotal = total;
       this.emit(state, true);
       abort.signal.throwIfAborted();
@@ -231,6 +247,7 @@ export class FfmpegRenderService implements RenderService {
           crf: preset.crf,
           preset: preset.preset,
           audio,
+          voice,
           duration,
           output: partial,
         }),
@@ -393,6 +410,8 @@ function ffmpegArgs(o: {
   crf: number;
   preset: string;
   audio: { file: string; start: number; volume: number } | null;
+  /** The voice-over track from `start` (video seconds), and when it speaks in output seconds. */
+  voice: { file: string; start: number; intervals: [number, number][]; musicLevel: number } | null;
   /** Seconds: frames / fps. */
   duration: number;
   output: string;
@@ -412,8 +431,9 @@ function ffmpegArgs(o: {
     'pipe:0',
   ];
   if (o.audio) args.push('-ss', o.audio.start.toFixed(3), '-i', o.audio.file);
+  if (o.voice) args.push('-ss', o.voice.start.toFixed(3), '-i', o.voice.file);
   args.push('-map', '0:v:0');
-  if (o.audio) args.push('-map', '1:a:0?');
+  if (o.audio && !o.voice) args.push('-map', '1:a:0?');
   const k = o.supersample ? 2 : 1;
   args.push(
     // Screenshots are full-range BT.601 JPEGs; the video is limited-range BT.709 (lanczos also handles supersampling).
@@ -438,21 +458,43 @@ function ffmpegArgs(o: {
     '-r',
     String(o.fps),
   );
-  if (o.audio) {
-    const fade = Math.min(FADE_OUT_S, o.duration);
-    // loudnorm first so `volume` stays relative to a normalized track; the fade comes last so nothing undoes it.
-    // loudnorm runs at 192 kHz: newer ffmpeg resamples to it on its own, 5.1 (Debian 12) fails unless asked to.
-    const filters = [
-      'aresample=192000',
-      'loudnorm=I=-14:TP=-1.5:LRA=11',
-      'aresample=48000',
-      `volume=${o.audio.volume}`,
-      `afade=t=out:st=${(o.duration - fade).toFixed(3)}:d=${fade.toFixed(3)}`,
-    ];
-    args.push('-af', filters.join(','), '-c:a', 'aac', '-b:a', '192k');
+  const fade = Math.min(FADE_OUT_S, o.duration);
+  const fadeOut = `afade=t=out:st=${(o.duration - fade).toFixed(3)}:d=${fade.toFixed(3)}`;
+  // loudnorm first so `volume` stays relative to a normalized track; the fade comes last so nothing undoes it.
+  // loudnorm runs at 192 kHz: newer ffmpeg resamples to it on its own, 5.1 (Debian 12) fails unless asked to.
+  const normalize = (lufs: number) => ['aresample=192000', `loudnorm=I=${lufs}:TP=-1.5:LRA=11`, 'aresample=48000'];
+  if (o.audio && !o.voice) {
+    args.push('-af', [...normalize(-14), `volume=${o.audio.volume}`, fadeOut].join(','), '-c:a', 'aac', '-b:a', '192k');
+  } else if (o.voice) {
+    const chains: string[] = [];
+    if (o.audio) {
+      const duck = o.voice.intervals.length
+        ? [`volume='${duckExpression(o.voice.intervals, o.voice.musicLevel)}':eval=frame`]
+        : [];
+      chains.push(`[1:a]${[...normalize(-14), `volume=${o.audio.volume}`, ...duck].join(',')}[music]`);
+    }
+    // Piper already evens out each sentence; loudnorm would not do: on the digital silence between sentences, it outputs
+    // garbage that the limiter turns into noise. The limiter only catches peaks: its default auto-level would lift
+    // everything back to 0 dB, ducking included.
+    chains.push(`[${o.audio ? 2 : 1}:a]aresample=48000[voice]`);
+    chains.push(
+      o.audio
+        ? `[music][voice]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95:level=disabled,${fadeOut}[audio]`
+        : `[voice]${fadeOut}[audio]`,
+    );
+    args.push('-filter_complex', chains.join(';'), '-map', '[audio]', '-c:a', 'aac', '-b:a', '192k');
   }
   args.push('-t', o.duration.toFixed(6), '-movflags', '+faststart', '-f', 'mp4', o.output);
   return args;
+}
+
+/** duckGain (src/shared/voiceOver.ts) as an ffmpeg `volume` expression of `t`. */
+export function duckExpression(spans: [number, number][], level: number): string {
+  const r = DUCK_RAMP_S;
+  const depth = spans
+    .map(([start, end]) => `clip(min((t-${(start - r).toFixed(3)})/${r},(${(end + r).toFixed(3)}-t)/${r}),0,1)`)
+    .reduce((all, one) => `max(${all},${one})`);
+  return `1-${(1 - level).toFixed(3)}*${depth}`;
 }
 
 interface Deferred<T> {

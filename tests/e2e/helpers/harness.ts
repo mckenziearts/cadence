@@ -10,11 +10,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import type { ViteDevServer } from 'vite';
-import type { BrandStore, CadenceConfig, Hub, MusicService, ProjectStore } from '../../../server/contracts';
+import type {
+  BrandStore,
+  CadenceConfig,
+  Hub,
+  MusicService,
+  ProjectStore,
+  VoiceOverService,
+  VoiceOverTrack,
+} from '../../../server/contracts';
 import { createFrameHandler } from '../../../server/frames/frameServer';
 import { createVite, invalidateDirs } from '../../../server/frames/vite';
 import { HttpError, KeyedMutex, pathExists, readJson, roundMs, sha256, shortHash } from '../../../server/util';
-import type { BrandFile, ProjectFile, ProjectState, SceneState, ServerEvent } from '../../../src/shared/types';
+import type { BrandFile, ProjectFile, ProjectState, SceneState, ServerEvent, VoiceOverLine } from '../../../src/shared/types';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const FIXTURES = path.join(ROOT, 'tests/fixtures');
@@ -26,6 +34,8 @@ const unused = (): never => {
 /** Reads projects/<id>/project.json on every call; code generations work like the real store's syncCode. */
 export class FixtureProjectStore implements ProjectStore {
   readonly events = new EventEmitter();
+  /** ProjectState.voiceOverLines, per project: the sentences generated so far. */
+  readonly voiceOverLines = new Map<string, VoiceOverLine[]>();
   private hashes = new Map<string, string>();
   private generations = new Map<string, number>();
   private invalidate: (dirs: string[]) => void = () => undefined;
@@ -86,6 +96,10 @@ export class FixtureProjectStore implements ProjectStore {
       music: file.music,
       musicUrl: null,
       musicGrid: null,
+      voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
+      voiceOverUrl: null,
+      voiceOverLines: this.voiceOverLines.get(id) ?? [],
+      voiceOverPending: [],
       codeGeneration: this.generation(id),
       createdAt: file.createdAt,
       updatedAt: file.updatedAt,
@@ -134,6 +148,7 @@ export class FixtureProjectStore implements ProjectStore {
   readArtDirection = unused;
   writeArtDirection = unused;
   setMusicGridProvider = unused;
+  setVoiceOverProvider = unused;
 }
 
 export class FixtureBrandStore implements BrandStore {
@@ -181,6 +196,17 @@ export class FixtureMusicService implements MusicService {
   grid = unused;
   snapCuts = unused;
   context = unused;
+}
+
+export class FixtureVoiceOverService implements VoiceOverService {
+  /** What track() returns, per project. */
+  tracks = new Map<string, VoiceOverTrack>();
+  async track(projectId: string): Promise<VoiceOverTrack | null> {
+    return this.tracks.get(projectId) ?? null;
+  }
+  async sync(): Promise<void> {}
+  voices = unused;
+  download = unused;
 }
 
 export interface Harness {
@@ -237,6 +263,7 @@ export async function startHarness(name: string): Promise<Harness> {
     ffmpegPath: 'ffmpeg',
     ffprobePath: 'ffprobe',
     claudePath: 'claude',
+    piperPath: 'piper',
     defaultModel: 'claude-opus-5-5',
     defaultEffort: 'medium',
     useApiKey: false,

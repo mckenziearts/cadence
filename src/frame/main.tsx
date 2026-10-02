@@ -6,7 +6,7 @@ import '@fontsource-variable/geist-mono';
 import '@fontsource-variable/inter';
 import '@fontsource-variable/inter/wght-italic.css';
 import '@fontsource-variable/jetbrains-mono';
-import { BrandContext, SceneContext, createMusic, setAssetBase, type Music, type SceneProps } from 'cadence';
+import { BrandContext, SceneContext, createMusic, setAssetBase, type Music, type SceneProps, type VoiceOverInfo } from 'cadence';
 import { Component, type ComponentType, type ErrorInfo, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
@@ -67,6 +67,7 @@ let loadError: string | null = null;
 let loadedGeneration = 0;
 let scenes = new Map<string, LoadedScene>();
 const musicCache = new Map<string, Music>();
+const voiceOverCache = new Map<string, VoiceOverInfo>();
 let renderErrors: string[] = [];
 let lastErrors: string[] = [];
 let lastPosted: string | null = null;
@@ -239,6 +240,7 @@ async function load(): Promise<void> {
   loadedGeneration = next.project.codeGeneration;
   setAssetBase(`/@fs${next.project.dir}/assets/`);
   musicCache.clear();
+  voiceOverCache.clear();
 }
 
 async function reloadNow(generation: number): Promise<void> {
@@ -304,6 +306,19 @@ function musicFor(project: ProjectState, scene: SceneState): Music {
   return music;
 }
 
+/** The scene's voice-over in scene seconds; one object per scene and project load, like its music. */
+function voiceOverFor(project: ProjectState, scene: SceneState): VoiceOverInfo {
+  let voiceOver = voiceOverCache.get(scene.id);
+  if (!voiceOver) {
+    const lines = project.voiceOverLines
+      .filter((l) => l.sceneId === scene.id)
+      .map((l) => ({ text: l.text, start: tidy(l.start - scene.start), end: tidy(l.end - scene.start) }));
+    voiceOver = { text: scene.voiceOver?.text ?? '', lines };
+    voiceOverCache.set(scene.id, voiceOver);
+  }
+  return voiceOver;
+}
+
 function view(picked: Picked | null, spec: FormatSpec): View {
   if (loadError) return { kind: 'error', title: 'Projet indisponible', message: loadError };
   if (!data) return { kind: 'empty' };
@@ -327,6 +342,7 @@ function view(picked: Picked | null, spec: FormatSpec): View {
     orientation: spec.orientation,
     fps: project.fps,
     music: musicFor(project, scene),
+    voiceOver: voiceOverFor(project, scene),
     scene: { id: scene.id, name: scene.name, index: scene.index, count: project.scenes.length, start: scene.start },
     brand: kit,
   };

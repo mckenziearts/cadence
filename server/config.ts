@@ -32,6 +32,7 @@ export function loadConfig(overrides: Partial<CadenceConfig> = {}): CadenceConfi
     ffmpegPath: env.FFMPEG_PATH || 'ffmpeg',
     ffprobePath: env.FFPROBE_PATH || 'ffprobe',
     claudePath: env.CLAUDE_PATH || 'claude',
+    piperPath: env.PIPER_PATH || 'piper',
     defaultModel: env.CADENCE_MODEL || 'claude-opus-5-5',
     defaultEffort: parseEffort(env.CADENCE_EFFORT),
     useApiKey: /^(1|true|yes|oui)$/i.test(env.CADENCE_USE_API_KEY ?? ''),

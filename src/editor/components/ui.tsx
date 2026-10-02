@@ -215,10 +215,11 @@ export function Segmented<T extends string>(props: {
             onClick={() => onChange(option.value)}
             className={clsx(
               'focus-ring display-caps inline-flex items-center justify-center gap-1.5 border-2 border-ink whitespace-nowrap select-none disabled:text-ink-4',
-              stretch && 'min-w-0 flex-1',
+              // Six side-panel tabs share 324 px below xl: each takes its label's width, plus an equal share of the rest.
+              stretch && (tabs ? 'min-w-0 flex-auto' : 'min-w-0 flex-1'),
               tabs
                 ? [
-                    '-mb-0.5 h-8 px-2.5 text-[15px]',
+                    '-mb-0.5 h-8 px-1 text-[13px] xl:px-2.5 xl:text-[15px]',
                     active
                       ? 'border-b-paper bg-paper text-ink shadow-[inset_0_3px_0_0_var(--color-now)]'
                       : 'bg-wash text-ink-3 hover:bg-white hover:text-ink',

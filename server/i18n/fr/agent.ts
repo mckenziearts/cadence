@@ -38,6 +38,7 @@ export default {
       music: 'Lecture de la grille musicale',
       templates: 'Liste des modèles',
       duration: (duration: string) => `Durée réglée à ${duration}`,
+      voiceOver: (cleared: boolean): string => (cleared ? 'Voix off retirée' : 'Voix off écrite et générée'),
       version: (label: string) => `Version « ${label} »`,
       newScene: (name: string) => `Nouvelle scène « ${name} »`,
       duplicate: (scene: string) => `Duplication de ${scene}`,
@@ -85,6 +86,7 @@ export default {
     renderOwnScene: 'rends ta scène, ou toute la vidéo avec wholeVideo: true.',
     checkOwnSeams: 'vérifie les raccords de ta scène.',
     setOwnDuration: 'change la durée de ta scène ; le chat du projet règle les autres.',
+    setOwnVoiceOver: 'écris la voix off de ta scène ; le chat du projet règle les autres.',
     badUrl: (url: string) => `Adresse invalide : ${url} (seules les adresses http(s) peuvent être capturées).`,
   },
   mcpTokens: {

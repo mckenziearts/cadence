@@ -75,6 +75,7 @@ async function loadProject(id: string, sceneId?: string | null): Promise<void> {
       publishing: { jobs: [], publications: [] },
       profile: false,
       music: { status: project.music ? (project.musicGrid ? 'ready' : 'analyzing') : 'idle', error: null },
+      voiceOver: { status: 'idle', error: null },
       cost: null,
       focusVersion: null,
       renaming: null,

@@ -1,4 +1,4 @@
-// Side panel: scene chat, project chat + settings, versions, music, media.
+// Side panel: scene chat, project chat + settings, versions, music, voice-over, media.
 import clsx from 'clsx';
 import { ChevronRight, ScanEye, Settings2 } from 'lucide-react';
 import { useState } from 'react';
@@ -14,8 +14,9 @@ import { Chat, ChatHeaderActions } from './Chat';
 import { MediaPanel } from './MediaPanel';
 import { MusicPanel } from './MusicPanel';
 import { VersionsPanel } from './VersionsPanel';
+import { VoicePanel } from './VoicePanel';
 
-const TABS: Panel[] = ['scene', 'project', 'versions', 'music', 'media'];
+const TABS: Panel[] = ['scene', 'project', 'versions', 'music', 'voice', 'media'];
 
 export function SidePanel() {
   const texts = useT().conversation.sidePanel;
@@ -39,6 +40,7 @@ export function SidePanel() {
       {panel === 'project' && <ProjectPanel />}
       {panel === 'versions' && <VersionsPanel />}
       {panel === 'music' && <MusicPanel />}
+      {panel === 'voice' && <VoicePanel />}
       {panel === 'media' && <MediaPanel />}
     </aside>
   );

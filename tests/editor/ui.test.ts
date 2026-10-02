@@ -10,9 +10,10 @@ import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
-import type { AgentProvider, BrandSource } from '../../server/contracts';
+import type { AgentProvider, BrandSource, SpeechEngine } from '../../server/contracts';
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
+import { writeWav } from '../../server/voiceover/wav';
 import type { AppState, ChatState, MusicAnalysis, MusicGridData, ProjectState } from '../../src/shared/types';
 import { fakeNetwork } from '../server/helpers';
 
@@ -80,6 +81,16 @@ const glabMissing: BrandSource = {
 };
 const stateDir = path.join(os.tmpdir(), `cadence-e2e-state-${process.pid}`);
 
+/** Piper as the voice-over tests need it: one second per sentence, never the real program. */
+const spoken: string[][] = [];
+const speech: SpeechEngine = {
+  check: async () => ({ ok: true }),
+  speak: async ({ sentences, files }) => {
+    spoken.push(sentences);
+    for (const file of files) await writeFile(file, writeWav({ sampleRate: 16000, samples: new Int16Array(16000).fill(800) }));
+  },
+};
+
 let server: RunningServer;
 let browser: Browser;
 
@@ -131,11 +142,17 @@ before(
       provider,
       brandSources: { github: brandSource, gitlab: glabMissing },
       networks: { youtube: fakeNetwork() },
+      speech,
       root: ROOT,
       // The YouTube keys and tokens of the test stay out of this machine's .cadence/accounts.json.
       stateDir,
     });
     browser = await chromium.launch();
+    // The default voices count as downloaded (the fake Piper never reads them).
+    await mkdir(path.join(stateDir, 'voices'), { recursive: true });
+    for (const voice of ['fr_FR-siwis-medium', 'en_US-joe-medium']) {
+      for (const ext of ['.onnx', '.onnx.json']) await writeFile(path.join(stateDir, 'voices', `${voice}${ext}`), '{}');
+    }
     for (const [id, name] of [
       [A, 'Éditeur A'],
       [B, 'Éditeur B'],
@@ -452,6 +469,32 @@ describe('editor', () => {
       .waitFor();
     await page.context().close();
   });
+
+  it(
+    'writes a scene voice-over in Voix: spoken once the field is left, heard in the preview, moved, removed',
+    { timeout: 90_000 },
+    async () => {
+      const page = await open(A);
+      await panel(page, 'Voix');
+      const text = page.getByRole('textbox', { name: /^Voix off de/ }).first();
+      await text.fill('Bonjour. Deux phrases.');
+      await text.blur();
+      await page.getByText(`2${NBSP}phrases, de 0,00${NBSP}s à 2,00${NBSP}s`).waitFor({ timeout: 30_000 });
+      assert.deepEqual(spoken.at(-1), ['Bonjour.', 'Deux phrases.']);
+      await page.locator('audio[src*="/voice-over/audio"]').waitFor({ state: 'attached' });
+
+      const start = page.getByRole('textbox', { name: /^Départ de la voix dans/ }).first();
+      await start.fill('0,5');
+      await start.press('Enter');
+      await page.getByText(`2${NBSP}phrases, de 0,50${NBSP}s à 2,50${NBSP}s`).waitFor();
+      assert.equal(spoken.length, 1, 'moving the voice speaks nothing again');
+
+      await text.fill('');
+      await text.blur();
+      await page.locator('audio[src*="/voice-over/audio"]').waitFor({ state: 'detached' });
+      await page.context().close();
+    },
+  );
 
   it('offers no seam suggestion on the first scene', { timeout: 90_000 }, async () => {
     const page = await open(`${A}/titre`);

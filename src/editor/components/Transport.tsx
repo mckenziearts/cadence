@@ -5,6 +5,7 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSt
 import { useT } from '../i18n';
 import { secs, secsLabel } from '../lib/format';
 import { frameStart, playbackTime, rulerStep, timelineMarks } from '../lib/timeline';
+import { duckedVolume, followVoice } from '../lib/voiceOver';
 import { currentScene, get, previewDuration, set, useStore } from '../store';
 import { seek, setMode, setPlaying, userSeek } from '../store/project';
 import { IconButton, Kbd, Popover, Segmented, Tooltip } from './ui';
@@ -14,7 +15,9 @@ import { IconButton, Kbd, Popover, Segmented, Tooltip } from './ui';
 /** Advances the playhead while playing, a frame at a time. With music, the picture keeps within a frame of the sound. */
 export function PlaybackEngine() {
   const audio = useRef<HTMLAudioElement>(null);
+  const voice = useRef<HTMLAudioElement>(null);
   const url = useStore((s) => s.project?.musicUrl ?? null);
+  const voiceUrl = useStore((s) => s.project?.voiceOverUrl ?? null);
   const volume = useStore((s) => s.volumeDraft ?? s.project?.music?.volume ?? 1);
   const muted = useStore((s) => s.muted);
   const playing = useStore((s) => s.playing);
@@ -27,13 +30,16 @@ export function PlaybackEngine() {
     const a = audio.current;
     if (!playing) {
       a?.pause();
+      voice.current?.pause();
       return;
     }
-    /** Track time at playhead 0 of what the preview shows. */
-    const offset = () => {
+    /** Video time at playhead 0 of what the preview shows. */
+    const shown = () => {
       const s = get();
-      return (s.project?.music?.start ?? 0) + (s.mode === 'scene' ? (currentScene(s)?.start ?? 0) : 0);
+      return s.mode === 'scene' ? (currentScene(s)?.start ?? 0) : 0;
     };
+    /** Track time at playhead 0 of what the preview shows. */
+    const offset = () => (get().project?.music?.start ?? 0) + shown();
     const withAudio = () => Boolean(a && get().project?.musicUrl);
     const syncAudio = () => {
       if (!a || !withAudio()) return;
@@ -43,6 +49,7 @@ export function PlaybackEngine() {
       void a.play().catch(() => undefined);
     };
     syncAudio();
+    followVoice(voice.current, shown() + get().time);
 
     // The playhead moves by whole frames: the preview and the deck redraw once per project frame, not at every display
     // refresh. `clock` keeps the exact time in between.
@@ -57,6 +64,8 @@ export function PlaybackEngine() {
       const heard = a && withAudio() && !a.paused && !a.seeking && a.readyState >= 2 ? a.currentTime - offset() : null;
       clock = playbackTime(clock, (now - last) / 1000, heard, s.project.fps);
       last = now;
+      followVoice(voice.current, shown() + clock);
+      if (a && withAudio()) a.volume = duckedVolume(s.project, s.volumeDraft ?? s.project.music?.volume ?? 1, shown() + clock);
       if (clock >= duration - 1e-4) {
         if (s.loop && duration > 0) {
           clock = 0;
@@ -81,16 +90,23 @@ export function PlaybackEngine() {
         clock = s.time;
         last = performance.now();
         syncAudio();
+        followVoice(voice.current, shown() + clock);
       }
     });
     return () => {
       cancelAnimationFrame(raf);
       unsubscribe();
       a?.pause();
+      voice.current?.pause();
     };
   }, [playing]);
 
-  return url ? <audio ref={audio} src={url} preload="auto" muted={muted} /> : null;
+  return (
+    <>
+      {url && <audio ref={audio} src={url} preload="auto" muted={muted} />}
+      {voiceUrl && <audio ref={voice} src={voiceUrl} preload="auto" muted={muted} />}
+    </>
+  );
 }
 
 // Transport
