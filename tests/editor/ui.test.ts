@@ -435,6 +435,24 @@ describe('editor', () => {
     await page.context().close();
   });
 
+  it('deletes an exported video from its card, once confirmed, into the project trash', { timeout: 90_000 }, async () => {
+    const name = `${B}-16x9-gone.mp4`;
+    await writeFile(path.join(server.config.projectsDir, B, 'renders', name), Buffer.alloc(2048, 1));
+    const page = await open(B);
+    await page.getByRole('button', { name: 'Rendu' }).click();
+    const card = page.getByRole('listitem').filter({ hasText: name });
+    await card.getByRole('button', { name: 'Supprimer la vidéo' }).click();
+    await card.getByRole('button', { name: 'Supprimer ?' }).click();
+    await card.waitFor({ state: 'detached' });
+    const trash = await readdir(path.join(server.config.projectsDir, B, '.cadence', 'trash'));
+    assert.ok(trash.some((file) => file.endsWith(`-${name}`)));
+    await page
+      .getByRole('listitem')
+      .filter({ hasText: `${B}-16x9-deck.mp4` })
+      .waitFor();
+    await page.context().close();
+  });
+
   it('offers no seam suggestion on the first scene', { timeout: 90_000 }, async () => {
     const page = await open(`${A}/titre`);
     await page.getByText('Suggestions', { exact: true }).waitFor({ timeout: 30_000 });

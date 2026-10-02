@@ -455,7 +455,7 @@ lists the Git hosts (`GET /api/git-accounts`, through `BrandSource.account()`) a
 - **Publishing** (`Publisher`): `POST /api/projects/:id/publications` checks the file (`RenderService.resolveFile`)
   and the connection, then uploads in the background; `publish` events carry the job (progress by steps of 2 %), and
   a finished upload is kept in `projects/<id>/.cadence/publications.json`. Deleting the project waits for its
-  uploads. Jobs live for the run.
+  uploads, deleting an exported video for its own. Jobs live for the run.
 
 ## REST API (editor origin, JSON, error messages `{ error }` in the interface language)
 
@@ -499,6 +499,7 @@ POST   /api/projects/:id/renders                   RenderRequest, answers Render
 GET    /api/projects/:id/renders                   { jobs: RenderJob[], files: RenderFile[] }
 DELETE /api/renders/:jobId                         cancel
 GET    /api/projects/:id/renders/:name             video/mp4 (Range support)
+DELETE /api/projects/:id/renders/:name             moves the MP4 to .cadence/trash (409 while it uploads)
 GET    /api/projects/:id/assets                    AssetInfo[]
 POST   /api/projects/:id/assets                    multipart "file", answers AssetInfo
 DELETE /api/projects/:id/assets                    ?path= 
@@ -539,7 +540,8 @@ with `scale=W:H:flags=lanczos`, and `setparams` tags the frames BT.709 (tv range
 their duration and code generation are compared with the job's; on a mismatch they reload, and a second mismatch
 fails the job (« Le projet a changé pendant le lancement du rendu »). Audio (when the project has music): track from
 `music.start`, AAC 192 k, `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length.
-Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`.
+Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`. Deleting one moves it to the project's
+`.cadence/trash/` (`RenderService.remove`); what the networks received stays in `publications.json`.
 
 ## Music
 

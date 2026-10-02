@@ -27,6 +27,7 @@ export default {
     eventsUnavailable: "Flux d'événements indisponible",
     rendering: "Un rendu de ce projet est en cours : annulez-le d'abord.",
     publishing: "Une vidéo de ce projet part sur un réseau : attendez la fin de l'envoi.",
+    videoSending: "Cette vidéo part sur un réseau : attendez la fin de l'envoi pour la supprimer.",
     noMusic: "Ce projet n'a pas de musique",
     imageName: (name: string) => `Nom d'image invalide : ${name}`,
     gitHost: (host: string) => `Hébergeur Git inconnu : ${host}`,

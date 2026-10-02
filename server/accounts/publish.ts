@@ -63,8 +63,10 @@ export class Publisher implements PublishService {
     return { jobs, publications: await readJsonOr<Publication[]>(this.file(projectId), []) };
   }
 
-  busy(projectId: string): boolean {
-    return [...this.jobs.values()].some((j) => j.projectId === projectId && j.status === 'uploading');
+  busy(projectId: string, file?: string): boolean {
+    return [...this.jobs.values()].some(
+      (j) => j.projectId === projectId && j.status === 'uploading' && (file === undefined || j.file === file),
+    );
   }
 
   private async run(

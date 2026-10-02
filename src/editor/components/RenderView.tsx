@@ -11,6 +11,7 @@ import {
   Pause,
   Play,
   Send,
+  Trash2,
   Volume2,
   VolumeX,
   X,
@@ -29,9 +30,10 @@ import { api, ignore } from '../api';
 import { useT } from '../i18n';
 import { NBSP, bytes, percentShort, relative, secs, secsLabel } from '../lib/format';
 import { currentScene, useStore } from '../store';
+import { loadRenders } from '../store/project';
 import { copyText, openModal } from '../store/ui';
 import { NetworkLogo } from './logos';
-import { Button, Checkbox, EmptyState, FormatGlyph, IconButton, Segmented, SectionTitle, Tooltip } from './ui';
+import { Button, Checkbox, ConfirmButton, EmptyState, FormatGlyph, IconButton, Segmented, SectionTitle, Tooltip } from './ui';
 
 const QUALITIES: RenderQuality[] = ['draft', 'standard', 'master'];
 
@@ -255,6 +257,7 @@ export function RenderView() {
                   <FileCard
                     key={file.name}
                     file={file}
+                    projectId={project.id}
                     dir={project.dir}
                     publications={publishing.publications.filter((p) => p.file === file.name)}
                     sending={publishing.jobs.find((j) => j.file === file.name && j.status === 'uploading')}
@@ -319,8 +322,14 @@ function JobRow({ job }: { job: RenderJob }) {
   );
 }
 
-function FileCard(props: { file: RenderFile; dir: string; publications: Publication[]; sending?: PublishJob }) {
-  const { file, dir, publications, sending } = props;
+function FileCard(props: {
+  file: RenderFile;
+  projectId: string;
+  dir: string;
+  publications: Publication[];
+  sending?: PublishJob;
+}) {
+  const { file, projectId, dir, publications, sending } = props;
   const { common, production } = useT();
   const texts = production.render.file;
   const visibilities = common.visibilities;
@@ -393,6 +402,18 @@ function FileCard(props: { file: RenderFile; dir: string; publications: Publicat
               <Download className="size-3.5" />
             </a>
           </Tooltip>
+          {/* The server refuses it too while this video uploads: the network reads the file. */}
+          <ConfirmButton
+            iconOnly
+            label={texts.remove}
+            confirmLabel={texts.removeConfirm}
+            icon={<Trash2 className="size-3.5" />}
+            disabled={sending !== undefined}
+            onConfirm={async () => {
+              await api.deleteRender(projectId, file.name);
+              await loadRenders();
+            }}
+          />
         </div>
       </div>
     </li>

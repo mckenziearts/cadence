@@ -27,6 +27,7 @@ export default {
     eventsUnavailable: 'Event stream unavailable',
     rendering: 'A render of this project is running: cancel it first.',
     publishing: 'A video of this project is being sent to a network: wait for the upload to finish.',
+    videoSending: 'This video is being sent to a network: wait for the upload to finish before deleting it.',
     noMusic: 'This project has no music',
     imageName: (name: string) => `Invalid image name: ${name}`,
     gitHost: (host: string) => `Unknown Git host: ${host}`,

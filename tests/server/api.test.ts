@@ -141,6 +141,9 @@ beforeEach(async () => {
     jobs: (projectId?: string) => renderJobs.filter((j) => projectId === undefined || j.projectId === projectId),
     files: async () => [],
     resolveFile: (id: string, name: string) => resolveInside(path.join(store.dir(id), 'renders'), name),
+    remove: async (id: string, name: string) => {
+      record('removeRender', { id, name });
+    },
     wait: async () => job,
   } satisfies RenderService;
   const music = {
@@ -467,7 +470,7 @@ test('chats: keys, messages, stop, clear, cost, agent frames', async () => {
   assert.equal((await call('GET', '/api/projects/demo/agent-frames/absent.jpg')).status, 404);
 });
 
-test('renders: validated requests, jobs and files, cancel, MP4 streaming', async () => {
+test('renders: validated requests, jobs and files, cancel, MP4 streaming, deletion', async () => {
   assert.equal((await json('POST', '/api/projects/demo/renders', { formats: ['16:9'], quality: 'draft', scale: 3 })).status, 400);
   assert.equal((await json('POST', '/api/projects/demo/renders', { formats: [], quality: 'draft' })).status, 400);
   assert.equal(
@@ -488,6 +491,8 @@ test('renders: validated requests, jobs and files, cancel, MP4 streaming', async
   assert.equal(res.headers.get('content-type'), 'video/mp4');
   assert.equal((await res.arrayBuffer()).byteLength, 100);
   assert.equal((await call('GET', '/api/projects/demo/renders/..%2Fproject.json')).status, 400);
+  assert.deepEqual((await json('DELETE', '/api/projects/demo/renders/demo.mp4')).body, { ok: true });
+  assert.deepEqual(calls.removeRender, [{ id: 'demo', name: 'demo.mp4' }]);
 });
 
 test('brand builds: repositories through gh, validated starts, cancel, running builds in the state', async () => {
@@ -876,6 +881,11 @@ test('publishing: the video goes out in the background, the project keeps the li
     status: 409,
     body: { error: "Une vidéo de ce projet part sur un réseau : attendez la fin de l'envoi." },
   });
+  assert.deepEqual(await json('DELETE', '/api/projects/demo/renders/demo-16x9.mp4'), {
+    status: 409,
+    body: { error: "Cette vidéo part sur un réseau : attendez la fin de l'envoi pour la supprimer." },
+  });
+  assert.deepEqual((await json('DELETE', '/api/projects/demo/renders/demo-9x16.mp4')).body, { ok: true }, 'another one goes');
 
   release();
   await until(async () => (await json('GET', '/api/projects/demo/publications')).body.jobs[0].status === 'done');

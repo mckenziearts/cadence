@@ -248,8 +248,8 @@ export interface AccountService {
 export interface PublishService {
   start(projectId: string, req: PublishRequest): Promise<PublishJob>;
   list(projectId: string): Promise<Publications>;
-  /** A video of the project is on its way: deleting the project waits. */
-  busy(projectId: string): boolean;
+  /** A video of the project (that file, when given) is on its way: deleting the project, or that video, waits. */
+  busy(projectId: string, file?: string): boolean;
 }
 
 export interface BrandBuildService {
@@ -375,6 +375,8 @@ export interface RenderService {
   files(projectId: string): Promise<RenderFile[]>;
   /** Absolute path of a finished render, after checking it stays inside renders/. */
   resolveFile(projectId: string, name: string): string;
+  /** Moves a finished render to the project's .cadence/trash. */
+  remove(projectId: string, name: string): Promise<void>;
   /** Resolves when the job ends (done, error or cancelled). Used by the CLI. */
   wait(jobId: string): Promise<RenderJob>;
 }

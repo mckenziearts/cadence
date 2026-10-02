@@ -251,6 +251,21 @@ describe('FfmpegRenderService', () => {
     await rm(live);
   });
 
+  it('moves a deleted video to the project trash, once', async () => {
+    const dir = path.join(h.store.dir(id), 'renders');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'gone-16x9.mp4'), 'x');
+    await renders.remove(id, 'gone-16x9.mp4');
+    assert.equal(
+      (await renders.files(id)).some((f) => f.name === 'gone-16x9.mp4'),
+      false,
+    );
+    const trash = await readdir(path.join(h.store.dir(id), '.cadence', 'trash'));
+    assert.ok(trash.some((name) => name.endsWith('-gone-16x9.mp4')));
+    await assert.rejects(renders.remove(id, 'gone-16x9.mp4'), { status: 404 });
+    await assert.rejects(renders.remove(id, '../project.json'), { status: 400 });
+  });
+
   it('cancels queued jobs and validates requests and file names', async () => {
     const jobs = await renders.start(id, { formats: ['16:9', '1:1'], quality: 'draft' });
     renders.cancel(jobs[1].id);

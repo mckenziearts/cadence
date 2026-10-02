@@ -102,6 +102,16 @@ export class FfmpegRenderService implements RenderService {
     return resolveInside(this.rendersDir(projectId), name);
   }
 
+  /** Kept in .cadence/trash rather than deleted, like a project or an asset: getting it back beats rendering it again. */
+  async remove(projectId: string, name: string): Promise<void> {
+    const file = this.resolveFile(projectId, name);
+    const stat = await fs.stat(file).catch(() => null);
+    if (!stat?.isFile()) throw new HttpError(404, m().api.fileNotFound(name));
+    const trash = path.join(this.deps.store.dir(projectId), '.cadence', 'trash');
+    await fs.mkdir(trash, { recursive: true });
+    await fs.rename(file, path.join(trash, `${Date.now()}-${name}`));
+  }
+
   wait(jobId: string): Promise<RenderJob> {
     const state = this.states.get(jobId);
     return state ? state.done : Promise.reject(new HttpError(404, m().media.render.notFound));

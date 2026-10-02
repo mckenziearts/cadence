@@ -136,6 +136,9 @@ first. Nothing is lost.
 To delete a project, hover its card on the home page and confirm: its folder goes to `projects/.trash/`, where you can
 get it back. This is blocked during a Claude answer or a render of the project.
 
+To delete an exported video, click the bin on its card on the Render page and confirm: the MP4 goes to the project's
+`.cadence/trash/`. What you published stays online. This is blocked while the video is being sent to a network.
+
 ## Publishing to networks
 
 On the Render page, **Publish** sends an exported video to a network: pick its tab, then fill in what it asks for. The

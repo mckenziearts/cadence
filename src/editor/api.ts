@@ -162,6 +162,7 @@ export const api = {
   renders: (id: string) => get<{ jobs: RenderJob[]; files: RenderFile[] }>(`${p(id)}/renders`, { quiet: true }),
   startRender: (id: string, input: RenderRequest) => post<RenderJob[]>(`${p(id)}/renders`, input),
   cancelRender: (jobId: string) => del<{ ok: true }>(`/api/renders/${encodeURIComponent(jobId)}`),
+  deleteRender: (id: string, name: string) => del<{ ok: true }>(`${p(id)}/renders/${encodeURIComponent(name)}`),
   repos: (host: GitHost) => get<RepoListing>(`/api/brand-sources/${host}`),
   startBrandBuild: (input: StartBrandBuildInput) => post<BrandBuild>('/api/brand-builds', input),
   cancelBrandBuild: (id: string) => del<{ ok: true }>(`/api/brand-builds/${encodeURIComponent(id)}`),

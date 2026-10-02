@@ -177,6 +177,8 @@ export default {
       copyPath: 'Copy path',
       pathCopied: 'Video path copied',
       download: 'Download',
+      remove: 'Delete the video',
+      removeConfirm: 'Delete?',
       fullScreen: 'Full screen',
       exitFullScreen: 'Exit full screen',
     },

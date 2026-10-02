@@ -350,6 +350,13 @@ export function createApi(deps: ApiDeps) {
   app.get('/projects/:id/renders/:name', async (c) =>
     sendFile(c, renders.resolveFile(c.req.param('id'), c.req.param('name')), 'video/mp4'),
   );
+  app.delete('/projects/:id/renders/:name', async (c) => {
+    const id = c.req.param('id');
+    const name = c.req.param('name');
+    if (deps.publisher.busy(id, name)) throw new HttpError(409, m().api.routes.videoSending);
+    await renders.remove(id, name);
+    return c.json({ ok: true });
+  });
 
   // Brand builds
   app.get('/brand-sources/:host', async (c) => {
