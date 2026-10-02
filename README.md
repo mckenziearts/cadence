@@ -24,7 +24,8 @@ what you want in a chat, down to the millisecond. Claude edits the scene, render
 preview updates. The music sets the grid: cuts and highlights land on beats and bars. Each scene can start on the exact
 last frame of the previous one, so the cuts disappear. You then export to MP4, in 16:9, 9:16, 1:1 or 4:5.
 
-This is the method Caleb Porzio showed with his video of the Flux Card, plus what several brands and formats need.
+This is the method Caleb Porzio showed with [his video of the Flux Card](https://x.com/calebporzio/status/2104937926593487309),
+plus what several brands and formats need.
 
 ## Requirements
 
