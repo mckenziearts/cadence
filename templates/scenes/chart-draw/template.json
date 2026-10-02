@@ -1,0 +1,23 @@
+{
+  "name": "Graphique tracé",
+  "description": "Une carte de tableau de bord : l'onglet de période glisse, puis la courbe se trace avec un point sur sa pointe, l'aire se remplit derrière elle et le montant compte en même temps, jusqu'au temps fort où s'affiche la tendance. Tout sort au dernier temps. Commence et finit sur le fond seul.",
+  "category": "data",
+  "bars": 3,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["graphique", "courbe", "données", "tableau de bord"],
+  "customize": [
+    "COPY : titre, onglets, badge de tendance, devise, étiquettes et valeurs de la courbe",
+    "TIMING : arrivée de la carte, onglet, tracé (se pose sur un temps fort), sortie",
+    "LAYOUT : carte et zone du graphique par format"
+  ],
+  "en": {
+    "name": "Drawn chart",
+    "description": "A dashboard card: the period tab slides, then the line draws itself with a dot at its tip, the area fills in behind it and the amount counts up at the same time, until the downbeat where the trend shows. Everything exits on the last beat. Starts and ends on the plain background.",
+    "tags": ["chart", "line", "data", "dashboard"],
+    "customize": [
+      "COPY: title, tabs, trend badge, currency, line labels and values",
+      "TIMING: card entrance, tab, drawing (lands on a downbeat), exit",
+      "LAYOUT: card and chart area per format"
+    ]
+  }
+}

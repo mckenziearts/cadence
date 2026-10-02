@@ -1,0 +1,23 @@
+{
+  "name": "Construction du logo",
+  "description": "Un point apparaît dans un fin cercle, s'ouvre sur le symbole de la marque, le logotype se déroule depuis le symbole pendant que l'ensemble se recentre, puis l'adresse du site se tape dessous. Commence sur le fond seul, finit sur le logo et l'adresse (fin de vidéo : rien ne sort).",
+  "category": "outro",
+  "bars": 4,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["logo", "fin", "signature", "teaser"],
+  "customize": [
+    "COPY.fallback : le texte sous le logo quand la marque n'a pas d'adresse",
+    "TIMING : point, symbole, logotype, adresse, en temps musicaux",
+    "LAYOUT : taille et position du logo par format"
+  ],
+  "en": {
+    "name": "Logo build",
+    "description": "A dot appears in a thin circle and opens onto the brand mark, the wordmark unrolls from the mark while the whole logo recenters, then the site address types itself below. Starts on the plain background, ends on the logo and the address (end of the video: nothing exits).",
+    "tags": ["logo", "ending", "signature", "teaser"],
+    "customize": [
+      "COPY.fallback: the text under the logo when the brand has no address",
+      "TIMING: dot, mark, wordmark, address, in beats",
+      "LAYOUT: logo size and position per format"
+    ]
+  }
+}

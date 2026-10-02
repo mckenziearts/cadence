@@ -1,0 +1,25 @@
+{
+  "name": "Code tapé",
+  "description": "À côté d'un titre en deux lignes, une fenêtre d'éditeur sombre tape un court extrait de code avec coloration syntaxique et curseur, puis un terminal monte et annonce la réussite. Pour les produits de développeurs. Tout sort au dernier temps. Commence et finit sur le fond seul.",
+  "category": "feature",
+  "bars": 3,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["code", "développeurs", "éditeur", "terminal", "frappe"],
+  "customize": [
+    "CODE : l'extrait ({id} = identifiant de la marque, {host} = son adresse) ; environ 40 caractères par seconde",
+    "COPY : titre, nom du fichier, commande et message du terminal",
+    "TIMING : arrivée, frappe, terminal, sortie, en temps musicaux",
+    "LAYOUT : fenêtre et taille du code par format"
+  ],
+  "en": {
+    "name": "Typed code",
+    "description": "Next to a two-line title, a dark editor window types a short code snippet with syntax highlighting and a caret, then a terminal slides up and reports success. For developer products. Everything exits on the last beat. Starts and ends on the plain background.",
+    "tags": ["code", "developers", "editor", "terminal", "typing"],
+    "customize": [
+      "CODE: the snippet ({id} = brand id, {host} = its address); about 40 characters per second",
+      "COPY: title, file name, terminal command and message",
+      "TIMING: entrance, typing, terminal, exit, in beats",
+      "LAYOUT: window and code size per format"
+    ]
+  }
+}

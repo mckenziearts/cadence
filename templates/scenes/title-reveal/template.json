@@ -1,0 +1,23 @@
+{
+  "name": "Titre révélé",
+  "description": "Le symbole de la marque apparaît, le titre monte mot à mot depuis un masque, le sous-titre arrive puis change de phrase sur la mesure suivante ; tout s'efface au dernier temps. Par défaut, le titre et les sous-titres sont ceux de la marque. Commence et finit sur le fond seul.",
+  "category": "title",
+  "bars": 2,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["titre", "ouverture", "typographie", "logo"],
+  "customize": [
+    "COPY : titre et sous-titres (par défaut ceux de la marque)",
+    "TIMING : symbole, mots, sous-titre, changement, sortie, en temps musicaux",
+    "LAYOUT : tailles par format"
+  ],
+  "en": {
+    "name": "Title reveal",
+    "description": "The brand mark appears, the title rises word by word from a mask, the subtitle arrives then switches to another line on the next bar; everything fades out on the last beat. The title and subtitles are the brand's by default. Starts and ends on the plain background.",
+    "tags": ["title", "opening", "typography", "logo"],
+    "customize": [
+      "COPY: title and subtitles (the brand's by default)",
+      "TIMING: mark, words, subtitle, switch, exit, in beats",
+      "LAYOUT: sizes per format"
+    ]
+  }
+}

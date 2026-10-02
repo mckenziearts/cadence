@@ -1,0 +1,87 @@
+import type fr from '../fr/timeline';
+
+export default {
+  filmstrip: {
+    label: 'Scenes',
+    addScene: 'Add a scene',
+    newScene: 'Scene',
+    scene: (n: number, name: string) => `Scene ${n}: ${name}`,
+    actions: (name: string) => `Actions for scene ${name}`,
+    noPreview: 'Preview unavailable',
+    name: 'Scene name',
+    renameHint: (name: string) => `${name} (double-click to rename)`,
+  },
+  sceneDuration: {
+    offGrid: (gap: string, early: boolean) => `The cut lands ${gap} ${early ? 'before' : 'after'} a bar line.`,
+    input: 'Scene duration, in seconds or bars (e.g. 2 bars)',
+    edit: 'Edit duration',
+    editOffGrid: (offGrid: string) => `${offGrid} Click to edit the duration (e.g. "2 bars").`,
+    label: (duration: string, length: string, offGrid: string | null) =>
+      `Edit duration: ${duration}, ${length}${offGrid ? `. ${offGrid}` : ''}`,
+  },
+  sceneMenu: {
+    label: (name: string) => `Scene ${name}`,
+    rename: 'Rename',
+    duplicate: 'Duplicate',
+    copyPath: 'Copy path',
+    pathCopied: 'Scene path copied',
+    lastScene: 'A project keeps at least one scene',
+    delete: 'Delete',
+    confirmDelete: 'Confirm deletion',
+  },
+  seams: {
+    unchecked: (from: string, to: string) => `Cut from ${from} to ${to} not checked yet`,
+    checkFailed: (error: string) => `Check failed: ${error}`,
+    changed: (share: string, from: string, to: string, verdict: string) =>
+      `${share} of pixels change at the cut from ${from} to ${to}: ${verdict}`,
+    clean: 'invisible cut',
+    jump: 'small visible jump',
+    cut: 'hard cut',
+  },
+  seamModal: {
+    title: (from: string, to: string) => `Cut from ${from} to ${to}`,
+    subtitle: (from: string, to: string, format: string) =>
+      `Last frame of "${from}" compared with the first frame of "${to}", in ${format}.`,
+    checked: (when: string) => `Checked ${when}`,
+    recheck: 'Check again',
+    askClaude: 'Ask Claude to fix it',
+    capturing: 'Capturing both frames...',
+    invisible: 'of pixels change: the cut is invisible.',
+    visible: 'of pixels change: the cut shows. The red area shows what jumps.',
+    end: (name: string) => `End of "${name}"`,
+    start: (name: string) => `Start of "${name}"`,
+    difference: 'Difference',
+    prompt: (from: string, share: string, format: string) =>
+      `The cut from "${from}" is not invisible (${share} of pixels differ in ${format}). Match the first frame of this scene to the last frame of the previous one, pixel for pixel.`,
+  },
+  transport: {
+    preview: 'Preview',
+    scene: 'This scene',
+    whole: 'Whole video',
+    play: 'Play',
+    pause: 'Pause',
+    playHint: 'Play (Space)',
+    pauseHint: 'Pause (Space)',
+    loop: 'Loop playback (L)',
+    once: 'Play once (L)',
+    mute: 'Mute',
+    unmute: 'Unmute',
+    playhead: 'Playhead',
+  },
+  shortcuts: {
+    title: 'Shortcuts',
+    label: 'Keyboard shortcuts',
+    button: 'Keyboard shortcuts (?)',
+    list: [
+      { keys: ['Space'], label: 'Play / pause' },
+      { keys: ['\u2190', '\u2192'], label: 'Previous / next frame' },
+      { keys: ['Shift', '\u2190 \u2192'], label: 'Back / forward one second' },
+      { keys: ['\u2191', '\u2193'], label: 'Previous / next scene' },
+      { keys: ['L'], label: 'Loop playback' },
+      { keys: ['⌘', 'Enter'], label: 'Send the message' },
+      { keys: ['Alt', '\u2190 \u2192'], label: 'Move the selected scene' },
+      { keys: ['Esc'], label: 'Close' },
+      { keys: ['?'], label: 'Show shortcuts' },
+    ],
+  },
+} satisfies typeof fr;

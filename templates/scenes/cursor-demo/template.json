@@ -1,0 +1,25 @@
+{
+  "name": "Démo au curseur",
+  "description": "La carte glisse sur le côté pour un titre en deux lignes ; un curseur clique dans le champ Bio, tape un texte, puis appuie sur Enregistrer ; le statut passe à « enregistré » et les mots qui changent dans le titre prennent la couleur d'accent. Commence sur la carte seule au centre (pose « hero »), finit sur le fond seul.",
+  "category": "ui",
+  "bars": 4,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["curseur", "clic", "saisie", "formulaire", "teaser"],
+  "customize": [
+    "COPY : les deux lignes du titre, la fin qui la remplace, le texte tapé, le statut",
+    "TIMING : arrivée du curseur, clic, frappe, appui, en temps musicaux",
+    "LAYOUT : place de la carte et du titre par format",
+    "CARD_COPY : contenu de la carte (partagé avec les autres scènes du teaser)"
+  ],
+  "en": {
+    "name": "Cursor demo",
+    "description": "The card slides aside for a two-line title; a cursor clicks into the Bio field, types some text, then presses Save; the status turns to \"saved\" and the words that change in the title take the accent color. Starts on the card alone in the center (\"hero\" pose), ends on the plain background.",
+    "tags": ["cursor", "click", "typing", "form", "teaser"],
+    "customize": [
+      "COPY: the two title lines, the ending that replaces the second one, the typed text, the status",
+      "TIMING: cursor entrance, click, typing, press, in beats",
+      "LAYOUT: card and title placement per format",
+      "CARD_COPY: card content (shared with the other teaser scenes)"
+    ]
+  }
+}

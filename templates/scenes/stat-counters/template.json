@@ -1,0 +1,23 @@
+{
+  "name": "Compteurs",
+  "description": "Un titre et trois cartes de statistiques (le composant Stat de la marque) : les chiffres défilent ensemble et se posent sur le temps fort suivant, où chaque carte donne un petit coup et affiche sa tendance. Tout sort au dernier temps. Commence et finit sur le fond seul.",
+  "category": "data",
+  "bars": 2,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["chiffres", "compteurs", "statistiques", "données"],
+  "customize": [
+    "COPY : titre ({name} = nom de la marque) et les trois statistiques (valeur, décimales, unité, tendance)",
+    "TIMING : début du comptage et temps d'arrivée (un temps fort)",
+    "LAYOUT : colonnes ou liste, tailles par format"
+  ],
+  "en": {
+    "name": "Counters",
+    "description": "A title and three stat cards (the brand's Stat component): the numbers roll together and land on the next downbeat, where each card gives a small bump and shows its trend. Everything exits on the last beat. Starts and ends on the plain background.",
+    "tags": ["numbers", "counters", "stats", "data"],
+    "customize": [
+      "COPY: title ({name} = brand name) and the three stats (value, decimals, unit, trend)",
+      "TIMING: count start and landing beat (a downbeat)",
+      "LAYOUT: columns or list, sizes per format"
+    ]
+  }
+}

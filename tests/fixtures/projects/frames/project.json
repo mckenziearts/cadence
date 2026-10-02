@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "Fixture images",
+  "brand": "test",
+  "fps": 30,
+  "formats": ["16:9", "9:16"],
+  "tempo": 120,
+  "scenes": [
+    { "id": "red-blue", "name": "Rouge puis bleu", "duration": 1 },
+    { "id": "blue", "name": "Bleu", "duration": 0.5 },
+    { "id": "green", "name": "Vert", "duration": 0.5 },
+    { "id": "brand", "name": "Marque", "duration": 1 },
+    { "id": "tailwind", "name": "Tailwind", "duration": 1 },
+    { "id": "throws", "name": "Plante après 0,5 s", "duration": 1 }
+  ],
+  "music": null,
+  "createdAt": "2026-09-30T00:00:00.000Z",
+  "updatedAt": "2026-09-30T00:00:00.000Z"
+}

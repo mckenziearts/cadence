@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "Fixture rendu",
+  "brand": "test",
+  "fps": 30,
+  "formats": ["16:9", "4:5"],
+  "tempo": 120,
+  "scenes": [
+    { "id": "a", "name": "Rouge", "duration": 0.5 },
+    { "id": "b", "name": "Bleu", "duration": 0.5 }
+  ],
+  "music": null,
+  "createdAt": "2026-09-30T00:00:00.000Z",
+  "updatedAt": "2026-09-30T00:00:00.000Z"
+}

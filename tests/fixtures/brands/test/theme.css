@@ -1,0 +1,10 @@
+/* Fixture brand for the frame e2e tests; the harness copies it next to the test projects, like brands/ and projects/. */
+@import 'tailwindcss' source(none);
+@import '@fontsource-variable/space-grotesk';
+@source '../../projects';
+
+@theme {
+  --color-primary: #7c3aed;
+  --color-accent: #f97316;
+  --font-display: 'Space Grotesk Variable', sans-serif;
+}

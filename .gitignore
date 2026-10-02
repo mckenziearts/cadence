@@ -1,0 +1,15 @@
+node_modules/
+.DS_Store
+*.log
+.env
+.env.*
+
+# Cadence internal state (settings, accounts, caches). Never commit.
+/.cadence/
+
+# Each person's content stays on their machine: the video projects and the brands built in the app.
+# projects/ is ignored as a whole: Tailwind skips the ignored subfolders of an @source folder.
+/projects/
+/brands/*
+# The brand Cadence ships: the base of every brand build and the brand of projects without one.
+!/brands/cadence/

@@ -1,0 +1,23 @@
+{
+  "name": "Appel à l'action",
+  "description": "Le titre monte, le bouton apparaît, un curseur glisse dessus et l'enfonce sur le temps fort, puis l'adresse se tape et le logo se pose en bas. Fin de vidéo : rien ne sort. Commence sur le fond seul, finit sur le titre, le bouton, l'adresse et le logo.",
+  "category": "outro",
+  "bars": 2,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["appel à l'action", "fin", "bouton", "curseur", "logo"],
+  "customize": [
+    "COPY : titre ({name} = nom de la marque), sous-titre (par défaut le slogan) et texte du bouton",
+    "TIMING : titre, bouton, curseur, appui (un temps fort), adresse, logo",
+    "LAYOUT : position du bouton et tailles par format"
+  ],
+  "en": {
+    "name": "Call to action",
+    "description": "The title rises, the button appears, a cursor glides over it and presses it on the downbeat, then the address types itself and the logo settles at the bottom. End of the video: nothing exits. Starts on the plain background, ends on the title, the button, the address and the logo.",
+    "tags": ["call to action", "ending", "button", "cursor", "logo"],
+    "customize": [
+      "COPY: title ({name} = brand name), subtitle (the tagline by default) and button text",
+      "TIMING: title, button, cursor, press (a downbeat), address, logo",
+      "LAYOUT: button position and sizes per format"
+    ]
+  }
+}

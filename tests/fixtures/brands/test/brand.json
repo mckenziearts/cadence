@@ -1,0 +1,29 @@
+{
+  "id": "test",
+  "name": "Marque de test",
+  "tagline": "Des images justes, à la milliseconde.",
+  "url": "https://example.test",
+  "language": "fr",
+  "colors": {
+    "background": "#f4f4f5",
+    "surface": "#ffffff",
+    "ink": "#18181b",
+    "muted": "#71717a",
+    "line": "#e4e4e7",
+    "primary": "#7c3aed",
+    "primaryInk": "#ffffff",
+    "accent": "#f97316",
+    "success": "#16a34a",
+    "warning": "#ca8a04",
+    "danger": "#dc2626"
+  },
+  "fonts": {
+    "display": "'Space Grotesk Variable', sans-serif",
+    "body": "'Inter Variable', sans-serif",
+    "mono": "'JetBrains Mono Variable', monospace",
+    "preload": ["700 32px 'Space Grotesk Variable'"]
+  },
+  "radius": { "sm": 6, "md": 10, "lg": 16, "xl": 24 },
+  "logo": { "mark": "assets/logo-mark.svg", "full": "assets/logo-full.svg" },
+  "voice": "Clair et direct."
+}

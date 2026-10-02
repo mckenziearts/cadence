@@ -1,0 +1,25 @@
+{
+  "name": "Zoom et annotations",
+  "description": "Le titre se tape pendant que la caméra plonge dans la carte ; trois plans mesurent sa géométrie (coins concentriques, un seul alignement, marges égales) avec des annotations dessinées, puis la caméra recule. Commence et finit sur la carte seule au centre (pose « hero »).",
+  "category": "ui",
+  "bars": 6,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["caméra", "zoom", "annotations", "géométrie", "teaser"],
+  "customize": [
+    "COPY : titre et étiquettes des annotations",
+    "LAYOUT.shots : où regarde chaque plan, à quel zoom, par format",
+    "TIMING : entrée et sortie de chaque plan, en temps musicaux",
+    "CARD_COPY : contenu de la carte (partagé avec les autres scènes du teaser)"
+  ],
+  "en": {
+    "name": "Zoom and annotations",
+    "description": "The title types itself while the camera dives into the card; three shots measure its geometry (concentric corners, a single alignment, equal margins) with drawn annotations, then the camera pulls back. Starts and ends on the card alone in the center (\"hero\" pose).",
+    "tags": ["camera", "zoom", "annotations", "geometry", "teaser"],
+    "customize": [
+      "COPY: title and annotation labels",
+      "LAYOUT.shots: where each shot looks, at which zoom, per format",
+      "TIMING: entrance and exit of each shot, in beats",
+      "CARD_COPY: card content (shared with the other teaser scenes)"
+    ]
+  }
+}

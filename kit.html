@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cadence · kit</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      /* Like a frame: nothing may move on its own. */
+      *,
+      *::before,
+      *::after {
+        transition: none !important;
+        animation: none !important;
+        caret-color: transparent !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/frame/kit.tsx"></script>
+  </body>
+</html>

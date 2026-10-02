@@ -1,0 +1,27 @@
+{
+  "name": "Grille des surfaces",
+  "description": "La carte rétrécit dans une rangée de ses styles, la rangée devient la première ligne d'une grille posée sur des fonds du plus clair au plus sombre, puis la caméra replonge dans la carte d'origine. Commence sur le titre et la carte (pose « titled »), finit sur la carte seule au centre (pose « hero »).",
+  "category": "ui",
+  "bars": 3,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["grille", "variantes", "fonds", "caméra", "teaser"],
+  "customize": [
+    "COLUMNS et COPY.labels : les styles de la carte Flux qui a inspiré le teaser, à remplacer par les vraies variantes du composant de la marque (dessinées dans CardShell), sans jamais en inventer",
+    "COPY : titres (et « from », celui de la scène précédente) et noms des styles",
+    "COLUMNS et rowColors : styles des colonnes et fonds des lignes",
+    "TIMING : rangée, grille, retour caméra, en temps musicaux",
+    "LAYOUT : tailles et positions de la rangée et de la grille par format"
+  ],
+  "en": {
+    "name": "Surface grid",
+    "description": "The card shrinks into a row of its styles, the row becomes the first line of a grid laid over backgrounds from lightest to darkest, then the camera dives back into the original card. Starts on the title and the card (\"titled\" pose), ends on the card alone in the center (\"hero\" pose).",
+    "tags": ["grid", "variants", "backgrounds", "camera", "teaser"],
+    "customize": [
+      "COLUMNS and COPY.labels: the styles of the Flux card that inspired the teaser, to replace with the real variants of the brand's component (drawn in CardShell), never invented ones",
+      "COPY: titles (and \"from\", the one of the previous scene) and style names",
+      "COLUMNS and rowColors: column styles and row backgrounds",
+      "TIMING: row, grid, camera return, in beats",
+      "LAYOUT: row and grid sizes and positions per format"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "Témoignage",
+  "description": "Un grand guillemet apparaît, la citation s'allume mot à mot comme lue à voix haute, un surligneur souligne sa phrase clé, puis l'auteur glisse en place avec le symbole de la marque. Tout sort au dernier temps. Commence et finit sur le fond seul.",
+  "category": "title",
+  "bars": 2,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["citation", "témoignage", "client", "typographie"],
+  "customize": [
+    "COPY : citation ({name} = nom de la marque), phrase surlignée, auteur et rôle",
+    "TIMING : lecture, surligneur, auteur, sortie, en temps musicaux",
+    "LAYOUT : tailles par format"
+  ],
+  "en": {
+    "name": "Testimonial",
+    "description": "A large quotation mark appears, the quote lights up word by word as if read aloud, a highlighter marks its key phrase, then the author slides into place with the brand mark. Everything exits on the last beat. Starts and ends on the plain background.",
+    "tags": ["quote", "testimonial", "customer", "typography"],
+    "customize": [
+      "COPY: quote ({name} = brand name), highlighted phrase, author and role",
+      "TIMING: reading, highlighter, author, exit, in beats",
+      "LAYOUT: sizes per format"
+    ]
+  }
+}

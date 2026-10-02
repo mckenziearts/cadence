@@ -1,0 +1,25 @@
+{
+  "name": "Anatomie éclatée",
+  "description": "La carte héros bascule en 3D, ses couches se séparent et chaque pièce reçoit une légende dessinée, puis tout revient à plat sous le titre. Commence sur la carte seule au centre (pose « hero »), finit sur le titre et la carte à plat (pose « titled »).",
+  "category": "ui",
+  "bars": 2,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["3d", "éclaté", "légendes", "carte", "teaser"],
+  "customize": [
+    "COPY : titre (et « from », le titre de la scène précédente) et légendes",
+    "CARD_COPY : contenu de la carte (partagé avec les autres scènes du teaser)",
+    "TIMING : bascule, éclatement, légendes, en temps musicaux",
+    "LAYOUT : angles 3D et colonnes des légendes par format"
+  ],
+  "en": {
+    "name": "Exploded anatomy",
+    "description": "The hero card tilts into 3D, its layers separate and each piece gets a drawn caption, then everything flattens back under the title. Starts on the card alone in the center (\"hero\" pose), ends on the title and the flat card (\"titled\" pose).",
+    "tags": ["3d", "exploded", "captions", "card", "teaser"],
+    "customize": [
+      "COPY: title (and \"from\", the title of the previous scene) and captions",
+      "CARD_COPY: card content (shared with the other teaser scenes)",
+      "TIMING: tilt, explosion, captions, in beats",
+      "LAYOUT: 3D angles and caption columns per format"
+    ]
+  }
+}

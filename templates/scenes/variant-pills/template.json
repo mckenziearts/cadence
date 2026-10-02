@@ -1,0 +1,27 @@
+{
+  "name": "Pastilles de variantes",
+  "description": "Sous le titre, une rangée de pastilles nomme les styles de la carte ; à chaque temps la pastille glisse et la carte change de style par un balayage de gauche à droite. Commence et finit sur le titre et la carte à plat (pose « titled »), dans son premier style.",
+  "category": "ui",
+  "bars": 2,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["variantes", "styles", "balayage", "rythme", "teaser"],
+  "customize": [
+    "VARIANTS, SEQUENCE et COPY.labels : les styles de la carte Flux qui a inspiré le teaser, à remplacer par les vraies variantes du composant de la marque (dessinées dans CardShell), sans jamais en inventer",
+    "COPY : titre (et « from », celui de la scène précédente) et noms des styles",
+    "SEQUENCE : l'ordre des styles, un par temps",
+    "TIMING : premier changement et durée du balayage",
+    "CARD_COPY : contenu de la carte (partagé avec les autres scènes du teaser)"
+  ],
+  "en": {
+    "name": "Variant pills",
+    "description": "Under the title, a row of pills names the card's styles; on each beat the pill slides and the card changes style with a left-to-right wipe. Starts and ends on the title and the flat card (\"titled\" pose), in its first style.",
+    "tags": ["variants", "styles", "wipe", "rhythm", "teaser"],
+    "customize": [
+      "VARIANTS, SEQUENCE and COPY.labels: the styles of the Flux card that inspired the teaser, to replace with the real variants of the brand's component (drawn in CardShell), never invented ones",
+      "COPY: title (and \"from\", the one of the previous scene) and style names",
+      "SEQUENCE: the order of the styles, one per beat",
+      "TIMING: first change and wipe length",
+      "CARD_COPY: card content (shared with the other teaser scenes)"
+    ]
+  }
+}

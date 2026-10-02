@@ -1,0 +1,25 @@
+{
+  "name": "Filaire lumineux",
+  "description": "Dans le noir, le plan de la carte héros se dessine en traits lumineux, vu en rasant ; la caméra se redresse face à lui, la scène s'éclaire jusqu'au fond de la marque et la vraie carte se pose sur son filaire. Commence dans le noir complet, finit sur la carte seule au centre (pose « hero »).",
+  "category": "intro",
+  "bars": 4,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["ouverture", "3d", "filaire", "glow", "teaser"],
+  "customize": [
+    "TIMING : tracé, redressement de la caméra, éclaircissement, arrivée de la carte, en temps musicaux",
+    "START : angle et cadrage de départ de la caméra par format",
+    "shapes() : les formes du plan (alignées sur la carte héros)",
+    "CARD_COPY : contenu de la carte (partagé avec les autres scènes du teaser)"
+  ],
+  "en": {
+    "name": "Glowing wireframe",
+    "description": "In the dark, the blueprint of the hero card draws itself in glowing lines, seen at a grazing angle; the camera straightens up to face it, the scene brightens up to the brand background and the real card settles onto its wireframe. Starts in complete darkness, ends on the card alone in the center (\"hero\" pose).",
+    "tags": ["opening", "3d", "wireframe", "glow", "teaser"],
+    "customize": [
+      "TIMING: drawing, camera straightening, brightening, card entrance, in beats",
+      "START: starting camera angle and framing per format",
+      "shapes(): the blueprint shapes (aligned with the hero card)",
+      "CARD_COPY: card content (shared with the other teaser scenes)"
+    ]
+  }
+}

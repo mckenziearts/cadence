@@ -1,0 +1,25 @@
+{
+  "name": "Vitrine navigateur",
+  "description": "Une fenêtre de navigateur se redresse ; le tableau de bord qu'elle contient, construit avec le kit de la marque, apparaît en cascade, les barres montent, puis la caméra plonge dans le graphique, signale le meilleur mois et recule. Tout sort au dernier temps. Commence et finit sur le fond seul.",
+  "category": "ui",
+  "bars": 3,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["navigateur", "tableau de bord", "caméra", "application web"],
+  "customize": [
+    "COPY : adresse, navigation, titres, statistiques, barres, meilleur mois, commandes",
+    "EXTRA : un composant vitrine de la marque à la place de la liste de commandes (voir les notes de la marque)",
+    "TIMING : arrivée, cascade, barres, zoom, annotation, retour, en temps musicaux",
+    "LAYOUT : fenêtre et blocs de la page par format, zoom de la caméra"
+  ],
+  "en": {
+    "name": "Browser showcase",
+    "description": "A browser window straightens up; the dashboard inside it, built with the brand kit, cascades in, the bars rise, then the camera dives into the chart, points out the best month and pulls back. Everything exits on the last beat. Starts and ends on the plain background.",
+    "tags": ["browser", "dashboard", "camera", "web app"],
+    "customize": [
+      "COPY: address, navigation, titles, stats, bars, best month, orders",
+      "EXTRA: a brand showcase component in place of the order list (see the brand notes)",
+      "TIMING: entrance, cascade, bars, zoom, annotation, return, in beats",
+      "LAYOUT: window and page blocks per format, camera zoom"
+    ]
+  }
+}

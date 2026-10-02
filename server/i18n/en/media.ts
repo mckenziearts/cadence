@@ -1,0 +1,228 @@
+import type fr from '../fr/media';
+
+export default {
+  sceneNotFound: (id: string) => `Scene not found: ${id}`,
+  invalidScale: (scale: unknown) => `Invalid scale: ${scale}`,
+  invalidFps: (fps: unknown) => `Invalid frame rate: ${fps}`,
+  reloadTimeout: 'Reloading took too long',
+  ffmpegStart: (bin: string, error: string) => `Could not start ffmpeg (${bin}): ${error}`,
+  capture: {
+    chromium: (error: string) => `Could not start Chromium (run "npm run setup" once): ${error}`,
+    frameNotStarted: (problems: string[]) => `The frame page did not start${problems.length ? `: ${problems.join('; ')}` : ''}`,
+    frameLoadTimeout: 'The frame page took too long to load',
+    seekTimeout: (time: string, seconds: number) => `Rendering t = ${time} took over ${seconds} s (infinite loop?)`,
+    stopping: 'Cadence is stopping: capture canceled',
+    sceneLoadTimeout: 'Loading the scene took too long',
+    invalidFormat: (format: string) => `Invalid format: ${format}`,
+    invalidTime: 'Invalid time',
+    kitNotStarted: 'The kit sheet did not start',
+    kitLoadTimeout: 'The kit sheet took too long to load',
+    invalidUrl: (url: string) => `Invalid URL: ${url}`,
+    httpOnly: 'Only http(s) URLs can be captured',
+    openFailed: (url: string, error: string) => `Could not open ${url}: ${error}`,
+    hostNotFound: (host: string) => `Host not found: ${host}`,
+    reserved: (host: string, address: string | null) =>
+      `Reserved address, capture refused: ${host}${address ? ` (${address})` : ''}`,
+    itself: 'Cadence cannot capture itself',
+  },
+  render: {
+    notFound: 'Render not found',
+    cancelled: 'Render canceled',
+    invalidFileName: (name: string) => `Invalid file name: ${name}`,
+    ffmpegStopped: (code: number, detail: string) => `ffmpeg stopped (code ${code}): ${detail}`,
+    videoError: (time: string, error: string) => `Error in the video at ${time}: ${error}`,
+    ffmpegFailed: (code: number, detail: string) => `ffmpeg failed (code ${code}): ${detail}`,
+    nothing: 'Nothing to render: the video (or the requested range) is empty',
+    projectChanged: 'The project changed while the render was starting: start the render again.',
+    invalidFormats: 'Invalid render formats',
+    invalidScale: (scale: number) => `Invalid scale: ${scale} (0.5, 1 or 2)`,
+    invalidQuality: (quality: string) => `Invalid quality: ${quality}`,
+    invalidRange: 'Invalid render range',
+    noScene: 'The project has no scene to render',
+    noDetail: 'no detail',
+  },
+  music: {
+    projectNotFound: (id: string) => `Project not found: ${id}`,
+    unsupported: (ext: string) => `Audio format not supported (${ext || 'no extension'}): mp3, wav, m4a, aac, flac or ogg`,
+    empty: 'The audio file is empty',
+    tooLarge: 'Audio file too large (200 MB maximum)',
+    trackNotFound: (file: string) => `Track not found: ${file}`,
+    invalidTrack: (file: string) => `Invalid track: ${file}`,
+    noMusic: 'This project has no music',
+    addMusicFirst: 'Add music before snapping the cuts',
+    changed: 'The music changed while snapping: try again',
+    analysisFailed: (file: string, error: string) => `Could not analyze ${file}: ${error}`,
+    cacheNotWritten: (file: string, error: string) => `[cadence] analysis cache not written (${file}): ${error}`,
+    start: 'The music start must be a positive number of seconds',
+    volume: 'The volume must be between 0 and 1',
+    tempo: (min: number, max: number) => `The tempo must be between ${min} and ${max} BPM`,
+    beatsPerBar: 'A bar has 3, 4 or 6 beats',
+    barOffset: (max: number) => `The bar offset must be a whole number of beats from 0 to ${max}`,
+    gridOffset: 'The grid offset must be between −0.25 and 0.25 s',
+    decodeFailed: (file: string, code: number | null, detail: string) =>
+      `ffmpeg could not decode ${file} (code ${code}): ${detail}`,
+    encodeFailed: (file: string, detail: string | undefined) => `ffmpeg could not encode ${file}: ${detail}`,
+  },
+  analyze: {
+    missingFile: (file: string) => `File not found: ${file}`,
+    number: (x: number, digits: number) => x.toFixed(digits),
+    times: (values: string[], more: boolean) => values.join(', ') + (more ? ', ...' : ''),
+    none: 'none',
+    file: (file: string) => `File        ${file}`,
+    duration: (seconds: string) => `Duration    ${seconds} s`,
+    tempo: (bpm: string, beatsPerBar: number, beat: string, bar: string) =>
+      `Tempo       ${bpm} BPM, ${beatsPerBar} beats per bar, 1 beat = ${beat} s, 1 bar = ${bar} s`,
+    confidence: (value: string) => `Confidence  ${value} (grid regularity, 0 to 1)`,
+    beats: (count: number, gap: string, spread: string, first: string) =>
+      `Beats       ${count} (gap ${gap} ± ${spread} ms); first: ${first}`,
+    bars: (count: number, first: string) => `Bars        ${count}; first: ${first}`,
+    phrases: (list: string) => `Phrases     ${list}`,
+    sections: (count: number) => `Sections    ${count}`,
+    section: (start: string, end: string, label: string, energy: string) =>
+      `            ${start} to ${end}  ${label} energy ${energy}`,
+    accents: (count: number, strongest: string) => `Accents     ${count}; strongest: ${strongest}`,
+    timings: (decoding: number, analysis: number) => `Timings     decoding ${decoding} ms, analysis ${analysis} ms`,
+  },
+  soundtracks: {
+    unknown: (ids: string, known: string) => `Unknown soundtrack: ${ids} (${known})`,
+    written: (file: string, bars: number, duration: number, lufs: string, peak: string) =>
+      `${file} ${bars} bars, ${duration} s, ${lufs} LUFS, peak ${peak} dBFS`,
+  },
+  brands: {
+    build: {
+      tools: {
+        copy_from_repo: 'Copying a file from the repository',
+        add_google_font: 'Downloading a font',
+        preview_brand: 'Looking at the kit sheet',
+        check_brand: 'Checking the brand',
+      },
+      incomplete: 'The brand does not pass the final check.',
+      badRepo: 'Repository not recognized: owner/name, or a github.com or gitlab.com URL (https://... or git@...).',
+      noName: 'Give the brand a name.',
+      notFound: 'Brand build not found',
+      cloning: (repo: string) => `Copying ${repo}`,
+      reading: 'Claude is reading the repository',
+      checking: 'Checking the brand',
+      fixing: 'Claude is fixing what the check found',
+      checkingAgain: 'Checking again',
+      unfinished: 'Claude could not finish the brand.',
+    },
+    check: {
+      missing: (file: string) => `${file} is missing`,
+      invalidJson: (error: string) => `brand.json is not valid JSON: ${error}`,
+      wrongId: (found: string, id: string) => `brand.json: id "${found}" instead of "${id}" (the folder name)`,
+      empty: (key: string) => `brand.json: ${key} is empty`,
+      url: 'brand.json: url must be a string',
+      language: 'brand.json: language must be "fr" or "en"',
+      unknownColors: (extra: string, known: string) => `brand.json: unknown colors ${extra} (only ${known})`,
+      hex: (key: string) => `brand.json: colors.${key} must be a lowercase #rrggbb hex`,
+      preload: (face: string) => `brand.json: preload "${face}" must look like "700 32px 'Family'"`,
+      preloadUnused: (family: string) => `brand.json: the preloaded font ${family} is in no stack`,
+      radius: 'brand.json: radius.sm, md, lg and xl must be ≥ 0',
+      radiusOrder: 'brand.json: radius needs sm ≤ md ≤ lg ≤ xl',
+      logoOutside: (key: string) => `brand.json: logo.${key} must stay inside the brand folder`,
+      logoMissing: (key: string, file: string) => `logo.${key} not found: ${file}`,
+      logoSvg: (key: string) => `logo.${key} must be an SVG that starts with <svg ... viewBox>`,
+      logoExternal: (key: string) => `logo.${key} must be self-contained (no script, no external link, no <image>)`,
+      note: (file: string) => `${file} must be written (more than 400 characters)`,
+      kitSheet: (error: string) => `Kit sheet: ${error}`,
+      compile: (error: string) => `index.tsx does not compile: ${error}`,
+      themeLine: (line: string) => `theme.css: missing ${line}`,
+      themeColor: (token: string, value: string | undefined) => `theme.css: ${token} must be ${value}, as in brand.json`,
+      themeFont: (token: string) => `theme.css: ${token} must match brand.json`,
+      themeRadius: (token: string, value: string) => `theme.css: ${token} must be ${value}`,
+      notInstalled: (spec: string) => `theme.css: ${spec} is not installed in Cadence (vendor the font in fonts/ instead)`,
+      themeFile: (file: string) => `theme.css: ${file} not found`,
+      fontNotLoaded: (where: string, name: string) => `${where} names the font "${name}", which theme.css never loads`,
+    },
+    fonts: {
+      invalidName: (family: string) => `Invalid font name: ${family}`,
+      unknown: (name: string) => `Google Fonts does not know the font "${name}"`,
+      noFile: (name: string) => `Google Fonts returned no file for "${name}"`,
+      refused: (name: string, status: number) => `Google Fonts refused the download of ${name} (HTTP ${status})`,
+      down: (status: number) => `Google Fonts is not responding (HTTP ${status})`,
+    },
+    source: {
+      copyFailed: (repo: string, error: string) => `Could not copy ${repo}: ${error}`,
+    },
+  },
+  doctor: {
+    title: 'Cadence: environment check',
+    editor: 'editor',
+    frames: 'frames',
+    failed: (count: number) => `${count} problem${count === 1 ? '' : 's'} to fix, then run \`npm run doctor\` again.`,
+    ready: (origin: string) => `All set. Run \`npm start\`, then open ${origin}`,
+    readyBusy: (origin: string) =>
+      `Cadence may already be running: open ${origin}. Otherwise run \`npm start -- --port 5320 --frame-port 5321\``,
+    nodeOld: (version: string) => `Node.js ${version} is too old`,
+    nodeFix: 'Install Node.js 22.12 or later',
+    ffmpegMissing: (bin: string) => `ffmpeg not found (${bin})`,
+    ffmpegFix: 'macOS: `brew install ffmpeg`; Debian/Ubuntu: `sudo apt install ffmpeg`; or set FFMPEG_PATH',
+    encoders: (version: string, missing: string[]) =>
+      `ffmpeg ${version} without the ${missing.join(' and ')} encoder${missing.length > 1 ? 's' : ''}`,
+    encodersFix: 'Install an ffmpeg build with libx264 and aac (for example `brew install ffmpeg`)',
+    ffprobeMissing: (bin: string) => `ffprobe not found (${bin})`,
+    ffprobeFix: 'It comes with ffmpeg, or set FFPROBE_PATH',
+    chromiumMissing: 'Chromium (Playwright) is not installed',
+    chromiumFailed: (error: string) => `Chromium does not start: ${error}`,
+    chromiumLibraries: 'Install its system libraries: `npm run setup -- --with-deps`',
+    claudeMissing: (bin: string) => `Claude Code not found (${bin})`,
+    claudeInstall: 'Install Claude Code (https://code.claude.com), run `claude`, then /login, or set CLAUDE_PATH',
+    claudeReady: (version: string, login: string | undefined) => `Claude Code ${version}${login ? `: ${login}` : ''}`,
+    claudeLoggedOut: (version: string) => `Claude Code ${version} is not logged in`,
+    claudeLogin: 'Run `claude` in a terminal, then /login',
+    portFree: (port: number, role: string) => `Port ${port} (${role}) is free`,
+    portBusy: (port: number, role: string) => `Port ${port} (${role}) is already in use (Cadence may already be running)`,
+    portFix: (variable: string) =>
+      `Stop the other program or pick another port (${variable}, or --port / --frame-port with \`npm start --\`)`,
+  },
+  config: {
+    locale: (value: string) => `Invalid CADENCE_LOCALE: ${value} (for example fr-FR or en-US)`,
+    port: (name: string, value: string) => `Invalid ${name}: ${value} (a port from 0 to 65535)`,
+    effort: (value: string, values: string) => `Invalid CADENCE_EFFORT: ${value} (values: ${values})`,
+  },
+  cli: {
+    help: `Cadence: prompt-driven motion design studio
+
+Usage: npm run cadence -- <command> [options]
+
+  start [--port 5310] [--frame-port 5311] [--dev]
+                                               starts the editor (--dev: from Vite's dev server, to work on Cadence)
+  render <project> [--formats 16:9,9:16] [--quality draft|standard|master]
+         [--scale 0.5|1|2] [--fps 24|30|60] [--supersample]
+                                               renders the video to MP4 (every format of the project by default)
+  analyze <audio> [--json]                     analyzes a music track (tempo, beats, bars, phrases)
+  soundtracks [id...]                          recomposes the soundtracks of the Music panel (src/editor/soundtracks)
+  new <name> [--brand <id>] [--template <id>] [--formats 16:9,9:16] [--fps 60]
+                                               creates a project
+  list                                         lists the projects
+  doctor                                       checks the environment (Node, ffmpeg, Chromium, Claude Code)
+  mcp [--port 5310]                            prints the command that connects Claude Code to Cadence
+`,
+    unknownCommand: (command: string) => `Unknown command: ${command}`,
+    stopping: 'Stopping Cadence...',
+    noProject: 'Specify the project to render: render <project>',
+    unknownQuality: (quality: string) => `Unknown quality: ${quality}`,
+    progress: (jobs: { format: string; percent: number }[]) => jobs.map((job) => `${job.format} ${job.percent}%`).join(', '),
+    exporting: (name: string, duration: string, formats: string, quality: string) =>
+      `Rendering "${name}" (${duration}): ${formats}, ${quality} quality`,
+    done: (format: string, file: string) => `✓ ${format}: ${file}`,
+    failed: (format: string, reason: string) => `✗ ${format}: ${reason}`,
+    cancelled: 'canceled',
+    failure: 'failed',
+    noAudio: 'Specify the audio file: analyze <audio>',
+    noName: 'Specify the project name: new <name>',
+    versionNotSaved: (error: string) => `Initial version not saved: ${error}`,
+    scenes: (count: number) => `${count} scene${count === 1 ? '' : 's'}`,
+    created: (name: string, scenes: string, dir: string) => `Project "${name}" created (${scenes}): ${dir}`,
+    empty: 'No project yet. Create one: npm run cadence -- new "My project"',
+    mcp: 'To use the Cadence tools from Claude Code in a terminal (Cadence must be running):',
+    parseErrors: {
+      ERR_PARSE_ARGS_UNKNOWN_OPTION: (option: string) => `Unknown option: ${option}`,
+      ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: (argument: string) => `Unexpected argument: ${argument}`,
+      ERR_PARSE_ARGS_INVALID_OPTION_VALUE: (option: string) => `Missing or invalid value for: ${option}`,
+    },
+    invalidPort: (value: string) => `Invalid port: ${value}`,
+    unknownFormat: (format: string, known: string) => `Unknown format: ${format} (${known})`,
+  },
+} satisfies typeof fr;

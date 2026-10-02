@@ -1,0 +1,27 @@
+{
+  "name": "Vitrine mobile",
+  "description": "À côté d'un titre en deux lignes, un téléphone pivote en place ; son écran, construit avec le kit de la marque, apparaît en cascade, défile, une ligne est touchée et l'écran glisse vers son détail, où une coche se dessine. Tout sort au dernier temps. Commence et finit sur le fond seul.",
+  "category": "ui",
+  "bars": 3,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["mobile", "téléphone", "application", "écran"],
+  "customize": [
+    "COPY : titre, contenu de l'écran d'accueil et du détail",
+    "EXTRA : un composant vitrine de la marque à la place de la carte de statistique (voir les notes de la marque)",
+    "TAPPED : la ligne touchée",
+    "TIMING : arrivée, défilement, toucher, glissement, coche, en temps musicaux",
+    "LAYOUT : place et taille du téléphone par format"
+  ],
+  "en": {
+    "name": "Mobile showcase",
+    "description": "Next to a two-line title, a phone swivels into place; its screen, built with the brand kit, cascades in and scrolls, a row is tapped and the screen slides to its detail, where a check mark draws itself. Everything exits on the last beat. Starts and ends on the plain background.",
+    "tags": ["mobile", "phone", "app", "screen"],
+    "customize": [
+      "COPY: title, home screen and detail content",
+      "EXTRA: a brand showcase component in place of the stat card (see the brand notes)",
+      "TAPPED: the tapped row",
+      "TIMING: entrance, scroll, tap, slide, check mark, in beats",
+      "LAYOUT: phone placement and size per format"
+    ]
+  }
+}

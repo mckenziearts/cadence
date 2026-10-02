@@ -1,0 +1,25 @@
+{
+  "name": "Liste de fonctionnalités",
+  "description": "Un titre, puis trois cartes de fonctionnalités se posent une par temps : icône tracée à la plume, titre, texte. En colonnes en paysage, en liste empilée dans les formats hauts ; tout sort au dernier temps. Par défaut, les fonctionnalités de la marque. Commence et finit sur le fond seul.",
+  "category": "feature",
+  "bars": 2,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["fonctionnalités", "cartes", "icônes", "liste"],
+  "customize": [
+    "COPY : titre ({name} = nom de la marque) et fonctionnalités (par défaut brand.copy.features)",
+    "CARD_ICONS : une icône par carte (bolt, layers, shield, chart, clock, sparkle, globe, users, code, heart)",
+    "TIMING : titre, arrivée des cartes (une par temps), sortie",
+    "LAYOUT : colonnes ou liste et tailles par format"
+  ],
+  "en": {
+    "name": "Feature list",
+    "description": "A title, then three feature cards land one per beat: pen-drawn icon, title, text. In columns in landscape, in a stacked list in tall formats; everything exits on the last beat. The brand's features by default. Starts and ends on the plain background.",
+    "tags": ["features", "cards", "icons", "list"],
+    "customize": [
+      "COPY: title ({name} = brand name) and features (brand.copy.features by default)",
+      "CARD_ICONS: one icon per card (bolt, layers, shield, chart, clock, sparkle, globe, users, code, heart)",
+      "TIMING: title, card entrances (one per beat), exit",
+      "LAYOUT: columns or list and sizes per format"
+    ]
+  }
+}

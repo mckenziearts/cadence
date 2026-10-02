@@ -1,0 +1,22 @@
+{
+  "name": "Teaser produit",
+  "description": "Le teaser d'un composant d'interface en huit plans enchaînés : filaire lumineux, anatomie éclatée, styles, surfaces, géométrie annotée, démo au curseur, plein cadre et logo. Environ 46 s à 145 BPM, avec des coupes invisibles d'une scène à l'autre.",
+  "fps": 60,
+  "formats": ["16:9", "9:16"],
+  "bpm": 145,
+  "scenes": [
+    { "template": "wireframe-glow", "name": "Filaire", "bars": 4 },
+    { "template": "exploded-anatomy", "name": "Anatomie", "bars": 2 },
+    { "template": "variant-pills", "name": "Chaque style", "bars": 2 },
+    { "template": "surface-grid", "name": "Chaque surface", "bars": 3 },
+    { "template": "zoom-annotate", "name": "Géométrie", "bars": 6 },
+    { "template": "cursor-demo", "name": "En direct", "bars": 4 },
+    { "template": "full-bleed", "name": "Plein cadre", "bars": 3 },
+    { "template": "logo-build", "name": "Logo", "bars": 4 }
+  ],
+  "en": {
+    "name": "Product teaser",
+    "description": "The teaser of an interface component in eight linked shots: glowing wireframe, exploded anatomy, styles, surfaces, annotated geometry, cursor demo, full bleed and logo. About 46 s at 145 BPM, with invisible cuts from one scene to the next.",
+    "scenes": ["Wireframe", "Anatomy", "Every style", "Every surface", "Geometry", "Live", "Full bleed", "Logo"]
+  }
+}

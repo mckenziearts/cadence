@@ -1,0 +1,25 @@
+{
+  "name": "Plein cadre",
+  "description": "Une carte photo à côté d'un titre en deux lignes : sa marge est signalée, l'image déborde jusqu'aux bords de la carte, puis s'ouvre sur tout le cadre (le titre passe en blanc) avant de revenir dans la carte. Commence et finit sur le fond seul.",
+  "category": "transition",
+  "bars": 3,
+  "formats": ["16:9", "9:16", "1:1", "4:5"],
+  "tags": ["image", "plein cadre", "transition", "teaser"],
+  "customize": [
+    "COPY : les deux lignes du titre, légende de la photo, étiquettes",
+    "Landscape : l'illustration (teintée par la couleur primaire), ou une vraie photo avec asset()",
+    "TIMING : marge, débord, ouverture plein cadre, retour, en temps musicaux",
+    "LAYOUT et MEDIA : place et proportions de la carte par format"
+  ],
+  "en": {
+    "name": "Full bleed",
+    "description": "A photo card next to a two-line title: its margin is pointed out, the image bleeds to the edges of the card, then opens up to the whole frame (the title turns white) before going back into the card. Starts and ends on the plain background.",
+    "tags": ["image", "full bleed", "transition", "teaser"],
+    "customize": [
+      "COPY: the two title lines, photo caption, labels",
+      "Landscape: the illustration (tinted with the primary color), or a real photo with asset()",
+      "TIMING: margin, bleed, full-frame opening, return, in beats",
+      "LAYOUT and MEDIA: card placement and proportions per format"
+    ]
+  }
+}

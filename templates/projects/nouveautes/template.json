@@ -1,0 +1,20 @@
+{
+  "name": "Nouveautés",
+  "description": "Le récapitulatif des nouveautés du mois en 30 s : titre, trois nouveautés, l'interface, un graphique de progression, un témoignage et l'appel à l'action. 120 BPM, en 16:9 et 1:1.",
+  "fps": 60,
+  "formats": ["16:9", "1:1"],
+  "bpm": 120,
+  "scenes": [
+    { "template": "title-reveal", "name": "Quoi de neuf", "bars": 2 },
+    { "template": "feature-list", "name": "Trois nouveautés", "bars": 3 },
+    { "template": "browser-showcase", "name": "Dans l'interface", "bars": 3 },
+    { "template": "chart-draw", "name": "Les résultats", "bars": 3 },
+    { "template": "quote-testimonial", "name": "Ils en parlent", "bars": 2 },
+    { "template": "cta-end", "name": "À essayer", "bars": 2 }
+  ],
+  "en": {
+    "name": "What's new",
+    "description": "The month's new features recap in 30 s: title, three new features, the interface, a progress chart, a testimonial and the call to action. 120 BPM, in 16:9 and 1:1.",
+    "scenes": ["What's new", "Three new features", "In the interface", "The results", "What people say", "Try it"]
+  }
+}

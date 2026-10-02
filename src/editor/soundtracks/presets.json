@@ -1,0 +1,146 @@
+[
+  {
+    "id": "pulse",
+    "name": "Pulse",
+    "style": "Tech house minimale",
+    "use": "Teaser produit",
+    "bpm": 120,
+    "versions": [
+      {
+        "file": "pulse-16s.m4a",
+        "bars": 8,
+        "duration": 16
+      },
+      {
+        "file": "pulse-32s.m4a",
+        "bars": 16,
+        "duration": 32
+      },
+      {
+        "file": "pulse-60s.m4a",
+        "bars": 30,
+        "duration": 60
+      }
+    ]
+  },
+  {
+    "id": "neon",
+    "name": "Néon",
+    "style": "Synthwave rétro",
+    "use": "Lancement, look rétro",
+    "bpm": 100,
+    "versions": [
+      {
+        "file": "neon-14s.m4a",
+        "bars": 6,
+        "duration": 14.4
+      },
+      {
+        "file": "neon-29s.m4a",
+        "bars": 12,
+        "duration": 28.8
+      },
+      {
+        "file": "neon-62s.m4a",
+        "bars": 26,
+        "duration": 62.4
+      }
+    ]
+  },
+  {
+    "id": "afro",
+    "name": "Afro",
+    "style": "Amapiano",
+    "use": "Annonce, événement",
+    "bpm": 112,
+    "versions": [
+      {
+        "file": "afro-17s.m4a",
+        "bars": 8,
+        "duration": 17.143
+      },
+      {
+        "file": "afro-30s.m4a",
+        "bars": 14,
+        "duration": 30
+      },
+      {
+        "file": "afro-60s.m4a",
+        "bars": 28,
+        "duration": 60
+      }
+    ]
+  },
+  {
+    "id": "lofi",
+    "name": "Lo-fi",
+    "style": "Lo-fi hip-hop",
+    "use": "Tuto, démo calme",
+    "bpm": 85,
+    "versions": [
+      {
+        "file": "lofi-17s.m4a",
+        "bars": 6,
+        "duration": 16.941
+      },
+      {
+        "file": "lofi-28s.m4a",
+        "bars": 10,
+        "duration": 28.235
+      },
+      {
+        "file": "lofi-62s.m4a",
+        "bars": 22,
+        "duration": 62.118
+      }
+    ]
+  },
+  {
+    "id": "nappe",
+    "name": "Nappe",
+    "style": "Ambiant",
+    "use": "Intro, explication",
+    "bpm": 90,
+    "versions": [
+      {
+        "file": "nappe-16s.m4a",
+        "bars": 6,
+        "duration": 16
+      },
+      {
+        "file": "nappe-32s.m4a",
+        "bars": 12,
+        "duration": 32
+      },
+      {
+        "file": "nappe-59s.m4a",
+        "bars": 22,
+        "duration": 58.667
+      }
+    ]
+  },
+  {
+    "id": "sprint",
+    "name": "Sprint",
+    "style": "Drum & bass",
+    "use": "Promo rapide",
+    "bpm": 170,
+    "versions": [
+      {
+        "file": "sprint-14s.m4a",
+        "bars": 10,
+        "duration": 14.118
+      },
+      {
+        "file": "sprint-31s.m4a",
+        "bars": 22,
+        "duration": 31.059
+      },
+      {
+        "file": "sprint-59s.m4a",
+        "bars": 42,
+        "duration": 59.294
+      }
+    ]
+  }
+]

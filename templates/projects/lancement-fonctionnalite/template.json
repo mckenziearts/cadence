@@ -1,0 +1,18 @@
+{
+  "name": "Lancement de fonctionnalité",
+  "description": "Annoncer une nouveauté en 20 s : le titre, le produit dans un navigateur, trois bénéfices et un appel à l'action. 120 BPM, en 16:9, 9:16 et 1:1.",
+  "fps": 60,
+  "formats": ["16:9", "9:16", "1:1"],
+  "bpm": 120,
+  "scenes": [
+    { "template": "title-reveal", "name": "Annonce", "bars": 2 },
+    { "template": "browser-showcase", "name": "Le produit", "bars": 3 },
+    { "template": "feature-list", "name": "Bénéfices", "bars": 2 },
+    { "template": "cta-end", "name": "Essayer", "bars": 3 }
+  ],
+  "en": {
+    "name": "Feature launch",
+    "description": "Announce something new in 20 s: the title, the product in a browser, three benefits and a call to action. 120 BPM, in 16:9, 9:16 and 1:1.",
+    "scenes": ["Announcement", "The product", "Benefits", "Try it"]
+  }
+}

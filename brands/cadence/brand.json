@@ -1,0 +1,29 @@
+{
+  "id": "cadence",
+  "name": "Cadence",
+  "tagline": "Every scene is code.",
+  "url": "",
+  "language": "en",
+  "colors": {
+    "background": "#fafafa",
+    "surface": "#ffffff",
+    "ink": "#0a0a0a",
+    "muted": "#8a8a8f",
+    "line": "#e6e6e9",
+    "primary": "#18181b",
+    "primaryInk": "#ffffff",
+    "accent": "#ff2e88",
+    "success": "#00bc7d",
+    "warning": "#fe9a00",
+    "danger": "#fb2c36"
+  },
+  "fonts": {
+    "display": "'Inter Variable', ui-sans-serif, system-ui, sans-serif",
+    "body": "'Geist Variable', ui-sans-serif, system-ui, sans-serif",
+    "mono": "'JetBrains Mono Variable', ui-monospace, monospace",
+    "preload": ["700 104px 'Inter Variable'", "400 20px 'Geist Variable'", "400 16px 'JetBrains Mono Variable'"]
+  },
+  "radius": { "sm": 8, "md": 12, "lg": 16, "xl": 22 },
+  "logo": { "mark": "assets/logo-mark.svg", "full": "assets/logo-full.svg" },
+  "voice": "Precise, calm and sure of itself: short sentences that show instead of explaining, one strong verb per headline, never a superlative."
+}

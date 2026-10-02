@@ -1,0 +1,10 @@
+node_modules
+package-lock.json
+projects/*/.cadence
+projects/*/renders
+brands/*/fonts
+brands/*/assets
+*.md
+# Written by the app (JSON.stringify), not by hand
+projects/*/project.json
+projects/*/music/*.analysis.json

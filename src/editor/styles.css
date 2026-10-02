@@ -1,0 +1,356 @@
+/* Editor UI (editor origin only). Frames load their brand's own theme; nothing here reaches them. */
+@import 'tailwindcss' source(none);
+@source './';
+
+/*
+ * Anton, Hanken Grotesk and Spline Sans Mono (SIL OFL 1.1, fonts/OFL.txt): latin and latin-ext subsets from
+ * @fontsource 5.3.0, served by the editor itself (no network, no package).
+ */
+@font-face {
+  font-family: 'Anton';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('./fonts/anton-latin-ext-400-normal.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Anton';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('./fonts/anton-latin-400-normal.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('./fonts/hanken-grotesk-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('./fonts/hanken-grotesk-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Spline Sans Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 300 700;
+  src: url('./fonts/spline-sans-mono-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Spline Sans Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 300 700;
+  src: url('./fonts/spline-sans-mono-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/*
+ * Cadence, retro media desk: cream paper, the logo's ink drawn thick, the logo's pink for what is on and what is now.
+ * The stock palette, radii and shadows are removed so copied components cannot bring their own look.
+ */
+@theme {
+  --color-*: initial;
+  /* A warm white for raised surfaces (fields, menus, cards); text on ink uses it too. */
+  --color-white: #fffdf8;
+  --color-black: #000000;
+  --color-paper: #f4efe4;
+  --color-wash: #ebe5d8;
+  --color-stage: #e6dfd0;
+  --color-track: #d9d1c1;
+  --color-ink: #18181b;
+  --color-ink-2: #403d38;
+  --color-ink-3: #6b665c;
+  --color-ink-4: #a19b8f;
+  /* Hairlines inside a panel; the frame of every panel and control is ink. */
+  --color-rule: rgb(24 24 27 / 0.16);
+  --color-grid: rgb(24 24 27 / 0.06);
+  /* The logo's playhead: on, selected, playing, now. Pink text uses now-strong (readable on paper). */
+  --color-now: #ff2e88;
+  --color-now-strong: #d6146a;
+  --color-ok: #1f7a45;
+  --color-warn: #c77d00;
+  --color-warn-ink: #6e4a00;
+  --color-alert: #c8341b;
+
+  /* Square corners everywhere; rounded-full stays for what is time (the logo's clips, the playhead). */
+  --radius: 0px;
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+
+  /* Printed shadows: solid ink, offset, no blur. */
+  --shadow-*: initial;
+  --shadow-hard-sm: 2px 2px 0 0 var(--color-ink);
+  --shadow-hard: 3px 3px 0 0 var(--color-ink);
+  --shadow-float: 4px 4px 0 0 var(--color-ink);
+  --shadow-modal: 6px 6px 0 0 var(--color-ink);
+
+  --font-sans: 'Hanken Grotesk', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: 'Anton', 'Hanken Grotesk', ui-sans-serif, sans-serif;
+  --font-mono: 'Spline Sans Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Motion: 60 / 125 / 250 ms on one curve, no bounce. */
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --default-transition-duration: 125ms;
+  --default-transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  --animate-fade-in: fade-in 125ms cubic-bezier(0.2, 0, 0, 1);
+  --animate-pop-in: pop-in 125ms cubic-bezier(0.2, 0, 0, 1);
+  --animate-caret: caret 1s steps(1) infinite;
+
+  @keyframes shimmer {
+    0% {
+      background-position: 120% 0;
+    }
+    100% {
+      background-position: -20% 0;
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translate(-2px, -2px);
+    }
+  }
+  @keyframes caret {
+    50% {
+      opacity: 0;
+    }
+  }
+}
+
+/* A key on a tape deck: printed shadow at rest, pressed flat on click. */
+@utility press {
+  box-shadow: var(--shadow-hard-sm);
+  transition:
+    translate 60ms var(--ease-out),
+    box-shadow 60ms var(--ease-out);
+  &:active:not(:disabled),
+  &[aria-pressed='true'],
+  &[data-down] {
+    translate: 2px 2px;
+    box-shadow: 0 0 0 0 var(--color-ink);
+  }
+  &:disabled {
+    box-shadow: none;
+  }
+}
+
+/* Graph paper behind the picture. */
+@utility bg-grid {
+  background-image:
+    linear-gradient(var(--color-grid) 1px, transparent 1px), linear-gradient(90deg, var(--color-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Pages around the picture (home, render): the same graph paper under the top bar, fading into plain paper further
+   down. Local, so it scrolls away with the page instead of staying under the bar. */
+@utility bg-grid-fade {
+  background:
+    linear-gradient(transparent, var(--color-paper) 40rem) local,
+    linear-gradient(var(--color-grid) 1px, transparent 1px) 0 0 / 24px 24px local,
+    linear-gradient(90deg, var(--color-grid) 1px, transparent 1px) 0 0 / 24px 24px local,
+    var(--color-stage);
+}
+
+/* Display type: Anton, upper case. */
+@utility display-caps {
+  font-family: var(--font-display);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+
+/* Small upper-case labels (badges, keys, meta): the sans, tracked. */
+@utility label-caps {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  html {
+    color-scheme: light;
+    /* Times, costs and sizes change in place: every figure keeps its width. */
+    font-variant-numeric: tabular-nums;
+  }
+  body {
+    margin: 0;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 20px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--color-now) 32%, transparent);
+  }
+  button,
+  [role='button'],
+  label[for],
+  summary {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: default;
+  }
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+  }
+  input[type='range'],
+  input[type='checkbox'],
+  input[type='radio'] {
+    accent-color: var(--color-ink);
+  }
+  /* Thin, quiet scrollbars: panels scroll a lot. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(24 24 27 / 0.22) transparent;
+  }
+}
+
+@layer components {
+  .skeleton {
+    background: linear-gradient(90deg, var(--color-wash) 0%, var(--color-track) 50%, var(--color-wash) 100%);
+    background-size: 220% 100%;
+    animation: var(--animate-shimmer);
+  }
+  .focus-ring {
+    outline: none;
+  }
+  .focus-ring:focus-visible {
+    outline: 2px solid var(--color-now);
+    outline-offset: 2px;
+  }
+  /* Three clips of the logo lighting up one per beat, at the project tempo (--beat, in seconds). */
+  .beat-pills > span {
+    animation: beat calc(var(--beat, 0.5s) * 3) steps(1) infinite;
+  }
+  .beat-pills > span:nth-child(2) {
+    animation-delay: var(--beat, 0.5s);
+  }
+  .beat-pills > span:nth-child(3) {
+    animation-delay: calc(var(--beat, 0.5s) * 2);
+  }
+  @keyframes beat {
+    0% {
+      opacity: 1;
+    }
+    33.333% {
+      opacity: 0.25;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .beat-pills > span {
+      animation: none;
+      opacity: 0.6;
+    }
+  }
+  /* Light markdown in chat replies. */
+  .prose-chat {
+    font-size: 14px;
+    line-height: 22px;
+    color: var(--color-ink-2);
+    font-variant-numeric: proportional-nums;
+    overflow-wrap: anywhere;
+  }
+  .prose-chat > * + * {
+    margin-top: 8px;
+  }
+  .prose-chat ul,
+  .prose-chat ol {
+    padding-left: 1.2em;
+  }
+  .prose-chat ul {
+    list-style: square;
+  }
+  .prose-chat ol {
+    list-style: decimal;
+  }
+  .prose-chat li + li {
+    margin-top: 2px;
+  }
+  .prose-chat li::marker {
+    color: var(--color-now);
+  }
+  .prose-chat a {
+    color: var(--color-ink);
+    text-decoration: underline;
+    text-decoration-color: var(--color-now);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 2px;
+  }
+  .prose-chat code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--color-wash);
+    padding: 0.1em 0.35em;
+  }
+  .prose-chat pre {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 18px;
+    background: var(--color-ink);
+    color: var(--color-paper);
+    box-shadow: var(--shadow-hard-sm);
+    padding: 10px 12px;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .prose-chat pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+  .prose-chat strong,
+  .prose-chat h3 {
+    font-weight: 700;
+    color: var(--color-ink);
+  }
+}
