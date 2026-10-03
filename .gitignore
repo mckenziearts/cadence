@@ -7,6 +7,9 @@ node_modules/
 # Cadence internal state (settings, accounts, caches). Never commit.
 /.cadence/
 
+# Planning notes, not part of the app.
+/tasks/
+
 # Each person's content stays on their machine: the video projects and the brands built in the app.
 # projects/ is ignored as a whole: Tailwind skips the ignored subfolders of an @source folder.
 /projects/

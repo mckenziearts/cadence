@@ -5,6 +5,7 @@ import { api } from '../api';
 import { Button, Modal, Segmented, Select, SectionTitle } from '../components/ui';
 import { useT } from '../i18n';
 import { set, useStore, NONE } from '../store';
+import { resolvePick } from '../store/chat';
 import { closeModal, toast } from '../store/ui';
 
 /** Each language under its own name, whatever the interface language. */
@@ -14,9 +15,22 @@ export function SettingsModal() {
   const t = useT();
   const app = useStore((s) => s.app)!;
   const language = useStore((s) => s.language);
-  const [draft, setDraft] = useState<Settings>({ ...app.settings, language });
+  // The scene/project defaults shown are the active agent's; saving routes them back to that agent.
+  const seed = (): Settings => {
+    const scene = resolvePick(app.settings, app.models, 'scene');
+    const project = resolvePick(app.settings, app.models, 'project');
+    return {
+      ...app.settings,
+      language,
+      sceneModel: scene.model,
+      sceneEffort: scene.effort,
+      projectModel: project.model,
+      projectEffort: project.effort,
+    };
+  };
+  const [draft, setDraft] = useState<Settings>(seed);
   const [saving, setSaving] = useState(false);
-  const dirty = JSON.stringify(draft) !== JSON.stringify({ ...app.settings, language });
+  const dirty = JSON.stringify(draft) !== JSON.stringify(seed());
 
   const save = async () => {
     setSaving(true);
@@ -119,10 +133,13 @@ function ChatDefaults(props: {
         <Select
           aria-label={t.settings.modelOf(props.title)}
           value={props.model}
-          onChange={(e) => props.onChange(e.target.value, props.effort)}
+          onChange={(e) => {
+            const next = models.find((m) => m.id === e.target.value);
+            props.onChange(e.target.value, next?.defaultEffort ?? next?.efforts?.[0] ?? props.effort);
+          }}
           className="w-full"
         >
-          {!spec && <option value={props.model}>{props.model}</option>}
+          {!spec && props.model && <option value={props.model}>{props.model}</option>}
           {models.map((m) => (
             <option key={m.id} value={m.id}>
               {m.label}
@@ -136,7 +153,7 @@ function ChatDefaults(props: {
           onChange={(e) => props.onChange(props.model, e.target.value as Effort)}
           className="w-full"
         >
-          {EFFORTS.map((e) => (
+          {(spec?.efforts ?? EFFORTS).map((e) => (
             <option key={e} value={e}>
               {t.common.efforts[e]}
             </option>

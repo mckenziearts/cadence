@@ -15,7 +15,7 @@ import {
   type ViteDevServer,
 } from 'vite';
 import type { CadenceConfig } from '../contracts';
-import { isInside } from '../util';
+import { CSS_CODE_EXEC, isInside } from '../util';
 
 export async function createVite({
   config,
@@ -99,6 +99,36 @@ async function brandIconSets(brandsDir: string): Promise<string[]> {
   return [...sets].sort();
 }
 
+// Only infra the agent can never write into, and that never holds a managed stylesheet. Everything else is read:
+// Tailwind inlines @import itself and honours neither this set nor Vite's server.fs rules, so a @plugin in any
+// import-reachable .css runs code at compile time. A name-based skip of e.g. `renders` was a bypass, because a dir
+// named `renders` under the agent-writable components/ is import-reachable (components/renders/evil.css).
+const SKIP_WALK = new Set(['.git', 'node_modules']);
+
+/**
+ * Refuse any CSS under the managed dirs that carries `@plugin` or `@config`: Tailwind would load and run that module
+ * in this process when it compiles. The whole subtree is scanned (not just the imported entry) because Tailwind
+ * resolves @import itself, so a leaf reached through @import hops, in any directory, would otherwise slip past. CSS
+ * compiles are infrequent (brand themes, scene-imported CSS), so walking the managed dirs each time stays cheap.
+ */
+export async function assertNoCssCodeExec(managedDirs: string[]): Promise<void> {
+  const offenders: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (entry.isDirectory()) {
+        if (!SKIP_WALK.has(entry.name)) await walk(path.join(dir, entry.name));
+      } else if (entry.name.endsWith('.css')) {
+        const file = path.join(dir, entry.name);
+        if (CSS_CODE_EXEC.test(await fs.readFile(file, 'utf8').catch(() => ''))) offenders.push(file);
+      }
+    }
+  };
+  await Promise.all(managedDirs.map(walk));
+  if (offenders.length) {
+    throw new Error(`CSS @plugin/@config runs code at build time and is not allowed here:\n${offenders.join('\n')}`);
+  }
+}
+
 const GENERATION_PARAM = /([?&])g=[^&]*&?/;
 
 /**
@@ -127,10 +157,15 @@ function cadencePlugin(managedDirs: string[]): Plugin {
     hotUpdate({ file }) {
       if (managedDirs.some((dir) => isInside(dir, file))) return [];
     },
-    transform(code, id) {
+    async transform(code, id) {
       // HMR is off, yet in middleware mode Vite's client still dials ws://<host>:24678: an uncaught error on every
       // page, or another app's dev server. A string patch: if Vite renames the call, only that error comes back.
       if (id.endsWith('/vite/dist/client/client.mjs')) return code.replace(VITE_CLIENT_CONNECT, '');
+      // `cadence` runs before `@tailwindcss/vite` (see createVite's plugin order), so this throws before Tailwind
+      // compiles any CSS that would run code. Tailwind inlines @import itself, so a check on this one file would miss
+      // a two-hop @import to @plugin: scan the whole managed set instead.
+      const file = id.replace(/[?#].*$/, '');
+      if (file.endsWith('.css') && managedDirs.some((dir) => isInside(dir, file))) await assertNoCssCodeExec(managedDirs);
     },
   };
 }

@@ -31,6 +31,7 @@ import { FileVersionStore } from '../../server/store/versions';
 import { FileUsageLog } from '../../server/usage';
 import { HttpError, pathExists, resolveInside } from '../../server/util';
 import {
+  MODELS,
   NETWORK_IDS,
   type BrandBuild,
   type ChatKey,
@@ -254,6 +255,10 @@ beforeEach(async () => {
     accounts,
     publisher: new Publisher({ store, renders, accounts, networks, hub }),
     agentStatus: async () => ({ ok: true, label: 'Claude Code', version: '2.1.285' }),
+    codexStatus: async () => ({ ok: false, label: 'Codex', reason: 'missing' as const }),
+    grokStatus: async () => ({ ok: false, label: 'Grok', reason: 'missing' as const }),
+    geminiStatus: async () => ({ ok: false, label: 'Gemini', reason: 'missing' as const }),
+    models: async () => MODELS,
     diagnose: async (file) => `Erreur : ${file}:3:5`,
   });
   await store.create({ name: 'Démo', brand: null, formats: ['16:9'], fps: 60 });
@@ -614,6 +619,8 @@ test('brands, logos, settings', async () => {
     projectModel: 'claude-opus-5-5',
     projectEffort: 'high',
     language: null,
+    agent: 'claude-code',
+    agentPrefs: {},
   });
   assert.equal((await json('PUT', '/api/settings', { projectEffort: 'turbo' })).status, 400);
   assert.equal((await json('PUT', '/api/settings', { language: 'de' })).status, 400);
@@ -624,21 +631,34 @@ test('usage: every recorded Claude Code run, summed per kind', async () => {
   assert.deepEqual((await json('GET', '/api/usage')).body, { since: null, chats: none, brands: none });
 
   const tokens = { input: 10, output: 200, cacheRead: 3000, cacheWrite: 400 };
-  await usage.record({ at: '2026-10-01T10:00:00.000Z', kind: 'chat', projectId: 'demo', chat: 'project', costUsd: 0.1, tokens });
+  const cc = { agent: 'claude-code' as const };
+  await usage.record({
+    at: '2026-10-01T10:00:00.000Z',
+    ...cc,
+    kind: 'chat',
+    projectId: 'demo',
+    chat: 'project',
+    costUsd: 0.1,
+    tokens,
+  });
   await usage.record({
     at: '2026-10-01T11:00:00.000Z',
+    ...cc,
     kind: 'chat',
     projectId: 'demo',
     chat: 'scene:intro',
     costUsd: 0.2,
     tokens,
   });
-  await usage.record({ at: '2026-10-01T12:00:00.000Z', kind: 'brand', brandId: 'acme', costUsd: 4.28, tokens });
+  await usage.record({ at: '2026-10-01T12:00:00.000Z', ...cc, kind: 'brand', brandId: 'acme', costUsd: 4.28, tokens });
+  // No ?agent: the active agent (Claude Code by default).
   assert.deepEqual((await json('GET', '/api/usage')).body, {
     since: '2026-10-01T10:00:00.000Z',
     chats: { runs: 2, costUsd: 0.3, tokens: { input: 20, output: 400, cacheRead: 6000, cacheWrite: 800 } },
     brands: { runs: 1, costUsd: 4.28, tokens },
   });
+  // Another agent's usage is separate: Codex counted none of these runs.
+  assert.deepEqual((await json('GET', '/api/usage?agent=codex')).body, { since: null, chats: none, brands: none });
 });
 
 test('brands: deleted into .cadence/trash, never the neutral kit, one in use or one being built', async () => {

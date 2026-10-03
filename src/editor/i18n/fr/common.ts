@@ -20,5 +20,6 @@ export default {
     high: 'Effort élevé',
     xhigh: 'Effort très élevé',
     max: 'Effort maximal',
+    ultra: 'Effort ultra',
   },
 };

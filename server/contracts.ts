@@ -76,6 +76,9 @@ export interface CadenceConfig {
   ffmpegPath: string;
   ffprobePath: string;
   claudePath: string;
+  codexPath: string;
+  grokPath: string;
+  geminiPath: string;
   /** Piper, for voice-overs (env PIPER_PATH): optional, each user installs it. */
   piperPath: string;
   /** Default model/effort (env CADENCE_MODEL / CADENCE_EFFORT), overridden by settings.json. */
@@ -575,7 +578,7 @@ export interface AgentProvider {
 export interface UsageLog {
   /** Append the run to <root>/.cadence/usage.jsonl. Never rejects: a lost line must not fail the run. */
   record(entry: UsageEntry): Promise<void>;
-  summary(): Promise<UsageSummary>;
+  summary(agent?: import('../src/shared/types').AgentId): Promise<UsageSummary>;
 }
 
 // server/settings.ts: export class FileSettingsStore implements SettingsStore  (constructor(config: CadenceConfig))
@@ -608,6 +611,12 @@ export interface ApiDeps {
   accounts: AccountService;
   publisher: PublishService;
   agentStatus: () => Promise<import('../src/shared/types').AgentStatus>;
+  /** CLI status on this computer for the other agents, for the Profile's cards (the running agent stays Claude for now). */
+  codexStatus: () => Promise<import('../src/shared/types').AgentStatus>;
+  grokStatus: () => Promise<import('../src/shared/types').AgentStatus>;
+  geminiStatus: () => Promise<import('../src/shared/types').AgentStatus>;
+  /** The models the given agent offers, with each model's efforts, for the chat picker. */
+  models: (agent: import('../src/shared/types').AgentId) => Promise<import('../src/shared/types').ModelSpec[]>;
   /** Compile a scene file through Vite and return the error text (with code frame), or null. */
   diagnose: (file: string) => Promise<string | null>;
 }

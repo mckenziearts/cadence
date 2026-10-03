@@ -1,15 +1,18 @@
 // The Profile page (#/@profil): the accounts Cadence uses on this computer. What Cadence asked Claude (the usage log),
 // Git hosts through their CLI, networks through the developer app the team created on each one (keys in a dialog),
 // connected in a new tab, refreshed on `accounts-changed`.
-import { CircleAlert, CircleCheck, Copy, KeyRound, RefreshCw } from 'lucide-react';
+import { Check, CircleAlert, CircleCheck, Copy, KeyRound, RefreshCw } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import type { GitAccount, GitHost, NetworkAccount, UsageSummary, UsageTotals } from '../../shared/types';
+import type { AgentId, AgentStatus, GitAccount, GitHost, NetworkAccount, UsageSummary, UsageTotals } from '../../shared/types';
 import { api } from '../api';
 import { useT } from '../i18n';
+import { External } from '../i18n/links';
 import { day, tokenCount, usd } from '../lib/format';
 import { NONE, useStore } from '../store';
+import { setAgent } from '../store/project';
 import { copyText, toast } from '../store/ui';
-import { GIT_LOGOS, NETWORK_LOGOS } from './logos';
+import { AGENTS, type AgentSpec } from './agents';
+import { AGENT_LOGOS, GIT_LOGOS, NETWORK_LOGOS } from './logos';
 import { Button, ConfirmButton, Field, IconButton, Modal, inputClass, Spinner } from './ui';
 
 const GIT_HOSTS: { id: GitHost; name: string; cli: string }[] = [
@@ -22,18 +25,25 @@ const GRID = 'mt-4 grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-6';
 export function Profile() {
   const t = useT();
   const networks = useStore((s) => s.app?.networks ?? NONE);
+  const selected = useStore((s) => s.app?.settings.agent ?? 'claude-code');
   const [git, setGit] = useState<Record<GitHost, GitAccount> | null>(null);
+  const [agents, setAgents] = useState<Record<AgentId, AgentStatus> | null>(null);
   const [checking, setChecking] = useState(false);
   const check = async () => {
     setChecking(true);
-    try {
-      setGit(await api.gitAccounts());
-    } catch (e) {
-      const failed: GitAccount = { available: false, reason: 'error', detail: (e as Error).message };
-      setGit({ github: failed, gitlab: failed });
-    } finally {
-      setChecking(false);
-    }
+    const agentError = (e: unknown): AgentStatus => ({ ok: false, label: '', reason: 'error', detail: (e as Error).message });
+    await Promise.all([
+      api.gitAccounts().then(setGit, (e: Error) => {
+        const failed: GitAccount = { available: false, reason: 'error', detail: e.message };
+        setGit({ github: failed, gitlab: failed });
+      }),
+      api
+        .agentAccounts()
+        .then(setAgents, (e) =>
+          setAgents(Object.fromEntries(AGENTS.map((a) => [a.id, agentError(e)])) as Record<AgentId, AgentStatus>),
+        ),
+    ]);
+    setChecking(false);
   };
   useEffect(() => void check(), []);
 
@@ -43,7 +53,30 @@ export function Profile() {
         <h1 className="display-caps text-5xl/none text-ink">{t.profile.title}</h1>
         <p className="mt-2 text-[13px] text-ink-3">{t.profile.subtitle}</p>
 
-        <ClaudeUsage />
+        <section className="mt-10" aria-labelledby="profile-agents">
+          <div className="flex items-center gap-3">
+            <h2 id="profile-agents" className="display-caps text-[22px]/7 text-ink">
+              {t.profile.agents.title}
+            </h2>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<RefreshCw className="size-3.5" />}
+              loading={checking}
+              onClick={() => void check()}
+            >
+              {t.common.check}
+            </Button>
+          </div>
+          <p className="mt-1 text-[13px] text-ink-3">{t.profile.agents.hint}</p>
+          <ul className={GRID}>
+            {AGENTS.map((agent) => (
+              <AgentCard key={agent.id} agent={agent} status={agents?.[agent.id]} selected={selected === agent.id} />
+            ))}
+          </ul>
+        </section>
+
+        <AgentUsage agent={selected} />
 
         <section className="mt-12" aria-labelledby="profile-git">
           <div className="flex items-center gap-3">
@@ -84,19 +117,26 @@ export function Profile() {
   );
 }
 
-/** Chats and brand builds as the usage log counted them; read once per visit. */
-function ClaudeUsage() {
+/** The selected agent's chats and brand builds as the usage log counted them; refreshed when the agent changes. */
+function AgentUsage({ agent }: { agent: AgentId }) {
   const t = useT();
+  const u = t.profile.usage;
+  const name = AGENTS.find((a) => a.id === agent)?.name ?? agent;
   const [usage, setUsage] = useState<UsageSummary | null>(null);
-  useEffect(() => void api.usage().then(setUsage, () => undefined), []);
-  const columns = [t.profile.usage.runs, t.profile.usage.read, t.profile.usage.written, t.profile.usage.cost];
+  // Codex and the others run on a subscription with no per-turn cost: only Claude Code reports dollars.
+  const showCost = agent === 'claude-code';
+  useEffect(() => {
+    setUsage(null);
+    void api.usage(agent).then(setUsage, () => undefined);
+  }, [agent]);
+  const columns = [u.runs, u.read, u.written, ...(showCost ? [u.cost] : [])];
 
   return (
     <section className="mt-10" aria-labelledby="profile-usage">
       <h2 id="profile-usage" className="display-caps text-[22px]/7 text-ink">
-        {t.profile.usage.title}
+        {u.title(name)}
       </h2>
-      <p className="mt-1 text-[13px] text-ink-3">{t.profile.usage.hint}</p>
+      <p className="mt-1 text-[13px] text-ink-3">{showCost ? u.hintCost : u.hintTokens}</p>
       {usage && (
         <>
           <div className="mt-4 max-w-3xl overflow-x-auto border-2 border-ink bg-white shadow-hard">
@@ -104,7 +144,7 @@ function ClaudeUsage() {
               <thead className="border-b-2 border-ink bg-paper text-[10px] text-ink-3">
                 <tr>
                   <th scope="col" className="label-caps px-4 py-2 text-left">
-                    {t.profile.usage.source}
+                    {u.source}
                   </th>
                   {columns.map((label) => (
                     <th key={label} scope="col" className="label-caps px-4 py-2 text-right">
@@ -114,24 +154,32 @@ function ClaudeUsage() {
                 </tr>
               </thead>
               <tbody>
-                <UsageRow label={t.profile.usage.chats} totals={usage.chats} />
-                <UsageRow label={t.profile.usage.brands} totals={usage.brands} />
+                <UsageRow label={u.chats} totals={usage.chats} showCost={showCost} />
+                <UsageRow label={u.brands} totals={usage.brands} showCost={showCost} />
               </tbody>
               <tfoot className="border-t-2 border-ink">
-                <UsageRow label={t.profile.usage.total} totals={sum(usage.chats, usage.brands)} total />
+                <UsageRow label={u.total} totals={sum(usage.chats, usage.brands)} showCost={showCost} total />
               </tfoot>
             </table>
           </div>
-          <p className="mt-3 text-[12px] text-ink-3">
-            {usage.since ? t.profile.usage.since(day(usage.since)) : t.profile.usage.empty}
-          </p>
+          <p className="mt-3 text-[12px] text-ink-3">{usage.since ? u.since(day(usage.since)) : u.empty}</p>
         </>
       )}
     </section>
   );
 }
 
-function UsageRow({ label, totals, total = false }: { label: string; totals: UsageTotals; total?: boolean }) {
+function UsageRow({
+  label,
+  totals,
+  showCost,
+  total = false,
+}: {
+  label: string;
+  totals: UsageTotals;
+  showCost: boolean;
+  total?: boolean;
+}) {
   const { tokens } = totals;
   const cell = 'px-4 py-2.5 text-right';
   return (
@@ -142,7 +190,7 @@ function UsageRow({ label, totals, total = false }: { label: string; totals: Usa
       <td className={`${cell} text-ink-2`}>{totals.runs}</td>
       <td className={`${cell} text-ink-2`}>{tokenCount(tokens.input + tokens.cacheRead + tokens.cacheWrite)}</td>
       <td className={`${cell} text-ink-2`}>{tokenCount(tokens.output)}</td>
-      <td className={`${cell} font-semibold text-ink`}>{usd(totals.costUsd)}</td>
+      {showCost && <td className={`${cell} font-semibold text-ink`}>{usd(totals.costUsd)}</td>}
     </tr>
   );
 }
@@ -164,13 +212,16 @@ function sum(a: UsageTotals, b: UsageTotals): UsageTotals {
  * Logo, name and status on top, what to do at the bottom: the cards of a row line up. A card with nothing to do keeps
  * its name centered when a neighbour makes the row taller.
  */
-function Card(props: { logo: ReactNode; title: string; status: ReactNode; children?: ReactNode }) {
+function Card(props: { logo: ReactNode; title: string; badge?: ReactNode; status: ReactNode; children?: ReactNode }) {
   return (
     <li className="flex flex-col justify-center gap-4 border-2 border-ink bg-white p-5 shadow-hard" aria-label={props.title}>
       <div className="flex items-center gap-3">
         <span className="grid size-12 shrink-0 place-items-center border-2 border-ink bg-white text-ink">{props.logo}</span>
         <div className="min-w-0">
-          <h3 className="display-caps text-[20px]/6 text-ink">{props.title}</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="display-caps text-[20px]/6 text-ink">{props.title}</h3>
+            {props.badge}
+          </div>
           <div className="mt-0.5 text-[13px]">{props.status}</div>
         </div>
       </div>
@@ -235,6 +286,101 @@ function GitCard({ host, account }: { host: (typeof GIT_HOSTS)[number]; account:
           </>
         ))}
     </Card>
+  );
+}
+
+function AgentCard({ agent, status, selected }: { agent: AgentSpec; status: AgentStatus | undefined; selected: boolean }) {
+  const t = useT();
+  const [help, setHelp] = useState(false);
+  const { cli, name } = agent;
+  const Logo = AGENT_LOGOS[agent.id];
+  const a = t.profile.agents;
+
+  const statusEl = !status ? (
+    <span className="flex items-center gap-1.5 text-ink-3">
+      <Spinner className="size-3.5" /> {t.profile.checking}
+    </span>
+  ) : status.ok ? (
+    <Status ok>{status.version ? `${a.ready} · ${status.version}` : a.ready}</Status>
+  ) : (
+    <Status ok={false}>
+      {status.reason === 'missing'
+        ? t.profile.missing(cli)
+        : status.reason === 'logged-out'
+          ? t.profile.loggedOut(cli)
+          : (status.detail ?? t.profile.failing(cli))}
+    </Status>
+  );
+
+  const badge = agent.soon ? (
+    <span className="label-caps border-2 border-ink bg-now px-1.5 py-0.5 text-[10px] text-ink">{a.soon}</span>
+  ) : undefined;
+
+  return (
+    <Card logo={<Logo className="size-7" />} title={name} badge={badge} status={statusEl}>
+      <div className="flex items-center gap-2">
+        {agent.soon ? null : selected ? (
+          <Button variant="primary" disabled icon={<Check className="size-4" />}>
+            {a.inUse}
+          </Button>
+        ) : (
+          // Only a connected agent can be chosen: picking one Cadence cannot reach would break every turn.
+          <Button variant="secondary" disabled={!status?.ok} onClick={() => void setAgent(agent.id)}>
+            {a.use}
+          </Button>
+        )}
+        {(agent.soon || (status && !status.ok && status.reason !== 'error')) && (
+          <Button variant="ghost" onClick={() => setHelp(true)}>
+            {a.setup}
+          </Button>
+        )}
+      </div>
+      {help && <AgentHelp agent={agent} reason={status?.reason} onClose={() => setHelp(false)} />}
+    </Card>
+  );
+}
+
+function AgentHelp({ agent, reason, onClose }: { agent: AgentSpec; reason: AgentStatus['reason']; onClose: () => void }) {
+  const t = useT();
+  const h = t.profile.agents.help;
+  return (
+    <Modal
+      title={h.title(agent.name)}
+      onClose={onClose}
+      width="max-w-lg"
+      footer={
+        <>
+          <span className="mr-auto" />
+          <Button variant="ghost" onClick={onClose}>
+            {t.common.close}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4 text-[13px] text-ink-2">
+        {reason === 'logged-out' ? (
+          <>
+            <p>{h.loginIntro(agent.name)}</p>
+            <Command text={agent.loginCmd} />
+          </>
+        ) : (
+          <>
+            <p>{h.installIntro(agent.name)}</p>
+            <div className="space-y-1">
+              <p className="label-caps text-[10px] text-ink-3">{h.install}</p>
+              <Command text={agent.installCmd} />
+            </div>
+            <div className="space-y-1">
+              <p className="label-caps text-[10px] text-ink-3">{h.login}</p>
+              <Command text={agent.loginCmd} />
+            </div>
+          </>
+        )}
+        <p>
+          <External href={agent.docs}>{h.docs}</External>
+        </p>
+      </div>
+    </Modal>
   );
 }
 

@@ -30,10 +30,10 @@ export default {
     },
     playheadAt: (time: string) => `à ${time}`,
     queued: 'En file d’attente',
-    working: 'Claude travaille\u2026',
-    writing: 'Claude rédige sa réponse\u2026',
-    thinking: 'Claude réfléchit\u2026',
-    failed: 'Claude s’est arrêté sur une erreur.',
+    working: 'Travail en cours\u2026',
+    writing: 'Rédaction de la réponse\u2026',
+    thinking: 'Réflexion\u2026',
+    failed: 'L’agent s’est arrêté sur une erreur.',
     stopped: 'Arrêtée',
     showVersion: 'Voir cette version',
     activity: {
@@ -47,7 +47,7 @@ export default {
     },
     reasoning: 'Raisonnement',
     composer: {
-      waiting: 'En attente : Claude travaille déjà sur ce projet',
+      waiting: 'En attente : un tour est déjà en cours sur ce projet',
       label: { scene: 'Message pour la scène', project: 'Message pour le projet' },
       placeholder: {
         scene: 'Que faut-il changer ? ex. « Garde le titre une seconde de plus, puis fais glisser la carte depuis la droite. »',

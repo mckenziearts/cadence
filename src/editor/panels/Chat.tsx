@@ -167,6 +167,7 @@ function useElapsedSince(iso: string | null): number {
 const AssistantMessage = memo(function AssistantMessage({ message, queued }: { message: ChatMessage; queued: boolean }) {
   const t = useT();
   const models = useStore((s) => s.app?.models);
+  const agentName = useStore((s) => s.app?.agent.label);
   const tempo = useStore((s) => s.project?.tempo);
   const streaming = message.status === 'streaming';
   const activity = message.activity ?? [];
@@ -177,7 +178,7 @@ const AssistantMessage = memo(function AssistantMessage({ message, queued }: { m
 
   return (
     <article className="text-ink-2">
-      <p className="label-caps mb-1.5 text-[10px] text-ink-3">Claude</p>
+      <p className="label-caps mb-1.5 text-[10px] text-ink-3">{agentName ?? 'Claude'}</p>
       {activity.length > 0 && <Activity items={activity} streaming={streaming} />}
       {notes.length > 0 && <Reasoning notes={notes} />}
       {message.text ? (
@@ -424,10 +425,13 @@ function Composer({ chatKey, kind, busy, queued }: { chatKey: ChatKey; kind: Cha
             aria-label={texts.model}
             quiet
             value={choice.model}
-            onChange={(e) => pick({ model: e.target.value })}
+            onChange={(e) => {
+              const next = models.find((m) => m.id === e.target.value);
+              pick({ model: e.target.value, effort: next?.defaultEffort ?? next?.efforts?.[0] ?? choice.effort });
+            }}
             className="w-[104px]"
           >
-            {!spec && <option value={choice.model}>{choice.model}</option>}
+            {!spec && choice.model && <option value={choice.model}>{choice.model}</option>}
             {models.map((m) => (
               <option key={m.id} value={m.id} title={m.hint[language]}>
                 {m.label}
@@ -444,7 +448,7 @@ function Composer({ chatKey, kind, busy, queued }: { chatKey: ChatKey; kind: Cha
             title={spec?.supportsEffort === false ? texts.noEffort(spec.label) : texts.effortHint}
           >
             {spec?.supportsEffort === false && <option value="">{texts.effortNone}</option>}
-            {EFFORTS.map((effort) => (
+            {(spec?.efforts ?? EFFORTS).map((effort) => (
               <option key={effort} value={effort}>
                 {t.common.efforts[effort]}
               </option>

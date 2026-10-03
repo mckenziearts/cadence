@@ -7,8 +7,10 @@ import {
   ID_PATTERN,
   MODEL_ID_PATTERN,
   MODELS,
+  agentPicks,
   isFormatId,
   sceneIdFromChatKey,
+  type AgentId,
   type ChatKey,
   type ChatMessage,
   type ChatState,
@@ -435,11 +437,10 @@ export class ChatManager implements ChatService {
       );
 
       const settings = await this.deps.settings.get();
-      const model = turn.model ?? (scene ? settings.sceneModel : settings.projectModel);
-      const effort =
-        MODELS.find((m) => m.id === model)?.supportsEffort === false
-          ? null
-          : (turn.effort ?? (scene ? settings.sceneEffort : settings.projectEffort));
+      const picks = agentPicks(settings, scene ? 'scene' : 'project');
+      const model = turn.model ?? picks.model;
+      // MODELS only knows Claude; a Codex model is absent, so effort is kept and the provider decides what it accepts.
+      const effort = MODELS.find((m) => m.id === model)?.supportsEffort === false ? null : (turn.effort ?? picks.effort);
       reply.model = model;
       if (effort) reply.effort = effort;
 
@@ -469,7 +470,7 @@ export class ChatManager implements ChatService {
         const { prompt, briefHash } = await this.prompt(turn, project, scene, brandId, dirs, resume);
         if (turn.abort.signal.aborted) break; // stopped while the context was being gathered
         const agentTurn = { ...base, prompt, sessionId: chat.sessionId ?? randomUUID(), resume };
-        const outcome = await this.stream(turn, agentTurn, started, briefHash);
+        const outcome = await this.stream(turn, agentTurn, started, briefHash, settings.agent);
         if (outcome !== 'session-lost') break;
         chat.sessionId = null;
         chat.briefHash = null;
@@ -554,7 +555,13 @@ export class ChatManager implements ChatService {
   }
 
   /** Feeds one provider run into the reply. 'session-lost' when the resumed Claude Code session no longer exists. */
-  private async stream(turn: Turn, agentTurn: AgentTurn, started: number, briefHash: string): Promise<'ok' | 'session-lost'> {
+  private async stream(
+    turn: Turn,
+    agentTurn: AgentTurn,
+    started: number,
+    briefHash: string,
+    agent: AgentId,
+  ): Promise<'ok' | 'session-lost'> {
     const { reply, chat, projectId, key } = turn;
     for await (const ev of this.deps.provider.run(agentTurn)) {
       switch (ev.type) {
@@ -597,15 +604,19 @@ export class ChatManager implements ChatService {
           break;
         }
         case 'done':
-          if (agentTurn.resume && ev.isError && /no conversation found/i.test(ev.text)) return 'session-lost';
+          // Claude Code: "No conversation found"; Codex: a missing thread on resume.
+          const sessionLost = /no conversation found|session not found|thread .*not found|failed to resume/i;
+          if (agentTurn.resume && ev.isError && sessionLost.test(ev.text)) return 'session-lost';
           if (ev.sessionId) chat.sessionId = ev.sessionId;
           reply.durationMs = ev.durationMs || Date.now() - started;
-          if (ev.costUsd !== undefined) {
-            const totals = { costUsd: ev.costUsd, tokens: ev.tokens ?? NO_TOKENS };
-            const spent = addedSince(totals, agentTurn.resume ? chat.sessionUsage : undefined);
-            chat.sessionUsage = totals;
-            reply.costUsd = spent.costUsd;
-            await this.deps.usage.record({ at: nowIso(), kind: 'chat', projectId, chat: key, ...spent });
+          // Claude Code reports a running session total (subtract the previous run); Codex reports this turn's tokens, no cost.
+          if (ev.costUsd !== undefined || ev.tokens) {
+            const claude = agent === 'claude-code';
+            const totals = { costUsd: ev.costUsd ?? 0, tokens: ev.tokens ?? NO_TOKENS };
+            const spent = claude ? addedSince(totals, agentTurn.resume ? chat.sessionUsage : undefined) : totals;
+            if (claude) chat.sessionUsage = totals;
+            if (ev.costUsd !== undefined) reply.costUsd = spent.costUsd;
+            await this.deps.usage.record({ at: nowIso(), agent, kind: 'chat', projectId, chat: key, ...spent });
           }
           if (turn.abort.signal.aborted) {
             reply.status = 'stopped';

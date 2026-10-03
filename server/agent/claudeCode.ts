@@ -115,7 +115,12 @@ export class ClaudeCodeProvider implements AgentProvider {
       if (out.code !== 0) throw new Error(m().agent.claudeCode.exitCode(out.code));
       version = out.stdout.trim().split(/\s+/)[0] ?? '';
     } catch (e) {
-      return { ok: false, label: this.label, detail: m().agent.claudeCode.notFound(bin, (e as Error).message) };
+      return {
+        ok: false,
+        label: this.label,
+        reason: 'missing',
+        detail: m().agent.claudeCode.notFound(bin, (e as Error).message),
+      };
     }
     let auth: { loggedIn?: boolean; authMethod?: string; subscriptionType?: string };
     try {
@@ -124,7 +129,7 @@ export class ClaudeCodeProvider implements AgentProvider {
       return { ok: true, label: this.label, version }; // older CLIs have no `auth status --json`
     }
     if (auth.loggedIn === false && !(this.config.useApiKey && env.ANTHROPIC_API_KEY)) {
-      return { ok: false, label: this.label, version, detail: m().agent.claudeCode.notLoggedIn };
+      return { ok: false, label: this.label, version, reason: 'logged-out', detail: m().agent.claudeCode.notLoggedIn };
     }
     const how = [auth.authMethod, auth.subscriptionType].filter(Boolean).join(', ');
     return { ok: true, label: this.label, version, detail: how ? m().agent.claudeCode.loggedIn(how) : undefined };

@@ -42,8 +42,9 @@ export function isFormatId(value: unknown): value is FormatId {
   return typeof value === 'string' && value in FORMATS;
 }
 
-export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+// The superset across agents: Claude stops at 'max', Codex adds 'ultra'. Each model lists the efforts it actually offers.
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 export interface ModelSpec {
   id: string;
@@ -51,6 +52,9 @@ export interface ModelSpec {
   /** Haiku 4.5 rejects the effort parameter. */
   supportsEffort: boolean;
   hint: Record<Language, string>;
+  /** The efforts this model offers (varies per model for Codex). Filled by the server catalogue, read by the picker. */
+  efforts?: Effort[];
+  defaultEffort?: Effort;
 }
 
 /** A model id goes to the claude CLI as an argument value: no leading dash, no spaces. */
@@ -651,8 +655,8 @@ export interface UsageCount {
   tokens: UsageTokens;
 }
 
-/** One Claude Code run Cadence started: a line of .cadence/usage.jsonl. */
-export type UsageEntry = UsageCount & { at: string } & (
+/** One agent run Cadence started: a line of .cadence/usage.jsonl. Lines written before per-agent tracking are Claude Code's. */
+export type UsageEntry = UsageCount & { at: string; agent: AgentId } & (
     { kind: 'chat'; projectId: string; chat: ChatKey } | { kind: 'brand'; brandId: string }
   );
 
@@ -751,13 +755,33 @@ export interface CaptureRefInput {
 export const LANGUAGES = ['fr', 'en'] as const;
 export type Language = (typeof LANGUAGES)[number];
 
-export interface Settings {
+/** The coding agent that drives chats and brand builds, through its own CLI logged in on this computer. */
+export const AGENT_IDS = ['claude-code', 'codex', 'grok', 'gemini'] as const;
+export type AgentId = (typeof AGENT_IDS)[number];
+
+/** A model and effort choice per chat scope. */
+export interface AgentPrefs {
   sceneModel: string;
   sceneEffort: Effort;
   projectModel: string;
   projectEffort: Effort;
+}
+
+export interface Settings extends AgentPrefs {
   /** Interface language; null until the editor first opens and picks the browser's. */
   language: Language | null;
+  /** Which agent the chats and brand builds run on. One at a time. */
+  agent: AgentId;
+  /** Per-agent model/effort, so each assistant keeps its own. The flat fields above are Claude Code's. */
+  agentPrefs?: Partial<Record<AgentId, Partial<AgentPrefs>>>;
+}
+
+/** The model and effort for a chat scope, for the active agent: Claude Code uses the flat fields, others use agentPrefs. */
+export function agentPicks(settings: Settings, scope: 'scene' | 'project'): { model: string; effort: Effort } {
+  const base: Partial<AgentPrefs> = settings.agent === 'claude-code' ? settings : (settings.agentPrefs?.[settings.agent] ?? {});
+  return scope === 'scene'
+    ? { model: base.sceneModel ?? '', effort: base.sceneEffort ?? 'medium' }
+    : { model: base.projectModel ?? '', effort: base.projectEffort ?? 'medium' };
 }
 
 export interface AgentStatus {
@@ -765,6 +789,8 @@ export interface AgentStatus {
   label: string;
   version?: string;
   detail?: string;
+  /** Why it is not ok, so the Profile can offer the right install or login help. */
+  reason?: 'missing' | 'logged-out' | 'error';
 }
 
 /** GET /api/state */

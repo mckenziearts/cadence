@@ -8,16 +8,17 @@ import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { z } from 'zod';
 import {
+  AGENT_IDS,
   EFFORTS,
   FORMAT_IDS,
   ID_PATTERN,
   LANGUAGES,
   MODEL_ID_PATTERN,
-  MODELS,
   NETWORK_IDS,
   VISIBILITIES,
   chatKeyForScene,
   isFormatId,
+  type AgentId,
   type AgentStatus,
   type AppState,
   type ChatKey,
@@ -139,6 +140,7 @@ const schemas = {
     projectModel: modelSchema.optional(),
     projectEffort: effortSchema.optional(),
     language: z.enum(LANGUAGES).optional(),
+    agent: z.enum(AGENT_IDS).optional(),
   }),
 };
 
@@ -177,7 +179,7 @@ export function createApi(deps: ApiDeps) {
       settings: currentSettings,
       agent,
       frameOrigin: config.frameOrigin,
-      models: MODELS,
+      models: await deps.models(currentSettings.agent),
       brandBuilds: deps.brandBuilds.list(),
       networks,
     };
@@ -400,6 +402,25 @@ export function createApi(deps: ApiDeps) {
 
   // Accounts & publishing
   app.get('/git-accounts', async (c) => c.json(await deps.accounts.git()));
+  // Live CLI status for the Profile's agent cards, re-checked on each visit like /git-accounts.
+  app.get('/agent-accounts', async (c) => {
+    const fallback =
+      (label: string) =>
+      (e: Error): AgentStatus => ({ ok: false, label, reason: 'error', detail: e.message });
+    const [claudeCode, codex, grok, gemini] = await Promise.all([
+      deps.agentStatus().catch(fallback('Claude Code')),
+      deps.codexStatus().catch(fallback('Codex')),
+      deps.grokStatus().catch(fallback('Grok')),
+      deps.geminiStatus().catch(fallback('Gemini')),
+    ]);
+    return c.json({ 'claude-code': claudeCode, codex, grok, gemini } satisfies Record<AgentId, AgentStatus>);
+  });
+  // The model catalogue of an agent (default: the active one), so the chat picker follows the selected assistant.
+  app.get('/agent-models', async (c) => {
+    const q = c.req.query('agent');
+    const agent: AgentId = AGENT_IDS.includes(q as AgentId) ? (q as AgentId) : (await settings.get()).agent;
+    return c.json(await deps.models(agent));
+  });
   app.put('/networks/:network/app', async (c) => {
     await deps.accounts.saveApp(networkId(c), await body(c, schemas.networkApp));
     return c.json({ ok: true });
@@ -448,7 +469,11 @@ export function createApi(deps: ApiDeps) {
     return c.json({ ok: true });
   });
   app.get('/settings', async (c) => c.json(await settings.get()));
-  app.get('/usage', async (c) => c.json(await deps.usage.summary()));
+  app.get('/usage', async (c) => {
+    const q = c.req.query('agent');
+    const agent: AgentId = AGENT_IDS.includes(q as AgentId) ? (q as AgentId) : (await settings.get()).agent;
+    return c.json(await deps.usage.summary(agent));
+  });
   app.put('/settings', async (c) => {
     const before = (await settings.get()).language;
     const next = await settings.update(await body(c, schemas.settings));

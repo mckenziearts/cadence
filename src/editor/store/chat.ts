@@ -2,12 +2,15 @@
 // reply, `chat-delta` = its text).
 import { api, ignore } from '../api';
 import {
+  agentPicks,
   sceneIdFromChatKey,
   type ChatKey,
   type ChatMessage,
   type ChatState,
   type Effort,
+  type ModelSpec,
   type Playhead,
+  type Settings,
 } from '../../shared/types';
 import { clamp, currentScene, get, set, type ChatKind } from '.';
 import { loadCost, selectScene } from './project';
@@ -57,14 +60,23 @@ export function playheadFor(key: ChatKey): Playhead {
   return { sceneId: null, t: round(s.time), format: s.format };
 }
 
+/** The model and effort for a chat scope: the active agent's stored choice, or the catalogue's first model as a default. */
+export function resolvePick(
+  settings: Settings | undefined,
+  models: ModelSpec[],
+  scope: ChatKind,
+): { model: string; effort: Effort } {
+  const base = settings ? agentPicks(settings, scope) : { model: '', effort: 'medium' as Effort };
+  const model = base.model && models.some((m) => m.id === base.model) ? base.model : (models[0]?.id ?? base.model);
+  const spec = models.find((m) => m.id === model);
+  const effort =
+    spec?.efforts && !spec.efforts.includes(base.effort) ? (spec.defaultEffort ?? spec.efforts[0] ?? base.effort) : base.effort;
+  return { model, effort };
+}
+
 export function modelChoice(kind: ChatKind): { model: string; effort: Effort } {
   const s = get();
-  const pick = s.picks[kind];
-  if (pick) return pick;
-  const settings = s.app?.settings;
-  return kind === 'scene'
-    ? { model: settings?.sceneModel ?? 'claude-opus-5-5', effort: settings?.sceneEffort ?? 'medium' }
-    : { model: settings?.projectModel ?? 'claude-opus-5-5', effort: settings?.projectEffort ?? 'high' };
+  return s.picks[kind] ?? resolvePick(s.app?.settings, s.app?.models ?? [], kind);
 }
 
 export async function sendMessage(key: ChatKey, text: string): Promise<boolean> {

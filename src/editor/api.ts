@@ -1,6 +1,8 @@
 // Typed client of the editor API. Mutating requests carry the per-start token the server put in the page; every
 // failure becomes a toast in the interface language (the server already answers `{ error }` in it) and then rejects.
 import type {
+  AgentId,
+  AgentStatus,
   AppState,
   AssetInfo,
   BrandBuild,
@@ -12,6 +14,7 @@ import type {
   FormatId,
   GitAccount,
   GitHost,
+  ModelSpec,
   MusicAnalysis,
   MusicSettingsPatch,
   NetworkId,
@@ -186,7 +189,9 @@ export const api = {
 
   /** Quiet: the Profile page shows the failure on its cards. */
   gitAccounts: () => get<Record<GitHost, GitAccount>>('/api/git-accounts', { quiet: true }),
-  usage: () => get<UsageSummary>('/api/usage'),
+  agentAccounts: () => get<Record<AgentId, AgentStatus>>('/api/agent-accounts', { quiet: true }),
+  agentModels: (agent: AgentId) => get<ModelSpec[]>(`/api/agent-models?agent=${agent}`, { quiet: true }),
+  usage: (agent: AgentId) => get<UsageSummary>(`/api/usage?agent=${agent}`, { quiet: true }),
   saveNetworkApp: (id: NetworkId, app: { clientId: string; clientSecret: string }) =>
     put<{ ok: true }>(`/api/networks/${id}/app`, app),
   connectNetwork: (id: NetworkId) => post<{ url: string }>(`/api/networks/${id}/connect`),

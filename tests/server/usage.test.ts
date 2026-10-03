@@ -25,14 +25,51 @@ test('FileUsageLog sums each kind from its first line and skips the lines it can
   const stateDir = path.join(root, '.cadence');
   const log = new FileUsageLog({ stateDir } as CadenceConfig);
 
-  await log.record({ at: '2026-10-01T09:00:00.000Z', kind: 'brand', brandId: 'acme', ...FIRST });
+  await log.record({ at: '2026-10-01T09:00:00.000Z', agent: 'claude-code', kind: 'brand', brandId: 'acme', ...FIRST });
   await fs.appendFile(path.join(stateDir, 'usage.jsonl'), 'pas du json\n{"kind":"chat","costUsd":1}\n{"at":"2026-10');
   await fs.appendFile(path.join(stateDir, 'usage.jsonl'), '\n');
-  await log.record({ at: '2026-10-01T10:00:00.000Z', kind: 'chat', projectId: 'demo', chat: 'project', ...SECOND });
+  await log.record({
+    at: '2026-10-01T10:00:00.000Z',
+    agent: 'codex',
+    kind: 'chat',
+    projectId: 'demo',
+    chat: 'project',
+    ...SECOND,
+  });
 
+  // No agent filter: every agent, each kind summed from its first line.
   assert.deepEqual(await log.summary(), {
     since: '2026-10-01T09:00:00.000Z',
     chats: { runs: 1, ...SECOND },
     brands: { runs: 1, ...FIRST },
+  });
+});
+
+test('FileUsageLog.summary(agent) keeps that agent only; lines written before per-agent tracking are Claude Code', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-usage-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, '.cadence');
+  const file = path.join(stateDir, 'usage.jsonl');
+  const log = new FileUsageLog({ stateDir } as CadenceConfig);
+  const empty = { runs: 0, costUsd: 0, tokens: NO_TOKENS };
+
+  await fs.mkdir(stateDir, { recursive: true });
+  // A legacy line with no `agent`: it counts as Claude Code.
+  const legacy = { at: '2026-10-01T08:00:00.000Z', kind: 'chat', projectId: 'demo', chat: 'project', ...FIRST };
+  await fs.appendFile(file, `${JSON.stringify(legacy)}\n`);
+  await log.record({
+    at: '2026-10-01T10:00:00.000Z',
+    agent: 'codex',
+    kind: 'chat',
+    projectId: 'demo',
+    chat: 'project',
+    ...SECOND,
+  });
+
+  assert.deepEqual(await log.summary('claude-code'), { since: legacy.at, chats: { runs: 1, ...FIRST }, brands: empty });
+  assert.deepEqual(await log.summary('codex'), {
+    since: '2026-10-01T10:00:00.000Z',
+    chats: { runs: 1, ...SECOND },
+    brands: empty,
   });
 });

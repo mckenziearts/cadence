@@ -147,6 +147,7 @@ export default {
         `theme.css : ${spec} n’est pas installé dans Cadence (copiez la police dans fonts/ à la place)`,
       themeFile: (file: string) => `theme.css : ${file} introuvable`,
       fontNotLoaded: (where: string, name: string) => `${where} nomme la police « ${name} », que theme.css ne charge jamais`,
+      cssCodeExec: (file: string) => `${file} : @plugin et @config sont interdits (ils exécutent du code au build)`,
     },
     fonts: {
       invalidName: (family: string) => `Nom de police invalide : ${family}`,
