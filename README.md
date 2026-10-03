@@ -19,6 +19,10 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
+<p align="center">
+  <img src="art/screenshot/editor.png" width="820" alt="The Cadence editor: preview, scene timeline and the chat that edits each scene">
+</p>
+
 A video is a sequence of scenes, and each scene is a React component that draws one frame for a time `t`. You describe
 what you want in a chat, down to the millisecond. Claude edits the scene, renders frames to check its work, and the
 preview updates. The music sets the grid: cuts and highlights land on beats and bars. Each scene can start on the exact
