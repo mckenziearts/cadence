@@ -21,5 +21,6 @@ export default {
     high: 'High effort',
     xhigh: 'Very high effort',
     max: 'Max effort',
+    ultra: 'Ultra effort',
   },
 } satisfies typeof fr;

@@ -2,7 +2,7 @@
 // publications, cost).
 import { ApiError, api, ignore } from '../api';
 import { browserLanguage, t } from '../i18n';
-import type { CreateSceneInput, FormatId, ProjectState, SeamResult } from '../../shared/types';
+import type { AgentId, CreateSceneInput, FormatId, ProjectState, SeamResult } from '../../shared/types';
 import { seamTone } from '../lib/format';
 import { clamp, currentScene, get, previewDuration, sceneAt, set, useStore, type PreviewMode } from '.';
 import { toast } from './ui';
@@ -24,6 +24,13 @@ export async function loadApp(): Promise<void> {
     set({ appError: (e as Error).message });
     throw e;
   }
+}
+
+/** Switch the assistant that drives chats and brand builds. A new agent has its own catalogue, so the session picks drop. */
+export async function setAgent(id: AgentId): Promise<void> {
+  const settings = await api.saveSettings({ agent: id });
+  const models = await api.agentModels(id).catch(() => undefined);
+  set((s) => ({ app: s.app && { ...s.app, settings, ...(models ? { models } : {}) }, picks: {} }));
 }
 
 /** Hash of the Profile page: a project id never starts with @. */

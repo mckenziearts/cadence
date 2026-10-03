@@ -61,6 +61,12 @@ export function isInside(dir: string, file: string): boolean {
   return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+// Tailwind loads and runs a JS/TS module in this process when it compiles a CSS file that carries `@plugin` or
+// `@config`. Scenes, components, brands and templates are written by the agent and never need either, so Cadence
+// refuses both before Tailwind sees the CSS. Matched on raw text (not after stripping comments): rejecting a
+// commented-out directive is safe, missing a real one is not.
+export const CSS_CODE_EXEC = /@(?:plugin|config)(?![\w-])/;
+
 /** "Mon super Projet !" becomes "mon-super-projet" (ASCII, kebab-case, max 64 chars, valid ID_PATTERN). */
 export function slugify(input: string, fallback = 'item'): string {
   const slug = input

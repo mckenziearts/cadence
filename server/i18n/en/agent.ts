@@ -66,6 +66,24 @@ export default {
     returnedError: (kind: string, text: string) =>
       text ? `Claude Code returned an error${kind}: ${text}` : `Claude Code returned an error${kind}.`,
   },
+  codex: {
+    notLoggedIn: 'Codex is not logged in: open a terminal, run "codex login", then try again.',
+    exitCode: (code: number) => `exit code ${code}`,
+    notFound: (bin: string, error: string) => `Codex not found ("${bin}"): install it and log in, or set CODEX_PATH. (${error})`,
+    loggedIn: 'Logged in to ChatGPT',
+    spawnFailed: (bin: string, error: string) => `Could not start Codex ("${bin}"): ${error}. Install Codex or set CODEX_PATH.`,
+    stopped: 'Stopped.',
+    crashed: (code: number | null, tail: string) =>
+      `Codex stopped unexpectedly${code === null ? '' : ` (code ${code})`}${tail ? `:\n${tail}` : '.'}`,
+  },
+  grok: {
+    notFound: (bin: string, error: string) => `Grok not found ("${bin}"): install it, or set GROK_PATH. (${error})`,
+    installed: 'Installed, connect it',
+  },
+  gemini: {
+    notFound: (bin: string, error: string) => `Gemini not found ("${bin}"): install it, or set GEMINI_PATH. (${error})`,
+    installed: 'Installed, connect it',
+  },
   mcpServer: {
     method: 'Method not allowed: the Cadence MCP only accepts POST.',
     browser: 'Request refused: the Cadence MCP does not accept calls from a browser.',

@@ -3,6 +3,7 @@ import { Check, FileText, LayoutTemplate, Plus, Trash2 } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
 import { FORMAT_IDS, type FormatId } from '../../shared/types';
 import { api, ignore } from '../api';
+import { AgentPicker } from '../components/AgentPicker';
 import { BrandMark } from '../components/TopBar';
 import {
   BeatPills,
@@ -236,6 +237,10 @@ export function NewProjectModal({ brand: initialBrand }: { brand?: string | null
                 />
               ))}
           </div>
+        </section>
+        <section className="space-y-2">
+          <SectionTitle>{t.profile.agents.title}</SectionTitle>
+          <AgentPicker />
         </section>
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-6">
           <section className="space-y-2">

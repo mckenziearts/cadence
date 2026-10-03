@@ -15,6 +15,7 @@ export default {
     model: (value: unknown) => `Modèle invalide : ${value}`,
     effort: (value: unknown) => `Niveau d'effort invalide : ${value}`,
     language: (value: unknown) => `Langue invalide : ${value}`,
+    agent: (value: unknown) => `Assistant invalide : ${value}`,
   },
   usage: {
     notSaved: '[cadence] Consommation non enregistrée :',

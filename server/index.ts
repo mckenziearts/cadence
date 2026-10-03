@@ -6,6 +6,9 @@ import { FileAccountService } from './accounts/accounts';
 import { Publisher } from './accounts/publish';
 import { ChatManager } from './agent/chat';
 import { ClaudeCodeProvider } from './agent/claudeCode';
+import { geminiStatus, grokStatus } from './agent/cliAgents';
+import { CodexProvider, codexModels } from './agent/codex';
+import { RoutingProvider } from './agent/router';
 import { writeProjectsGuide } from './agent/guide';
 import { createApi } from './api';
 import { BrandBuilder } from './brands/build';
@@ -14,7 +17,7 @@ import { PlaywrightCapture } from './capture/capture';
 import { FfmpegRenderService } from './capture/render';
 import { PixelSeamService } from './capture/seams';
 import { loadConfig } from './config';
-import type { GitHost, NetworkId } from '../src/shared/types';
+import { MODELS, type AgentId, type Effort, type GitHost, type ModelSpec, type NetworkId } from '../src/shared/types';
 import type { AgentProvider, BrandSource, CadenceConfig, Network, SpeechEngine } from './contracts';
 import { builtEditor, devEditor } from './editor';
 import { createFrameHandler } from './frames/frameServer';
@@ -141,7 +144,18 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const versions = new FileVersionStore(store);
     const assets = new FileAssetStore(store, capture);
     const tokens = new McpTokens(config);
-    const provider = customProvider ?? new ClaudeCodeProvider(config);
+    const claudeCode = new ClaudeCodeProvider(config);
+    const codex = new CodexProvider(config);
+    // One agent at a time: the Profile picks it, the router sends each turn to it (Claude Code when nothing is selected).
+    const provider = customProvider ?? new RoutingProvider({ 'claude-code': claudeCode, codex }, settings, 'claude-code');
+    const claudeEfforts: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+    const claudeCatalog: ModelSpec[] = MODELS.map((model) => ({
+      ...model,
+      efforts: model.supportsEffort ? claudeEfforts : [],
+      defaultEffort: model.supportsEffort ? config.defaultEffort : undefined,
+    }));
+    const models = (agent: AgentId): Promise<ModelSpec[]> =>
+      agent === 'codex' ? codexModels(config) : Promise.resolve(claudeCatalog);
     const chats = new ChatManager({
       config,
       store,
@@ -216,6 +230,10 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       accounts,
       publisher,
       agentStatus: () => provider.status(),
+      codexStatus: () => codex.status(),
+      grokStatus: () => grokStatus(config),
+      geminiStatus: () => geminiStatus(config),
+      models,
       diagnose,
     });
     const mcp = createMcpHandler({

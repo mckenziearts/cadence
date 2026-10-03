@@ -4,7 +4,15 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { MODELS, type BrandBuild, type GitHost, type StartBrandBuildInput, type UsageCount } from '../../src/shared/types';
+import {
+  MODELS,
+  agentPicks,
+  type AgentId,
+  type BrandBuild,
+  type GitHost,
+  type StartBrandBuildInput,
+  type UsageCount,
+} from '../../src/shared/types';
 import { activityLabel } from '../agent/chat';
 import { buildBrandGuide } from '../agent/guide';
 import type {
@@ -50,6 +58,8 @@ interface State {
   done: Promise<BrandBuild>;
   settle: (build: BrandBuild) => void;
   lastEmit: number;
+  /** The agent that runs this build (set when its turn is built); its usage is recorded under it. */
+  agent: AgentId;
   /** Running totals of the build's Claude Code session, as its last run reported them. */
   sessionUsage?: UsageCount;
 }
@@ -95,7 +105,7 @@ export class BrandBuilder implements BrandBuildService {
       costUsd: null,
       createdAt: new Date().toISOString(),
     };
-    const state: State = { build, repo, abort: new AbortController(), done, settle, lastEmit: 0 };
+    const state: State = { build, repo, abort: new AbortController(), done, settle, lastEmit: 0, agent: 'claude-code' };
     this.states.set(build.id, state);
     this.queue.push(state);
     this.emit(state, true);
@@ -246,8 +256,10 @@ export class BrandBuilder implements BrandBuildService {
   ): Promise<Omit<AgentTurn, 'prompt' | 'resume'>> {
     const { config } = this.deps;
     const settings = await this.deps.settings.get();
-    const model = settings.projectModel;
-    const effort = MODELS.find((m) => m.id === model)?.supportsEffort === false ? null : settings.projectEffort;
+    state.agent = settings.agent;
+    const picks = agentPicks(settings, 'project');
+    const model = picks.model;
+    const effort = MODELS.find((m) => m.id === model)?.supportsEffort === false ? null : picks.effort;
     const shared = path.join(config.root, 'src', 'shared');
     const rule = (tool: string, target: string) => `${tool}(//${target.replace(/^\/+/, '')})`;
     const pkg = JSON.parse(await fs.readFile(path.join(config.root, 'package.json'), 'utf8')) as {
@@ -305,12 +317,22 @@ export class BrandBuilder implements BrandBuildService {
         }
         this.patch(state, { activity: label });
       } else if (event.type === 'done') {
-        if (event.costUsd !== undefined) {
-          const totals = { costUsd: event.costUsd, tokens: event.tokens ?? NO_TOKENS };
-          const spent = addedSince(totals, turn.resume ? state.sessionUsage : undefined);
-          state.sessionUsage = totals;
-          state.build.costUsd = (state.build.costUsd ?? 0) + spent.costUsd;
-          await this.deps.usage.record({ at: nowIso(), kind: 'brand', brandId: state.build.brandId, ...spent });
+        // Claude Code reports a running session total (subtract the previous run); Codex reports this run's tokens, no cost.
+        if (event.costUsd !== undefined || event.tokens) {
+          const claude = state.agent === 'claude-code';
+          const totals = { costUsd: event.costUsd ?? 0, tokens: event.tokens ?? NO_TOKENS };
+          const spent = claude ? addedSince(totals, turn.resume ? state.sessionUsage : undefined) : totals;
+          if (claude) {
+            state.sessionUsage = totals;
+            state.build.costUsd = (state.build.costUsd ?? 0) + spent.costUsd;
+          }
+          await this.deps.usage.record({
+            at: nowIso(),
+            agent: state.agent,
+            kind: 'brand',
+            brandId: state.build.brandId,
+            ...spent,
+          });
         }
         if (event.subtype === 'aborted' || state.abort.signal.aborted) throw new BuildCancelled();
         if (event.isError) throw new Error(event.text || m().media.brands.build.unfinished);

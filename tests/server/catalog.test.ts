@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
+import { agentPicks } from '../../src/shared/types';
 import { loadConfig } from '../../server/config';
 import { SseHub } from '../../server/hub';
 import { language } from '../../server/i18n';
@@ -103,6 +104,8 @@ test('settings: defaults from the config, validated updates, bad stored values i
     projectModel: 'claude-opus-5-5',
     projectEffort: 'high',
     language: null,
+    agent: 'claude-code',
+    agentPrefs: {},
   });
   const next = await settings.update({ sceneModel: 'claude-sonnet-5-5', projectEffort: 'max' });
   assert.equal(next.sceneModel, 'claude-sonnet-5-5');
@@ -112,6 +115,23 @@ test('settings: defaults from the config, validated updates, bad stored values i
   await fs.writeFile(path.join(t.config.stateDir, 'settings.json'), JSON.stringify({ sceneModel: 42, projectEffort: 'max' }));
   assert.equal((await settings.get()).sceneModel, 'claude-opus-5-5');
   assert.equal((await settings.get()).projectEffort, 'max');
+  assert.equal((await settings.update({ agent: 'codex' })).agent, 'codex');
+  assert.equal((await settings.update({ agent: 'grok' })).agent, 'grok');
+  await rejectsWithStatus(settings.update({ agent: 'copilot' as never }), 400);
+  assert.equal((await settings.get()).agent, 'grok');
+});
+
+test('settings: model and effort are remembered per agent', async () => {
+  const settings = new FileSettingsStore({ ...t.config, defaultModel: 'claude-opus-5-5', defaultEffort: 'medium' });
+  await settings.update({ sceneModel: 'claude-sonnet-5-5', sceneEffort: 'high' });
+  // Codex's choice goes to agentPrefs; Claude Code's flat fields stay put.
+  await settings.update({ agent: 'codex' });
+  await settings.update({ projectModel: 'gpt-6-sol', projectEffort: 'ultra' });
+  const s = await settings.get();
+  assert.equal(s.sceneModel, 'claude-sonnet-5-5');
+  assert.deepEqual(s.agentPrefs?.codex, { projectModel: 'gpt-6-sol', projectEffort: 'ultra' });
+  assert.deepEqual(agentPicks(s, 'project'), { model: 'gpt-6-sol', effort: 'ultra' });
+  assert.deepEqual(agentPicks({ ...s, agent: 'claude-code' }, 'scene'), { model: 'claude-sonnet-5-5', effort: 'high' });
 });
 
 test('settings: the language is validated, kept, and the server speaks it at once', async () => {

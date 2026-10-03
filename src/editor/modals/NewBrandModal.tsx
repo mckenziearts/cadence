@@ -6,6 +6,7 @@ import { Check, Lock, Search, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { BrandBuild, GitHost, RepoListing, RepoSummary } from '../../shared/types';
 import { api, ignore } from '../api';
+import { AgentPicker } from '../components/AgentPicker';
 import { GIT_LOGOS } from '../components/logos';
 import { BeatPills, Button, ConfirmButton, Field, Kbd, Modal, Segmented, Spinner, fieldBase } from '../components/ui';
 import { useT } from '../i18n';
@@ -188,6 +189,10 @@ function PickRepo({ onStarted }: { onStarted: (build: BrandBuild) => void }) {
             className={clsx(fieldBase, 'h-9 w-full text-sm')}
           />
         </Field>
+        <section className="space-y-2">
+          <h3 className="display-caps text-[15px] text-ink">{t.profile.agents.title}</h3>
+          <AgentPicker />
+        </section>
       </form>
     </Modal>
   );

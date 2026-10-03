@@ -30,6 +30,10 @@ export default {
         lofi: { style: 'Lo-fi hip-hop', use: 'Tutorial, calm demo' },
         nappe: { style: 'Ambient', use: 'Intro, explainer' },
         sprint: { style: 'Drum & bass', use: 'Fast promo' },
+        elan: { style: 'Corporate pop', use: 'Pitch, startup' },
+        titan: { style: 'Epic cinematic', use: 'Trailer, big launch' },
+        bitume: { style: 'Trap', use: 'Fashion, streetwear' },
+        prisme: { style: 'Future bass', use: 'App, social media' },
       },
     },
     track: {

@@ -66,6 +66,27 @@ export default {
     returnedError: (kind: string, text: string) =>
       text ? `Claude Code a renvoyé une erreur${kind} : ${text}` : `Claude Code a renvoyé une erreur${kind}.`,
   },
+  codex: {
+    notLoggedIn: 'Codex n’est pas connecté : ouvrez un terminal, lancez « codex login », puis réessayez.',
+    exitCode: (code: number) => `code de sortie ${code}`,
+    notFound: (bin: string, error: string) =>
+      `Codex est introuvable (« ${bin} ») : installez-le et connectez-vous, ou réglez CODEX_PATH. (${error})`,
+    loggedIn: 'Connecté à ChatGPT',
+    spawnFailed: (bin: string, error: string) =>
+      `Impossible de lancer Codex (« ${bin} ») : ${error}. Installez Codex ou réglez CODEX_PATH.`,
+    stopped: 'Arrêté.',
+    crashed: (code: number | null, tail: string) =>
+      `Codex s’est arrêté de façon inattendue${code === null ? '' : ` (code ${code})`}${tail ? ` :\n${tail}` : '.'}`,
+  },
+  grok: {
+    notFound: (bin: string, error: string) => `Grok est introuvable (« ${bin} ») : installez-le, ou réglez GROK_PATH. (${error})`,
+    installed: 'Installé, à connecter',
+  },
+  gemini: {
+    notFound: (bin: string, error: string) =>
+      `Gemini est introuvable (« ${bin} ») : installez-le, ou réglez GEMINI_PATH. (${error})`,
+    installed: 'Installé, à connecter',
+  },
   mcpServer: {
     method: 'Méthode non autorisée : le MCP de Cadence n’accepte que POST.',
     browser: 'Requête refusée : le MCP de Cadence n’accepte pas les appels venant d’un navigateur.',

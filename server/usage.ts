@@ -1,6 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { UsageCount, UsageEntry, UsageSummary, UsageTokens, UsageTotals } from '../src/shared/types';
+import {
+  AGENT_IDS,
+  type AgentId,
+  type UsageCount,
+  type UsageEntry,
+  type UsageSummary,
+  type UsageTokens,
+  type UsageTotals,
+} from '../src/shared/types';
 import type { CadenceConfig, UsageLog } from './contracts';
 import { m } from './i18n';
 
@@ -37,13 +45,14 @@ export class FileUsageLog implements UsageLog {
     }
   }
 
-  async summary(): Promise<UsageSummary> {
+  async summary(agent?: AgentId): Promise<UsageSummary> {
     const text = await fs.readFile(this.file, 'utf8').catch(() => '');
     const totals = { chat: emptyTotals(), brand: emptyTotals() };
     let since: string | null = null;
     for (const line of text.split('\n')) {
       const entry = parseLine(line);
       if (!entry) continue;
+      if (agent && entry.agent !== agent) continue;
       since ??= entry.at;
       const sum = totals[entry.kind];
       sum.runs += 1;
@@ -63,9 +72,12 @@ function parseLine(line: string): UsageEntry | null {
   try {
     const entry = JSON.parse(line) as UsageEntry;
     const known = entry.kind === 'chat' || entry.kind === 'brand';
-    return known && typeof entry.costUsd === 'number' && TOKEN_KEYS.every((key) => typeof entry.tokens?.[key] === 'number')
-      ? entry
-      : null;
+    if (!known || typeof entry.costUsd !== 'number' || !TOKEN_KEYS.every((key) => typeof entry.tokens?.[key] === 'number')) {
+      return null;
+    }
+    // Lines written before usage was tracked per agent are Claude Code's.
+    if (!AGENT_IDS.includes(entry.agent)) entry.agent = 'claude-code';
+    return entry;
   } catch {
     return null;
   }

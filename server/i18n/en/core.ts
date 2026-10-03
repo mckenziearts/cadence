@@ -17,6 +17,7 @@ export default {
     model: (value: unknown) => `Invalid model: ${value}`,
     effort: (value: unknown) => `Invalid effort level: ${value}`,
     language: (value: unknown) => `Invalid language: ${value}`,
+    agent: (value: unknown) => `Invalid agent: ${value}`,
   },
   usage: {
     notSaved: '[cadence] Usage not recorded:',

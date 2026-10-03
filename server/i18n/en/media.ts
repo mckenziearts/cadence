@@ -145,6 +145,7 @@ export default {
       notInstalled: (spec: string) => `theme.css: ${spec} is not installed in Cadence (vendor the font in fonts/ instead)`,
       themeFile: (file: string) => `theme.css: ${file} not found`,
       fontNotLoaded: (where: string, name: string) => `${where} names the font "${name}", which theme.css never loads`,
+      cssCodeExec: (file: string) => `${file}: @plugin and @config are not allowed (they run code at build time)`,
     },
     fonts: {
       invalidName: (family: string) => `Invalid font name: ${family}`,

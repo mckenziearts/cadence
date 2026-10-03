@@ -26,10 +26,10 @@ export default {
     },
     playheadAt: (time: string) => `at ${time}`,
     queued: 'Queued',
-    working: 'Claude is working...',
-    writing: 'Claude is writing its answer...',
-    thinking: 'Claude is thinking...',
-    failed: 'Claude stopped on an error.',
+    working: 'Working...',
+    writing: 'Writing the answer...',
+    thinking: 'Thinking...',
+    failed: 'The agent stopped on an error.',
     stopped: 'Stopped',
     showVersion: 'Show this version',
     activity: {
@@ -43,7 +43,7 @@ export default {
     },
     reasoning: 'Reasoning',
     composer: {
-      waiting: 'Waiting: Claude is already working on this project',
+      waiting: 'Waiting: a turn is already running on this project',
       label: { scene: 'Message for the scene', project: 'Message for the project' },
       placeholder: {
         scene: 'What should change? e.g. "Hold the title one second longer, then slide the card in from the right."',

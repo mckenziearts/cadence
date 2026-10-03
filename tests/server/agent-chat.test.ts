@@ -41,6 +41,7 @@ const SETTINGS: Settings = {
   projectModel: 'claude-sonnet-5-5',
   projectEffort: 'medium',
   language: 'fr',
+  agent: 'claude-code',
 };
 
 function makeProject(dir: string, ids: string[]): ProjectState {
