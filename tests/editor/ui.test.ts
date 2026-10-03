@@ -83,9 +83,12 @@ const stateDir = path.join(os.tmpdir(), `cadence-e2e-state-${process.pid}`);
 
 /** Piper as the voice-over tests need it: one second per sentence, never the real program. */
 const spoken: string[][] = [];
+/** Set, Piper fails with this message. */
+let speechError: string | null = null;
 const speech: SpeechEngine = {
   check: async () => ({ ok: true }),
   speak: async ({ sentences, files }) => {
+    if (speechError) throw new Error(speechError);
     spoken.push(sentences);
     for (const file of files) await writeFile(file, writeWav({ sampleRate: 16000, samples: new Int16Array(16000).fill(800) }));
   },
@@ -492,6 +495,54 @@ describe('editor', () => {
       await text.fill('');
       await text.blur();
       await page.locator('audio[src*="/voice-over/audio"]').waitFor({ state: 'detached' });
+      await page.context().close();
+    },
+  );
+
+  it(
+    'keeps a voice-over failure in Voix after a reload, generates the scene again, and listens from its voice start',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-v`;
+      await api('POST', '/api/projects', { name: 'Voix', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Parole', duration: 3 });
+      speechError = 'Piper a échoué (code 1)';
+      const page = await open(id);
+      await panel(page, 'Voix');
+      await page.getByRole('textbox', { name: 'Voix off de « Parole »' }).fill('Bonjour.');
+      await page.getByRole('textbox', { name: 'Voix off de « Parole »' }).blur();
+      const start = page.getByRole('textbox', { name: 'Départ de la voix dans « Parole », en secondes' });
+      await start.fill('0,5');
+      await start.press('Enter');
+      const generate = page.getByRole('button', { name: 'Générer la voix off de « Parole »' });
+      await generate.waitFor({ timeout: 30_000 });
+      await page.getByRole('alert').filter({ hasText: 'Piper a échoué (code 1)' }).waitFor();
+
+      await page.reload();
+      await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
+      await panel(page, 'Voix');
+      await page.getByRole('alert').filter({ hasText: 'Piper a échoué (code 1)' }).waitFor({ timeout: 10_000 });
+      speechError = null;
+      await generate.click();
+      await page.getByText(`1${NBSP}phrase, de 0,50${NBSP}s à 1,50${NBSP}s`).waitFor({ timeout: 30_000 });
+      assert.equal(await page.getByRole('alert').filter({ hasText: 'Piper a échoué' }).count(), 0);
+
+      // By the right edge of the window, the Listen tooltip stays inside it, on one line.
+      const listen = page.getByRole('button', { name: 'Écouter la voix off de « Parole »' });
+      await listen.hover();
+      const tip = (await page.getByRole('tooltip').boundingBox())!;
+      assert.ok(tip.x >= 0 && tip.x + tip.width <= 1440 && tip.height < 30, `tooltip ${JSON.stringify(tip)}`);
+      // Muted, Listen turns the sound back on: it is there to hear the voice.
+      await page.getByRole('button', { name: 'Couper le son' }).click();
+      await listen.click();
+      await page.getByRole('button', { name: 'Couper le son' }).waitFor({ timeout: 5_000 });
+      const pause = page.getByRole('button', { name: 'Pause', exact: true });
+      await pause.waitFor({ timeout: 10_000 });
+      await pause.click();
+      assert.equal(new URL(page.url()).hash, `#/${id}/${scene.id}`);
+      const at = await page.getByRole('slider', { name: 'Tête de lecture' }).getAttribute('aria-valuetext');
+      const t = Number(at!.replace(',', '.').replace(/[^\d.]/g, ''));
+      assert.ok(t >= 0.5 && t < 1.5, `the playhead starts at the voice: ${at}`);
       await page.context().close();
     },
   );

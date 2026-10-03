@@ -26,6 +26,8 @@ import { readWav, wavSeconds, writeWav } from './wav';
 
 /** Typing in the editor saves often: speak once the text rests. */
 const SYNC_DELAY_MS = 400;
+/** How long the gain of an overlap that would clip takes to come back to 1 on each side. */
+const OVERLAP_RAMP_S = 0.02;
 
 interface Sentence {
   text: string;
@@ -47,9 +49,12 @@ export function splitSentences(text: string, language: 'fr' | 'en'): string[] {
 export class LocalVoiceOverService implements VoiceOverService {
   private seconds = new Map<string, { size: number; seconds: number }>();
   private mutex = new KeyedMutex();
-  private timers = new Map<string, NodeJS.Timeout>();
-  /** Per project, the sentences Piper last failed on: retried only once they change, or when someone asks. */
-  private failed = new Map<string, string>();
+  /** Per project, the pending automatic sync and the missing sentences it was set for. */
+  private timers = new Map<string, { timer: NodeJS.Timeout; key: string }>();
+  /** Projects being synced: reading them neither schedules another try nor shows the last failure. */
+  private syncing = new Set<string>();
+  /** Per project, the sentences Piper last failed on and why: retried only once they change, or when someone asks. */
+  private failed = new Map<string, { key: string; error: string }>();
   private downloads = new Map<string, Promise<void>>();
   /** Per project, which lines the track.wav on disk holds. */
   private built = new Map<string, string>();
@@ -88,19 +93,30 @@ export class LocalVoiceOverService implements VoiceOverService {
     const planned = await this.plan(id, voiceOver, scenes);
     const lines = place(planned);
     const missing = missingKey(planned);
-    if (missing && this.failed.get(id) !== missing) this.schedule(id);
+    const failure = this.failed.get(id);
+    const syncing = this.syncing.has(id);
+    // The editor and the frames read the project at any time: once per set of missing sentences, never during a sync,
+    // and a read never pushes back the try already set.
+    if (missing && !syncing && failure?.key !== missing && this.timers.get(id)?.key !== missing) this.schedule(id, missing);
     return {
       voiceOver,
       voiceOverUrl: lines.length ? `/api/projects/${id}/voice-over/audio?v=${trackKey(lines)}` : null,
       voiceOverLines: lines.map(({ file: _file, ...line }) => line),
       voiceOverPending: planned.filter((p) => p.sentences.some((s) => s.seconds === null)).map((p) => p.scene.id),
+      voiceOverError: missing && !syncing && failure?.key === missing ? failure.error : null,
     };
   };
 
   async sync(projectId: string): Promise<void> {
     this.unschedule(projectId);
-    // Its own store.get() schedules the missing sentences again: drop that, or a failure would retry on its own.
-    await this.mutex.run(projectId, () => this.speakMissing(projectId).finally(() => this.unschedule(projectId)));
+    await this.mutex.run(projectId, async () => {
+      this.syncing.add(projectId);
+      try {
+        await this.speakMissing(projectId);
+      } finally {
+        this.syncing.delete(projectId);
+      }
+    });
   }
 
   private async speakMissing(projectId: string): Promise<void> {
@@ -126,8 +142,9 @@ export class LocalVoiceOverService implements VoiceOverService {
       });
       this.failed.delete(projectId);
     } catch (e) {
-      this.failed.set(projectId, missingKey(planned));
-      hub.send({ type: 'voice-over', projectId, status: 'error', error: (e as Error).message });
+      const error = (e as Error).message;
+      this.failed.set(projectId, { key: missingKey(planned), error });
+      hub.send({ type: 'voice-over', projectId, status: 'error', error });
       throw e;
     }
     hub.send({ type: 'voice-over', projectId, status: 'ready' });
@@ -145,15 +162,19 @@ export class LocalVoiceOverService implements VoiceOverService {
       if (this.built.get(projectId) === key && (await pathExists(file))) return;
       const sentences = await Promise.all(lines.map((line) => fs.readFile(line.file).then(readWav)));
       const rate = sentences[0].sampleRate;
-      const samples = new Int16Array(Math.ceil(Math.max(...lines.map((l) => l.end)) * rate));
+      const mix = new Int32Array(Math.ceil(Math.max(...lines.map((l) => l.end)) * rate));
+      const spans: [number, number][] = [];
       for (const [i, line] of lines.entries()) {
         const at = Math.round(line.start * rate);
         const source = sentences[i].samples;
-        // A sentence that runs into the next scene's voice-over overlaps it: both are heard.
-        for (let j = 0; j < source.length && at + j < samples.length; j++) {
-          samples[at + j] = Math.max(-32768, Math.min(32767, samples[at + j] + source[j]));
-        }
+        for (let j = 0; j < source.length && at + j < mix.length; j++) mix[at + j] += source[j];
+        spans.push([at, Math.min(mix.length, at + source.length)]);
       }
+      // A sentence that runs into the next scene's voice-over overlaps it: both are heard, and where their sum would
+      // clip, the shared stretch is lowered just enough.
+      lowerOverlaps(mix, spans, Math.round(OVERLAP_RAMP_S * rate));
+      const samples = new Int16Array(mix.length);
+      for (let i = 0; i < mix.length; i++) samples[i] = Math.max(-32768, Math.min(32767, mix[i]));
       await writeFileAtomic(file, writeWav({ sampleRate: rate, samples }));
       this.built.set(projectId, key);
     });
@@ -165,19 +186,19 @@ export class LocalVoiceOverService implements VoiceOverService {
   }
 
   private unschedule(projectId: string): void {
-    clearTimeout(this.timers.get(projectId));
+    clearTimeout(this.timers.get(projectId)?.timer);
     this.timers.delete(projectId);
   }
 
-  private schedule(projectId: string): void {
-    clearTimeout(this.timers.get(projectId));
+  private schedule(projectId: string, key: string): void {
+    clearTimeout(this.timers.get(projectId)?.timer);
     const timer = setTimeout(() => {
       this.timers.delete(projectId);
       // The editor hears about a failure through the hub event.
       this.sync(projectId).catch(() => undefined);
     }, SYNC_DELAY_MS);
     timer.unref();
-    this.timers.set(projectId, timer);
+    this.timers.set(projectId, { timer, key });
   }
 
   private async plan(projectId: string, settings: VoiceOverSettings, scenes: SceneState[]) {
@@ -286,6 +307,34 @@ function place(planned: { scene: SceneState; sentences: Sentence[] }[]): PlacedL
     }
   }
   return lines;
+}
+
+/**
+ * Lowers, in place, each stretch where sentences overlap and their sum passes 32767: one gain brings its peak to 32767,
+ * with linear ramps of `ramp` samples back to 1 on each side. Stretches closer than two ramps count as one, so ramps
+ * never cross.
+ */
+function lowerOverlaps(mix: Int32Array, spans: [number, number][], ramp: number): void {
+  const stretches: [number, number][] = [];
+  let furthest = 0;
+  for (const [start, end] of [...spans].sort((x, y) => x[0] - y[0])) {
+    if (start < furthest) {
+      const last = stretches.at(-1);
+      if (last && start - last[1] < 2 * ramp) last[1] = Math.max(last[1], Math.min(end, furthest));
+      else stretches.push([start, Math.min(end, furthest)]);
+    }
+    furthest = Math.max(furthest, end);
+  }
+  for (const [start, end] of stretches) {
+    let peak = 0;
+    for (let i = start; i < end; i++) peak = Math.max(peak, Math.abs(mix[i]));
+    if (peak <= 32767) continue;
+    const g = 32767 / peak;
+    for (let i = Math.max(0, start - ramp + 1); i < Math.min(mix.length, end + ramp - 1); i++) {
+      const away = i < start ? start - i : i >= end ? i - end + 1 : 0;
+      mix[i] = Math.round(mix[i] * (g + ((1 - g) * away) / ramp));
+    }
+  }
 }
 
 function missingKey(planned: { sentences: Sentence[] }[]): string {

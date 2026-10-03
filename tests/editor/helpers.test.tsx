@@ -143,6 +143,7 @@ function project(durations: number[], musicGrid: MusicGridData | null = null, st
     voiceOverUrl: null,
     voiceOverLines: [],
     voiceOverPending: [],
+    voiceOverError: null,
     codeGeneration: 0,
     createdAt: '',
     updatedAt: '',

@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { ID_PATTERN, type ChatKey, type VersionEntry, type VersionSource } from '../../src/shared/types';
+import { ID_PATTERN, type ChatKey, type SceneVoiceOver, type VersionEntry, type VersionSource } from '../../src/shared/types';
 import type { ProjectStore, VersionStore } from '../contracts';
 import { m } from '../i18n';
+import { parseSceneVoiceOver } from './projects';
 import {
   HttpError,
   KeyedMutex,
@@ -61,13 +62,20 @@ export class FileVersionStore implements VersionStore {
           const scene = current.scenes.find((s) => s.id === sceneId);
           if (!scene) throw new HttpError(409, m().api.versions.sceneGone(sceneId));
           const then = manifest['project.json'] ? await this.readObject(projectId, manifest['project.json']) : null;
-          const duration = sceneDurations(then).get(sceneId);
+          // Only what the version says about the scene, and only what the store accepts today: the scene file is
+          // already written back when the patch runs.
+          const old = sceneFields(then).get(sceneId);
+          const patch: { duration?: number; voiceOver?: SceneVoiceOver | null } = {};
+          if (typeof old?.duration === 'number' && old.duration > 0 && old.duration !== scene.duration)
+            patch.duration = old.duration;
+          const voiceOver = old ? snapshotVoiceOver(old.voiceOver) : undefined;
+          if (voiceOver !== undefined && JSON.stringify(voiceOver) !== JSON.stringify(scene.voiceOver ?? null)) {
+            patch.voiceOver = voiceOver;
+          }
 
           await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
           await writeFileAtomic(path.join(dir, rel), await this.readObject(projectId, manifest[rel]));
-          if (typeof duration === 'number' && duration !== scene.duration) {
-            await this.store.updateScene(projectId, sceneId, { duration });
-          }
+          if (Object.keys(patch).length) await this.store.updateScene(projectId, sceneId, patch);
           return this.record(
             projectId,
             { label: m().api.versions.restoredScene(scene.name, versionId), source: 'restore' },
@@ -132,7 +140,7 @@ export class FileVersionStore implements VersionStore {
     return entry;
   }
 
-  /** Scenes whose file changed, plus scenes whose duration changed (or that appeared/disappeared) in project.json. */
+  /** Scenes whose file changed, plus scenes whose duration or voice-over changed (or that appeared or went) in project.json. */
   private async changedScenes(
     projectId: string,
     changed: string[],
@@ -145,9 +153,13 @@ export class FileVersionStore implements VersionStore {
       if (match && ID_PATTERN.test(match[1])) ids.add(match[1]);
     }
     if (changed.includes('project.json')) {
-      const a = sceneDurations(previous['project.json'] ? await this.readObject(projectId, previous['project.json']) : null);
-      const b = sceneDurations(files.get('project.json') ?? null);
-      for (const id of new Set([...a.keys(), ...b.keys()])) if (a.get(id) !== b.get(id)) ids.add(id);
+      const a = sceneFields(previous['project.json'] ? await this.readObject(projectId, previous['project.json']) : null);
+      const b = sceneFields(files.get('project.json') ?? null);
+      for (const id of new Set([...a.keys(), ...b.keys()])) {
+        const [x, y] = [a.get(id), b.get(id)];
+        if (!x || !y || x.duration !== y.duration || JSON.stringify(x.voiceOver ?? null) !== JSON.stringify(y.voiceOver ?? null))
+          ids.add(id);
+      }
     }
     return [...ids].sort();
   }
@@ -222,14 +234,28 @@ async function readTracked(dir: string): Promise<Map<string, Buffer>> {
   return out;
 }
 
-/** Each scene id with its duration in a project.json snapshot (empty when absent or unreadable). */
-function sceneDurations(data: Buffer | null): Map<string, unknown> {
+type SceneFields = { duration?: unknown; voiceOver?: unknown };
+
+/** Each scene id with its duration and voice-over in a project.json snapshot (empty when absent or unreadable). */
+function sceneFields(data: Buffer | null): Map<string, SceneFields> {
   try {
     const scenes = (JSON.parse(data?.toString('utf8') ?? 'null') as { scenes?: unknown } | null)?.scenes;
     return new Map(
-      Array.isArray(scenes) ? scenes.map((s: { id?: string; duration?: unknown }) => [String(s?.id), s?.duration]) : [],
+      Array.isArray(scenes)
+        ? scenes.map((s: { id?: string } & SceneFields) => [String(s?.id), { duration: s?.duration, voiceOver: s?.voiceOver }])
+        : [],
     );
   } catch {
     return new Map();
+  }
+}
+
+/** A snapshot's voice-over as the store reads it today: null for none, undefined when it is no longer valid. */
+function snapshotVoiceOver(value: unknown): SceneVoiceOver | null | undefined {
+  if (value === undefined || value === null) return null;
+  try {
+    return parseSceneVoiceOver(value);
+  } catch {
+    return undefined;
   }
 }

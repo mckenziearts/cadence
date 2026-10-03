@@ -100,6 +100,7 @@ export class FixtureProjectStore implements ProjectStore {
       voiceOverUrl: null,
       voiceOverLines: this.voiceOverLines.get(id) ?? [],
       voiceOverPending: [],
+      voiceOverError: null,
       codeGeneration: this.generation(id),
       createdAt: file.createdAt,
       updatedAt: file.updatedAt,

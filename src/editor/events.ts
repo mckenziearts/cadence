@@ -167,8 +167,16 @@ function handle(event: ServerEvent): void {
       return;
     case 'voice-over':
       if (event.projectId !== current) return;
-      set({ voiceOver: { status: event.status, error: event.error ?? null } });
-      if (event.status === 'error') toast(event.error ?? t().production.voiceOver.status.failed, 'error');
+      // A new try hides the last failure until it ends, as the server does: no stale alert between 'ready' and the refetch.
+      set((s) => ({
+        voiceOver: { status: event.status },
+        project: event.status === 'speaking' && s.project ? { ...s.project, voiceOverError: null } : s.project,
+      }));
+      if (event.status === 'error') {
+        toast(event.error ?? t().production.voiceOver.status.failed, 'error');
+        // project.voiceOverError holds it from now on, also after a reload.
+        void refreshProject();
+      }
       return;
     case 'versions':
       if (event.projectId === current) set((s) => ({ versionsTick: s.versionsTick + 1 }));

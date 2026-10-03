@@ -75,7 +75,7 @@ async function loadProject(id: string, sceneId?: string | null): Promise<void> {
       publishing: { jobs: [], publications: [] },
       profile: false,
       music: { status: project.music ? (project.musicGrid ? 'ready' : 'analyzing') : 'idle', error: null },
-      voiceOver: { status: 'idle', error: null },
+      voiceOver: { status: 'idle' },
       cost: null,
       focusVersion: null,
       renaming: null,
@@ -237,6 +237,24 @@ useStore.subscribe((s, prev) => {
 export function userSeek(t: number): void {
   seek(t);
   set((s) => ({ seekNonce: s.seekNonce + 1 }));
+}
+
+/** Play the preview from where a scene's voice-over starts, sound on: the button exists to hear it. */
+export function playVoiceOver(sceneId: string): void {
+  const s = get();
+  const scene = s.project?.scenes.find((x) => x.id === sceneId);
+  if (!scene) return;
+  const at = scene.voiceOver?.at ?? 0;
+  // A voice that starts past its scene's end is only heard in the whole video.
+  if (s.mode === 'scene' && at < scene.duration) {
+    selectScene(sceneId);
+    userSeek(at);
+  } else {
+    setMode('whole');
+    userSeek(scene.start + at);
+  }
+  set({ muted: false });
+  setPlaying(true);
 }
 
 export function setPlaying(playing: boolean): void {

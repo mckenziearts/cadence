@@ -159,7 +159,7 @@ export type VoiceOverProvider = (
   id: string,
   data: ProjectFile,
   scenes: SceneState[],
-) => Promise<Pick<ProjectState, 'voiceOver' | 'voiceOverUrl' | 'voiceOverLines' | 'voiceOverPending'>>;
+) => Promise<Pick<ProjectState, 'voiceOver' | 'voiceOverUrl' | 'voiceOverLines' | 'voiceOverPending' | 'voiceOverError'>>;
 
 // server/store/brands.ts: export class FileBrandStore implements BrandStore  (constructor(config: CadenceConfig))
 

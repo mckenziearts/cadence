@@ -250,8 +250,16 @@ export function Segmented<T extends string>(props: {
 export function Tooltip(props: { label: ReactNode; children: ReactNode; side?: 'top' | 'bottom'; className?: string }) {
   const { label, children, side = 'bottom' } = props;
   const anchor = useRef<HTMLSpanElement>(null);
+  const tip = useRef<HTMLSpanElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const id = useId();
+  // Centered under its anchor but kept inside the window: by the right edge, the box would shrink to the space left.
+  useLayoutEffect(() => {
+    const el = tip.current;
+    if (!pos || !el) return;
+    const half = el.offsetWidth / 2;
+    el.style.left = `${Math.min(Math.max(pos.x, half + 8), window.innerWidth - half - 8)}px`;
+  }, [pos, label]);
   const show = () => {
     const rect = anchor.current?.getBoundingClientRect();
     if (rect) setPos({ x: rect.left + rect.width / 2, y: side === 'bottom' ? rect.bottom + 6 : rect.top - 6 });
@@ -272,11 +280,12 @@ export function Tooltip(props: { label: ReactNode; children: ReactNode; side?: '
       {pos &&
         createPortal(
           <span
+            ref={tip}
             id={id}
             role="tooltip"
             style={{ left: pos.x, top: pos.y }}
             className={clsx(
-              'pointer-events-none fixed z-[70] max-w-64 -translate-x-1/2 animate-fade-in bg-ink px-2 py-1 text-center text-xs/4 font-medium text-white',
+              'pointer-events-none fixed z-[70] w-max max-w-64 -translate-x-1/2 animate-fade-in bg-ink px-2 py-1 text-center text-xs/4 font-medium text-white',
               side === 'top' && '-translate-y-full',
             )}
           >

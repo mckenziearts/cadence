@@ -120,8 +120,10 @@ export default {
       textLabel: (scene: string) => `Voix off de « ${scene} »`,
       at: 'Départ',
       atLabel: (scene: string) => `Départ de la voix dans « ${scene} », en secondes`,
-      pending: 'À générer',
       speaking: 'Génération...',
+      generate: 'Générer',
+      generateLabel: (scene: string) => `Générer la voix off de « ${scene} »`,
+      listenLabel: (scene: string) => `Écouter la voix off de « ${scene} »`,
       sentences: (n: number) => plural(n, 'phrase', 'phrases'),
       timing: (count: string, from: string, to: string) => `${count}, de ${from} à ${to}`,
       overflow: (by: string) => `La voix dépasse la scène de ${by} : allongez la scène ou raccourcissez le texte.`,
@@ -129,7 +131,6 @@ export default {
     status: {
       speaking: 'Piper génère la voix...',
       failed: 'La voix off n’a pas pu être générée',
-      retry: 'Réessayer',
     },
   },
   brand: {

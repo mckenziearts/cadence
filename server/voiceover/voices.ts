@@ -1,8 +1,9 @@
 // The Piper voices Cadence offers: single-speaker French and English voices, with the license of their dataset (from
-// each voice's MODEL_CARD). Files come from one commit of rhasspy/piper-voices, so their md5 never changes.
+// each voice's MODEL_CARD). Files come from the commit of the v1.0.0 tag of rhasspy/piper-voices, so their md5 never
+// changes: pinned by commit rather than by tag name, since a tag can be moved and a commit cannot.
 import type { VoiceOverSettings } from '../../src/shared/types';
 
-export const VOICES_REVISION = 'c10ece1aade47bb51c153c893d14e5bf8e5b7117';
+export const VOICES_REVISION = '375a0fe641dea077c2a47b4e9a056d6da521eed3';
 
 export interface VoiceSpec {
   id: string;

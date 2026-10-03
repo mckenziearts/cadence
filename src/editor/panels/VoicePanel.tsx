@@ -1,14 +1,14 @@
 // Voice-over: Piper's state, the voice (download, license), speed and music level, then each scene's text and timing.
 import clsx from 'clsx';
-import { AlertTriangle, Copy, Download, RotateCcw } from 'lucide-react';
+import { AlertTriangle, AudioLines, Copy, Download, Play } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { SceneState, SceneVoiceOver, VoiceOverSettings, VoicesState } from '../../shared/types';
 import { api, ignore } from '../api';
-import { Button, SectionTitle, Slider, Spinner, fieldBase, inputClass } from '../components/ui';
+import { Button, IconButton, SectionTitle, Slider, Spinner, fieldBase, inputClass } from '../components/ui';
 import { useT } from '../i18n';
 import { bytes, parseDecimal, percentShort, secs, secsLabel } from '../lib/format';
 import { useStore } from '../store';
-import { applyProject } from '../store/project';
+import { applyProject, playVoiceOver } from '../store/project';
 import { copyText } from '../store/ui';
 
 const PIPER_INSTALL = 'pipx install piper-tts';
@@ -166,8 +166,8 @@ function Voice({ voices, onDownloaded }: { voices: VoicesState | null; onDownloa
 function Status() {
   const texts = useT().production.voiceOver.status;
   const project = useStore((s) => s.project)!;
-  const { status, error } = useStore((s) => s.voiceOver);
-  if (status === 'speaking') {
+  const speaking = useStore((s) => s.voiceOver.status === 'speaking');
+  if (speaking) {
     return (
       <p className="flex items-center gap-2 text-[13px] text-ink-2">
         <Spinner className="size-3.5" />
@@ -175,21 +175,11 @@ function Status() {
       </p>
     );
   }
-  if (status !== 'error' || !project.voiceOverPending.length) return null;
+  if (!project.voiceOverError || !project.voiceOverPending.length) return null;
   return (
-    <div className="space-y-2">
-      <p className="flex items-start gap-1.5 text-xs text-alert">
-        <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error ?? texts.failed}
-      </p>
-      <Button
-        size="xs"
-        variant="secondary"
-        icon={<RotateCcw className="size-3" />}
-        onClick={() => void api.syncVoiceOver(project.id).then(applyProject).catch(ignore)}
-      >
-        {texts.retry}
-      </Button>
-    </div>
+    <p role="alert" className="flex items-start gap-1.5 text-xs text-alert">
+      <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {project.voiceOverError}
+    </p>
   );
 }
 
@@ -216,6 +206,7 @@ function SceneVoice({ scene }: { scene: SceneState }) {
   const saved = scene.voiceOver;
   const [text, setText] = useState<string | null>(null);
   const [at, setAt] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
   const lines = project.voiceOverLines.filter((l) => l.sceneId === scene.id);
   const pending = project.voiceOverPending.includes(scene.id);
   const overflow = (lines.at(-1)?.end ?? 0) - (scene.start + scene.duration);
@@ -226,8 +217,31 @@ function SceneVoice({ scene }: { scene: SceneState }) {
     void api.updateScene(project.id, scene.id, { voiceOver }).then(applyProject).catch(ignore);
   };
 
+  const generate = () => {
+    setGenerating(true);
+    // The route speaks every missing sentence, the failed ones included.
+    void api
+      .syncVoiceOver(project.id)
+      .then(applyProject)
+      .catch(ignore)
+      .finally(() => setGenerating(false));
+  };
+
   let timing: ReactNode = null;
-  if (pending) timing = speaking ? texts.speaking : texts.pending;
+  if (pending && project.voiceOverError && !speaking) {
+    timing = (
+      <Button
+        size="xs"
+        variant="secondary"
+        icon={<AudioLines className="size-3" />}
+        aria-label={texts.generateLabel(scene.name)}
+        loading={generating}
+        onClick={generate}
+      >
+        {texts.generate}
+      </Button>
+    );
+  } else if (pending) timing = texts.speaking;
   else if (lines.length) {
     const from = secsLabel(lines[0].start - scene.start);
     timing = texts.timing(texts.sentences(lines.length), from, secsLabel(lines.at(-1)!.end - scene.start));
@@ -241,6 +255,15 @@ function SceneVoice({ scene }: { scene: SceneState }) {
         </span>
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{scene.name}</span>
         <span className="text-xs text-ink-3">{secsLabel(scene.duration)}</span>
+        {!pending && lines.length > 0 && (
+          <IconButton
+            size="xs"
+            label={texts.listenLabel(scene.name)}
+            icon={<Play className="size-3" />}
+            onClick={() => playVoiceOver(scene.id)}
+            className="-my-0.5"
+          />
+        )}
       </div>
       <textarea
         aria-label={texts.textLabel(scene.name)}

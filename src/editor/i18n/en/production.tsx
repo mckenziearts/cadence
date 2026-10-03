@@ -123,8 +123,10 @@ export default {
       textLabel: (scene: string) => `Voice-over of "${scene}"`,
       at: 'Start',
       atLabel: (scene: string) => `Where the voice starts in "${scene}", in seconds`,
-      pending: 'To generate',
       speaking: 'Generating...',
+      generate: 'Generate',
+      generateLabel: (scene: string) => `Generate the voice-over of "${scene}"`,
+      listenLabel: (scene: string) => `Listen to the voice-over of "${scene}"`,
       sentences: (n: number) => plural(n, 'sentence', 'sentences'),
       timing: (count: string, from: string, to: string) => `${count}, from ${from} to ${to}`,
       overflow: (by: string) => `The voice runs ${by} past the scene: lengthen the scene or shorten the text.`,
@@ -132,7 +134,6 @@ export default {
     status: {
       speaking: 'Piper is generating the voice...',
       failed: 'The voice-over could not be generated',
-      retry: 'Try again',
     },
   },
   brand: {

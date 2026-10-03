@@ -230,9 +230,12 @@ export class FfmpegRenderService implements RenderService {
       const audio =
         audioFile && project.music ? { file: audioFile, start: project.music.start + from, volume: project.music.volume } : null;
       const track = await voiceOver.track(job.projectId);
-      const voice = track
-        ? { file: track.file, start: from, intervals: voiceSpans(track.lines, from), musicLevel: track.musicLevel }
-        : null;
+      // A range without any sentence gets no voice input: seeking past the track's end gives no audio stream at all in
+      // ffmpeg 8.1, which other versions may not do.
+      const voice =
+        track && track.lines.some((l) => l.end > from && l.start < from + duration)
+          ? { file: track.file, start: from, intervals: voiceSpans(track.lines, from), musicLevel: track.musicLevel }
+          : null;
       job.framesTotal = total;
       this.emit(state, true);
       abort.signal.throwIfAborted();
@@ -474,13 +477,14 @@ function ffmpegArgs(o: {
       chains.push(`[1:a]${[...normalize(-14), `volume=${o.audio.volume}`, ...duck].join(',')}[music]`);
     }
     // Piper already evens out each sentence; loudnorm would not do: on the digital silence between sentences, it outputs
-    // garbage that the limiter turns into noise. The limiter only catches peaks: its default auto-level would lift
-    // everything back to 0 dB, ducking included.
+    // garbage that the limiter turns into noise. The limiter, on the voice alone too, only catches peaks: its default
+    // auto-level would lift everything back to 0 dB, ducking included.
+    const limiter = 'alimiter=limit=0.95:level=disabled';
     chains.push(`[${o.audio ? 2 : 1}:a]aresample=48000[voice]`);
     chains.push(
       o.audio
-        ? `[music][voice]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95:level=disabled,${fadeOut}[audio]`
-        : `[voice]${fadeOut}[audio]`,
+        ? `[music][voice]amix=inputs=2:duration=longest:normalize=0,${limiter},${fadeOut}[audio]`
+        : `[voice]${limiter},${fadeOut}[audio]`,
     );
     args.push('-filter_complex', chains.join(';'), '-map', '[audio]', '-c:a', 'aac', '-b:a', '192k');
   }

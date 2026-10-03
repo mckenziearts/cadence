@@ -610,6 +610,7 @@ export class FileProjectStore implements ProjectStore {
       voiceOverUrl: null,
       voiceOverLines: [],
       voiceOverPending: [],
+      voiceOverError: null,
     };
     if (!this.voiceOver) return none;
     try {
@@ -758,7 +759,7 @@ function parseVoiceOver(value: unknown): VoiceOverSettings {
 }
 
 /** null for a blank text: the scene has no voice-over. */
-function parseSceneVoiceOver(value: unknown): SceneVoiceOver | null {
+export function parseSceneVoiceOver(value: unknown): SceneVoiceOver | null {
   const parsed = sceneVoiceOverSchema.safeParse(value);
   if (!parsed.success) throw new HttpError(400, m().api.projects.sceneVoiceOver(formatIssues(parsed.error)));
   const text = parsed.data.text.trim();

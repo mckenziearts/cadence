@@ -85,6 +85,12 @@ async function rmsDb(file: string, from: number, to: number): Promise<number> {
   return value === '-inf' ? -Infinity : Number(value);
 }
 
+/** Highest sample of the audio, in dBFS. */
+async function peakDb(file: string): Promise<number> {
+  const { stderr } = await run('ffmpeg', ['-hide_banner', '-i', file, '-af', 'astats', '-f', 'null', '-']);
+  return Number([...stderr.matchAll(/Peak level dB: (\S+)/g)].at(-1)?.[1]);
+}
+
 /** One decoded frame of the video as PNG. */
 async function frameAt(file: string, t: number): Promise<Buffer> {
   const { stdout } = await run(
@@ -256,6 +262,36 @@ export default function A({ voiceOver }: SceneProps) {
     } finally {
       h.store.voiceOverLines.delete(id);
       await writeFile(sceneFile, code);
+    }
+  });
+
+  it('limits a full-scale voice alone, and gives a range without any sentence no voice at all', async () => {
+    const dir = path.join(h.store.dir(id), 'voice-test');
+    await mkdir(dir, { recursive: true });
+    const voice = path.join(dir, 'loud.wav');
+    const speech = Int16Array.from({ length: 22050 }, (_, i) => Math.round(32767 * Math.sin((2 * Math.PI * 440 * i) / 22050)));
+    await writeFile(voice, writeWav({ sampleRate: 22050, samples: speech }));
+    try {
+      voiceOver.tracks.set(id, {
+        file: voice,
+        lines: [{ sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4 }],
+        musicLevel: 0.3,
+      });
+      const alone = (await renderOne({ formats: ['16:9'], quality: 'draft' })).file;
+      const peak = await peakDb(alone);
+      // ffmpeg 8.1: -0.33 dBFS with the limiter (0.95 is -0.45, AAC adds about 0.1 dB), 0 to +0.08 without it. The
+      // threshold sits between the two, so another AAC encoder has room.
+      assert.ok(peak <= -0.15, `peak ${peak} dBFS`);
+
+      // The track still sounds after 0.5 s, but no sentence falls there: the range gets no voice input.
+      const range = (await renderOne({ formats: ['16:9'], quality: 'draft', range: { from: 0.5, to: 1 } })).file;
+      assert.equal(
+        (await probe(range)).streams.some((s) => s.codec_type === 'audio'),
+        false,
+      );
+    } finally {
+      voiceOver.tracks.delete(id);
+      await rm(dir, { recursive: true, force: true });
     }
   });
 

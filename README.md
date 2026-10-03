@@ -375,8 +375,11 @@ flags the two voices that are not for commercial use. Cadence runs Piper as a se
 
 - Sentences are spoken one by one and cached in `projects/<id>/.cadence/voice-over/`: changing a sentence only speaks
   that one again, and moving a scene or its start speaks nothing again.
-- Timing is per sentence, not per word. A sentence stays inside its scene: lengthen the scene (or shorten the text)
-  when the Voice tab says the voice runs past it.
+- When Piper fails, the Voice tab keeps its message, after a reload too, and each scene left without its voice gets a
+  **Generate** button that tries again. A spoken scene has a **Listen** button that plays the preview from where its
+  voice starts.
+- Timing is per sentence, not per word. A sentence can run past the end of its scene into the next one, and the Voice
+  tab says so: lengthen the scene (or shorten the text).
 - No subtitles yet: the on-screen text is whatever the scenes draw.
 
 ## Command line

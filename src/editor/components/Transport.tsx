@@ -117,7 +117,7 @@ export function Transport() {
   const playing = useStore((s) => s.playing);
   const loop = useStore((s) => s.loop);
   const muted = useStore((s) => s.muted);
-  const hasMusic = useStore((s) => Boolean(s.project?.musicUrl));
+  const hasSound = useStore((s) => Boolean(s.project?.musicUrl || s.project?.voiceOverUrl));
 
   return (
     <div className="flex h-16 shrink-0 items-center gap-3 border-t-2 border-ink bg-paper px-4">
@@ -155,7 +155,7 @@ export function Transport() {
           side="top"
           onClick={() => set({ loop: !loop })}
         />
-        {hasMusic && (
+        {hasSound && (
           <IconButton
             label={muted ? t.timeline.transport.unmute : t.timeline.transport.mute}
             icon={muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}

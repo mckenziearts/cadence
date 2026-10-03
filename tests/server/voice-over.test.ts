@@ -27,6 +27,10 @@ let voiceOver: LocalVoiceOverService;
 let events: ServerEvent[];
 let spoken: { sentences: string[]; lengthScale: number }[];
 let engineError: Error | null;
+/** While set, the fake Piper waits for it before speaking (or failing). */
+let hold: Promise<void> | null;
+/** The fake Piper's sample `i` of a sentence. */
+let wave: (text: string, i: number) => number;
 
 beforeEach(async () => {
   t = await makeRoot();
@@ -34,14 +38,17 @@ beforeEach(async () => {
   events = [];
   spoken = [];
   engineError = null;
+  hold = null;
+  wave = () => 1000;
   const hub: Hub = { send: (e) => void events.push(e), handleSse: () => undefined };
   const engine: SpeechEngine = {
     check: async () => ({ ok: true }),
     speak: async ({ sentences, lengthScale, files }) => {
+      await hold;
       if (engineError) throw engineError;
       spoken.push({ sentences, lengthScale });
       for (const [i, text] of sentences.entries()) {
-        const samples = new Int16Array(Math.round(seconds(text) * RATE)).fill(1000);
+        const samples = Int16Array.from({ length: Math.round(seconds(text) * RATE) }, (_, j) => wave(text, j));
         await fs.writeFile(files[i], writeWav({ sampleRate: RATE, samples }));
       }
     },
@@ -58,6 +65,14 @@ async function install(voice: string) {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${voice}.onnx`), 'model');
   await fs.writeFile(path.join(dir, `${voice}.onnx.json`), '{}');
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const speakings = () => events.filter((e) => e.type === 'voice-over' && e.status === 'speaking').length;
+
+async function until(done: () => boolean): Promise<void> {
+  for (let i = 0; i < 100 && !done(); i++) await sleep(20);
+  assert.ok(done());
 }
 
 /** A project with two 2 s scenes, `intro` and `demo`. */
@@ -158,6 +173,79 @@ test('a failure is told once: the same sentences are not retried on their own, b
   assert.deepEqual((await store.get(id)).voiceOverPending, []);
 });
 
+test('the project keeps why Piper failed until the missing sentences change or a sync speaks them', async () => {
+  const id = await twoScenes();
+  engineError = new HttpError(500, 'Piper a échoué (code 1)');
+  let project = await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour.', at: 0 } });
+  assert.equal(project.voiceOverError, null, 'nothing failed yet');
+  await assert.rejects(voiceOver.sync(id));
+  assert.equal((await store.get(id)).voiceOverError, 'Piper a échoué (code 1)');
+
+  // The same sentences stay failed: nothing speaks on its own, the error stays.
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour.', at: 0.5 } });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(events.filter((e) => e.type === 'voice-over' && e.status === 'speaking').length, 1);
+  assert.equal((await store.get(id)).voiceOverError, 'Piper a échoué (code 1)');
+
+  // A new text is new missing sentences: no error until Piper has tried them, and it does on its own.
+  engineError = null;
+  project = await store.updateScene(id, 'demo', { voiceOver: { text: 'Salut.', at: 0 } });
+  assert.equal(project.voiceOverError, null);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.deepEqual(spoken, [{ sentences: ['Salut.'], lengthScale: 1 }]);
+
+  // A sync that succeeds clears a failure.
+  engineError = new HttpError(500, 'Piper a échoué (code 2)');
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Encore.', at: 0 } });
+  await assert.rejects(voiceOver.sync(id));
+  assert.equal((await store.get(id)).voiceOverError, 'Piper a échoué (code 2)');
+  engineError = null;
+  await voiceOver.sync(id);
+  project = await store.get(id);
+  assert.equal(project.voiceOverError, null);
+  assert.deepEqual(project.voiceOverPending, []);
+});
+
+test('reading the project often does not hold back the sentences it schedules', async () => {
+  const id = await twoScenes();
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour.', at: 0 } });
+  // The editor and the frames read the project whenever they like: a read must not push the start back.
+  for (let i = 0; i < 20 && !spoken.length; i++) {
+    await store.get(id);
+    await sleep(100);
+  }
+  assert.deepEqual(spoken, [{ sentences: ['Bonjour.'], lengthScale: 1 }]);
+});
+
+test('while Piper speaks, reading the project queues no second attempt and shows no stale error', async () => {
+  const id = await twoScenes();
+  let release = () => {};
+  hold = new Promise((resolve) => (release = resolve));
+  engineError = new HttpError(500, 'Piper a échoué (code 1)');
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour.', at: 0 } });
+  await until(() => speakings() === 1);
+  for (let i = 0; i < 6; i++) {
+    assert.equal((await store.get(id)).voiceOverError, null);
+    await sleep(100);
+  }
+  await sleep(500); // what those reads would have scheduled starts now, while Piper still speaks
+  release();
+  await until(() => events.some((e) => e.type === 'voice-over' && e.status === 'error'));
+  await sleep(600);
+  assert.equal(speakings(), 1, 'one failure, told once');
+  assert.equal((await store.get(id)).voiceOverError, 'Piper a échoué (code 1)');
+
+  // Generate again, and a reload meanwhile: the failure is not shown while Piper tries again.
+  hold = new Promise((resolve) => (release = resolve));
+  engineError = null;
+  const retry = voiceOver.sync(id);
+  await until(() => speakings() === 2);
+  assert.equal((await store.get(id)).voiceOverError, null, 'being spoken again');
+  release();
+  await retry;
+  assert.deepEqual((await store.get(id)).voiceOverPending, []);
+});
+
 test('a voice that is not downloaded fails with a message saying where to get it', async () => {
   const id = await twoScenes();
   await store.update(id, { voiceOver: { voice: 'fr_FR-gilles-low', speed: 1, musicLevel: 0.3 } });
@@ -181,6 +269,72 @@ test('the track lays each sentence at its time, as one WAV', async () => {
   assert.equal(samples[at - 1], 0, 'silent before the first sentence');
   assert.equal(samples[at], 1000);
   assert.equal(samples.at(-1), 1000);
+});
+
+test('two sentences that overlap are lowered just enough where their sum would clip, and only there', async () => {
+  const id = await twoScenes();
+  const first = 'Une phrase assez longue pour déborder.';
+  const second = 'La suite.';
+  const tone = (text: string, i: number) => Math.round(30000 * Math.sin((2 * Math.PI * (text === first ? 440 : 710) * i) / RATE));
+  wave = tone;
+  const intro = (await store.get(id)).scenes[0].id;
+  await store.updateScene(id, intro, { voiceOver: { text: first, at: 1 } });
+  await store.updateScene(id, 'demo', { voiceOver: { text: second, at: 0 } });
+  await voiceOver.sync(id);
+  const lines = (await voiceOver.track(id))!.lines;
+  const atA = Math.round(lines[0].start * RATE);
+  const atB = Math.round(lines[1].start * RATE);
+  const endA = atA + Math.round(seconds(first) * RATE);
+  const endB = atB + Math.round(seconds(second) * RATE);
+  assert.ok(atB < endA, 'the first sentence runs into the second');
+  const a = (i: number) => (i >= atA && i < endA ? tone(first, i - atA) : 0);
+  const b = (i: number) => (i >= atB && i < endB ? tone(second, i - atB) : 0);
+  const { samples } = readWav(await fs.readFile((await voiceOver.track(id))!.file));
+
+  const ratios: number[] = [];
+  let peak = 0;
+  let sum = 0;
+  for (let i = atB; i < endA; i++) {
+    peak = Math.max(peak, Math.abs(samples[i]));
+    sum = Math.max(sum, Math.abs(a(i) + b(i)));
+    if (Math.abs(a(i) + b(i)) > 20000) ratios.push(samples[i] / (a(i) + b(i)));
+  }
+  assert.ok(sum > 40000, `the sum passes full scale: ${sum}`);
+  assert.ok(
+    Math.max(...ratios) - Math.min(...ratios) < 0.001,
+    `one gain over the overlap: ${Math.min(...ratios)} to ${Math.max(...ratios)}`,
+  );
+  assert.ok(Math.max(...ratios) < 1, 'lowered');
+  assert.ok(peak >= 32700, `just enough: peak ${peak}`);
+
+  // On each side, the gain comes back to 1 over 20 ms instead of stepping.
+  const ramp = Math.round(0.02 * RATE);
+  const g = ratios[0];
+  const before: number[] = [];
+  const after: number[] = [];
+  for (let i = atB - ramp + 1; i < atB; i++) if (Math.abs(a(i)) > 20000) before.push(samples[i] / a(i));
+  for (let i = endA; i < endA + ramp - 1; i++) if (Math.abs(b(i)) > 20000) after.push(samples[i] / b(i));
+  for (const gains of [before, after]) {
+    assert.ok(
+      gains.length && gains.every((x) => x > g + 0.001 && x < 0.9995),
+      `a ramp between ${g} and 1: ${Math.min(...gains)} to ${Math.max(...gains)}`,
+    );
+  }
+
+  // 50 ms away from the overlap, each sentence is as Piper spoke it.
+  const margin = Math.round(0.05 * RATE);
+  const expect = (from: number, to: number, f: (i: number) => number) =>
+    Int16Array.from({ length: to - from }, (_, j) => f(from + j));
+  assert.deepEqual(samples.subarray(atA, atB - margin), expect(atA, atB - margin, a), 'the first sentence');
+  assert.deepEqual(samples.subarray(endA + margin, endB), expect(endA + margin, endB, b), 'the second sentence');
+
+  // Without overlap, the track is each sentence at its time over silence.
+  await store.updateScene(id, 'demo', { voiceOver: { text: second, at: 0.5 } });
+  const apart = (await voiceOver.track(id))!;
+  const at = Math.round(apart.lines[1].start * RATE);
+  const end = at + Math.round(seconds(second) * RATE);
+  const expected = expect(0, end, (i) => a(i) + (i >= at ? tone(second, i - at) : 0));
+  assert.deepEqual(readWav(await fs.readFile(apart.file)).samples, expected);
 });
 
 test('downloads check the md5, share one transfer, and refuse a voice Cadence does not offer', async () => {
@@ -230,7 +384,7 @@ test('downloads check the md5, share one transfer, and refuse a voice Cadence do
       fetched.map((u) => u.split('/').slice(-1)[0]),
       ['fr_FR-test-low.onnx.json', 'fr_FR-test-low.onnx'],
     );
-    assert.match(fetched[0], /\/resolve\/c10ece1aade47bb51c153c893d14e5bf8e5b7117\/fr\/fr_FR\/test\/low\//);
+    assert.match(fetched[0], /\/resolve\/375a0fe641dea077c2a47b4e9a056d6da521eed3\/fr\/fr_FR\/test\/low\//);
     assert.ok((await service.voices()).voices.find((v) => v.id === spec.id)?.installed);
   } finally {
     VOICES.pop();

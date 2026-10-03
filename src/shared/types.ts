@@ -232,6 +232,8 @@ export interface ProjectState {
   voiceOverLines: VoiceOverLine[];
   /** Scenes whose voice-over is not generated yet (being generated, or Piper failed). */
   voiceOverPending: string[];
+  /** Why Piper last failed on the sentences still missing; null while a sync tries them again, or when none failed. */
+  voiceOverError: string | null;
   /** Bumped whenever any code file of the project (or its brand) changes; frames re-import when it moves. */
   codeGeneration: number;
   createdAt: string;

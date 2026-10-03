@@ -549,7 +549,8 @@ with `scale=W:H:flags=lanczos`, and `setparams` tags the frames BT.709 (tv range
 their duration and code generation are compared with the job's; on a mismatch they reload, and a second mismatch
 fails the job (« Le projet a changé pendant le lancement du rendu »). Audio (when the project has music): track from
 `music.start`, AAC 192 k, `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length. With a
-voice-over, its track is a second input (see "Voice-over") and the audio goes through `-filter_complex`.
+voice-over, its track is a second input (see "Voice-over"), unless no sentence falls in the rendered range, and the
+audio goes through `-filter_complex`, voice alone or mixed, ending with the same limiter.
 Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`. Deleting one moves it to the project's
 `.cadence/trash/` (`RenderService.remove`); what the networks received stays in `publications.json`.
 
@@ -590,22 +591,32 @@ or `en_US-joe-medium`). Piper (GPL-3.0) is never shipped: each user installs it 
 (`execFile`-style arguments, no shell), then renames each WAV into place in the order of Piper's monotonic file names.
 
 - Voices: `server/voiceover/voices.ts` lists the single-speaker French and English voices offered, with the license
-  of their dataset (`commercial`, `credit` for CC-BY). Downloads come from one commit of `rhasspy/piper-voices`, md5
-  checked before the file is renamed in, into `<root>/.cadence/voices/`.
+  of their dataset (`commercial`, `credit` for CC-BY). Downloads come from the commit of the v1.0.0 tag of
+  `rhasspy/piper-voices`, md5 checked before the file is renamed in, into `<root>/.cadence/voices/`.
 - Sentences: `Intl.Segmenter` (line breaks end one too). Each sentence's WAV is cached in
   `projects/<id>/.cadence/voice-over/<hash>.wav`, the hash covering voice, speed and text: a retouch speaks only the
   changed sentence, and restoring a version finds its sentences again.
 - `ProjectState` (`setVoiceOverProvider`): `voiceOver` (settings in use), `voiceOverLines` (generated sentences laid
   one after the other from `scene.start + at`, in video seconds), `voiceOverPending` (scenes with a sentence not
-  generated; they have no line at all) and `voiceOverUrl` (the track, `?v=` changes with the lines). Computing it
-  schedules the missing sentences (400 ms after the last change); a failure goes to the editor (SSE `voice-over`) and
-  the same sentences are only retried through `POST .../voice-over/sync`. A success sends `project-changed`.
+  generated; they have no line at all), `voiceOverError` (why Piper last failed on the sentences still missing; null
+  while a sync tries them again, once they change, or once spoken) and `voiceOverUrl` (the track, `?v=` changes with the
+  lines). Computing it schedules one try of the missing sentences, 400 ms after the first read that finds a new set of
+  them and never during a sync: the editor and the frames read the project at will, and a read neither postpones that
+  try nor queues a second one. A failure goes to the editor (SSE `voice-over`, which then refetches the project); the
+  same sentences are not tried again on their own, only by a sync: `POST .../voice-over/sync` (the **Generate** button
+  of each pending scene in the Voice tab, a voice download), an export, or `set_voice_over`. A success sends
+  `project-changed`.
 - Track: `track.wav`, the sentences laid at their times over silence, one per project, rebuilt when its lines change.
+  Sentences that overlap (one running into the next scene's voice-over) are summed; where the sum would pass full
+  scale, the shared stretch is lowered just enough (one gain for the stretch, 20 ms linear ramps on each side) instead
+  of being clipped. Without overlap, the samples are the sentences' own.
   The preview plays it in a second `<audio>` that follows the video clock (`src/editor/lib/voiceOver.ts`).
 - Music under the voice: `voiceSpans` merges back-to-back sentences, `duckGain` gives the music `musicLevel` inside a
   span with 0.25 s linear ramps (`src/shared/voiceOver.ts`), in the preview and in the MP4 (`duckExpression`, a
   `volume` expression). The render's voice branch has no `loudnorm` (it turns the digital silence between sentences
-  into garbage); the mix ends with `alimiter=limit=0.95:level=disabled` (the default auto-level would undo the ducking).
+  into garbage); the voice alone and the mix with the music both end with `alimiter=limit=0.95:level=disabled` (the
+  default auto-level would undo the ducking). A range where no sentence falls gets no voice input at all, so the MP4
+  does not depend on what a given ffmpeg does with an input sought past its end.
 - Scenes get `voiceOver` (`{ text, lines }` in scene seconds) in their props; the agent sets text and timing with
   `set_voice_over` and reads the sentence times in its turn context and `get_project`.
 

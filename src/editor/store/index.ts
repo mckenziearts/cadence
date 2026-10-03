@@ -96,7 +96,7 @@ export interface EditorState {
   publishing: Publications;
   music: { status: MusicStatus; error: string | null };
   /** Piper's latest run on the open project. */
-  voiceOver: { status: VoiceOverStatus; error: string | null };
+  voiceOver: { status: VoiceOverStatus };
   versionsTick: number;
   assetsTick: number;
   cost: number | null;
@@ -172,7 +172,7 @@ export const useStore = create<EditorState>()(() => ({
   renders: { jobs: [], files: [] },
   publishing: { jobs: [], publications: [] },
   music: { status: 'idle', error: null },
-  voiceOver: { status: 'idle', error: null },
+  voiceOver: { status: 'idle' },
   versionsTick: 0,
   assetsTick: 0,
   cost: null,
