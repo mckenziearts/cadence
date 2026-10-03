@@ -166,19 +166,23 @@ export interface HitOpts {
   pan?: number;
 }
 
-/** Kick (or a sub boom): a sine falling from `from` to `to` Hz, a noise click, soft saturation. */
+/**
+ * Kick (or a sub boom): a sine falling from `from` to `to` Hz, a noise click, soft saturation. With `to` on a note and
+ * `choke` seconds before the next one, an 808: the next note cuts it.
+ */
 export function kick(
   bus: Stereo,
   t: number,
   rand: Rand,
-  o: HitOpts & { from?: number; to?: number; drop?: number; decay?: number; drive?: number; click?: number } = {},
+  o: HitOpts & { from?: number; to?: number; drop?: number; decay?: number; drive?: number; click?: number; choke?: number } = {},
 ): void {
-  const { vel = 1, from = 150, to = 48, drop = 0.035, decay = 0.28, drive = 2, click = 0.4 } = o;
+  const { vel = 1, from = 150, to = 48, drop = 0.035, decay = 0.28, drive = 2, click = 0.4, choke = Infinity } = o;
   const norm = Math.tanh(drive);
   let phase = 0;
-  voice(bus, t, decay * 6 + 0.01, o.pan ?? 0, (_, dt) => {
+  voice(bus, t, Math.min(decay * 6, choke + 0.1) + 0.01, o.pan ?? 0, (_, dt) => {
     phase = (phase + (to + (from - to) * Math.exp(-dt / drop)) / SR) % 1;
-    const body = Math.sin(TAU * phase) * Math.min(1, dt / 0.0015) * Math.exp(-dt / decay);
+    const cut = dt < choke ? 1 : Math.exp(-(dt - choke) / 0.015);
+    const body = Math.sin(TAU * phase) * Math.min(1, dt / 0.0015) * Math.exp(-dt / decay) * cut;
     const tick = dt < 0.01 ? click * (rand() * 2 - 1) * Math.exp(-dt / 0.002) : 0;
     return (vel * Math.tanh(drive * (body + tick))) / norm;
   });

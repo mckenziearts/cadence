@@ -142,5 +142,101 @@
         "duration": 59.294
       }
     ]
+  },
+  {
+    "id": "elan",
+    "name": "Élan",
+    "style": "Pop corporate",
+    "use": "Présentation, startup",
+    "bpm": 115,
+    "versions": [
+      {
+        "file": "elan-17s.m4a",
+        "bars": 8,
+        "duration": 16.696
+      },
+      {
+        "file": "elan-29s.m4a",
+        "bars": 14,
+        "duration": 29.217
+      },
+      {
+        "file": "elan-58s.m4a",
+        "bars": 28,
+        "duration": 58.435
+      }
+    ]
+  },
+  {
+    "id": "titan",
+    "name": "Titan",
+    "style": "Cinématique épique",
+    "use": "Bande-annonce, lancement",
+    "bpm": 110,
+    "versions": [
+      {
+        "file": "titan-13s.m4a",
+        "bars": 6,
+        "duration": 13.091
+      },
+      {
+        "file": "titan-31s.m4a",
+        "bars": 14,
+        "duration": 30.545
+      },
+      {
+        "file": "titan-61s.m4a",
+        "bars": 28,
+        "duration": 61.091
+      }
+    ]
+  },
+  {
+    "id": "bitume",
+    "name": "Bitume",
+    "style": "Trap",
+    "use": "Mode, streetwear",
+    "bpm": 160,
+    "versions": [
+      {
+        "file": "bitume-15s.m4a",
+        "bars": 10,
+        "duration": 15
+      },
+      {
+        "file": "bitume-30s.m4a",
+        "bars": 20,
+        "duration": 30
+      },
+      {
+        "file": "bitume-60s.m4a",
+        "bars": 40,
+        "duration": 60
+      }
+    ]
+  },
+  {
+    "id": "prisme",
+    "name": "Prisme",
+    "style": "Future bass",
+    "use": "Appli, réseaux sociaux",
+    "bpm": 156,
+    "versions": [
+      {
+        "file": "prisme-15s.m4a",
+        "bars": 10,
+        "duration": 15.385
+      },
+      {
+        "file": "prisme-31s.m4a",
+        "bars": 20,
+        "duration": 30.769
+      },
+      {
+        "file": "prisme-62s.m4a",
+        "bars": 40,
+        "duration": 61.538
+      }
+    ]
   }
 ]

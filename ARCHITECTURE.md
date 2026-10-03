@@ -568,7 +568,7 @@ The analysis runs in a worker thread (`server/music/worker.mjs`, JavaScript so t
 starts a worker without the parent's `--import` hooks): its DSP would hold the server for about 1 s per 10 minutes of
 audio, and the memory it peaks at goes away with the worker. An upload is written to disk as it arrives.
 
-Preset soundtracks (Music panel, « Ou choisissez une ambiance »): six styles composed in code by
+Preset soundtracks (Music panel, « Ou choisissez une ambiance »): ten styles composed in code by
 `server/music/soundtracks.ts` on a small offline synthesizer (`synth.ts`: PolyBLEP oscillators, SVF and RBJ filters,
 drum and FM voices, Freeverb, ping-pong delay, sidechain, BS.1770 loudness, look-ahead limiter), each in versions of
 about 15, 30 and 60 s: an even number of bars, the last one a final hit, mastered to −16 LUFS and encoded to AAC by
