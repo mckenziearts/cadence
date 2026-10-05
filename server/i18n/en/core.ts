@@ -22,5 +22,6 @@ export default {
   usage: {
     notSaved: '[cadence] Usage not recorded:',
   },
+  editorRootDev: 'editorRoot and dev cannot be combined: dev mode only serves the Cadence editor.',
   windows: 'Cadence runs on macOS and Linux. On Windows, run it in WSL 2.',
 } satisfies typeof fr;

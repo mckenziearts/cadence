@@ -39,6 +39,8 @@ export async function builtEditor(root: string): Promise<EditorApp> {
     envDir: false,
     logLevel: 'warn',
     plugins: [react(), tailwindcss()],
+    // A host app (editorRoot) has its own react and react-dom: one copy, else hooks fail ("Invalid hook call").
+    resolve: { dedupe: ['react', 'react-dom'] },
     build: {
       write: false,
       copyPublicDir: false,

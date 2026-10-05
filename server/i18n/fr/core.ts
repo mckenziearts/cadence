@@ -20,5 +20,6 @@ export default {
   usage: {
     notSaved: '[cadence] Consommation non enregistrée :',
   },
+  editorRootDev: "editorRoot et dev ne vont pas ensemble : le mode dev sert uniquement l'éditeur de Cadence.",
   windows: 'Cadence tourne sous macOS et Linux. Sous Windows, lancez-le dans WSL 2.',
 };

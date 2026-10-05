@@ -47,6 +47,8 @@ export type StartOptions = Partial<CadenceConfig> & {
   quiet?: boolean;
   /** `npm run dev`: the editor from Vite's dev server and React's development build, for work on Cadence itself. */
   dev?: boolean;
+  /** A host app's folder with its own index.html, built instead of the core's (production build only, not with `dev`). */
+  editorRoot?: string;
   provider?: AgentProvider;
   /** Where brand builds get repositories (tests: fakes that never call gh, glab or git). */
   brandSources?: Partial<Record<GitHost, BrandSource>>;
@@ -95,12 +97,14 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
   const {
     quiet = false,
     dev = false,
+    editorRoot,
     provider: customProvider,
     brandSources: customSources,
     networks: customNetworks,
     speech,
     ...overrides
   } = options;
+  if (dev && editorRoot) throw new Error(m().core.editorRootDev);
   // Scene URLs are /@fs<absolute path>, which a Windows path never matches: no scene would load.
   if (process.platform === 'win32') throw new Error(m().core.windows);
   // Vite reads NODE_ENV, and sets it when unset, once per process: set before any Vite call, it decides the React build
@@ -132,7 +136,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const forced = process.env.CADENCE_LANGUAGE;
     const chosen = isLanguage(forced) ? forced : (await settings.get()).language;
     if (chosen) setLanguage(chosen);
-    const built = dev ? null : await builtEditor(config.root);
+    const built = dev ? null : await builtEditor(editorRoot ?? config.root);
     vite = await createVite({ config });
     const editor = built ?? devEditor(vite, config.root);
     capture = new PlaywrightCapture({ config, store });

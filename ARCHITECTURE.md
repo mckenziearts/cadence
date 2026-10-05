@@ -76,7 +76,7 @@ cadence/
     frame/kit.tsx           kit sheet app (kit.html)
     frame/texts.ts          the frame and kit pages' error texts, in the page's <html lang>
     frame/editor.ts         the editor that embeds a frame or kit page: its origins, and the one to post to
-    editor/                 editor app (React + Tailwind v4, French and English UI)
+    editor/                 editor app (React + Tailwind v4, French and English UI); index.ts is what a host app imports
     editor/i18n/            useT() and t(), the fr/ and en/ dictionaries by area, links.tsx
     editor/soundtracks/     preset soundtracks (AAC) and presets.json, written by `soundtracks`
   brands/<id>/              brands (see "Brands"): cadence ships, the others stay on each machine
@@ -631,9 +631,28 @@ or `en_US-joe-medium`). Piper (GPL-3.0) is never shipped: each user installs it 
 
 `render` starts a quiet server on free ports (`port 0`).
 
-`startServer(options)` accepts `Partial<CadenceConfig>` plus `{ quiet?: boolean; provider?: AgentProvider }` and
-returns `{ config, services, editorToken, close() }` (`close()` cancels renders and stops agent turns first). Ports may be 0: servers listen first, then origins are computed and the
+`startServer(options)` accepts `Partial<CadenceConfig>` plus `{ quiet?: boolean; provider?: AgentProvider }` and the
+hooks of "Embedding Cadence", and returns `{ config, services, editorToken, close() }` (`close()` cancels renders and stops agent turns first). Ports may be 0: servers listen first, then origins are computed and the
 dependent services are created.
+
+## Embedding Cadence
+
+A host app can run Cadence inside its own shell: it calls `startServer()` with options that shape the core and builds
+its own editor page on top of the core's components. These options and the exports of `src/editor/index.ts` are public
+contract: removing or reshaping one is a major version.
+
+- `editorRoot`: a folder with the host's own `index.html`, built instead of the core's at every start (the same
+  in-memory production build, `server/editor.ts`) and served with the same token, frame-origin metas and guards. Its
+  scripts import the core editor through `src/editor/index.ts`, which exports `App`, `api`, `ApiError`, `useStore` and
+  `useT` and nothing else; an export is added when a host needs it.
+- CSS: the host stylesheet imports the core's (`@import '<core>/src/editor/styles.css';`) and adds `@source './';` for
+  its own files. Tailwind only generates the classes it finds in scanned sources, and the core stylesheet scans
+  `src/editor/` only: without its own `@source`, the host's screens come out unstyled.
+- React: the host installs `react` and `react-dom` at the exact versions of the core's `package.json`. The build
+  resolves both from `editorRoot` (`resolve.dedupe`), so the core components run on the host's copy: one React in the
+  bundle, where two would leave a blank editor ("Invalid hook call"). `tests/server/editor-root.test.ts` checks it.
+- `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
+- The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 
 ## Tests
 
