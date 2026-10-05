@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { plural } from '../../lib/format';
 import type fr from '../fr/shell';
 
@@ -82,9 +83,9 @@ export default {
     deleteConfirm: 'Delete project?',
     deleted: (name: string) => `Project "${name}" deleted (the folder is in projects/.trash)`,
     pitch: {
-      title: (
+      title: (agents: ReactNode): ReactNode => (
         <>
-          Describe a video, <span className="text-now">Claude writes it scene by scene.</span>
+          Describe a video, <span className="text-now">{agents} writes it scene by scene.</span>
         </>
       ),
       body: 'Each scene is a component that draws a picture for a given instant, to the millisecond. Animations lock onto the music, cuts become invisible, and each brand comes in every format.',

@@ -1,13 +1,14 @@
 // Projects home: one card per project (a frame of its first scene), search and brand filter; the pitch before the first.
 import clsx from 'clsx';
 import { Plus, Search, Trash2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { BrandSummary, ProjectSummary } from '../../shared/types';
 import { api } from '../api';
 import { useT } from '../i18n';
 import { relative, secsLabel } from '../lib/format';
 import { NONE, useStore } from '../store';
 import { openModal, toast } from '../store/ui';
+import { AGENTS } from './agents';
 import { BrandMark, Logo } from './TopBar';
 import { Button, ConfirmButton, Segmented, fieldBase } from './ui';
 
@@ -176,11 +177,17 @@ function Cover({ project }: { project: ProjectSummary }) {
 /** Before the first project: what Cadence does, and a start from each brand. */
 function Pitch({ brands }: { brands: BrandSummary[] }) {
   const t = useT();
+  const picker = useStore((s) => s.app?.features.agentPicker ?? true);
+  const agent = useStore((s) => s.app?.settings.agent ?? 'claude-code');
+  // A host that hides the agent choice runs one agent: the pitch names that one.
+  const names = AGENTS.filter((a) => (picker ? !a.soon : a.id === agent)).map((a) => a.name);
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-grid-fade">
       <div className="mx-auto max-w-3xl px-8 py-16">
         <Logo className="size-11" />
-        <h1 className="display-caps mt-8 text-5xl/[1.05] text-balance text-ink">{t.shell.home.pitch.title}</h1>
+        <h1 className="display-caps mt-8 text-5xl/[1.05] text-balance text-ink">
+          {t.shell.home.pitch.title(<AgentNames names={names} />)}
+        </h1>
         <p className="mt-5 max-w-xl text-[15px]/6 text-pretty text-ink-2">{t.shell.home.pitch.body}</p>
         <Button
           variant="primary"
@@ -227,5 +234,48 @@ function Pitch({ brands }: { brands: BrandSummary[] }) {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The agents a video can be written with, one after the other in the same box, so the line never reflows. One round of
+ * 2 s turns, back to the first, then still: motion past 5 s needs a pause control (WCAG 2.2.2), which a third name would
+ * reach. Screen readers and reduced motion get them all at once.
+ */
+function AgentNames({ names }: { names: string[] }) {
+  const language = useStore((s) => s.language);
+  const [still] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const [turn, setTurn] = useState(0);
+  const rotates = !still && names.length > 1;
+
+  useEffect(() => {
+    if (!rotates || turn === names.length) return;
+    const id = setTimeout(() => setTurn(turn + 1), 2000);
+    return () => clearTimeout(id);
+  }, [rotates, turn, names.length]);
+
+  const all = new Intl.ListFormat(language, { type: 'disjunction' }).format(names);
+  if (!rotates) return all;
+  const shown = turn % names.length;
+  return (
+    <>
+      <span className="sr-only">{all}</span>
+      <span aria-hidden className="inline-grid">
+        {names.map((name, i) => (
+          // The scenes' SwapWords: the outgoing name lifts away, the next one rises from behind a mask under the line. The
+          // mask closes on the line box (SwapWords leaves room for descenders): capitals have none, the next line starts there.
+          <span key={name} className="[grid-area:1/1] [clip-path:inset(-1em_-0.15em_0_-0.15em)]">
+            <span
+              className={clsx(
+                'inline-block',
+                i === shown ? turn > 0 && 'animate-word-in' : i === (turn - 1) % names.length ? 'animate-word-out' : 'opacity-0',
+              )}
+            >
+              {name}
+            </span>
+          </span>
+        ))}
+      </span>
+    </>
   );
 }

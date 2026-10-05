@@ -125,6 +125,8 @@
   --animate-fade-in: fade-in 125ms cubic-bezier(0.2, 0, 0, 1);
   --animate-pop-in: pop-in 125ms cubic-bezier(0.2, 0, 0, 1);
   --animate-caret: caret 1s steps(1) infinite;
+  --animate-word-in: word-in 250ms 125ms cubic-bezier(0.2, 0, 0, 1) both;
+  --animate-word-out: word-out 125ms cubic-bezier(0.2, 0, 0, 1) both;
 
   @keyframes shimmer {
     0% {
@@ -148,6 +150,18 @@
   @keyframes caret {
     50% {
       opacity: 0;
+    }
+  }
+  @keyframes word-in {
+    from {
+      opacity: 0;
+      transform: translateY(1.35em);
+    }
+  }
+  @keyframes word-out {
+    to {
+      opacity: 0;
+      transform: translateY(-0.28em);
     }
   }
 }

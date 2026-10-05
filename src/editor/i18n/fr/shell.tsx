@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { plural } from '../../lib/format';
 
 /** Around the panels: top bar, projects home, stage, presentation; then what the store, the API client and the events say. */
@@ -85,9 +86,10 @@ export default {
     deleteConfirm: 'Supprimer le projet ?',
     deleted: (name: string) => `Projet « ${name} » supprimé (le dossier est dans projects/.trash)`,
     pitch: {
-      title: (
+      /** `agents` names the agents a video can be written with. */
+      title: (agents: ReactNode): ReactNode => (
         <>
-          Décrivez une vidéo, <span className="text-now">Claude l’écrit scène par scène.</span>
+          Décrivez une vidéo, <span className="text-now">{agents} l’écrit scène par scène.</span>
         </>
       ),
       body: 'Chaque scène est un composant qui dessine une image pour un instant donné, à la milliseconde. Les animations se calent sur la musique, les coupes deviennent invisibles, et chaque marque se décline dans tous les formats.',

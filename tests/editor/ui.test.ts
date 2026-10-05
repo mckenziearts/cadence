@@ -938,7 +938,7 @@ describe('preview', () => {
 describe('features', () => {
   // The same lookups with every feature on, then off: a lookup that finds nothing when its section is on would make the
   // second run prove nothing.
-  async function sectionCounts(features: Features): Promise<Record<string, number>> {
+  async function sectionCounts(features: Features): Promise<{ counts: Record<string, number>; codexPitch: number }> {
     const t = await makeRoot();
     let hosted: RunningServer | undefined;
     try {
@@ -956,6 +956,8 @@ describe('features', () => {
         brandSources: { github: brandSource, gitlab: glabMissing },
         networks: { youtube: fakeNetwork() },
         features,
+        // No Codex CLI behind the agent picked below: its model list stays empty.
+        codexPath: path.join(stateDir, 'no-codex'),
       });
       // A network with its keys keeps its connect button: only the keys controls go.
       const saved = await fetch(`${hosted.config.editorOrigin}/api/networks/youtube/app`, {
@@ -964,6 +966,12 @@ describe('features', () => {
         body: JSON.stringify({ clientId: 'e2e-client', clientSecret: 'e2e-secret' }),
       });
       assert.equal(saved.status, 200);
+      const agent = await fetch(`${hosted.config.editorOrigin}/api/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': hosted.editorToken },
+        body: JSON.stringify({ agent: 'codex' }),
+      });
+      assert.equal(agent.status, 200);
       const counts: Record<string, number> = {};
       const page = await newPage();
       await page.goto(`${hosted.config.editorOrigin}/#/@profil`);
@@ -977,7 +985,15 @@ describe('features', () => {
       counts['profile keys'] = await page.getByRole('button', { name: /^(Configurer|Clés)$/ }).count();
 
       await page.goto(`${hosted.config.editorOrigin}/#/`);
-      await page.getByRole('button', { name: 'Créer un projet' }).click({ timeout: 60_000 });
+      await page.getByRole('button', { name: 'Créer un projet' }).waitFor({ timeout: 60_000 });
+      counts['pitch agents'] = await page
+        .getByRole('heading', { name: 'Décrivez une vidéo, Claude Code ou Codex l’écrit scène par scène.' })
+        .count();
+      // Without the choice, the pitch names the one agent the host runs: Codex, not the first of the list.
+      const codexPitch = await page
+        .getByRole('heading', { name: 'Décrivez une vidéo, Codex l’écrit scène par scène.', exact: true })
+        .count();
+      await page.getByRole('button', { name: 'Créer un projet' }).click();
       const project = page.getByRole('dialog', { name: 'Nouveau projet' });
       await project.getByLabel('Nom du projet').waitFor();
       counts['new project agent'] = await project.getByRole('heading', { name: 'Assistant IA', exact: true }).count();
@@ -986,7 +1002,7 @@ describe('features', () => {
       await brand.getByText('acme/e2e-site').waitFor();
       counts['new brand agent'] = await brand.getByRole('heading', { name: 'Assistant IA', exact: true }).count();
       await page.context().close();
-      return counts;
+      return { counts, codexPitch };
     } finally {
       await hosted?.close();
       await t.cleanup();
@@ -994,11 +1010,96 @@ describe('features', () => {
   }
 
   it('shows the agent choice, the Git accounts and the network app keys by default', { timeout: 180_000 }, async () => {
-    for (const [lookup, count] of Object.entries(await sectionCounts(DEFAULT_FEATURES))) assert.ok(count > 0, lookup);
+    const { counts, codexPitch } = await sectionCounts(DEFAULT_FEATURES);
+    for (const [lookup, count] of Object.entries(counts)) assert.ok(count > 0, lookup);
+    assert.equal(codexPitch, 0);
   });
 
   it('hides the agent choice, the Git accounts and the network app keys a host turns off', { timeout: 180_000 }, async () => {
-    const counts = await sectionCounts({ agentPicker: false, gitSources: false, networkApps: false });
+    const { counts, codexPitch } = await sectionCounts({ agentPicker: false, gitSources: false, networkApps: false });
     for (const [lookup, count] of Object.entries(counts)) assert.equal(count, 0, lookup);
+    assert.equal(codexPitch, 1);
+  });
+});
+
+describe('pitch', () => {
+  const title = 'Décrivez une vidéo, Claude Code ou Codex l’écrit scène par scène.';
+  let t: Awaited<ReturnType<typeof makeRoot>>;
+  let hosted: RunningServer;
+
+  // No project: the home shows the pitch.
+  before(async () => {
+    t = await makeRoot();
+    const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
+    hosted = await startServer({
+      root: ROOT,
+      projectsDir,
+      brandsDir,
+      templatesDir,
+      stateDir,
+      editorPort: 0,
+      framePort: 0,
+      quiet: true,
+      provider,
+    });
+  });
+
+  after(async () => {
+    await hosted?.close();
+    await t?.cleanup();
+  });
+
+  it('turns through the agent names once, then stays on the first', { timeout: 120_000 }, async () => {
+    const page = await newPage();
+    // The turns run on the page's timers only: the clock stands still until the test moves it.
+    const start = Date.now();
+    await page.clock.install({ time: start });
+    await page.clock.pauseAt(start + 1000);
+    await page.goto(`${hosted.config.editorOrigin}/#/`);
+    const heading = page.getByRole('heading', { name: title, exact: true });
+    await heading.waitFor({ timeout: 60_000 });
+    const names = heading.locator('[aria-hidden] > span > span');
+    // Each name with its opacity once its animation has ended.
+    const shown = (expected: string[]) =>
+      names.evaluateAll(
+        (spans, expected) =>
+          spans.every((span) => span.getAnimations().every((a) => a.playState === 'finished')) &&
+          spans.map((span) => `${span.textContent} ${getComputedStyle(span).opacity}`).join(', ') === expected.join(', '),
+        expected,
+      );
+    const settle = async (expected: string[]) => {
+      for (let i = 0; i < 100 && !(await shown(expected)); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(
+        await names.evaluateAll((spans) => spans.map((span) => `${span.textContent} ${getComputedStyle(span).opacity}`)),
+        expected,
+      );
+    };
+
+    await settle(['Claude Code 1', 'Codex 0']);
+    await page.clock.runFor(2000);
+    await settle(['Claude Code 0', 'Codex 1']);
+    await page.clock.runFor(2000);
+    await settle(['Claude Code 1', 'Codex 0']);
+    // Back on the first, the title stays still: a next turn would show Codex.
+    await page.clock.runFor(10_000);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await settle(['Claude Code 1', 'Codex 0']);
+    assert.equal(await heading.count(), 1);
+    await page.context().close();
+  });
+
+  it('shows every agent name at once under reduced motion', { timeout: 120_000 }, async () => {
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      locale: 'fr-FR',
+      reducedMotion: 'reduce',
+    });
+    const page = await context.newPage();
+    await page.goto(`${hosted.config.editorOrigin}/#/`);
+    const heading = page.getByRole('heading', { name: title, exact: true });
+    await heading.waitFor({ timeout: 60_000 });
+    assert.equal(await heading.locator('[aria-hidden]').count(), 0);
+    assert.equal(await heading.textContent(), title);
+    await context.close();
   });
 });
