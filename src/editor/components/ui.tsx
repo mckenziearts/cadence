@@ -421,7 +421,7 @@ export function Modal(props: {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-ink/40 p-6"
+      className="no-drag fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-ink/40 p-6"
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

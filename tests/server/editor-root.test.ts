@@ -32,7 +32,7 @@ async function writeHost(dir: string): Promise<void> {
   );
   await fs.writeFile(
     path.join(src, 'main.tsx'),
-    `import { createRoot } from 'react-dom/client';\nimport { App } from '${core}/index';\nimport './styles.css';\n\nfunction X() {\n  return <p>${HOST_PAGE}</p>;\n}\n\ncreateRoot(document.getElementById('root')!).render(\n  <div className="bg-[#c0ffee]">\n    <App pages={{ '@x': X }} />\n  </div>,\n);\n`,
+    `import { createRoot } from 'react-dom/client';\nimport { App, Profile } from '${core}/index';\nimport './styles.css';\n\nfunction X() {\n  return <p>${HOST_PAGE}</p>;\n}\n\ncreateRoot(document.getElementById('root')!).render(\n  <div className="bg-[#c0ffee]">\n    <App pages={{ '@x': X, '@moi': () => <Profile /> }} />\n  </div>,\n);\n`,
   );
   await fs.writeFile(path.join(src, 'styles.css'), `@import '${core}/styles.css';\n@source './';\n`);
   for (const name of ['react', 'react-dom', 'scheduler'])
@@ -115,13 +115,15 @@ test('the host bundle carries its pages', () => {
   assert.ok(hostBuild.js.includes(HOST_PAGE));
 });
 
-test('a host page opens from the hash, an unknown page goes home', async (t) => {
+test('a host page opens from the hash, the core Profile too, an unknown page goes home', async (t) => {
   const browser = await chromium.launch().catch(() => null);
   if (!browser) return t.skip('Chromium missing (npm run setup)');
   try {
     const page = await browser.newPage();
     await page.goto(`${server.config.editorOrigin}/#/@x`);
     await page.getByText(HOST_PAGE, { exact: true }).waitFor({ timeout: 30_000 });
+    await page.goto(`${server.config.editorOrigin}/#/@moi`);
+    await page.getByRole('listitem', { name: 'YouTube' }).waitFor({ timeout: 30_000 });
     await page.goto(`${server.config.editorOrigin}/#/@nope`);
     await page.waitForFunction(() => location.hash === '#/', null, { timeout: 30_000 });
     assert.equal(await page.getByText(HOST_PAGE, { exact: true }).count(), 0);

@@ -139,8 +139,9 @@ function AgentUsage({ agent }: { agent: AgentId }) {
   const u = t.profile.usage;
   const name = AGENTS.find((a) => a.id === agent)?.name ?? agent;
   const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   // Codex and the others run on a subscription with no per-turn cost: only Claude Code reports dollars.
-  const showCost = agent === 'claude-code';
+  const showCost = costs && agent === 'claude-code';
   useEffect(() => {
     setUsage(null);
     void api.usage(agent).then(setUsage, () => undefined);
@@ -152,7 +153,9 @@ function AgentUsage({ agent }: { agent: AgentId }) {
       <h2 id="profile-usage" className="display-caps text-[22px]/7 text-ink">
         {u.title(name)}
       </h2>
-      <p className="mt-1 text-[13px] text-ink-3">{showCost ? u.hintCost : u.hintTokens}</p>
+      {(showCost || agent !== 'claude-code') && (
+        <p className="mt-1 text-[13px] text-ink-3">{showCost ? u.hintCost : u.hintTokens}</p>
+      )}
       {usage && (
         <>
           <div className="mt-4 max-w-3xl overflow-x-auto border-2 border-ink bg-white shadow-hard">

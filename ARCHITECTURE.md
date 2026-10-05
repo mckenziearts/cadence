@@ -646,8 +646,9 @@ contract: removing or reshaping one is a major version.
 
 - `editorRoot`: a folder with the host's own `index.html`, built instead of the core's at every start (the same
   in-memory production build, `server/editor.ts`) and served with the same token, frame-origin metas and guards. Its
-  scripts import the core editor through `src/editor/index.ts`, which exports `App`, `api`, `ApiError`, `useStore` and
-  `useT` (and the `Pages` type) and nothing else; an export is added when a host needs it.
+  scripts import the core editor through `src/editor/index.ts`, which exports `App`, `Profile`, `api`, `ApiError`,
+  `useStore` and `useT` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
+  the core's `@profil` page, for a host page that wraps it rather than replacing it.
 - `pages`: `<App pages={{ '@compte': Account }} />` adds the host's screens to the editor's hash router. A page id
   starts with `@`, which no project id can, so a page never shadows a project; `#/@compte` opens it in place of the
   home (closing the open project), a reload keeps it, and an id that neither the host nor the core provides goes home
@@ -673,11 +674,19 @@ contract: removing or reshaping one is a major version.
   `DEFAULT_FEATURES` (every flag `true`) live in `src/shared/types.ts`; a missing key stays on, and the merged object
   reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the
   Profile and the agent choice of the new project and new brand dialogs, `gitSources` the Profile's Git accounts,
-  `networkApps` the buttons that edit a network app's keys (connect and disconnect stay). Flags shape the UI only: the
-  routes behind a hidden section still answer, so a flag is never a security boundary. A flag is an `if` around an
+  `networkApps` the buttons that edit a network app's keys (connect and disconnect stay), `modelPicker` the model and
+  effort choice of the settings (both chat scopes) and of the chat composers, `costs` every dollar amount (chat
+  messages, versions, brand build progress, Profile usage, the project total in the top bar). Flags shape the UI only:
+  the routes behind a hidden section still answer, so a flag is never a security boundary. A flag is an `if` around an
   existing section, with no new component or string; adding one is a minor version. Flags stay few and coarse: a host
   that would need more than twelve is better served by a page of its own (`pages`). `tests/server/features.test.ts`
   checks the merge, `tests/editor/ui.test.ts` the hidden sections in Chromium.
+- Title bar: a host window without a native title bar drags by the editor's top bar. The `TopBar` header is a window
+  drag region (`app-region: drag`, the `titlebar` utility of `src/editor/styles.css`) whose links, buttons, fields,
+  focusable elements and menus are `no-drag`, and layers that cover it (modal backdrops, the lightbox, the
+  presentation) are `no-drag` too. The header pads its start by `var(--titlebar-inset, 0px)`: the host sets
+  `--titlebar-inset` on `:root` to the width of its window buttons. This is CSS, not a flag: a browser ignores
+  `app-region` and the inset defaults to 0, so nothing changes there. `tests/editor/ui.test.ts` checks both in Chromium.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand
