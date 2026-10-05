@@ -121,15 +121,18 @@ Guards (editor origin, `server/http.ts`):
 - `/mcp` requires `Authorization: Bearer <mcpToken>`; the token resolves to a scope (see MCP). Requests with an
   `Origin` header are rejected (browsers never call MCP).
 - `/frame.html` and `/kit.html` return 404 on the editor origin: scene and brand code never run next to the token.
+- The editor HTML is sent with the CSP `frame-src <frame origin>; frame-ancestors 'none'`: the previews show the frame
+  origin only (scene code cannot send its own frame to another site), and no other site may embed the editor.
 - `GET /oauth/<network>/callback` is where a network sends the person back after the consent page: a cross-site
   navigation, so outside `/api`. It acts only on a state issued by `POST /api/networks/:id/connect` (editor token),
   single use, 10 minutes, bound to its network, and answers a small HTML page (CSP `default-src 'none'`, no referrer).
 
 Frame origin (`server/frames/frameServer.ts`): Host check, GET/HEAD only, never serves `/api`, `/mcp`,
-`/index.html`, `/__open-in-editor`. `frame.html` is sent with a CSP: `default-src 'self'; script-src 'self';
-style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
-media-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors <editor
-origins>` (both `127.0.0.1` and `localhost` editor hosts), so scene code cannot fetch other origins and only the
+`/index.html`, `/__open-in-editor`. Every response is sent with a CSP, not only `frame.html` and `kit.html` (scene code
+could load any other document of the origin in an iframe and send requests from there): `default-src 'self'; script-src
+'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
+media-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors <editor origins>`
+(both `127.0.0.1` and `localhost` editor hosts), so scene code cannot fetch other origins and only the
 editor may embed frames. HMR is off, and the Cadence plugin removes the Vite client's websocket dial (in middleware
 mode it would target port 24678 and log an uncaught error on every page). `<meta name="cadence-editor-origin">` (space-separated list) drives postMessage origin checks.
 Font files (`.woff2`, `.woff`, `.ttf`, `.otf`) answer `Access-Control-Allow-Origin` to the editor origins, and only
@@ -137,12 +140,12 @@ them: the brand panel shows the brand fonts (see "Brand builds").
 The editor origin also answers 404 to `/__open-in-editor` (any website could otherwise launch the user's editor).
 
 Capture pages (`server/capture/capture.ts`, thumbnails, agent frames, seams, renders) are locked down beyond the CSP,
-because a worker script has no CSP and WebRTC ignores it: every request that is not for the frame origin is aborted
-(`context.route('**')`), other connections go to a dead proxy (`127.0.0.1:9`, frame host bypassed), WebRTC may not
-use UDP (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`), service workers are blocked and popups are
-closed. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first
-frame) and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE` (default `fr-FR`, checked at
-start); the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
+which WebRTC ignores and which does not stop navigations or popups: every request that is not for the frame origin is
+aborted (`context.route('**')`), other connections go to a dead proxy (`127.0.0.1:9`, frame host bypassed), WebRTC may
+not use UDP (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`), service workers are blocked and popups are
+closed. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first frame)
+and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE` (default `fr-FR`, checked at start);
+the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
 
 Reference captures (`screenshotUrl`) check every request by origin: host names are resolved, link-local,
 unspecified and multicast addresses (IPv4-mapped included) are refused, and so are Cadence's own ports; other

@@ -110,6 +110,20 @@ describe('frame origin', () => {
     assert.match(html, /\/src\/frame\/main\.tsx/);
   });
 
+  it('puts the frame CSP on every response, not only on the pages', async () => {
+    const csp = (await request(`/frame.html?project=${id}`)).headers['content-security-policy'];
+    assert.ok(csp);
+    for (const url of [
+      `/frame-api/projects/${id}`,
+      `/@fs${h.store.dir(id)}/assets/square.svg`,
+      '/src/frame/main.tsx',
+      `/@fs${h.config.root}/package.json`,
+      '/api/state',
+    ]) {
+      assert.equal((await request(url)).headers['content-security-policy'], csp, url);
+    }
+  });
+
   it('gives the frame read-only project data and diagnostics', async () => {
     const res = await fetch(`${h.config.frameOrigin}/frame-api/projects/${id}`);
     const data = (await res.json()) as {
@@ -395,6 +409,44 @@ describe('frame CSP', () => {
     assert.ok(violations.some((v) => v.startsWith('connect-src') && v.includes(h.config.editorOrigin)));
     assert.ok(violations.some((v) => v.startsWith('img-src') && v.includes(h.config.editorOrigin)));
     await context.close();
+  });
+
+  it('keeps scene code from fetching another site through another document of the frame origin', async () => {
+    let requests = 0;
+    const other = http.createServer((_req, res) => {
+      requests++;
+      res.end();
+    });
+    await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
+    const page = await open({ scene: 'blue' });
+    try {
+      // Project data and a project asset, loaded as documents next to the scene to send a request from there. Their
+      // frame-ancestors refuses them under a scene, and their connect-src (the CSP test above) would stop the request.
+      await page.evaluate(
+        ([sources, url]) =>
+          Promise.all(
+            sources.map(async (src) => {
+              const frame = Object.assign(document.createElement('iframe'), { src });
+              const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+              document.body.append(frame);
+              await loaded;
+              try {
+                await frame.contentWindow!.fetch(url, { method: 'POST', body: 'secret' });
+              } catch {
+                // Refused, or sent and refused a CORS answer: only the count of requests tells.
+              }
+            }),
+          ),
+        [
+          [`/frame-api/projects/${id}`, `/@fs${h.store.dir(id)}/assets/square.svg`],
+          `http://127.0.0.1:${(other.address() as AddressInfo).port}/`,
+        ] as const,
+      );
+      assert.equal(requests, 0);
+    } finally {
+      await page.context().close();
+      other.close();
+    }
   });
 });
 

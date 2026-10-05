@@ -105,7 +105,8 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
           res.writeHead(200, {
             'Content-Type': 'text/html; charset=utf-8',
             'Cache-Control': 'no-store',
-            'Content-Security-Policy': "frame-ancestors 'none'",
+            // The previews show the frame origin only: scene code cannot send its own frame to another site.
+            'Content-Security-Policy': `frame-src ${config.frameOrigin}; frame-ancestors 'none'`,
             'X-Content-Type-Options': 'nosniff',
           });
           res.end(html);

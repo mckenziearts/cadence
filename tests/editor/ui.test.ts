@@ -3,7 +3,10 @@
 // node --import tsx --test tests/editor/ui.test.ts
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -274,6 +277,40 @@ describe('editor', () => {
       assert.equal(new URL(server.config.frameOrigin).hostname, 'localhost');
     } finally {
       await isolated.close();
+    }
+  });
+
+  it('keeps the preview on the frame origin: scene code cannot send it to another site', { timeout: 90_000 }, async () => {
+    let requests = 0;
+    const other = http.createServer((_req, res) => {
+      requests++;
+      res.end();
+    });
+    await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
+    const page = await newPage();
+    try {
+      await open(`${A}/titre`, page);
+      await page.frameLocator('iframe[src*="/frame.html"]').locator('#root').waitFor({ state: 'attached' });
+      await page.evaluate(() => {
+        const w = window as unknown as { violations: string[] };
+        w.violations = [];
+        document.addEventListener('securitypolicyviolation', (e) => w.violations.push(e.effectiveDirective));
+      });
+      const preview = page.frames().find((frame) => frame.url().startsWith(`${server.config.frameOrigin}/frame.html`))!;
+      const outside = `http://127.0.0.1:${(other.address() as AddressInfo).port}/?data=secret`;
+      // Deferred, so the evaluate returns before the frame leaves.
+      await preview.evaluate((url) => void setTimeout(() => location.assign(url)), outside);
+      const outcome = await Promise.race([
+        page
+          .waitForFunction(() => (window as unknown as { violations: string[] }).violations.includes('frame-src'))
+          .then(() => 'blocked'),
+        once(other, 'request').then(() => 'sent'),
+      ]);
+      assert.equal(outcome, 'blocked');
+      assert.equal(requests, 0);
+    } finally {
+      await page.context().close();
+      other.close();
     }
   });
 

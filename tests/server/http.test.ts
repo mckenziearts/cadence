@@ -154,7 +154,8 @@ test('editor HTML carries the token and the frame origin; frame.html and kit.htm
   assert.equal(res.status, 200);
   assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
   assert.equal(res.headers['cache-control'], 'no-store');
-  assert.equal(res.headers['content-security-policy'], "frame-ancestors 'none'");
+  // The previews may only show the frame origin: scene code cannot send its own frame to another site.
+  assert.equal(res.headers['content-security-policy'], "frame-src http://127.0.0.1:5300; frame-ancestors 'none'");
   assert.match(res.body, new RegExp(`<head>\\s*<meta name="cadence-token" content="${TOKEN}" />`));
   assert.match(res.body, /<meta name="cadence-frame-origin" content="http:\/\/127\.0\.0\.1:5300" \/>/);
   assert.match(res.body, /@vite\/client/, 'transformed by Vite');

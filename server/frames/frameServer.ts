@@ -1,5 +1,5 @@
-// Request handler of the FRAME origin: frame.html (with its CSP), read-only project data for the frame page, and
-// Vite modules (runtime, brands, scenes). Scene code runs here, on an origin that cannot reach the editor API.
+// Request handler of the FRAME origin, every response under its CSP: frame.html, read-only project data for the frame
+// page, and Vite modules (runtime, brands, scenes). Scene code runs here, on an origin that cannot reach the editor API.
 import fs from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
@@ -52,6 +52,9 @@ export function createFrameHandler(deps: {
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // On every response, not only the pages: scene code could load any other document of this origin (project data, an
+    // SVG or HTML asset, an error page) in an iframe and send requests from there.
+    res.setHeader('Content-Security-Policy', frameCsp(config));
     const host = req.headers.host ?? '';
     if (host !== `127.0.0.1:${config.framePort}` && host !== `localhost:${config.framePort}`) {
       return send(res, req, 403, 'text/plain; charset=utf-8', m().core.http.host);
@@ -63,7 +66,6 @@ export function createFrameHandler(deps: {
     const url = req.url ?? '/';
     const { pathname } = new URL(url, 'http://frame');
     if (pathname === '/frame.html' || pathname === '/kit.html') {
-      res.setHeader('Content-Security-Policy', frameCsp(config));
       res.setHeader('Cache-Control', 'no-store');
       return send(
         res,
