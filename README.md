@@ -464,4 +464,6 @@ the server, the preview frame, the scene runtime and the Cadence brand kit.
 
 ## License
 
-Cadence is released under the [MIT license](LICENSE).
+Cadence is released under the [MIT license](LICENSE). Contributions are accepted under the same license, without a
+CLA (see [CONTRIBUTING.md](CONTRIBUTING.md)). The license does not cover the name: a fork that you redistribute takes
+another name than "Cadence".
