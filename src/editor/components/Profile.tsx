@@ -3,7 +3,16 @@
 // connected in a new tab, refreshed on `accounts-changed`.
 import { Check, CircleAlert, CircleCheck, Copy, KeyRound, RefreshCw } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import type { AgentId, AgentStatus, GitAccount, GitHost, NetworkAccount, UsageSummary, UsageTotals } from '../../shared/types';
+import {
+  DEFAULT_FEATURES,
+  type AgentId,
+  type AgentStatus,
+  type GitAccount,
+  type GitHost,
+  type NetworkAccount,
+  type UsageSummary,
+  type UsageTotals,
+} from '../../shared/types';
 import { api } from '../api';
 import { useT } from '../i18n';
 import { External } from '../i18n/links';
@@ -26,6 +35,7 @@ export function Profile() {
   const t = useT();
   const networks = useStore((s) => s.app?.networks ?? NONE);
   const selected = useStore((s) => s.app?.settings.agent ?? 'claude-code');
+  const features = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const [git, setGit] = useState<Record<GitHost, GitAccount> | null>(null);
   const [agents, setAgents] = useState<Record<AgentId, AgentStatus> | null>(null);
   const [checking, setChecking] = useState(false);
@@ -53,53 +63,59 @@ export function Profile() {
         <h1 className="display-caps text-5xl/none text-ink">{t.profile.title}</h1>
         <p className="mt-2 text-[13px] text-ink-3">{t.profile.subtitle}</p>
 
-        <section className="mt-10" aria-labelledby="profile-agents">
-          <div className="flex items-center gap-3">
-            <h2 id="profile-agents" className="display-caps text-[22px]/7 text-ink">
-              {t.profile.agents.title}
-            </h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<RefreshCw className="size-3.5" />}
-              loading={checking}
-              onClick={() => void check()}
-            >
-              {t.common.check}
-            </Button>
-          </div>
-          <p className="mt-1 text-[13px] text-ink-3">{t.profile.agents.hint}</p>
-          <ul className={GRID}>
-            {AGENTS.map((agent) => (
-              <AgentCard key={agent.id} agent={agent} status={agents?.[agent.id]} selected={selected === agent.id} />
-            ))}
-          </ul>
-        </section>
+        {features.agentPicker && (
+          <>
+            <section className="mt-10" aria-labelledby="profile-agents">
+              <div className="flex items-center gap-3">
+                <h2 id="profile-agents" className="display-caps text-[22px]/7 text-ink">
+                  {t.profile.agents.title}
+                </h2>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<RefreshCw className="size-3.5" />}
+                  loading={checking}
+                  onClick={() => void check()}
+                >
+                  {t.common.check}
+                </Button>
+              </div>
+              <p className="mt-1 text-[13px] text-ink-3">{t.profile.agents.hint}</p>
+              <ul className={GRID}>
+                {AGENTS.map((agent) => (
+                  <AgentCard key={agent.id} agent={agent} status={agents?.[agent.id]} selected={selected === agent.id} />
+                ))}
+              </ul>
+            </section>
 
-        <AgentUsage agent={selected} />
+            <AgentUsage agent={selected} />
+          </>
+        )}
 
-        <section className="mt-12" aria-labelledby="profile-git">
-          <div className="flex items-center gap-3">
-            <h2 id="profile-git" className="display-caps text-[22px]/7 text-ink">
-              {t.profile.git}
-            </h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<RefreshCw className="size-3.5" />}
-              loading={checking}
-              onClick={() => void check()}
-            >
-              {t.common.check}
-            </Button>
-          </div>
-          <p className="mt-1 text-[13px] text-ink-3">{t.profile.gitHint}</p>
-          <ul className={GRID}>
-            {GIT_HOSTS.map((host) => (
-              <GitCard key={host.id} host={host} account={git?.[host.id]} />
-            ))}
-          </ul>
-        </section>
+        {features.gitSources && (
+          <section className="mt-12" aria-labelledby="profile-git">
+            <div className="flex items-center gap-3">
+              <h2 id="profile-git" className="display-caps text-[22px]/7 text-ink">
+                {t.profile.git}
+              </h2>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<RefreshCw className="size-3.5" />}
+                loading={checking}
+                onClick={() => void check()}
+              >
+                {t.common.check}
+              </Button>
+            </div>
+            <p className="mt-1 text-[13px] text-ink-3">{t.profile.gitHint}</p>
+            <ul className={GRID}>
+              {GIT_HOSTS.map((host) => (
+                <GitCard key={host.id} host={host} account={git?.[host.id]} />
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section className="mt-12" aria-labelledby="profile-networks">
           <h2 id="profile-networks" className="display-caps text-[22px]/7 text-ink">
@@ -391,6 +407,7 @@ function NetworkCard({ network }: { network: NetworkAccount }) {
   const Logo = NETWORK_LOGOS[network.id];
   const { account } = network;
   const configured = network.clientId !== null;
+  const { networkApps } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
 
   const connect = async () => {
     // Opened in the click itself: a tab opened after a request may count as a popup and be blocked.
@@ -419,9 +436,11 @@ function NetworkCard({ network }: { network: NetworkAccount }) {
     <Card logo={<Logo className="size-8" />} title={network.label} status={status}>
       <div className="flex items-center gap-2">
         {!configured ? (
-          <Button variant="secondary" icon={<KeyRound className="size-4" />} onClick={() => setKeys(true)}>
-            {t.profile.setUp}
-          </Button>
+          networkApps && (
+            <Button variant="secondary" icon={<KeyRound className="size-4" />} onClick={() => setKeys(true)}>
+              {t.profile.setUp}
+            </Button>
+          )
         ) : (
           <>
             {account ? (
@@ -440,9 +459,11 @@ function NetworkCard({ network }: { network: NetworkAccount }) {
                 {texts.connect}
               </Button>
             )}
-            <Button variant="ghost" icon={<KeyRound className="size-3.5" />} onClick={() => setKeys(true)}>
-              {t.profile.keys}
-            </Button>
+            {networkApps && (
+              <Button variant="ghost" icon={<KeyRound className="size-3.5" />} onClick={() => setKeys(true)}>
+                {t.profile.keys}
+              </Button>
+            )}
           </>
         )}
       </div>

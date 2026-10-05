@@ -793,6 +793,21 @@ export interface AgentStatus {
   reason?: 'missing' | 'logged-out' | 'error';
 }
 
+/**
+ * Editor sections a host app can hide (StartOptions.features). They shape the UI only: the routes behind a hidden section
+ * still answer.
+ */
+export interface Features {
+  /** The agent cards and usage on the Profile, and the agent choice of the new project and new brand dialogs. */
+  agentPicker: boolean;
+  /** The Git accounts (gh, glab) on the Profile. */
+  gitSources: boolean;
+  /** The buttons that edit a network app's keys; connect and disconnect stay. */
+  networkApps: boolean;
+}
+
+export const DEFAULT_FEATURES: Features = { agentPicker: true, gitSources: true, networkApps: true };
+
 /** GET /api/state */
 export interface AppState {
   projects: ProjectSummary[];
@@ -806,6 +821,7 @@ export interface AppState {
   /** Brand builds of this run, newest first. */
   brandBuilds: BrandBuild[];
   networks: NetworkAccount[];
+  features: Features;
 }
 
 // Server -> editor events (SSE on /api/events)

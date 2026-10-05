@@ -14,8 +14,16 @@ import type { AgentProvider, BrandSource, SpeechEngine } from '../../server/cont
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
 import { writeWav } from '../../server/voiceover/wav';
-import type { AppState, ChatState, MusicAnalysis, MusicGridData, ProjectState } from '../../src/shared/types';
-import { fakeNetwork } from '../server/helpers';
+import {
+  DEFAULT_FEATURES,
+  type AppState,
+  type ChatState,
+  type Features,
+  type MusicAnalysis,
+  type MusicGridData,
+  type ProjectState,
+} from '../../src/shared/types';
+import { fakeNetwork, makeRoot } from '../server/helpers';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const PREFIX = `e2e-editor-${process.pid}`;
@@ -924,5 +932,73 @@ describe('preview', () => {
     // Stopped: the selection catches up with the playhead.
     await page.waitForFunction((hash) => location.hash === hash, `#/${A}/${second.id}`);
     await page.context().close();
+  });
+});
+
+describe('features', () => {
+  // The same lookups with every feature on, then off: a lookup that finds nothing when its section is on would make the
+  // second run prove nothing.
+  async function sectionCounts(features: Features): Promise<Record<string, number>> {
+    const t = await makeRoot();
+    let hosted: RunningServer | undefined;
+    try {
+      const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
+      hosted = await startServer({
+        root: ROOT,
+        projectsDir,
+        brandsDir,
+        templatesDir,
+        stateDir,
+        editorPort: 0,
+        framePort: 0,
+        quiet: true,
+        provider,
+        brandSources: { github: brandSource, gitlab: glabMissing },
+        networks: { youtube: fakeNetwork() },
+        features,
+      });
+      // A network with its keys keeps its connect button: only the keys controls go.
+      const saved = await fetch(`${hosted.config.editorOrigin}/api/networks/youtube/app`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': hosted.editorToken },
+        body: JSON.stringify({ clientId: 'e2e-client', clientSecret: 'e2e-secret' }),
+      });
+      assert.equal(saved.status, 200);
+      const counts: Record<string, number> = {};
+      const page = await newPage();
+      await page.goto(`${hosted.config.editorOrigin}/#/@profil`);
+      const youtube = page.getByRole('listitem', { name: 'YouTube' });
+      await youtube.getByRole('button', { name: 'Connecter la chaîne' }).waitFor({ timeout: 60_000 });
+      await page.getByRole('listitem', { name: 'LinkedIn' }).waitFor();
+      for (const name of ['Assistant IA', 'Dépôts Git', /^Consommation/]) {
+        counts[`profile ${name}`] = await page.getByRole('heading', { name, exact: true }).count();
+      }
+      counts['profile GitHub'] = await page.getByRole('listitem', { name: 'GitHub' }).count();
+      counts['profile keys'] = await page.getByRole('button', { name: /^(Configurer|Clés)$/ }).count();
+
+      await page.goto(`${hosted.config.editorOrigin}/#/`);
+      await page.getByRole('button', { name: 'Créer un projet' }).click({ timeout: 60_000 });
+      const project = page.getByRole('dialog', { name: 'Nouveau projet' });
+      await project.getByLabel('Nom du projet').waitFor();
+      counts['new project agent'] = await project.getByRole('heading', { name: 'Assistant IA', exact: true }).count();
+      await project.getByRole('button', { name: /Nouvelle marque/ }).click();
+      const brand = page.getByRole('dialog', { name: 'Nouvelle marque' });
+      await brand.getByText('acme/e2e-site').waitFor();
+      counts['new brand agent'] = await brand.getByRole('heading', { name: 'Assistant IA', exact: true }).count();
+      await page.context().close();
+      return counts;
+    } finally {
+      await hosted?.close();
+      await t.cleanup();
+    }
+  }
+
+  it('shows the agent choice, the Git accounts and the network app keys by default', { timeout: 180_000 }, async () => {
+    for (const [lookup, count] of Object.entries(await sectionCounts(DEFAULT_FEATURES))) assert.ok(count > 0, lookup);
+  });
+
+  it('hides the agent choice, the Git accounts and the network app keys a host turns off', { timeout: 180_000 }, async () => {
+    const counts = await sectionCounts({ agentPicker: false, gitSources: false, networkApps: false });
+    for (const [lookup, count] of Object.entries(counts)) assert.equal(count, 0, lookup);
   });
 });

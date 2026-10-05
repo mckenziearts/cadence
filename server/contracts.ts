@@ -625,4 +625,5 @@ export interface ApiDeps {
   /** Compile a scene file through Vite and return the error text (with code frame), or null. */
   diagnose: (file: string) => Promise<string | null>;
   hostApi?: HostApi;
+  features: import('../src/shared/types').Features;
 }

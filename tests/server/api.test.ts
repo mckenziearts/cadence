@@ -31,6 +31,7 @@ import { FileVersionStore } from '../../server/store/versions';
 import { FileUsageLog } from '../../server/usage';
 import { HttpError, pathExists, resolveInside } from '../../server/util';
 import {
+  DEFAULT_FEATURES,
   MODELS,
   NETWORK_IDS,
   type BrandBuild,
@@ -260,6 +261,7 @@ beforeEach(async () => {
     geminiStatus: async () => ({ ok: false, label: 'Gemini', reason: 'missing' as const }),
     models: async () => MODELS,
     diagnose: async (file) => `Erreur : ${file}:3:5`,
+    features: DEFAULT_FEATURES,
   });
   await store.create({ name: 'Démo', brand: null, formats: ['16:9'], fps: 60 });
 });

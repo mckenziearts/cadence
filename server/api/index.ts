@@ -182,6 +182,7 @@ export function createApi(deps: ApiDeps) {
       models: await deps.models(currentSettings.agent),
       brandBuilds: deps.brandBuilds.list(),
       networks,
+      features: deps.features,
     };
     return c.json(state);
   });

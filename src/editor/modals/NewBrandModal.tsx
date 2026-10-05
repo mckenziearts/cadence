@@ -4,7 +4,7 @@
 import clsx from 'clsx';
 import { Check, Lock, Search, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { BrandBuild, GitHost, RepoListing, RepoSummary } from '../../shared/types';
+import { DEFAULT_FEATURES, type BrandBuild, type GitHost, type RepoListing, type RepoSummary } from '../../shared/types';
 import { api, ignore } from '../api';
 import { AgentPicker } from '../components/AgentPicker';
 import { GIT_LOGOS } from '../components/logos';
@@ -39,6 +39,7 @@ const HOSTS: Record<GitHost, { label: string; cli: string; install: string }> = 
 
 function PickRepo({ onStarted }: { onStarted: (build: BrandBuild) => void }) {
   const t = useT();
+  const { agentPicker } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const [host, setHost] = useState<GitHost>('github');
   const [listings, setListings] = useState<Partial<Record<GitHost, RepoListing>>>({});
   const listing = listings[host] ?? null;
@@ -189,10 +190,12 @@ function PickRepo({ onStarted }: { onStarted: (build: BrandBuild) => void }) {
             className={clsx(fieldBase, 'h-9 w-full text-sm')}
           />
         </Field>
-        <section className="space-y-2">
-          <h3 className="display-caps text-[15px] text-ink">{t.profile.agents.title}</h3>
-          <AgentPicker />
-        </section>
+        {agentPicker && (
+          <section className="space-y-2">
+            <h3 className="display-caps text-[15px] text-ink">{t.profile.agents.title}</h3>
+            <AgentPicker />
+          </section>
+        )}
       </form>
     </Modal>
   );

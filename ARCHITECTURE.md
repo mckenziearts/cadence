@@ -666,6 +666,15 @@ contract: removing or reshaping one is a major version.
   `{ error }`; request bodies keep the core's 2 MB limit. A GET only gets the Host and `sec-fetch-site` checks, so a
   host route never changes anything on GET. `tests/server/host-api.test.ts` checks the guards, the errors and both
   refusals.
+- `features`: `startServer({ features: { gitSources: false } })` hides editor sections. `Features` and
+  `DEFAULT_FEATURES` (every flag `true`) live in `src/shared/types.ts`; a missing key stays on, and the merged object
+  reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the
+  Profile and the agent choice of the new project and new brand dialogs, `gitSources` the Profile's Git accounts,
+  `networkApps` the buttons that edit a network app's keys (connect and disconnect stay). Flags shape the UI only: the
+  routes behind a hidden section still answer, so a flag is never a security boundary. A flag is an `if` around an
+  existing section, with no new component or string; adding one is a minor version. Flags stay few and coarse: a host
+  that would need more than twelve is better served by a page of its own (`pages`). `tests/server/features.test.ts`
+  checks the merge, `tests/editor/ui.test.ts` the hidden sections in Chromium.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand

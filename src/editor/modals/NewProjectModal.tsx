@@ -238,10 +238,12 @@ export function NewProjectModal({ brand: initialBrand }: { brand?: string | null
               ))}
           </div>
         </section>
-        <section className="space-y-2">
-          <SectionTitle>{t.profile.agents.title}</SectionTitle>
-          <AgentPicker />
-        </section>
+        {app.features.agentPicker && (
+          <section className="space-y-2">
+            <SectionTitle>{t.profile.agents.title}</SectionTitle>
+            <AgentPicker />
+          </section>
+        )}
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-6">
           <section className="space-y-2">
             <SectionTitle>{t.dialogs.newProject.formats}</SectionTitle>

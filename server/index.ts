@@ -17,7 +17,16 @@ import { PlaywrightCapture } from './capture/capture';
 import { FfmpegRenderService } from './capture/render';
 import { PixelSeamService } from './capture/seams';
 import { loadConfig } from './config';
-import { MODELS, type AgentId, type Effort, type GitHost, type ModelSpec, type NetworkId } from '../src/shared/types';
+import {
+  DEFAULT_FEATURES,
+  MODELS,
+  type AgentId,
+  type Effort,
+  type Features,
+  type GitHost,
+  type ModelSpec,
+  type NetworkId,
+} from '../src/shared/types';
 import type { AgentProvider, BrandSource, CadenceConfig, HostApi, Network, SpeechEngine } from './contracts';
 import { builtEditor, devEditor } from './editor';
 import { createFrameHandler } from './frames/frameServer';
@@ -58,6 +67,8 @@ export type StartOptions = Partial<CadenceConfig> & {
   speech?: SpeechEngine;
   /** A host app's routes: each entry is served under /api/<name>; a name must be a lowercase slug free in /api. */
   api?: HostApi;
+  /** Editor sections a host app hides; a missing key stays on. UI only, see ARCHITECTURE.md "Embedding Cadence". */
+  features?: Partial<Features>;
 };
 
 export interface Services {
@@ -105,6 +116,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     networks: customNetworks,
     speech,
     api: hostApi,
+    features,
     ...overrides
   } = options;
   if (dev && editorRoot) throw new Error(m().core.editorRootDev);
@@ -243,6 +255,10 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       models,
       diagnose,
       hostApi,
+      // Key by key rather than a spread: an undefined flag stays on, and a key the editor does not know is not served.
+      features: Object.fromEntries(
+        Object.entries(DEFAULT_FEATURES).map(([key, on]) => [key, features?.[key as keyof Features] ?? on]),
+      ) as Features,
     });
     const mcp = createMcpHandler({
       config,
