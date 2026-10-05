@@ -44,7 +44,7 @@ export default function Anatomy({ t, duration, width, height, music, brand }: Sc
 - Files in the project's `assets/` load with `asset('logo.svg')`. Rebuild UI in code with the kit rather than screenshots: every element can then move on its own and stays crisp at any size. Animated GIF, WebP and SVG images freeze on their first frame in renders (they still play in the preview): drive motion from `t`.
 - Always pass an explicit locale to `Intl.*` and `toLocale*()` (`brand.language === 'fr' ? 'fr-FR' : 'en-US'`): renders do not use the viewer's locale.
 
-The `cadence` runtime reference (src/runtime/API.md) closes this guide.
+The `cadence` runtime reference closes this guide.
 
 ## Brand kit
 
@@ -143,6 +143,6 @@ This chat is about the whole video: structure, pacing, consistency between scene
 This part is for Claude Code sessions started in a terminal. Inside the Cadence editor (messages that start with `<cadence_context>`), the chat's own scope rules apply instead.
 
 - Connect the tools once: with Cadence running (`npm start`), `npm run cadence -- mcp` prints the `claude mcp add --transport http cadence …` command to run.
-- Every tool takes `projectId`: the folder name under `projects/`. Start with `get_project`.
+- Every tool takes `projectId`: the name of a project folder next to this file. Start with `get_project`.
 - Edit a project's `scenes/**`, `components/**` and `art-direction.md`; change structure and timing with the tools while Cadence runs (they keep `project.json` consistent). Never touch `.cadence/`.
 - The preview reloads when files change; `render_frames` and `check_seams` show exactly what the video will show.

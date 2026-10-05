@@ -129,7 +129,7 @@ background: withAlpha(brand.colors.accent, 0.12)
   `pick({ landscape, portrait, square?, '4:5'?: ... })` returns the value for this format (an exact format key wins;
   `square` falls back to `portrait`). `safe` = `{ top, right, bottom, left }` margins kept clear of social-app UI:
   220 / 60 / 380 / 60 in 9:16, 60 in 1:1 and 4:5, 72 in 16:9.
-- `asset(path): string`: URL of `projects/<id>/assets/<path>`: `<img src={asset('screens/home.png')} />`. Animated
+- `asset(path): string`: URL of the project's `assets/<path>`: `<img src={asset('screens/home.png')} />`. Animated
   GIF/WebP/SVG images freeze on their first frame in frames and renders (the preview may still play them): drive
   motion from `t` instead (an image sequence, transforms).
 - Frame internals (never use in scenes): `SceneContext`, `BrandContext`, `setAssetBase`, `createMusic`.

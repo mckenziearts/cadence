@@ -162,7 +162,7 @@ made a cold start 0.9 s and 983 MB instead of 0.2 s and 509 MB). A brand built l
 import, which pages already open take in their stride: they keep a single React.
 
 Code reloads: `ProjectStore.watch(vite.watcher)` debounces the file events of Vite's watcher, which already watches the
-root. Its `server.watch.ignored` leaves out what only piles up (`.cadence/` folders, renders, soundtracks, trashed
+root; `createVite` adds the managed dirs that live outside it. Its `server.watch.ignored` leaves out what only piles up (`.cadence/` folders, renders, soundtracks, trashed
 projects): on Linux each watched file holds an inotify watch, and a recursive `fs.watch` there walks the whole tree at
 start. `syncCode(id)` hashes code files (scenes/**, components/**, and the project's brand folder); on change it calls
 the injected module invalidator (invalidates every Vite module under those dirs with a fresh HMR timestamp), bumps the
@@ -653,6 +653,11 @@ contract: removing or reshaping one is a major version.
   bundle, where two would leave a blank editor ("Invalid hook call"). `tests/server/editor-root.test.ts` checks it.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
+- `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand
+  kits there import the core's `dependencies` (its `package.json`, read at start) and nothing else: the frames Vite
+  server lists them in `resolve.dedupe`, so they resolve from the core's `node_modules` and never from the importer's
+  folder. Vite's watcher gets them too, so edits made outside the editor still reload. `tests/server/outside-root.test.ts`
+  checks both, and that the `CLAUDE.md` written there names no core path.
 
 ## Tests
 

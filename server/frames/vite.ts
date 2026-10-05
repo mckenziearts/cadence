@@ -27,6 +27,9 @@ export async function createVite({
 }): Promise<ViteDevServer> {
   const managed = [config.projectsDir, config.brandsDir, config.templatesDir];
   const cacheDir = process.env.CADENCE_VITE_CACHE_DIR;
+  const { dependencies } = JSON.parse(await fs.readFile(path.join(config.root, 'package.json'), 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
   const base: InlineConfig = {
     root: config.root,
     configFile: false,
@@ -56,12 +59,14 @@ export async function createVite({
       // This watcher also feeds ProjectStore.watch(). What only piles up stays out (versions, chats and thumbnails under
       // .cadence/, renders, soundtracks, trashed projects): on Linux each watched file holds an inotify watch.
       watch: {
-        ignored: ['**/.cadence/**', '**/projects/*/renders/**', '**/projects/*/music/**', '**/projects/.trash/**'],
+        ignored: ['**/.cadence/**', (file: string) => pilesUp(config.projectsDir, file)],
       },
     },
     resolve: {
       alias: { cadence: path.join(config.root, 'src/runtime/index.ts'), '@brands': config.brandsDir },
-      dedupe: ['react', 'react-dom'],
+      // Vite resolves a bare import from the importer's folder, and managed dirs may live outside the core (a host app's
+      // own folders) with no node_modules: deduped ids resolve from `root` instead, so scenes get the core's packages.
+      dedupe: Object.keys(dependencies),
     },
     // Several Cadence servers (tests, CLI renders) may run side by side: each can get its own dependency cache.
     ...(cacheDir ? { cacheDir } : {}),
@@ -84,7 +89,18 @@ export async function createVite({
     },
     plugins: [cadencePlugin(managed), react(), tailwindcss()],
   };
-  return createServer(mergeConfig(base, overrides) as InlineConfig);
+  const server = await createServer(mergeConfig(base, overrides) as InlineConfig);
+  // Vite watches its root only: managed dirs a host app keeps elsewhere are added, so an edit made from a terminal
+  // session or by hand reaches ProjectStore.watch() there too.
+  server.watcher.add(managed.filter((dir) => !isInside(config.root, dir)));
+  return server;
+}
+
+/** Renders, soundtracks and trashed projects: by path rather than glob, so it holds wherever projectsDir lives. */
+function pilesUp(projectsDir: string, file: string): boolean {
+  if (!isInside(projectsDir, file)) return false;
+  const [project, folder] = path.relative(projectsDir, file).split(path.sep);
+  return project === '.trash' || folder === 'renders' || folder === 'music';
 }
 
 const ICON_SET = /['"](@heroicons\/react\/\d+\/(?:solid|outline)|@tabler\/icons-react)['"]/g;
