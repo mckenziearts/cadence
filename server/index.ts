@@ -18,7 +18,7 @@ import { FfmpegRenderService } from './capture/render';
 import { PixelSeamService } from './capture/seams';
 import { loadConfig } from './config';
 import { MODELS, type AgentId, type Effort, type GitHost, type ModelSpec, type NetworkId } from '../src/shared/types';
-import type { AgentProvider, BrandSource, CadenceConfig, Network, SpeechEngine } from './contracts';
+import type { AgentProvider, BrandSource, CadenceConfig, HostApi, Network, SpeechEngine } from './contracts';
 import { builtEditor, devEditor } from './editor';
 import { createFrameHandler } from './frames/frameServer';
 import { createVite, diagnoseFile, invalidateDirs } from './frames/vite';
@@ -56,6 +56,8 @@ export type StartOptions = Partial<CadenceConfig> & {
   networks?: Partial<Record<NetworkId, Network>>;
   /** Who speaks voice-overs (tests: a fake that never runs Piper). */
   speech?: SpeechEngine;
+  /** A host app's routes: each entry is served under /api/<name>; a name must be a lowercase slug free in /api. */
+  api?: HostApi;
 };
 
 export interface Services {
@@ -102,6 +104,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     brandSources: customSources,
     networks: customNetworks,
     speech,
+    api: hostApi,
     ...overrides
   } = options;
   if (dev && editorRoot) throw new Error(m().core.editorRootDev);
@@ -239,6 +242,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       geminiStatus: () => geminiStatus(config),
       models,
       diagnose,
+      hostApi,
     });
     const mcp = createMcpHandler({
       config,

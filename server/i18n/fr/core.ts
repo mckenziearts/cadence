@@ -20,6 +20,11 @@ export default {
   usage: {
     notSaved: '[cadence] Consommation non enregistrée :',
   },
+  hostApi: {
+    name: (name: string) =>
+      `Nom de routes hôte invalide : « ${name} » (lettres minuscules, chiffres et tirets, en commençant par une lettre).`,
+    taken: (name: string) => `Le nom de routes hôte « ${name} » est déjà pris par une route de Cadence (/api/${name}).`,
+  },
   editorRootDev: "editorRoot et dev ne vont pas ensemble : le mode dev sert uniquement l'éditeur de Cadence.",
   windows: 'Cadence tourne sous macOS et Linux. Sous Windows, lancez-le dans WSL 2.',
 };

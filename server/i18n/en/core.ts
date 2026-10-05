@@ -22,6 +22,10 @@ export default {
   usage: {
     notSaved: '[cadence] Usage not recorded:',
   },
+  hostApi: {
+    name: (name: string) => `Invalid host route name: "${name}" (lowercase letters, digits and hyphens, starting with a letter).`,
+    taken: (name: string) => `The host route name "${name}" is already taken by a Cadence route (/api/${name}).`,
+  },
   editorRootDev: 'editorRoot and dev cannot be combined: dev mode only serves the Cadence editor.',
   windows: 'Cadence runs on macOS and Linux. On Windows, run it in WSL 2.',
 } satisfies typeof fr;

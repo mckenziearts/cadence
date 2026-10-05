@@ -658,6 +658,14 @@ contract: removing or reshaping one is a major version.
 - React: the host installs `react` and `react-dom` at the exact versions of the core's `package.json`. The build
   resolves both from `editorRoot` (`resolve.dedupe`), so the core components run on the host's copy: one React in the
   bundle, where two would leave a blank editor ("Invalid hook call"). `tests/server/editor-root.test.ts` checks it.
+- `api`: `startServer({ api: { compte: account } })` serves a host app's Hono app (`Hono<{ Bindings: HttpBindings }>`)
+  under `/api/compte`, mounted after the built-in routes. A name is a lowercase slug (`/^[a-z][a-z0-9-]*$/`) that no
+  built-in route starts with: `startServer()` rejects any other. Host routes go through the same guards as the core's
+  (Host check, `sec-fetch-site`, `X-Cadence-Token` on every method but GET and HEAD), and a host app without its own
+  `onError` answers errors like the core API: `HttpError` keeps its status, anything else is a 500, both as JSON
+  `{ error }`; request bodies keep the core's 2 MB limit. A GET only gets the Host and `sec-fetch-site` checks, so a
+  host route never changes anything on GET. `tests/server/host-api.test.ts` checks the guards, the errors and both
+  refusals.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand

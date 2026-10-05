@@ -481,6 +481,15 @@ export function createApi(deps: ApiDeps) {
     return c.json(next);
   });
 
+  // Host routes: after the built-in ones, under a name none of them uses. Without its own onError, a host app's errors
+  // land in the handler above.
+  const builtIn = new Set(app.routes.map((route) => route.path.split('/')[2]));
+  for (const [name, routes] of Object.entries(deps.hostApi ?? {})) {
+    if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(m().core.hostApi.name(name));
+    if (builtIn.has(name)) throw new Error(m().core.hostApi.taken(name));
+    app.route(`/${name}`, routes);
+  }
+
   return app;
 
   /**

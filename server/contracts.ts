@@ -3,6 +3,8 @@
 // Modules must depend on these interfaces, never on each other's concrete classes.
 import type { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { HttpBindings } from '@hono/node-server';
+import type { Hono } from 'hono';
 import type {
   AssetInfo,
   BrandBuild,
@@ -590,6 +592,9 @@ export interface SettingsStore {
 
 // server/api/index.ts: export function createApi(deps: ApiDeps): Hono   (routes under /api, see ARCHITECTURE.md)
 
+/** A host app's route groups, each mounted under /api/<name> behind the editor guards (ARCHITECTURE.md "Embedding Cadence"). */
+export type HostApi = Record<string, Hono<{ Bindings: HttpBindings }>>;
+
 export interface ApiDeps {
   config: CadenceConfig;
   store: ProjectStore;
@@ -619,4 +624,5 @@ export interface ApiDeps {
   models: (agent: import('../src/shared/types').AgentId) => Promise<import('../src/shared/types').ModelSpec[]>;
   /** Compile a scene file through Vite and return the error text (with code frame), or null. */
   diagnose: (file: string) => Promise<string | null>;
+  hostApi?: HostApi;
 }
