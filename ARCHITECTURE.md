@@ -644,7 +644,14 @@ contract: removing or reshaping one is a major version.
 - `editorRoot`: a folder with the host's own `index.html`, built instead of the core's at every start (the same
   in-memory production build, `server/editor.ts`) and served with the same token, frame-origin metas and guards. Its
   scripts import the core editor through `src/editor/index.ts`, which exports `App`, `api`, `ApiError`, `useStore` and
-  `useT` and nothing else; an export is added when a host needs it.
+  `useT` (and the `Pages` type) and nothing else; an export is added when a host needs it.
+- `pages`: `<App pages={{ '@compte': Account }} />` adds the host's screens to the editor's hash router. A page id
+  starts with `@`, which no project id can, so a page never shadows a project; `#/@compte` opens it in place of the
+  home (closing the open project), a reload keeps it, and an id that neither the host nor the core provides goes home
+  with the hash reset to `#/`. A host page wins over a core page of the same id, so a host may replace `@profil`; every
+  replaced page is a screen the host maintains against each core release, so replacements stay rare. Host pages keep
+  their own fr and en strings and read the language with `useStore((s) => s.language)`. `tests/editor/routing.test.ts`
+  checks the hash parsing and the resolution, `tests/server/editor-root.test.ts` a host page in Chromium.
 - CSS: the host stylesheet imports the core's (`@import '<core>/src/editor/styles.css';`) and adds `@source './';` for
   its own files. Tailwind only generates the classes it finds in scanned sources, and the core stylesheet scans
   `src/editor/` only: without its own `@source`, the host's screens come out unstyled.

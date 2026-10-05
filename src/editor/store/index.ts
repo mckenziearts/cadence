@@ -115,8 +115,8 @@ export interface EditorState {
   renaming: string | null;
   /** Finished brand builds their window has shown: the top bar no longer lists them. */
   seenBuilds: string[];
-  /** The Profile page (#/@profil) in place of the home. */
-  profile: boolean;
+  /** The page the hash names (#/@profil, a host page) in place of the home; App resolves it to a screen. */
+  page: string | null;
 }
 
 /** localStorage can throw (private mode, blocked site data): conveniences only. */
@@ -184,7 +184,7 @@ export const useStore = create<EditorState>()(() => ({
   toasts: [],
   renaming: null,
   seenBuilds: memory.get('seen-builds')?.split(' ') ?? [],
-  profile: false,
+  page: null,
 }));
 
 /** Stable empty list for selectors (a fresh `[]` per call would re-render forever). */

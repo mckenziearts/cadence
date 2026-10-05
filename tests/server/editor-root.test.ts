@@ -7,12 +7,14 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { chromium } from 'playwright';
 import { builtEditor } from '../../server/editor';
 import { m } from '../../server/i18n';
 import { startServer, type RunningServer } from '../../server/index';
 import { makeRoot, type TestRoot } from './helpers';
 
 const repo = path.resolve(import.meta.dirname, '../..');
+const HOST_PAGE = 'Host page marker';
 let t: TestRoot;
 let host: string;
 let server: RunningServer;
@@ -30,7 +32,7 @@ async function writeHost(dir: string): Promise<void> {
   );
   await fs.writeFile(
     path.join(src, 'main.tsx'),
-    `import { createRoot } from 'react-dom/client';\nimport { App } from '${core}/index';\nimport './styles.css';\n\ncreateRoot(document.getElementById('root')!).render(\n  <div className="bg-[#c0ffee]">\n    <App />\n  </div>,\n);\n`,
+    `import { createRoot } from 'react-dom/client';\nimport { App } from '${core}/index';\nimport './styles.css';\n\nfunction X() {\n  return <p>${HOST_PAGE}</p>;\n}\n\ncreateRoot(document.getElementById('root')!).render(\n  <div className="bg-[#c0ffee]">\n    <App pages={{ '@x': X }} />\n  </div>,\n);\n`,
   );
   await fs.writeFile(path.join(src, 'styles.css'), `@import '${core}/styles.css';\n@source './';\n`);
   for (const name of ['react', 'react-dom', 'scheduler'])
@@ -107,6 +109,25 @@ test('the host bundle holds one React, like the core editor', () => {
   const count = reactElements(coreBuild.js);
   assert.ok(count > 0);
   assert.equal(reactElements(hostBuild.js), count);
+});
+
+test('the host bundle carries its pages', () => {
+  assert.ok(hostBuild.js.includes(HOST_PAGE));
+});
+
+test('a host page opens from the hash, an unknown page goes home', async (t) => {
+  const browser = await chromium.launch().catch(() => null);
+  if (!browser) return t.skip('Chromium missing (npm run setup)');
+  try {
+    const page = await browser.newPage();
+    await page.goto(`${server.config.editorOrigin}/#/@x`);
+    await page.getByText(HOST_PAGE, { exact: true }).waitFor({ timeout: 30_000 });
+    await page.goto(`${server.config.editorOrigin}/#/@nope`);
+    await page.waitForFunction(() => location.hash === '#/', null, { timeout: 30_000 });
+    assert.equal(await page.getByText(HOST_PAGE, { exact: true }).count(), 0);
+  } finally {
+    await browser.close();
+  }
 });
 
 test('dev mode refuses an editorRoot', async () => {

@@ -4,6 +4,7 @@ import { ApiError, api, ignore } from '../api';
 import { browserLanguage, t } from '../i18n';
 import type { AgentId, CreateSceneInput, FormatId, ProjectState, SeamResult } from '../../shared/types';
 import { seamTone } from '../lib/format';
+import { parseHash } from '../lib/routing';
 import { clamp, currentScene, get, previewDuration, sceneAt, set, useStore, type PreviewMode } from '.';
 import { toast } from './ui';
 
@@ -39,10 +40,10 @@ export const PROFILE_PAGE = '@profil';
 /** The project or page named by the URL hash; without one, the app opens on the projects home. */
 export async function openInitialProject(): Promise<void> {
   const projects = get().app?.projects ?? [];
-  const [hashProject, hashScene] = decodeURIComponent(location.hash.replace(/^#\/?/, '')).split('/');
-  if (hashProject === PROFILE_PAGE) set({ profile: true });
-  else if (hashProject !== get().project?.id && projects.some((p) => p.id === hashProject)) {
-    await openProject(hashProject, hashScene || null);
+  const { page, projectId, sceneId } = parseHash(location.hash);
+  if (page) set({ page });
+  else if (projectId && projectId !== get().project?.id && projects.some((p) => p.id === projectId)) {
+    await openProject(projectId, sceneId);
   }
 }
 
@@ -80,7 +81,7 @@ async function loadProject(id: string, sceneId?: string | null): Promise<void> {
       seams: [],
       renders: { jobs: [], files: [] },
       publishing: { jobs: [], publications: [] },
-      profile: false,
+      page: null,
       music: { status: project.music ? (project.musicGrid ? 'ready' : 'analyzing') : 'idle', error: null },
       voiceOver: { status: 'idle' },
       cost: null,
@@ -185,8 +186,7 @@ export function writeHash(): void {
   const next = `#/${[s.project.id, s.sceneId].filter(Boolean).join('/')}`;
   if (location.hash === next) return;
   // Opening a project from the home or another project gets its own history entry (Back returns there); scenes replace it.
-  const [shown] = decodeURIComponent(location.hash.replace(/^#\/?/, '')).split('/');
-  if (shown === s.project.id) history.replaceState(null, '', next);
+  if (parseHash(location.hash).projectId === s.project.id) history.replaceState(null, '', next);
   else history.pushState(null, '', next);
 }
 

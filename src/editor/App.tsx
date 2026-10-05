@@ -15,6 +15,7 @@ import { t, useT } from './i18n';
 import { Modals } from './modals/Modals';
 import { SidePanel } from './panels/SidePanel';
 import { get, set, useStore } from './store';
+import { parseHash, resolvePage, type Pages } from './lib/routing';
 import { restoreDrafts } from './store/chat';
 import { isAudioFile, uploadMusic } from './store/music';
 import {
@@ -30,7 +31,10 @@ import {
 } from './store/project';
 import { dismissToast, toast } from './store/ui';
 
-export function App() {
+const CORE_PAGES: Pages = { [PROFILE_PAGE]: Profile };
+
+/** The editor. `pages` adds a host app's screens, opened by `#/@<id>`; a host page replaces a core one of the same id. */
+export function App({ pages }: { pages?: Pages }) {
   const t = useT();
   const app = useStore((s) => s.app);
   const appError = useStore((s) => s.appError);
@@ -38,7 +42,8 @@ export function App() {
   const projectLoading = useStore((s) => s.projectLoading);
   const view = useStore((s) => s.view);
   const presenting = useStore((s) => s.presenting);
-  const profile = useStore((s) => s.profile);
+  const page = useStore((s) => s.page);
+  const Page = page ? resolvePage(page, pages, CORE_PAGES) : null;
   const [booted, setBooted] = useState(false);
 
   useEffect(() => {
@@ -50,6 +55,13 @@ export function App() {
       .finally(() => setBooted(true));
     return disconnect;
   }, []);
+
+  // A page nobody provides: the home, and a hash that no longer names it.
+  useEffect(() => {
+    if (!page || Page) return;
+    set({ page: null });
+    history.replaceState(null, '', '#/');
+  }, [page, Page]);
 
   useShortcuts();
   const drop = useAudioDrop();
@@ -92,8 +104,8 @@ export function App() {
         ) : (
           <RenderView />
         )
-      ) : profile ? (
-        <Profile />
+      ) : Page ? (
+        <Page />
       ) : booted && !projectLoading ? (
         <Home />
       ) : (
@@ -291,22 +303,22 @@ function useShortcuts() {
           break;
       }
     };
-    // The URL names the project and scene (#/<projet>/<scène>), the Profile page (#/@profil), or the home without one:
-    // follow it (links, Back).
+    // The URL names the project and scene (#/<projet>/<scène>), a page (#/@profil), or the home without one: follow it
+    // (links, Back).
     const onHash = () => {
-      const [projectId, sceneId] = decodeURIComponent(location.hash.replace(/^#\/?/, '')).split('/');
+      const { page, projectId, sceneId } = parseHash(location.hash);
       const s = get();
-      if (projectId === PROFILE_PAGE) {
+      if (page) {
         if (s.project) closeProject(true);
-        set({ profile: true });
+        set({ page });
         return;
       }
-      if (s.profile) set({ profile: false });
+      if (s.page) set({ page: null });
       if (!projectId) {
         if (s.project) closeProject();
         return;
       }
-      if (projectId !== s.project?.id) void openProject(projectId, sceneId || null).catch(ignore);
+      if (projectId !== s.project?.id) void openProject(projectId, sceneId).catch(ignore);
       else if (sceneId && sceneId !== s.sceneId) selectScene(sceneId);
     };
     window.addEventListener('keydown', onKey);

@@ -43,7 +43,7 @@ export function TopBar() {
   const project = useStore((s) => s.project);
   const loading = useStore((s) => s.projectLoading);
   const view = useStore((s) => s.view);
-  const profile = useStore((s) => s.profile);
+  const page = useStore((s) => s.page);
   return (
     <header className="relative z-30 flex h-14 shrink-0 items-center gap-2 border-b-2 border-ink bg-paper px-3">
       <Tooltip label={t.shell.topBar.home}>
@@ -118,7 +118,7 @@ export function TopBar() {
       <IconButton
         label={t.shell.topBar.profile}
         icon={<CircleUserRound className="size-4" />}
-        active={profile}
+        active={page === PROFILE_PAGE}
         onClick={() => (location.hash = `#/${PROFILE_PAGE}`)}
       />
       <IconButton
