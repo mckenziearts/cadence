@@ -804,7 +804,7 @@ export interface Features {
   gitSources: boolean;
   /** The buttons that edit a network app's keys; connect and disconnect stay. */
   networkApps: boolean;
-  /** The model and effort choice of the settings and the chat composers. */
+  /** The model and effort choice of the settings and the chat composers; without it, turns run on the settings' models. */
   modelPicker: boolean;
   /** Every dollar amount: chat messages, versions, brand builds, Profile usage and the project total. */
   costs: boolean;

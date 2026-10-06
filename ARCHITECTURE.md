@@ -675,8 +675,9 @@ contract: removing or reshaping one is a major version.
   reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the
   Profile and the agent choice of the new project and new brand dialogs, `gitSources` the Profile's Git accounts,
   `networkApps` the buttons that edit a network app's keys (connect and disconnect stay), `modelPicker` the model and
-  effort choice of the settings (both chat scopes) and of the chat composers, `costs` every dollar amount (chat
-  messages, versions, brand build progress, Profile usage, the project total in the top bar). Flags shape the UI only:
+  effort choice of the settings (both chat scopes) and of the chat composers (a message then carries no model, so the
+  turn runs on the settings' models, which the host may set outside the editor's catalog), `costs` every dollar amount
+  (chat messages, versions, brand build progress, Profile usage, the project total in the top bar). Flags shape the UI only:
   the routes behind a hidden section still answer, so a flag is never a security boundary. A flag is an `if` around an
   existing section, with no new component or string; adding one is a minor version. Flags stay few and coarse: a host
   that would need more than twelve is better served by a page of its own (`pages`). `tests/server/features.test.ts`

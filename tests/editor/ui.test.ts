@@ -1217,6 +1217,60 @@ describe('features', () => {
       }
     });
   }
+
+  it(
+    'sends no model without the model choice: the turn runs on the settings, outside the catalog too',
+    { timeout: 120_000 },
+    async () => {
+      const t = await makeRoot();
+      let hosted: RunningServer | undefined;
+      try {
+        const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
+        const model = 'claude-sonnet-4-6';
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(path.join(stateDir, 'settings.json'), JSON.stringify({ sceneModel: model }));
+        const models: string[] = [];
+        hosted = await startServer({
+          root: ROOT,
+          projectsDir,
+          brandsDir,
+          templatesDir,
+          stateDir,
+          editorPort: 0,
+          framePort: 0,
+          quiet: true,
+          provider: {
+            ...provider,
+            run(turn) {
+              models.push(turn.model);
+              return provider.run(turn);
+            },
+          },
+          features: { ...DEFAULT_FEATURES, modelPicker: false },
+        });
+        const created = await fetch(`${hosted.config.editorOrigin}/api/projects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': hosted.editorToken },
+          body: JSON.stringify({ name: 'Modèle', id: 'modele', brand: 'cadence', formats: ['16:9'], fps: 30 }),
+        });
+        assert.ok(created.ok, `POST /api/projects: ${created.status}`);
+        const page = await newPage();
+        await page.goto(`${hosted.config.editorOrigin}/#/modele/titre`);
+        await page.getByRole('textbox', { name: 'Message pour la scène' }).fill('Bonjour', { timeout: 60_000 });
+        const sent = page.waitForRequest((r) => r.url().endsWith('/chats/scene:titre/messages') && r.method() === 'POST');
+        await page.getByRole('button', { name: 'Envoyer' }).click();
+        const body = (await sent).postDataJSON() as Record<string, unknown>;
+        assert.equal(body.model, undefined);
+        assert.equal(body.effort, undefined);
+        await page.getByText('Réponse factice.').waitFor({ timeout: 30_000 });
+        assert.deepEqual(models, [model]);
+        await page.context().close();
+      } finally {
+        await hosted?.close();
+        await t.cleanup();
+      }
+    },
+  );
 });
 
 describe('pitch', () => {
