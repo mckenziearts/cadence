@@ -108,6 +108,18 @@ export default {
     written: (file: string, bars: number, duration: number, lufs: string, peak: string) =>
       `${file} ${bars} bars, ${duration} s, ${lufs} LUFS, peak ${peak} dBFS`,
   },
+  sounds: {
+    written: (file: string, duration: string, peakAt: string, peak: string) =>
+      `${file} ${duration} s, loudest at ${peakAt} s, peak ${peak} dBFS`,
+    cues: {
+      notArray: 'sounds() must return an array of cues',
+      tooMany: (max: number) => `sounds() returns more than ${max} cues`,
+      notObject: (index: number) => `sound cue ${index}: expected an object { at, sound, gain? }`,
+      at: (index: number, duration: number) => `sound cue ${index}: at must be a number of seconds from 0 to ${duration}`,
+      sound: (index: number, known: string) => `sound cue ${index}: unknown sound (${known})`,
+      gain: (index: number) => `sound cue ${index}: gain must be a number from 0 to 1`,
+    },
+  },
   brands: {
     build: {
       tools: {
@@ -217,6 +229,7 @@ Usage: npm run cadence -- <command> [options]
                                                renders the video to MP4 (every format of the project by default)
   analyze <audio> [--json]                     analyzes a music track (tempo, beats, bars, phrases)
   soundtracks [id...]                          recomposes the soundtracks of the Music panel (src/editor/soundtracks)
+  sounds                                       rewrites the sound effects scenes can play (src/editor/sounds)
   new <name> [--brand <id>] [--template <id>] [--formats 16:9,9:16] [--fps 60]
                                                creates a project
   list                                         lists the projects

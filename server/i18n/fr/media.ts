@@ -109,6 +109,18 @@ export default {
     written: (file: string, bars: number, duration: number, lufs: string, peak: string) =>
       `${file} ${bars} mesures \u00b7 ${duration} s \u00b7 ${lufs} LUFS \u00b7 crête ${peak} dBFS`,
   },
+  sounds: {
+    written: (file: string, duration: string, peakAt: string, peak: string) =>
+      `${file} ${duration} s \u00b7 plus fort à ${peakAt} s \u00b7 crête ${peak} dBFS`,
+    cues: {
+      notArray: 'sounds() doit renvoyer un tableau de sons',
+      tooMany: (max: number) => `sounds() renvoie plus de ${max} sons`,
+      notObject: (index: number) => `son ${index} : un objet { at, sound, gain? } est attendu`,
+      at: (index: number, duration: number) => `son ${index} : at doit être un nombre de secondes entre 0 et ${duration}`,
+      sound: (index: number, known: string) => `son ${index} : son inconnu (${known})`,
+      gain: (index: number) => `son ${index} : gain doit être un nombre entre 0 et 1`,
+    },
+  },
   brands: {
     build: {
       tools: {
@@ -219,6 +231,7 @@ Usage : npm run cadence -- <commande> [options]
                                                exporte la vidéo en MP4 (tous les formats du projet par défaut)
   analyze <audio> [--json]                     analyse une musique (tempo, temps, mesures, phrases)
   soundtracks [ambiance\u2026]                      recompose les ambiances du panneau Musique (src/editor/soundtracks)
+  sounds                                       réécrit les effets sonores que les scènes peuvent jouer (src/editor/sounds)
   new <nom> [--brand <id>] [--template <id>] [--formats 16:9,9:16] [--fps 60]
                                                crée un projet
   list                                         liste les projets
