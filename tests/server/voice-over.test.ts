@@ -6,10 +6,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 import { duckExpression } from '../../server/capture/render';
-import type { Hub, SpeechEngine } from '../../server/contracts';
+import type { ElevenLabsApi, Hub, SpeechEngine } from '../../server/contracts';
 import { FileBrandStore } from '../../server/store/brands';
 import { FileProjectStore } from '../../server/store/projects';
-import { HttpError } from '../../server/util';
+import { HttpError, shortHash } from '../../server/util';
 import { LocalVoiceOverService, splitSentences } from '../../server/voiceover/service';
 import { VOICES, type VoiceSpec } from '../../server/voiceover/voices';
 import { readWav, writeWav } from '../../server/voiceover/wav';
@@ -31,6 +31,8 @@ let engineError: Error | null;
 let hold: Promise<void> | null;
 /** The fake Piper's sample `i` of a sentence. */
 let wave: (text: string, i: number) => number;
+/** What the fake ElevenLabs was asked to speak, without the files. */
+let elevenLabsSpoken: Omit<Parameters<ElevenLabsApi['speak']>[0], 'files'>[];
 
 beforeEach(async () => {
   t = await makeRoot();
@@ -53,7 +55,26 @@ beforeEach(async () => {
       }
     },
   };
-  voiceOver = new LocalVoiceOverService({ config: t.config, store, brands: new FileBrandStore(t.config), hub, engine });
+  elevenLabsSpoken = [];
+  const elevenLabs: ElevenLabsApi = {
+    voices: async () => [],
+    models: async () => [],
+    speak: async ({ files, ...input }) => {
+      elevenLabsSpoken.push(input);
+      for (const [i, text] of input.sentences.entries()) {
+        const samples = Int16Array.from({ length: Math.round(seconds(text) * 24000) }, () => 500);
+        await fs.writeFile(files[i], writeWav({ sampleRate: 24000, samples }));
+      }
+    },
+  };
+  voiceOver = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: new FileBrandStore(t.config),
+    hub,
+    engine,
+    elevenLabs,
+  });
   store.setVoiceOverProvider(voiceOver.provider);
   await install('fr_FR-siwis-medium');
 });
@@ -118,6 +139,103 @@ test('until a voice is picked, the project speaks with the default voice of its 
   await assert.rejects(store.update(id, { voiceOver: { voice: 'en_GB-cori-medium', speed: 3, musicLevel: 0.5 } }), {
     status: 400,
   });
+});
+
+const ELEVENLABS = {
+  engine: 'elevenlabs',
+  voice: 'JBFqnCBsd6RMkjVDRZzb',
+  model: 'eleven_multilingual_v2',
+  speed: 1.1,
+  musicLevel: 0.3,
+} as const;
+
+test('project.json keeps Piper settings as they were and ElevenLabs settings with their engine and model', async () => {
+  const id = await twoScenes();
+  const file = path.join(store.dir(id), 'project.json');
+  const raw = async () => JSON.parse(await fs.readFile(file, 'utf8')).voiceOver;
+
+  await store.update(id, { voiceOver: { engine: 'piper', voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3, model: 'x' } });
+  assert.deepEqual(await raw(), { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 }, 'no engine key for Piper');
+
+  await store.update(id, { voiceOver: ELEVENLABS });
+  assert.deepEqual(await raw(), ELEVENLABS);
+  assert.deepEqual((await store.get(id)).voiceOver, ELEVENLABS);
+
+  for (const wrong of [{ speed: 1.5 }, { model: 'Eleven v2' }, { voice: 'fr_FR-siwis-medium' }, { model: undefined }]) {
+    await assert.rejects(store.update(id, { voiceOver: { ...ELEVENLABS, ...wrong } }), { status: 400 });
+  }
+
+  // A project.json written before ElevenLabs reads as it did.
+  const data = JSON.parse(await fs.readFile(file, 'utf8'));
+  await fs.writeFile(file, JSON.stringify({ ...data, voiceOver: { voice: 'en_GB-cori-medium', speed: 1.2, musicLevel: 0.5 } }));
+  assert.deepEqual((await store.get(id)).voiceOver, { voice: 'en_GB-cori-medium', speed: 1.2, musicLevel: 0.5 });
+});
+
+test('Piper sentences keep the cache name they always had: a project finds them again without speaking', async () => {
+  const id = await twoScenes();
+  const dir = path.join(store.dir(id), '.cadence', 'voice-over');
+  await fs.mkdir(dir, { recursive: true });
+  const samples = Int16Array.from({ length: RATE }, () => 1000);
+  await fs.writeFile(
+    path.join(dir, `${shortHash('fr_FR-siwis-medium\n1\nBonjour.')}.wav`),
+    writeWav({ sampleRate: RATE, samples }),
+  );
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour.', at: 0 } });
+  await voiceOver.sync(id);
+  assert.equal(spoken.length, 0);
+  assert.deepEqual((await store.get(id)).voiceOverLines, [{ sceneId: 'demo', text: 'Bonjour.', start: 2, end: 3 }]);
+});
+
+test('ElevenLabs speaks with the saved key, voice, model and speed, into its own cache names; Piper is not asked', async () => {
+  const id = await twoScenes();
+  await fs.writeFile(path.join(t.config.stateDir, 'elevenlabs.json'), JSON.stringify({ key: 'sk_saved' }));
+  await store.update(id, { voiceOver: ELEVENLABS });
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour. Ça va ?', at: 0 } });
+  await voiceOver.sync(id);
+  assert.deepEqual(elevenLabsSpoken, [
+    { key: 'sk_saved', voice: ELEVENLABS.voice, model: ELEVENLABS.model, speed: 1.1, sentences: ['Bonjour.', 'Ça va ?'] },
+  ]);
+  assert.equal(spoken.length, 0);
+  const dir = path.join(store.dir(id), '.cadence', 'voice-over');
+  const name = `${shortHash(`elevenlabs\n${ELEVENLABS.model}\n${ELEVENLABS.voice}\n1.1\nBonjour.`)}.wav`;
+  assert.ok((await fs.readdir(dir)).includes(name));
+  const project = await store.get(id);
+  assert.deepEqual(project.voiceOverPending, []);
+  assert.deepEqual(
+    project.voiceOverLines.map((l) => l.text),
+    ['Bonjour.', 'Ça va ?'],
+  );
+});
+
+test('ElevenLabs never speaks on its own, even right after a switch from Piper: only a sync pays for the sentences', async () => {
+  const id = await twoScenes();
+  await fs.writeFile(path.join(t.config.stateDir, 'elevenlabs.json'), JSON.stringify({ key: 'sk_saved' }));
+  // Piper would speak this 400 ms later; the switch comes first.
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour.', at: 0 } });
+  await store.update(id, { voiceOver: ELEVENLABS });
+  for (let i = 0; i < 6; i++) {
+    assert.deepEqual((await store.get(id)).voiceOverPending, ['demo']);
+    await sleep(100);
+  }
+  assert.equal(spoken.length + elevenLabsSpoken.length, 0);
+
+  await voiceOver.sync(id);
+  assert.equal(elevenLabsSpoken.length, 1);
+  assert.deepEqual((await store.get(id)).voiceOverPending, []);
+});
+
+test('without a saved key, ElevenLabs fails saying where to add it, and the project shows why', async () => {
+  const id = await twoScenes();
+  await store.update(id, { voiceOver: ELEVENLABS });
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour.', at: 0 } });
+  let message = '';
+  await assert.rejects(
+    voiceOver.sync(id),
+    (e: HttpError) => ((message = e.message), e.status === 409 && /ElevenLabs/.test(message)),
+  );
+  assert.equal(elevenLabsSpoken.length, 0);
+  assert.equal((await store.get(id)).voiceOverError, message);
+  assert.deepEqual(events.at(-1), { type: 'voice-over', projectId: id, status: 'error', error: message });
 });
 
 test('sync speaks each sentence once, lays them from scene start + at, and follows the scenes without speaking again', async () => {
@@ -362,6 +480,7 @@ test('downloads check the md5, share one transfer, and refuse a voice Cadence do
       brands: new FileBrandStore(t.config),
       hub: { send: () => undefined, handleSse: () => undefined },
       engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+      elevenLabs: { voices: async () => [], models: async () => [], speak: async () => undefined },
       fetch: async (url) => {
         fetched.push(String(url));
         const data = String(url).endsWith('.json') ? files['.onnx.json'] : files['.onnx'];

@@ -13,7 +13,7 @@ import {
   type StartBrandBuildInput,
   type UsageCount,
 } from '../../src/shared/types';
-import { activityLabel } from '../agent/chat';
+import { activityLabel, denyRules } from '../agent/chat';
 import { buildBrandGuide } from '../agent/guide';
 import type {
   AgentProvider,
@@ -293,6 +293,7 @@ export class BrandBuilder implements BrandBuildService {
         rule('Write', `${brandDir}/**`),
         ...BRAND_TOOLS.map((tool) => `${MCP_PREFIX}${tool}`),
       ],
+      deny: denyRules(config.stateDir),
       addDirs: [repoDir, config.brandsDir, shared],
       mcpServers: { cadence: { type: 'http', url: config.mcpUrl, headers: { Authorization: `Bearer ${token}` } } },
       sessionId: randomUUID(),

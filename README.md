@@ -346,8 +346,9 @@ analysis assumes 3 or 4 beats per bar. 6/8 is set by hand.
 ## Voice-over
 
 Each scene can have a voice-over: in the **Voice** tab, type what the voice says over the scene and when it starts.
-Cadence speaks it with [Piper](https://github.com/OHF-Voice/piper1-gpl), on your machine: the text never leaves it. The
-preview plays the voice with the picture, the music goes down while it speaks (to the level set under **Music under**),
+Cadence speaks it with [Piper](https://github.com/OHF-Voice/piper1-gpl), on your machine: the text never leaves it. If
+you have an [ElevenLabs](https://elevenlabs.io) account, it can speak it with an ElevenLabs voice instead (see below).
+The preview plays the voice with the picture, the music goes down while it speaks (to the level set under **Music under**),
 and the MP4 holds the same mix. In a chat, Claude can write a scene's voice-over and time the animations to its
 sentences.
 
@@ -377,9 +378,25 @@ Piper's own documentation presents it as made for personal use and research. Its
 forbid other uses, but each voice keeps the license of the recordings it learned from: the Voice tab shows it, and
 flags the two voices that are not for commercial use. Cadence runs Piper as a separate program and never ships it.
 
+To use ElevenLabs, paste an API key from your ElevenLabs account
+([API keys](https://elevenlabs.io/app/settings/api-keys)) in the **Voice-over** section of the Profile, then choose
+ElevenLabs in a project's Voice tab. Once the key is saved, the same Profile card picks the voice and model new projects
+start with: it goes into a project's `project.json` when the project is created, and a later change never touches the
+projects already made. Without a choice (the default), new projects start with Piper. Then:
+
+- The text of each sentence goes to ElevenLabs, and every sentence spoken is billed on your account. That is why
+  Cadence never speaks with ElevenLabs on its own while you type: it speaks on the **Generate** button, on export, or
+  when Claude sets a voice-over.
+- ElevenLabs' free plan is for non-commercial use: a video that sells something needs a paid plan.
+- The key stays in `.cadence/elevenlabs.json`, readable by your user account only: never sent to the browser, never in
+  a project, out of Claude Code's reach. **Remove the key** in the Profile deletes it, and new projects start with Piper
+  again; the ones already set on ElevenLabs keep their voice and ask for a key.
+- Voices come from your ElevenLabs library (the first 100), and they speak French and English alike. Speed goes from
+  0.7 to 1.2.
+
 - Sentences are spoken one by one and cached in `projects/<id>/.cadence/voice-over/`: changing a sentence only speaks
   that one again, and moving a scene or its start speaks nothing again.
-- When Piper fails, the Voice tab keeps its message, after a reload too, and each scene left without its voice gets a
+- When a voice-over fails, the Voice tab keeps its message, after a reload too, and each scene left without its voice gets a
   **Generate** button that tries again. A spoken scene has a **Listen** button that plays the preview from where its
   voice starts.
 - Timing is per sentence, not per word. A sentence can run past the end of its scene into the next one, and the Voice
@@ -413,8 +430,9 @@ the scene contract.
 - **Restricted agent.** Claude has no shell and no web access. In a scene chat, it can only edit that scene's file. Its
   MCP tools go through a token valid for a single exchange.
 - **Network accounts.** App keys and connections stay in `.cadence/accounts.json`, readable by your user account only:
-  never sent to the browser, out of Claude's reach. The return from a network only accepts a single-use state, valid
-  10 minutes, that the editor asked for.
+  never sent to the browser, out of Claude Code's reach. The return from a network only accepts a single-use state,
+  valid 10 minutes, that the editor asked for. The ElevenLabs key gets the same treatment in `.cadence/elevenlabs.json`.
+  Codex's sandbox limits what it writes, not what it reads: with Codex as the assistant, both files are within its reach.
 
 Never expose it on a network.
 

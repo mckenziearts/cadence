@@ -16,6 +16,7 @@ export default {
     effort: (value: unknown) => `Niveau d'effort invalide : ${value}`,
     language: (value: unknown) => `Langue invalide : ${value}`,
     agent: (value: unknown) => `Assistant invalide : ${value}`,
+    defaultVoice: 'Voix par défaut invalide : une voix et un modèle ElevenLabs sont attendus',
   },
   usage: {
     notSaved: '[cadence] Consommation non enregistrée :',

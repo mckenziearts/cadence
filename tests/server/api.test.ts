@@ -12,8 +12,10 @@ import { createApi } from '../../server/api';
 import type {
   BrandBuildService,
   BrandSource,
+  ApiDeps,
   CaptureService,
   ChatService,
+  ElevenLabsApi,
   MusicService,
   Network,
   RenderService,
@@ -30,6 +32,7 @@ import { FileTemplateStore } from '../../server/store/templates';
 import { FileVersionStore } from '../../server/store/versions';
 import { FileUsageLog } from '../../server/usage';
 import { HttpError, pathExists, resolveInside } from '../../server/util';
+import { LocalVoiceOverService } from '../../server/voiceover/service';
 import {
   DEFAULT_FEATURES,
   MODELS,
@@ -65,6 +68,7 @@ const JPEG = Buffer.from([0xff, 0xd8, 0xff, 4, 5, 6]);
 let t: TestRoot;
 let usage: FileUsageLog;
 let app: ReturnType<typeof createApi>;
+let deps: ApiDeps;
 let store: FileProjectStore;
 let calls: Record<string, unknown[]>;
 let audioFile: string | null;
@@ -182,7 +186,11 @@ beforeEach(async () => {
     audioPath: async () => audioFile,
   } satisfies MusicService;
   const voiceOver = {
-    voices: async () => ({ piper: { ok: true }, voices: [] }),
+    voices: async () => ({ piper: { ok: true }, voices: [], elevenLabs: { configured: false } }),
+    elevenLabs: async () => ({ voices: [], models: [] }),
+    setElevenLabsKey: async (key: string | null) => {
+      record('elevenLabsKey', key);
+    },
     download: async (voice: string) => {
       record('downloadVoice', voice);
       return { ...SIWIS, installed: true };
@@ -228,7 +236,7 @@ beforeEach(async () => {
     git: { github: brandSource, gitlab: glab },
   });
   usage = new FileUsageLog(t.config);
-  app = createApi({
+  deps = {
     config: t.config,
     store,
     brands,
@@ -262,7 +270,8 @@ beforeEach(async () => {
     models: async () => MODELS,
     diagnose: async (file) => `Erreur : ${file}:3:5`,
     features: DEFAULT_FEATURES,
-  });
+  };
+  app = createApi(deps);
   await store.create({ name: 'Démo', brand: null, formats: ['16:9'], fps: 60 });
 });
 
@@ -459,7 +468,11 @@ test('music: upload (the file as the body), select, settings, snap, audio stream
 });
 
 test('voice-overs: voices, download, scene text, settings, speaking on request, the track as WAV', async () => {
-  assert.deepEqual((await json('GET', '/api/voices')).body, { piper: { ok: true }, voices: [] });
+  assert.deepEqual((await json('GET', '/api/voices')).body, {
+    piper: { ok: true },
+    voices: [],
+    elevenLabs: { configured: false },
+  });
   const downloaded = await json('POST', '/api/voices/fr_FR-siwis-medium/download');
   assert.deepEqual(downloaded.body, { ...SIWIS, installed: true });
   assert.deepEqual(calls.downloadVoice, ['fr_FR-siwis-medium']);
@@ -489,6 +502,186 @@ test('voice-overs: voices, download, scene text, settings, speaking on request, 
   assert.equal(audio.status, 200);
   assert.equal(audio.headers.get('content-type'), 'audio/wav');
   assert.equal(await audio.text(), 'RIFF0000WAVE');
+});
+
+test('voice-overs: ElevenLabs settings are checked against its own ranges; Piper keeps its voices', async () => {
+  const settings = {
+    engine: 'elevenlabs',
+    voice: 'JBFqnCBsd6RMkjVDRZzb',
+    model: 'eleven_multilingual_v2',
+    speed: 1.2,
+    musicLevel: 0.4,
+  };
+  const patch = (voiceOver: unknown) => json('PATCH', '/api/projects/demo', { voiceOver });
+  assert.deepEqual((await patch(settings)).body.voiceOver, settings);
+  assert.deepEqual((await json('GET', '/api/projects/demo')).body.voiceOver, settings);
+  for (const wrong of [{ speed: 1.5 }, { speed: 0.5 }, { model: 'Eleven v2' }, { voice: 'a/b' }, { model: undefined }]) {
+    const res = await patch({ ...settings, ...wrong });
+    assert.equal(res.status, 400, JSON.stringify(wrong));
+    assert.match(res.body.error, /^Requête invalide/);
+  }
+  assert.equal((await patch({ ...settings, engine: 'other' })).status, 400);
+  assert.equal((await patch({ voice: 'JBFqnCBsd6RMkjVDRZzb', speed: 1, musicLevel: 0.3 })).status, 400, 'Piper by default');
+  const piper = { voice: 'fr_FR-siwis-medium', speed: 2, musicLevel: 0.3 };
+  assert.deepEqual((await patch({ ...piper, engine: 'piper' })).body.voiceOver, piper);
+});
+
+test('voice-overs: the ElevenLabs key is checked, kept in a file only this machine reads, never sent back', async () => {
+  const asked: [string, string][] = [];
+  const elevenLabs: ElevenLabsApi = {
+    voices: async (key) => {
+      asked.push(['voices', key]);
+      if (key === 'sk_refused') throw new HttpError(400, 'ElevenLabs refuse la clé API');
+      return [{ id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', category: 'premade', previewUrl: null, languages: ['en'] }];
+    },
+    models: async (key) => (asked.push(['models', key]), [{ id: 'eleven_multilingual_v2', name: 'Multilingual v2' }]),
+    speak: async () => undefined,
+  };
+  const voiceOver = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs,
+  });
+  app = createApi({ ...deps, voiceOver });
+  const file = path.join(t.config.stateDir, 'elevenlabs.json');
+  const configured = async () => {
+    const text = await call('GET', '/api/voices').then((res) => res.text());
+    assert.ok(!text.includes('sk_'), 'never the key');
+    return JSON.parse(text).elevenLabs;
+  };
+
+  assert.deepEqual(await configured(), { configured: false });
+  const none = await json('GET', '/api/voices/elevenlabs');
+  assert.equal(none.status, 409);
+  assert.match(none.body.error, /ElevenLabs/);
+
+  for (const key of ['', '   ', 'sk_a b', `sk_${'x'.repeat(254)}`]) {
+    const malformed = await json('PUT', '/api/voices/elevenlabs/key', { key });
+    assert.equal(malformed.status, 400, JSON.stringify(key));
+    assert.ok(!JSON.stringify(malformed.body).includes('sk_'), 'never the key');
+  }
+  assert.deepEqual(asked, [], 'a malformed key never reaches ElevenLabs');
+  const refused = await json('PUT', '/api/voices/elevenlabs/key', { key: 'sk_refused' });
+  assert.deepEqual(refused, { status: 400, body: { error: 'ElevenLabs refuse la clé API' } });
+  assert.equal(await pathExists(file), false);
+
+  assert.deepEqual(await json('PUT', '/api/voices/elevenlabs/key', { key: '  sk_good  ' }), {
+    status: 200,
+    body: { configured: true },
+  });
+  assert.deepEqual(asked.at(-1), ['voices', 'sk_good']);
+  assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { key: 'sk_good' });
+  assert.deepEqual(await configured(), { configured: true });
+  const lists = await call('GET', '/api/voices/elevenlabs').then((res) => res.text());
+  assert.ok(!lists.includes('sk_good'));
+  assert.deepEqual(JSON.parse(lists), {
+    voices: [{ id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', category: 'premade', previewUrl: null, languages: ['en'] }],
+    models: [{ id: 'eleven_multilingual_v2', name: 'Multilingual v2' }],
+  });
+  assert.deepEqual(asked.slice(-2).sort(), [
+    ['models', 'sk_good'],
+    ['voices', 'sk_good'],
+  ]);
+  // Next to it, the Piper download route still answers for its own voices.
+  assert.equal((await json('POST', '/api/voices/elevenlabs/download')).status, 404);
+
+  // A file edited by hand that no longer parses: JSON.parse would quote the key, the error does not.
+  await fs.writeFile(file, 'sk_hand_edited\n');
+  const unreadable = await json('GET', '/api/voices');
+  assert.equal(unreadable.status, 500);
+  assert.match(unreadable.body.error, /elevenlabs\.json/);
+  assert.ok(!unreadable.body.error.includes('sk_hand'), unreadable.body.error);
+  assert.equal((await json('PUT', '/api/voices/elevenlabs/key', { key: 'sk_good' })).status, 200);
+  assert.deepEqual(await configured(), { configured: true });
+
+  for (let i = 0; i < 2; i++) {
+    assert.deepEqual(await json('DELETE', '/api/voices/elevenlabs/key'), { status: 200, body: { configured: false } });
+  }
+  assert.equal(await pathExists(file), false);
+  assert.deepEqual(await configured(), { configured: false });
+});
+
+test('voice-overs: a removal sent during a slow ElevenLabs check is not undone by the key it was checking', async () => {
+  let checking!: () => void;
+  let answer!: () => void;
+  const asked = new Promise<void>((resolve) => (checking = resolve));
+  const answered = new Promise<void>((resolve) => (answer = resolve));
+  const voiceOver = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: {
+      voices: async () => (checking(), await answered, []),
+      models: async () => [],
+      speak: async () => undefined,
+    },
+  });
+  app = createApi({ ...deps, voiceOver });
+  const saving = json('PUT', '/api/voices/elevenlabs/key', { key: 'sk_slow' });
+  await asked;
+  const removing = json('DELETE', '/api/voices/elevenlabs/key');
+  // Long enough for an unguarded removal to finish before the check answers.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  answer();
+  assert.equal((await saving).status, 200);
+  assert.deepEqual(await removing, { status: 200, body: { configured: false } });
+  assert.equal(await pathExists(path.join(t.config.stateDir, 'elevenlabs.json')), false);
+});
+
+test('voice-overs: the default voice goes into project.json at creation only, never into existing projects', async () => {
+  const create = async (id: string) =>
+    (await json('POST', '/api/projects', { name: id, id, brand: null, formats: ['16:9'], fps: 30 })).body;
+  const file = (id: string) => fs.readFile(path.join(store.dir(id), 'project.json'), 'utf8');
+  await create('piper-before');
+  const before = await file('piper-before');
+  assert.ok(!before.includes('voiceOver'), 'the Piper default writes nothing, as before');
+
+  const voice = { engine: 'elevenlabs', voice: 'JBFqnCBsd6RMkjVDRZzb', model: 'eleven_multilingual_v2' };
+  for (const wrong of [
+    { ...voice, engine: 'piper' },
+    { ...voice, voice: 'a b' },
+    { ...voice, model: 'Eleven' },
+  ]) {
+    assert.equal((await json('PUT', '/api/settings', { defaultVoice: wrong })).status, 400, JSON.stringify(wrong));
+  }
+  assert.deepEqual((await json('PUT', '/api/settings', { defaultVoice: voice })).body.defaultVoice, voice);
+  assert.deepEqual(
+    (await json('PUT', '/api/settings', { projectEffort: 'max' })).body.defaultVoice,
+    voice,
+    'kept when not named',
+  );
+  const created = await create('eleven');
+  const written = { ...voice, speed: 1, musicLevel: 0.3 };
+  assert.deepEqual(created.voiceOver, written);
+  assert.deepEqual(JSON.parse(await file('eleven')).voiceOver, written);
+  assert.equal(await file('piper-before'), before, 'an existing project keeps its voice');
+  const changed = { ...voice, voice: 'otherVoice2' };
+  await json('PUT', '/api/settings', { defaultVoice: changed });
+  assert.deepEqual(JSON.parse(await file('eleven')).voiceOver, written, 'nor does a project made with the old default');
+
+  // Removing the key sets new projects back on Piper.
+  await json('DELETE', '/api/voices/elevenlabs/key');
+  assert.equal((await json('GET', '/api/settings')).body.defaultVoice, undefined);
+  await json('PUT', '/api/settings', { defaultVoice: changed });
+  await json('PUT', '/api/settings', { defaultVoice: null });
+  await create('piper-after');
+  assert.ok(!(await file('piper-after')).includes('voiceOver'));
+  assert.deepEqual(JSON.parse(await file('eleven')).voiceOver, written);
+
+  // A settings.json edited by hand with a voice the store would refuse: ignored, so projects still get made, on Piper.
+  await fs.writeFile(path.join(t.config.stateDir, 'settings.json'), JSON.stringify({ defaultVoice: { ...voice, voice: 'a b' } }));
+  assert.equal((await json('GET', '/api/settings')).body.defaultVoice, undefined);
+  assert.equal(
+    (await json('POST', '/api/projects', { name: 'x', id: 'hand-edited', brand: null, formats: ['16:9'], fps: 30 })).status,
+    200,
+  );
+  assert.ok(!(await file('hand-edited')).includes('voiceOver'));
 });
 
 test('versions: manual save, list, restore', async () => {

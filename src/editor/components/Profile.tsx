@@ -1,8 +1,9 @@
 // The Profile page (#/@profil): the accounts Cadence uses on this computer. What Cadence asked Claude (the usage log),
-// Git hosts through their CLI, networks through the developer app the team created on each one (keys in a dialog),
-// connected in a new tab, refreshed on `accounts-changed`.
-import { Check, CircleAlert, CircleCheck, Copy, KeyRound, RefreshCw } from 'lucide-react';
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+// Git hosts through their CLI, the voice-over engines (Piper's voices, the ElevenLabs key and the voice new projects
+// start with), networks through the developer app the team created on each one (keys in a dialog), connected in a new
+// tab, refreshed on `accounts-changed`.
+import { AlertTriangle, AudioLines, Check, CircleAlert, CircleCheck, Copy, KeyRound, RefreshCw } from 'lucide-react';
+import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
 import {
   DEFAULT_FEATURES,
   type AgentId,
@@ -12,16 +13,18 @@ import {
   type NetworkAccount,
   type UsageSummary,
   type UsageTotals,
+  type VoicesState,
 } from '../../shared/types';
-import { api } from '../api';
+import { ApiError, api, ignore } from '../api';
 import { useT } from '../i18n';
 import { External } from '../i18n/links';
-import { day, tokenCount, usd } from '../lib/format';
-import { NONE, useStore } from '../store';
+import { bytes, day, tokenCount, usd } from '../lib/format';
+import { NONE, set, useStore } from '../store';
 import { setAgent } from '../store/project';
 import { copyText, toast } from '../store/ui';
 import { AGENTS, type AgentSpec } from './agents';
-import { AGENT_LOGOS, GIT_LOGOS, NETWORK_LOGOS } from './logos';
+import { AGENT_LOGOS, ElevenLabsLogo, GIT_LOGOS, NETWORK_LOGOS } from './logos';
+import { ElevenLabsVoiceSelect, PIPER_INSTALL } from './voiceOver';
 import { Button, ConfirmButton, Field, IconButton, Modal, inputClass, Spinner } from './ui';
 
 const GIT_HOSTS: { id: GitHost; name: string; cli: string }[] = [
@@ -116,6 +119,8 @@ export function Profile() {
             </ul>
           </section>
         )}
+
+        <VoiceSection />
 
         <section className="mt-12" aria-labelledby="profile-networks">
           <h2 id="profile-networks" className="display-caps text-[22px]/7 text-ink">
@@ -305,6 +310,149 @@ function GitCard({ host, account }: { host: (typeof GIT_HOSTS)[number]; account:
           </>
         ))}
     </Card>
+  );
+}
+
+/** Piper and ElevenLabs: what each needs on this computer, and the voice new projects start with. */
+function VoiceSection() {
+  const t = useT();
+  const [voices, setVoices] = useState<VoicesState | null>(null);
+  const load = () => void api.voices().then(setVoices, ignore);
+  useEffect(load, []);
+  return (
+    <section className="mt-12" aria-labelledby="profile-voice">
+      <h2 id="profile-voice" className="display-caps text-[22px]/7 text-ink">
+        {t.profile.voice.title}
+      </h2>
+      <p className="mt-1 text-[13px] text-ink-3">{t.profile.voice.hint}</p>
+      <ul className={GRID}>
+        <PiperCard voices={voices} />
+        <ElevenLabsCard configured={voices?.elevenLabs.configured} onChange={load} />
+      </ul>
+    </section>
+  );
+}
+
+function Checking() {
+  const t = useT();
+  return (
+    <span className="flex items-center gap-1.5 text-ink-3">
+      <Spinner className="size-3.5" /> {t.profile.checking}
+    </span>
+  );
+}
+
+function PiperCard({ voices }: { voices: VoicesState | null }) {
+  const p = useT().profile.voice.piper;
+  const installed = voices?.voices.filter((v) => v.installed) ?? NONE;
+  const status = !voices ? <Checking /> : <Status ok={voices.piper.ok}>{voices.piper.ok ? p.ready : p.missing}</Status>;
+  // Piper has no mark of its own to show: a neutral glyph.
+  return (
+    <Card logo={<AudioLines className="size-7" aria-hidden />} title="Piper" status={status}>
+      {voices && !voices.piper.ok && (
+        <>
+          <p>{p.install}</p>
+          <Command text={PIPER_INSTALL} />
+        </>
+      )}
+      {voices && (
+        <div className="space-y-1">
+          <p className="label-caps text-[10px] text-ink-3">{p.voices}</p>
+          {installed.length ? (
+            <ul className="space-y-0.5">
+              {installed.map((v) => (
+                <li key={v.id} className="flex items-baseline justify-between gap-3">
+                  <span className="min-w-0 truncate text-ink">
+                    {v.name} <span className="text-ink-3">{v.locale}</span>
+                  </span>
+                  <span className="shrink-0 text-ink-3">{bytes(v.size)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-ink-3">{p.none}</p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ElevenLabsCard({ configured, onChange }: { configured: boolean | undefined; onChange: () => void }) {
+  const e = useT().profile.voice.elevenLabs;
+  const defaultVoice = useStore((s) => s.app?.settings.defaultVoice ?? null);
+  const status = configured === undefined ? <Checking /> : <Status ok={configured}>{configured ? e.configured : e.noKey}</Status>;
+  const pick = (next: { voice: string; model: string } | null) =>
+    void api
+      .saveSettings({ defaultVoice: next && { engine: 'elevenlabs', ...next } })
+      .then((settings) => set((s) => ({ app: s.app && { ...s.app, settings } })), ignore);
+  const remove = async () => {
+    await api.removeElevenLabsKey();
+    // The server set new projects back on Piper with the key.
+    set((s) => ({ app: s.app && { ...s.app, settings: { ...s.app.settings, defaultVoice: null } } }));
+    onChange();
+  };
+  return (
+    <Card logo={<ElevenLabsLogo className="size-7" />} title="ElevenLabs" status={status}>
+      {configured === false && <ElevenLabsKeyForm onSaved={onChange} />}
+      {configured && (
+        <>
+          <p className="label-caps text-[10px] text-ink-3">{e.newProjects}</p>
+          <ElevenLabsVoiceSelect value={defaultVoice} onChange={pick} label={e.defaultLabel} none={e.piper} noneSelectable />
+          <p className="text-xs text-ink-3">{e.defaultHint}</p>
+          <ConfirmButton variant="secondary" label={e.removeKey} confirmLabel={e.removeKeyConfirm} onConfirm={remove} />
+        </>
+      )}
+    </Card>
+  );
+}
+
+/** Sent once to the server, which keeps it in its state directory: the field empties and the key is never shown back. */
+function ElevenLabsKeyForm({ onSaved }: { onSaved: () => void }) {
+  const e = useT().profile.voice.elevenLabs;
+  const id = useId();
+  const [key, setKey] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await api.saveElevenLabsKey(key.trim());
+      setKey('');
+      onSaved();
+    } catch (failure) {
+      setError((failure as ApiError).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <form onSubmit={(event) => void submit(event)} className="space-y-2">
+      <Field label={e.key} htmlFor={`${id}-key`} hint={e.keyHint}>
+        <input
+          id={`${id}-key`}
+          type="password"
+          value={key}
+          onChange={(event) => setKey(event.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-error` : undefined}
+          className={inputClass}
+        />
+      </Field>
+      {error && (
+        <p id={`${id}-error`} className="flex items-start gap-1.5 text-xs text-alert">
+          <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
+        </p>
+      )}
+      <p className="text-xs text-ink-2">{e.billing}</p>
+      <Button type="submit" size="sm" variant="secondary" loading={saving} disabled={!key.trim()}>
+        {e.saveKey}
+      </Button>
+    </form>
   );
 }
 

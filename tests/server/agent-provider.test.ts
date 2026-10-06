@@ -189,6 +189,7 @@ function turn(overrides: Partial<AgentTurn> = {}): AgentTurn {
     effort: 'high',
     tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep'],
     allow: ['Read(//p/**)', 'Glob', 'mcp__cadence__render_frames'],
+    deny: ['Read(//s/**)'],
     addDirs: ['/brands/cadence', '/templates'],
     mcpServers: { cadence: { type: 'http', url: 'http://127.0.0.1:5299/mcp', headers: { Authorization: 'Bearer tok' } } },
     sessionId: SESSION,
@@ -264,10 +265,11 @@ describe('claudeArgs', () => {
     // Variadic lists end at the next option.
     const allow = args.indexOf('--allowedTools');
     assert.deepEqual(args.slice(allow + 1, allow + 4), ['Read(//p/**)', 'Glob', 'mcp__cadence__render_frames']);
-    assert.equal(args[allow + 4], '--add-dir');
-    assert.deepEqual(args.slice(allow + 5, allow + 7), ['/brands/cadence', '/templates']);
-    assert.equal(args[allow + 7], '--mcp-config');
-    assert.equal(args[allow + 8], FILES.mcpConfig);
+    assert.deepEqual(args.slice(allow + 4, allow + 6), ['--disallowedTools', 'Read(//s/**)']);
+    assert.equal(args[allow + 6], '--add-dir');
+    assert.deepEqual(args.slice(allow + 7, allow + 9), ['/brands/cadence', '/templates']);
+    assert.equal(args[allow + 9], '--mcp-config');
+    assert.equal(args[allow + 10], FILES.mcpConfig);
     assert.equal(args[args.indexOf('--append-system-prompt-file') + 1], FILES.systemPrompt);
     assert.deepEqual(args.slice(-2), ['--session-id', SESSION]);
     assert.ok(!args.includes('Agrandis le titre'), 'the prompt goes through stdin');

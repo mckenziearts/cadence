@@ -29,6 +29,7 @@ import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
 import { HttpError, pathExists, resolveInside } from '../util';
+import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
 import { VOICES } from '../voiceover/voices';
 import { dataUrl, sendFile, sendImage } from './files';
 
@@ -46,11 +47,22 @@ const fpsSchema = z.literal([24, 30, 60]);
 const languageSchema = z.enum(['fr', 'en']).nullable();
 const effortSchema = z.enum(EFFORTS);
 const modelSchema = z.string().regex(MODEL_ID_PATTERN);
-const voiceOverSchema = z.object({
-  voice: z.enum(VOICES.map((v) => v.id) as [string, ...string[]]),
-  speed: z.number().min(0.5).max(2),
-  musicLevel: z.number().min(0).max(1),
-});
+const voiceOverSchema = z.discriminatedUnion('engine', [
+  z.object({
+    engine: z.literal('piper').optional(),
+    voice: z.enum(VOICES.map((v) => v.id) as [string, ...string[]]),
+    speed: z.number().min(0.5).max(2),
+    musicLevel: z.number().min(0).max(1),
+  }),
+  // ElevenLabs' own speed range.
+  z.object({
+    engine: z.literal('elevenlabs'),
+    voice: z.string().regex(ELEVENLABS_VOICE_PATTERN),
+    model: z.string().regex(ELEVENLABS_MODEL_PATTERN),
+    speed: z.number().min(0.7).max(1.2),
+    musicLevel: z.number().min(0).max(1),
+  }),
+]);
 
 const schemas = {
   createProject: z.object({
@@ -126,6 +138,7 @@ const schemas = {
     fullPage: z.boolean().optional(),
     name: z.string().max(80).optional(),
   }),
+  elevenLabsKey: z.object({ key: z.string().trim().min(1).max(256).regex(/^\S+$/) }),
   networkApp: z.object({ clientId: z.string().trim().min(1).max(300), clientSecret: z.string().trim().min(1).max(300) }),
   publish: z.object({
     file: z.string().min(1).max(300),
@@ -141,6 +154,14 @@ const schemas = {
     projectEffort: effortSchema.optional(),
     language: z.enum(LANGUAGES).optional(),
     agent: z.enum(AGENT_IDS).optional(),
+    defaultVoice: z
+      .object({
+        engine: z.literal('elevenlabs'),
+        voice: z.string().regex(ELEVENLABS_VOICE_PATTERN),
+        model: z.string().regex(ELEVENLABS_MODEL_PATTERN),
+      })
+      .nullable()
+      .optional(),
   }),
 };
 
@@ -196,7 +217,10 @@ export function createApi(deps: ApiDeps) {
   // Projects
   app.get('/projects/:id', async (c) => c.json(await store.get(c.req.param('id'))));
   app.post('/projects', async (c) => {
-    const project = await store.create(await body(c, schemas.createProject));
+    const project = await store.create({
+      ...(await body(c, schemas.createProject)),
+      voiceOver: (await settings.get()).defaultVoice,
+    });
     await versions
       .snapshot(project.id, { label: m().api.versions.initial, source: 'baseline' })
       .catch((e: Error) => console.warn(m().api.versions.notSaved(e.message)));
@@ -321,6 +345,17 @@ export function createApi(deps: ApiDeps) {
   // Voice-overs
   app.get('/voices', async (c) => c.json(await deps.voiceOver.voices()));
   app.post('/voices/:voice/download', async (c) => c.json(await deps.voiceOver.download(c.req.param('voice'))));
+  app.get('/voices/elevenlabs', async (c) => c.json(await deps.voiceOver.elevenLabs()));
+  app.put('/voices/elevenlabs/key', async (c) => {
+    await deps.voiceOver.setElevenLabsKey((await body(c, schemas.elevenLabsKey)).key);
+    return c.json({ configured: true });
+  });
+  app.delete('/voices/elevenlabs/key', async (c) => {
+    await deps.voiceOver.setElevenLabsKey(null);
+    // Without the key, new projects start on Piper again (the ones already made keep their voice and answer "no key").
+    await settings.update({ defaultVoice: null });
+    return c.json({ configured: false });
+  });
   /** Speak what is missing now, even sentences Piper failed on before (the editor's "Try again"). */
   app.post('/projects/:id/voice-over/sync', async (c) => {
     const id = await existingProject(c);

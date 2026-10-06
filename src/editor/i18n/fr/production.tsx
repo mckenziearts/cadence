@@ -95,6 +95,20 @@ export default {
       copy: 'Copier',
       copied: 'Commande copiée',
     },
+    engine: {
+      label: 'Moteur de la voix',
+      hints: { piper: 'Sur cette machine, gratuit.', elevenlabs: 'Avec votre compte ElevenLabs.' },
+    },
+    elevenLabs: {
+      noKey: 'Aucune clé ElevenLabs sur cet ordinateur : ajoutez la vôtre dans le Profil.',
+      openProfile: 'Ouvrir le Profil',
+      loading: 'Chargement de vos voix...',
+      voiceLabel: 'Voix ElevenLabs de la vidéo',
+      pick: 'Choisissez une voix',
+      preview: (name: string) => `Écouter un extrait de la voix ${name}`,
+      model: 'Modèle',
+      modelLabel: 'Modèle ElevenLabs',
+    },
     voice: {
       title: 'Voix',
       label: 'Voix de la vidéo',
@@ -115,7 +129,10 @@ export default {
     },
     script: {
       title: 'Texte',
-      hint: 'Une voix off par scène, dite phrase par phrase. Cadence la génère dès que vous quittez le champ.',
+      hint: {
+        piper: 'Une voix off par scène, dite phrase par phrase. Cadence la génère dès que vous quittez le champ.',
+        elevenlabs: 'Une voix off par scène, dite phrase par phrase. ElevenLabs la génère quand vous cliquez sur Générer.',
+      },
       placeholder: 'Ce que dit la voix pendant cette scène',
       textLabel: (scene: string) => `Voix off de « ${scene} »`,
       at: 'Départ',
@@ -129,7 +146,7 @@ export default {
       overflow: (by: string) => `La voix dépasse la scène de ${by} : allongez la scène ou raccourcissez le texte.`,
     },
     status: {
-      speaking: 'Piper génère la voix...',
+      speaking: 'Génération de la voix...',
       failed: 'La voix off n’a pas pu être générée',
     },
   },

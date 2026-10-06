@@ -121,6 +121,14 @@ export function allowRules(projectDir: string, sceneId: string | null, dirs: Dir
   return [...reads, 'Glob', 'Grep', ...writable.flatMap((file) => [rule('Edit', file), rule('Write', file)]), ...tools];
 }
 
+/**
+ * Files no turn may read: the network and ElevenLabs keys. --restricted already keeps the file tools to a turn's folders;
+ * this still holds if one of them ever contains the state folder, where the brand build keeps its clones.
+ */
+export function denyRules(stateDir: string): string[] {
+  return ['accounts.json', 'elevenlabs.json'].map((file) => `Read(//${path.join(stateDir, file).replace(/^\/+/, '')})`);
+}
+
 function displayPath(file: unknown, projectDir: string, root: string): string {
   if (typeof file !== 'string') return m().agent.chat.activity.file;
   if (isInside(projectDir, file)) return path.relative(projectDir, file);
@@ -460,6 +468,7 @@ export class ChatManager implements ChatService {
         effort,
         tools: TOOLS,
         allow: allowRules(project.dir, scene?.id ?? null, dirs),
+        deny: denyRules(config.stateDir),
         addDirs: [dirs.brand, dirs.templates, dirs.runtime],
         mcpServers: { cadence: { type: 'http', url: config.mcpUrl, headers: { Authorization: `Bearer ${token}` } } },
         signal: turn.abort.signal,

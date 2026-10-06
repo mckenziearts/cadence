@@ -96,6 +96,7 @@ async function setup(script: Script) {
     projectsDir: path.join(root, 'projects'),
     brandsDir: path.join(root, 'brands'),
     templatesDir: path.join(root, 'templates'),
+    stateDir: path.join(root, '.cadence'),
     mcpUrl: 'http://127.0.0.1:5299/mcp',
   } as CadenceConfig;
 
@@ -324,6 +325,8 @@ test('a scene turn: context, rules, streaming, activity, version, cost and sessi
   assert.ok(turn.allow.includes(`Read(//${env.projectDir.slice(1)}/**)`));
   assert.ok(turn.allow.includes('mcp__cadence__render_frames'));
   assert.ok(!turn.allow.some((rule) => rule.includes('components') || rule === 'mcp__cadence__create_scene'));
+  const keys = path.join(env.root, '.cadence').slice(1);
+  assert.deepEqual(turn.deny, [`Read(//${keys}/accounts.json)`, `Read(//${keys}/elevenlabs.json)`]);
   assert.match(turn.systemPrompt, /## Scope: scene chat/);
   assert.doesNotMatch(turn.systemPrompt, /## Scope: project chat/);
   assert.match(turn.prompt, /^<cadence_context>/);

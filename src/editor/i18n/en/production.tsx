@@ -102,6 +102,20 @@ export default {
       copy: 'Copy',
       copied: 'Command copied',
     },
+    engine: {
+      label: 'Voice engine',
+      hints: { piper: 'On this machine, free.', elevenlabs: 'With your ElevenLabs account.' },
+    },
+    elevenLabs: {
+      noKey: 'No ElevenLabs key on this computer: add yours in the Profile.',
+      openProfile: 'Open the Profile',
+      loading: 'Loading your voices...',
+      voiceLabel: "The video's ElevenLabs voice",
+      pick: 'Choose a voice',
+      preview: (name: string) => `Listen to a sample of the voice ${name}`,
+      model: 'Model',
+      modelLabel: 'ElevenLabs model',
+    },
     voice: {
       title: 'Voice',
       label: "The video's voice",
@@ -122,7 +136,10 @@ export default {
     },
     script: {
       title: 'Text',
-      hint: 'One voice-over per scene, spoken sentence by sentence. Cadence generates it as soon as you leave the field.',
+      hint: {
+        piper: 'One voice-over per scene, spoken sentence by sentence. Cadence generates it as soon as you leave the field.',
+        elevenlabs: 'One voice-over per scene, spoken sentence by sentence. ElevenLabs generates it when you click Generate.',
+      },
       placeholder: 'What the voice says during this scene',
       textLabel: (scene: string) => `Voice-over of "${scene}"`,
       at: 'Start',
@@ -136,7 +153,7 @@ export default {
       overflow: (by: string) => `The voice runs ${by} past the scene: lengthen the scene or shorten the text.`,
     },
     status: {
-      speaking: 'Piper is generating the voice...',
+      speaking: 'Generating the voice...',
       failed: 'The voice-over could not be generated',
     },
   },

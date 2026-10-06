@@ -90,6 +90,7 @@ function turn(overrides: Partial<AgentTurn> = {}): AgentTurn {
     effort: 'high',
     tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep'],
     allow: [],
+    deny: [],
     addDirs: [],
     mcpServers: { cadence: { type: 'http', url: 'http://127.0.0.1:5299/mcp', headers: { Authorization: 'Bearer sk-cdx-9f' } } },
     sessionId: THREAD,

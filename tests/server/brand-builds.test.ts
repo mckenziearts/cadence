@@ -342,6 +342,7 @@ test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, 
   assert.equal(turn.cwd, dir);
   const writes = turn.allow.filter((rule) => /^(Write|Edit)\(/.test(rule));
   assert.deepEqual(writes, [`Edit(/${dir}/**)`, `Write(/${dir}/**)`]);
+  assert.deepEqual(turn.deny, [`Read(/${t.config.stateDir}/accounts.json)`, `Read(/${t.config.stateDir}/elevenlabs.json)`]);
   assert.deepEqual(fx.scopes, [{ kind: 'brand', brandId: 'acme-studio', repoDir: turn.addDirs[0] }]);
   assert.equal(fx.tokens.resolve(/Bearer (\S+)/.exec(JSON.stringify(turn.mcpServers))![1]), null, 'the token is revoked');
   const statuses = fx.events.map((e) => (e as { build: BrandBuild }).build.status);

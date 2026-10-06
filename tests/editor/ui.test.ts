@@ -13,9 +13,10 @@ import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Locator, type Page } from 'playwright';
-import type { AgentProvider, BrandSource, SpeechEngine } from '../../server/contracts';
+import type { AgentProvider, BrandSource, ElevenLabsApi, SpeechEngine } from '../../server/contracts';
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
+import { HttpError } from '../../server/util';
 import { writeWav } from '../../server/voiceover/wav';
 import {
   DEFAULT_FEATURES,
@@ -106,6 +107,36 @@ const speech: SpeechEngine = {
   },
 };
 
+/** ElevenLabs as the Voice panel and Profile tests need it: one accepted key, two voices, never the network. */
+const ELEVENLABS_KEY = `sk_e2e_${process.pid}`;
+const elevenLabsSpoken: string[][] = [];
+/** Set, ElevenLabs keeps speaking until it settles. */
+let elevenLabsHold: Promise<void> | null = null;
+const elevenLabs: ElevenLabsApi = {
+  voices: async (key) => {
+    if (key !== ELEVENLABS_KEY) throw new HttpError(400, 'ElevenLabs refuse la clé API : vérifiez-la dans le Profil');
+    return [
+      {
+        id: 'voiceAlice1',
+        name: 'Alice',
+        category: 'premade',
+        previewUrl: 'https://example.invalid/alice.mp3',
+        languages: ['fr'],
+      },
+      { id: 'voiceBob2', name: 'Bob', category: 'premade', previewUrl: null, languages: ['en'] },
+    ];
+  },
+  models: async () => [
+    { id: 'eleven_flash_v2_5', name: 'Flash v2.5' },
+    { id: 'eleven_multilingual_v2', name: 'Multilingual v2' },
+  ],
+  speak: async ({ sentences, files }) => {
+    elevenLabsSpoken.push(sentences);
+    await elevenLabsHold;
+    for (const file of files) await writeFile(file, writeWav({ sampleRate: 24000, samples: new Int16Array(24000).fill(800) }));
+  },
+};
+
 let server: RunningServer;
 let browser: Browser;
 
@@ -158,6 +189,7 @@ before(
       brandSources: { github: brandSource, gitlab: glabMissing },
       networks: { youtube: fakeNetwork() },
       speech,
+      elevenLabs,
       root: ROOT,
       // The YouTube keys and tokens of the test stay out of this machine's .cadence/accounts.json.
       stateDir,
@@ -646,6 +678,156 @@ describe('editor', () => {
       const t = Number(at!.replace(',', '.').replace(/[^\d.]/g, ''));
       assert.ok(t >= 0.5 && t < 1.5, `the playhead starts at the voice: ${at}`);
       await page.context().close();
+    },
+  );
+
+  it(
+    'sends Voix to the Profile for the ElevenLabs key, picks a voice, and speaks a scene only on Générer',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-e`;
+      await api('POST', '/api/projects', { name: 'ElevenLabs', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      await api('POST', `/api/projects/${id}/scenes`, { name: 'Parole', duration: 3 });
+      const piper = (await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver;
+      // Out of ElevenLabs' range: switching brings it inside.
+      await api('PATCH', `/api/projects/${id}`, { voiceOver: { ...piper, speed: 1.8 } });
+      let page = await open(id);
+      let release = () => {};
+      try {
+        await panel(page, 'Voix');
+        await page.getByText('Cadence la génère dès que vous quittez le champ.').waitFor();
+        await page.getByRole('group', { name: 'Moteur de la voix' }).getByRole('button', { name: 'ElevenLabs' }).click();
+
+        // No key form here any more: one line and the way to the Profile.
+        await page.getByText('Aucune clé ElevenLabs sur cet ordinateur : ajoutez la vôtre dans le Profil.').waitFor();
+        assert.equal(await page.getByLabel('Clé API ElevenLabs').count(), 0);
+        await page.getByRole('button', { name: 'Ouvrir le Profil' }).click();
+        await page.getByRole('heading', { name: 'Profil', exact: true }).waitFor({ timeout: 10_000 });
+        assert.match(page.url(), /#\/@profil$/);
+        await page.context().close();
+
+        await api('PUT', '/api/voices/elevenlabs/key', { key: ELEVENLABS_KEY });
+        page = await open(id);
+        await panel(page, 'Voix');
+        await page.getByRole('group', { name: 'Moteur de la voix' }).getByRole('button', { name: 'ElevenLabs' }).click();
+        const voice = page.getByRole('combobox', { name: 'Voix ElevenLabs de la vidéo' });
+        await voice.waitFor({ timeout: 10_000 });
+        // Nothing saved until a voice is set: the project still speaks with Piper.
+        assert.equal((await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver.engine, undefined);
+        assert.equal(await page.getByRole('combobox', { name: 'Modèle ElevenLabs' }).inputValue(), 'eleven_multilingual_v2');
+
+        const saved = page.waitForRequest((r) => r.method() === 'PATCH' && r.url().endsWith(`/api/projects/${id}`));
+        await voice.selectOption('voiceAlice1');
+        assert.deepEqual(JSON.parse((await saved).postData()!), {
+          voiceOver: { engine: 'elevenlabs', voice: 'voiceAlice1', model: 'eleven_multilingual_v2', speed: 1.2, musicLevel: 0.3 },
+        });
+        await page.getByRole('button', { name: 'Écouter un extrait de la voix Alice' }).waitFor();
+        await page.getByText('ElevenLabs la génère quand vous cliquez sur Générer.').waitFor();
+        assert.equal(await page.getByRole('slider', { name: 'Vitesse de la voix' }).getAttribute('max'), '1.2');
+        const project = await api<ProjectState>('GET', `/api/projects/${id}`);
+        assert.equal(project.voiceOver.engine, 'elevenlabs');
+        assert.equal(project.voiceOver.model, 'eleven_multilingual_v2');
+
+        // A scene's text waits for Générer, and the voice stays put while ElevenLabs speaks with it.
+        const text = page.getByRole('textbox', { name: 'Voix off de « Parole »' });
+        await text.fill('Bonjour.');
+        await text.blur();
+        const generate = page.getByRole('button', { name: 'Générer la voix off de « Parole »' });
+        await generate.waitFor({ timeout: 10_000 });
+        assert.equal(elevenLabsSpoken.length, 0, 'ElevenLabs never speaks on its own');
+        elevenLabsHold = new Promise((resolve) => (release = resolve));
+        await generate.click();
+        await page.locator('fieldset[disabled]').waitFor({ timeout: 10_000 });
+        assert.ok(await voice.isDisabled());
+        release();
+        await page.getByText(`1${NBSP}phrase, de 0,00${NBSP}s à 1,00${NBSP}s`).waitFor({ timeout: 10_000 });
+        assert.deepEqual(elevenLabsSpoken, [['Bonjour.']]);
+        assert.ok(await voice.isEnabled());
+
+        // Back to Piper: the language's default voice with this project's speed, no ElevenLabs field left behind.
+        const kept = page.waitForResponse(
+          (r) =>
+            r.request().method() === 'PATCH' &&
+            r.url().endsWith(`/api/projects/${id}`) &&
+            /"speed":1\.2/.test(r.request().postData()!),
+        );
+        await page.getByRole('group', { name: 'Moteur de la voix' }).getByRole('button', { name: 'Piper' }).click();
+        await page.getByText('Cadence la génère dès que vous quittez le champ.').waitFor({ timeout: 10_000 });
+        assert.equal(await page.getByRole('combobox', { name: 'Voix de la vidéo', exact: true }).inputValue(), piper.voice);
+        assert.equal(await page.getByRole('slider', { name: 'Vitesse de la voix' }).getAttribute('max'), '2');
+        await kept;
+        assert.deepEqual((await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver, { ...piper, speed: 1.2 });
+      } finally {
+        release();
+        elevenLabsHold = null;
+        await api('DELETE', '/api/voices/elevenlabs/key');
+        await page.context().close();
+      }
+    },
+  );
+
+  it(
+    'saves the ElevenLabs key in the Profile without showing it back, and picks the voice of new projects',
+    { timeout: 90_000 },
+    async () => {
+      const page = await newPage();
+      try {
+        await page.goto(`${server.config.editorOrigin}/#/@profil`);
+        await page.getByRole('heading', { name: 'Voix off' }).waitFor({ timeout: 60_000 });
+        const card = page.getByRole('listitem', { name: 'ElevenLabs' });
+        await card.getByText('Pas de clé').waitFor({ timeout: 10_000 });
+        await page.getByRole('listitem', { name: 'Piper' }).getByText('Installé, gratuit').waitFor();
+
+        const key = card.getByLabel('Clé API ElevenLabs');
+        await key.fill('sk_refused');
+        await key.press('Enter');
+        const refused = card.getByText('ElevenLabs refuse la clé API');
+        await refused.waitFor({ timeout: 10_000 });
+        assert.equal(await key.getAttribute('aria-invalid'), 'true');
+        assert.equal(await key.getAttribute('aria-describedby'), await refused.getAttribute('id'));
+        assert.equal(
+          await card.getByRole('link', { name: /réglages de votre compte ElevenLabs/ }).getAttribute('target'),
+          '_blank',
+        );
+        await card.getByText(/chaque génération est facturée sur votre compte/).waitFor();
+
+        await key.fill(ELEVENLABS_KEY);
+        await card.getByRole('button', { name: 'Enregistrer la clé' }).click();
+        await card.getByText('Clé enregistrée').waitFor({ timeout: 10_000 });
+        const voice = card.getByRole('combobox', { name: 'Voix des nouveaux projets' });
+        await voice.waitFor({ timeout: 10_000 });
+        assert.equal(await card.getByLabel('Clé API ElevenLabs').count(), 0);
+        assert.ok(!(await page.content()).includes(ELEVENLABS_KEY), 'the key never comes back to the page');
+        assert.ok(!JSON.stringify(await api('GET', '/api/voices')).includes(ELEVENLABS_KEY));
+        assert.ok(!JSON.stringify(await api('GET', '/api/state')).includes(ELEVENLABS_KEY));
+        // Piper until a voice is picked.
+        assert.equal(await voice.inputValue(), '');
+        assert.equal(await card.getByRole('combobox', { name: 'Modèle ElevenLabs' }).inputValue(), 'eleven_multilingual_v2');
+
+        const saved = page.waitForRequest((r) => r.method() === 'PUT' && r.url().endsWith('/api/settings'));
+        await voice.selectOption('voiceAlice1');
+        const defaultVoice = { engine: 'elevenlabs', voice: 'voiceAlice1', model: 'eleven_multilingual_v2' };
+        assert.deepEqual(JSON.parse((await saved).postData()!), { defaultVoice });
+        await card.getByRole('button', { name: 'Écouter un extrait de la voix Alice' }).waitFor();
+
+        const id = `${PREFIX}-default`;
+        await api('POST', '/api/projects', { name: 'Voix par défaut', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+        assert.deepEqual((await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver, {
+          ...defaultVoice,
+          speed: 1,
+          musicLevel: 0.3,
+        });
+
+        // Without the key, new projects start on Piper again.
+        await card.getByRole('button', { name: 'Retirer la clé' }).click();
+        await card.getByRole('button', { name: 'Retirer la clé ?' }).click();
+        await card.getByText('Pas de clé').waitFor({ timeout: 10_000 });
+        await card.getByLabel('Clé API ElevenLabs').waitFor();
+        assert.equal((await api<AppState>('GET', '/api/state')).settings.defaultVoice, undefined);
+      } finally {
+        await api('DELETE', '/api/voices/elevenlabs/key');
+        await page.context().close();
+      }
     },
   );
 

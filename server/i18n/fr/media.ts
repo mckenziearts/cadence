@@ -74,6 +74,15 @@ export default {
     downloadFailed: (name: string, error: string) => `Téléchargement de la voix ${name} impossible : ${error}`,
     corrupted: (name: string) => `La voix ${name} téléchargée est corrompue (md5) : réessayez`,
     noTrack: 'Aucune voix off générée pour ce projet',
+    elevenLabsKeyRefused: (detail: string | null) =>
+      `ElevenLabs refuse la clé API${detail ? ` (${detail})` : ''} : vérifiez-la dans le Profil`,
+    elevenLabsQuota: (detail: string | null) =>
+      `ElevenLabs refuse la demande pour l’instant${detail ? ` (${detail})` : ''} : quota ou limite de débit atteint, réessayez plus tard ou changez d’offre`,
+    elevenLabsSaid: (detail: string) => `ElevenLabs a répondu : ${detail}`,
+    elevenLabsHttpStatus: (status: number) => `erreur ${status}`,
+    elevenLabsNoKey: 'Aucune clé API ElevenLabs enregistrée : ajoutez la vôtre dans le Profil',
+    elevenLabsKeyUnreadable: (file: string) => `${file} illisible : enregistrez à nouveau votre clé ElevenLabs dans le Profil`,
+    elevenLabsDown: 'ElevenLabs ne répond pas : vérifiez la connexion à Internet, puis réessayez',
   },
   analyze: {
     missingFile: (file: string) => `Fichier introuvable : ${file}`,

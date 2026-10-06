@@ -39,6 +39,7 @@ import {
   writeFileAtomic,
   writeJsonAtomic,
 } from '../util';
+import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
 import { defaultVoiceOver } from '../voiceover/voices';
 import { DEFAULT_BRAND, FileBrandStore } from './brands';
 import { FileTemplateStore } from './templates';
@@ -66,11 +67,24 @@ const musicSchema = z.object({
 });
 
 /** Ranges only: a voice this Cadence does not offer (a newer project) fails when spoken, not when read. */
-const voiceOverSchema = z.object({
-  voice: z.string().regex(/^[a-z]{2,3}_[A-Z]{2}-\w+-\w+$/),
-  speed: z.number().min(0.5).max(2).default(1),
-  musicLevel: z.number().min(0).max(1).default(0.3),
-});
+const voiceOverSchema = z
+  .discriminatedUnion('engine', [
+    z.object({
+      engine: z.literal('piper').optional(),
+      voice: z.string().regex(/^[a-z]{2,3}_[A-Z]{2}-\w+-\w+$/),
+      speed: z.number().min(0.5).max(2).default(1),
+      musicLevel: z.number().min(0).max(1).default(0.3),
+    }),
+    z.object({
+      engine: z.literal('elevenlabs'),
+      voice: z.string().regex(ELEVENLABS_VOICE_PATTERN),
+      model: z.string().regex(ELEVENLABS_MODEL_PATTERN),
+      speed: z.number().min(0.7).max(1.2).default(1),
+      musicLevel: z.number().min(0).max(1).default(0.3),
+    }),
+  ])
+  // Piper settings keep the shape they had before ElevenLabs: no diff in the versions of existing projects.
+  .transform(({ engine, ...settings }) => (engine === 'elevenlabs' ? { engine, ...settings } : settings));
 
 const sceneVoiceOverSchema = z.object({
   text: z.string().max(MAX_VOICE_OVER_CHARS),
@@ -318,6 +332,8 @@ export class FileProjectStore implements ProjectStore {
       ...(input.language ? { language: parseLanguage(input.language) } : {}),
       scenes,
       music: null,
+      // Once, here: a later change of the default never re-speaks (nor bills) an existing video.
+      ...(input.voiceOver ? { voiceOver: parseVoiceOver(input.voiceOver) } : {}),
       createdAt: now,
       updatedAt: now,
     };

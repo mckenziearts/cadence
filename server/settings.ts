@@ -5,12 +5,14 @@ import {
   MODEL_ID_PATTERN,
   type AgentId,
   type AgentPrefs,
+  type DefaultVoice,
   type Effort,
   type Settings,
 } from '../src/shared/types';
 import type { CadenceConfig, SettingsStore } from './contracts';
 import { isLanguage, m, setLanguage } from './i18n';
 import { HttpError, KeyedMutex, readJsonOr, writeJsonAtomic } from './util';
+import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from './voiceover/elevenlabs';
 
 const PREF_FIELDS = ['sceneModel', 'sceneEffort', 'projectModel', 'projectEffort'] as const;
 
@@ -25,6 +27,7 @@ export class FileSettingsStore implements SettingsStore {
 
   async get(): Promise<Settings> {
     const stored = await readJsonOr<Partial<Settings>>(this.file, {});
+    const defaultVoice = cleanDefaultVoice(stored.defaultVoice);
     const defaults: Settings = {
       sceneModel: this.config.defaultModel,
       sceneEffort: this.config.defaultEffort,
@@ -41,6 +44,8 @@ export class FileSettingsStore implements SettingsStore {
       language: isLanguage(stored.language) ? stored.language : defaults.language,
       agent: isAgent(stored.agent) ? stored.agent : defaults.agent,
       agentPrefs: cleanPrefs(stored.agentPrefs),
+      // Absent for Piper: the files written before this setting read as they did.
+      ...(defaultVoice ? { defaultVoice } : {}),
     };
   }
 
@@ -54,11 +59,15 @@ export class FileSettingsStore implements SettingsStore {
     if (patch.language !== undefined && !isLanguage(patch.language))
       throw new HttpError(400, m().core.settings.language(patch.language));
     if (patch.agent !== undefined && !isAgent(patch.agent)) throw new HttpError(400, m().core.settings.agent(patch.agent));
+    const defaultVoice = patch.defaultVoice ? cleanDefaultVoice(patch.defaultVoice) : patch.defaultVoice;
+    if (patch.defaultVoice && !defaultVoice) throw new HttpError(400, m().core.settings.defaultVoice);
     return this.mutex.run('settings', async () => {
       const current = await this.get();
       const next: Settings = { ...current, agentPrefs: { ...current.agentPrefs } };
       if (patch.language !== undefined) next.language = patch.language;
       if (patch.agent !== undefined) next.agent = patch.agent;
+      if (defaultVoice) next.defaultVoice = defaultVoice;
+      else if (defaultVoice === null) delete next.defaultVoice;
       // The model/effort of this update belong to the agent in force after it (Claude Code keeps the flat fields).
       const agent = patch.agent ?? current.agent;
       const given: Partial<AgentPrefs> = {};
@@ -102,4 +111,11 @@ function isEffort(value: unknown): value is Effort {
 
 function isAgent(value: unknown): value is AgentId {
   return AGENT_IDS.includes(value as AgentId);
+}
+
+/** A valid ElevenLabs default with its own fields only, or undefined. */
+function cleanDefaultVoice(value: unknown): DefaultVoice | undefined {
+  const { engine, voice, model } = (value ?? {}) as Partial<DefaultVoice>;
+  if (engine !== 'elevenlabs' || typeof voice !== 'string' || typeof model !== 'string') return undefined;
+  return ELEVENLABS_VOICE_PATTERN.test(voice) && ELEVENLABS_MODEL_PATTERN.test(model) ? { engine, voice, model } : undefined;
 }
