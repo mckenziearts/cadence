@@ -39,7 +39,13 @@ async function features(extra: Pick<StartOptions, 'features'>): Promise<AppState
 }
 
 test('every feature is on when the host passes none', async () => {
-  assert.deepEqual(await features({}), { agentPicker: true, gitSources: true, networkApps: true });
+  assert.deepEqual(await features({}), {
+    agentPicker: true,
+    gitSources: true,
+    networkApps: true,
+    modelPicker: true,
+    costs: true,
+  });
 });
 
 test('a feature the host turns off is off, the others stay on', async () => {
@@ -47,10 +53,28 @@ test('a feature the host turns off is off, the others stay on', async () => {
     agentPicker: true,
     gitSources: false,
     networkApps: true,
+    modelPicker: true,
+    costs: true,
+  });
+});
+
+test('a host can hide the model choice and the costs', async () => {
+  assert.deepEqual(await features({ features: { modelPicker: false, costs: false } }), {
+    agentPicker: true,
+    gitSources: true,
+    networkApps: true,
+    modelPicker: false,
+    costs: false,
   });
 });
 
 test('an undefined flag stays on and an unknown key is not served', async () => {
   const flags = { agentPicker: undefined, gitSources: false, legacy: false } as Partial<AppState['features']>;
-  assert.deepEqual(await features({ features: flags }), { agentPicker: true, gitSources: false, networkApps: true });
+  assert.deepEqual(await features({ features: flags }), {
+    agentPicker: true,
+    gitSources: false,
+    networkApps: true,
+    modelPicker: true,
+    costs: true,
+  });
 });

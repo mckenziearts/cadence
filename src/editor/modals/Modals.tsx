@@ -58,7 +58,7 @@ function Lightbox({ images, index }: { images: string[]; index: number }) {
       role="dialog"
       aria-modal="true"
       aria-label={t.dialogs.lightbox.label}
-      className="fixed inset-0 z-50 flex animate-fade-in flex-col bg-ink/90 backdrop-blur-sm"
+      className="no-drag fixed inset-0 z-50 flex animate-fade-in flex-col bg-ink/90 backdrop-blur-sm"
       onPointerDown={(e) => e.target === e.currentTarget && closeModal()}
     >
       <div className="flex items-center gap-3 px-5 py-3 text-white/80">

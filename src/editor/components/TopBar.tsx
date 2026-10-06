@@ -14,7 +14,7 @@ import {
   Settings,
 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
-import type { BrandBuild, BrandSummary, ProjectSummary } from '../../shared/types';
+import { DEFAULT_FEATURES, type BrandBuild, type BrandSummary, type ProjectSummary } from '../../shared/types';
 import { useT } from '../i18n';
 import { secsLabel, usd } from '../lib/format';
 import { set, useStore, NONE } from '../store';
@@ -44,8 +44,9 @@ export function TopBar() {
   const loading = useStore((s) => s.projectLoading);
   const view = useStore((s) => s.view);
   const page = useStore((s) => s.page);
+  const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   return (
-    <header className="relative z-30 flex h-14 shrink-0 items-center gap-2 border-b-2 border-ink bg-paper px-3">
+    <header className="titlebar relative z-30 flex h-14 shrink-0 items-center gap-2 border-b-2 border-ink bg-paper pe-3">
       <Tooltip label={t.shell.topBar.home}>
         <a href="#/" aria-label={t.shell.topBar.homeLink} className="focus-ring flex items-center gap-2.5 pr-2 pl-1 text-ink">
           <Logo className="size-7" />
@@ -100,8 +101,12 @@ export function TopBar() {
               aria-label={t.shell.topBar.copyPath}
             />
           </Tooltip>
-          <span className="mx-2 h-6 w-px bg-rule" aria-hidden />
-          <CostPill />
+          {costs && (
+            <>
+              <span className="mx-2 h-6 w-px bg-rule" aria-hidden />
+              <CostPill />
+            </>
+          )}
           <Button
             variant="secondary"
             icon={<Maximize className="size-4" />}

@@ -144,7 +144,7 @@ export function Present() {
       role="dialog"
       aria-modal="true"
       aria-label={t.shell.present.label}
-      className={clsx('fixed inset-0 z-[80] bg-black', idle && playing && 'cursor-none')}
+      className={clsx('no-drag fixed inset-0 z-[80] bg-black', idle && playing && 'cursor-none')}
       onPointerMove={poke}
     >
       <FrameView

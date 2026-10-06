@@ -263,6 +263,7 @@ const BOARD_SCALE = 0.6;
 function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: BrandBuild) => void }) {
   const t = useT();
   const frameOrigin = useStore((s) => s.app?.frameOrigin ?? '');
+  const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const live = !build.finishedAt;
   const step = STEPS.findIndex((s) => s.statuses.includes(build.status));
   const restart = async () => onRestart(await api.startBrandBuild({ repo: build.repo, name: build.name }).catch(() => build));
@@ -282,7 +283,7 @@ function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: 
   return (
     <Modal
       title={title}
-      subtitle={`${t.dialogs.newBrand.progress.from(build.repo)}${build.costUsd ? ` · ${usd(build.costUsd)}` : ''}`}
+      subtitle={`${t.dialogs.newBrand.progress.from(build.repo)}${costs && build.costUsd ? ` · ${usd(build.costUsd)}` : ''}`}
       onClose={closeModal}
       width="max-w-[760px]"
       footer={

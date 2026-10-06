@@ -1,6 +1,6 @@
 import { CircleCheck, CircleAlert } from 'lucide-react';
 import { useState } from 'react';
-import { EFFORTS, type Effort, type Settings } from '../../shared/types';
+import { DEFAULT_FEATURES, EFFORTS, type Effort, type Settings } from '../../shared/types';
 import { api } from '../api';
 import { Button, Modal, Segmented, Select, SectionTitle } from '../components/ui';
 import { useT } from '../i18n';
@@ -15,6 +15,9 @@ export function SettingsModal() {
   const t = useT();
   const app = useStore((s) => s.app)!;
   const language = useStore((s) => s.language);
+  const { modelPicker, costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
+  // Claude Code's hint is about the cost shown: with the costs hidden it goes too.
+  const agentHint = app.agent.detail ?? (costs ? t.settings.agentHint : undefined);
   // The scene/project defaults shown are the active agent's; saving routes them back to that agent.
   const seed = (): Settings => {
     const scene = resolvePick(app.settings, app.models, 'scene');
@@ -50,7 +53,7 @@ export function SettingsModal() {
   return (
     <Modal
       title={t.settings.title}
-      subtitle={t.settings.subtitle}
+      subtitle={modelPicker ? t.settings.subtitle : undefined}
       onClose={closeModal}
       width="max-w-xl"
       footer={
@@ -77,20 +80,24 @@ export function SettingsModal() {
             options={(['fr', 'en'] as const).map((value) => ({ value, label: LANGUAGE_NAMES[value] }))}
           />
         </section>
-        <ChatDefaults
-          title={t.settings.sceneChats}
-          hint={t.settings.sceneChatsHint}
-          model={draft.sceneModel}
-          effort={draft.sceneEffort}
-          onChange={(model, effort) => setDraft({ ...draft, sceneModel: model, sceneEffort: effort })}
-        />
-        <ChatDefaults
-          title={t.settings.projectChat}
-          hint={t.settings.projectChatHint}
-          model={draft.projectModel}
-          effort={draft.projectEffort}
-          onChange={(model, effort) => setDraft({ ...draft, projectModel: model, projectEffort: effort })}
-        />
+        {modelPicker && (
+          <>
+            <ChatDefaults
+              title={t.settings.sceneChats}
+              hint={t.settings.sceneChatsHint}
+              model={draft.sceneModel}
+              effort={draft.sceneEffort}
+              onChange={(model, effort) => setDraft({ ...draft, sceneModel: model, sceneEffort: effort })}
+            />
+            <ChatDefaults
+              title={t.settings.projectChat}
+              hint={t.settings.projectChatHint}
+              model={draft.projectModel}
+              effort={draft.projectEffort}
+              onChange={(model, effort) => setDraft({ ...draft, projectModel: model, projectEffort: effort })}
+            />
+          </>
+        )}
         <section className="space-y-2">
           <SectionTitle>{t.settings.agent}</SectionTitle>
           <div className="flex items-start gap-2.5 rounded-xl bg-wash px-3.5 py-3 ring-1 ring-rule">
@@ -105,7 +112,7 @@ export function SettingsModal() {
                   app.agent.version ? `${app.agent.label} ${app.agent.version}` : app.agent.label,
                 )}
               </p>
-              <p className="mt-0.5 text-xs leading-relaxed text-ink-3">{app.agent.detail ?? t.settings.agentHint}</p>
+              {agentHint && <p className="mt-0.5 text-xs leading-relaxed text-ink-3">{agentHint}</p>}
             </div>
           </div>
         </section>

@@ -12,7 +12,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type Locator, type Page } from 'playwright';
 import type { AgentProvider, BrandSource, SpeechEngine } from '../../server/contracts';
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
@@ -20,6 +20,7 @@ import { writeWav } from '../../server/voiceover/wav';
 import {
   DEFAULT_FEATURES,
   type AppState,
+  type BrandBuild,
   type ChatState,
   type Features,
   type MusicAnalysis,
@@ -363,6 +364,62 @@ describe('editor', () => {
     await page.getByRole('heading', { name: 'Projets' }).waitFor();
     await page.goBack();
     await page.getByRole('group', { name: 'Panneau' }).waitFor();
+    await page.context().close();
+  });
+
+  it('lets a host app drag its window by the top bar, padded for its window buttons', { timeout: 90_000 }, async () => {
+    const page = await newPage();
+    await page.goto(`${server.config.editorOrigin}/`);
+    const home = page.getByRole('link', { name: 'Cadence, accueil des projets' });
+    const header = page.locator('header', { has: home });
+    await header.waitFor({ timeout: 60_000 });
+    const region = (target: Locator) => target.evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region'));
+    const start = () => header.evaluate((el) => getComputedStyle(el).paddingInlineStart);
+    assert.equal(await region(header), 'drag');
+    assert.equal(await region(home), 'no-drag');
+    const settings = header.getByRole('button', { name: 'Réglages', exact: true });
+    assert.equal(await region(settings), 'no-drag');
+    assert.equal(await start(), '12px');
+    await page.evaluate(() => document.documentElement.style.setProperty('--titlebar-inset', '78px'));
+    assert.equal(await start(), '90px');
+    await settings.click();
+    const backdrop = page.getByRole('dialog', { name: 'Réglages' }).locator('..');
+    assert.equal(await region(backdrop), 'no-drag');
+    await page.context().close();
+  });
+
+  it('keeps the presentation and the lightbox out of the window drag', { timeout: 90_000 }, async () => {
+    const page = await newPage();
+    // A past turn whose tool call looked at a frame, so the chat offers to enlarge it.
+    await page.route(`**/api/projects/${A}/chats/scene:titre`, (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      const chat: ChatState = {
+        key: 'scene:titre',
+        running: false,
+        queued: false,
+        totalCostUsd: 0,
+        messages: [
+          {
+            id: 'e2e-frames',
+            role: 'assistant',
+            text: 'Réponse factice.',
+            createdAt: '2026-10-01T10:00:00.000Z',
+            status: 'done',
+            activity: [{ id: 'e2e-tool', tool: 'render_frames', label: 'Rendu de 1 image', status: 'ok', images: ['/e2e.png'] }],
+          },
+        ],
+      };
+      return route.fulfill({ json: chat });
+    });
+    await open(`${A}/titre`, page);
+    const region = (target: Locator) => target.evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region'));
+    await page.getByRole('button', { name: 'Agrandir l’image rendue par Claude' }).click({ timeout: 30_000 });
+    const lightbox = page.getByRole('dialog', { name: 'Image rendue par Claude' });
+    assert.equal(await region(lightbox), 'no-drag');
+    await page.keyboard.press('Escape');
+    await lightbox.waitFor({ state: 'detached' });
+    await page.getByRole('button', { name: 'Présenter', exact: true }).click();
+    assert.equal(await region(page.getByRole('dialog', { name: 'Présentation' })), 'no-drag');
     await page.context().close();
   });
 
@@ -973,6 +1030,31 @@ describe('preview', () => {
 });
 
 describe('features', () => {
+  const COST = `0,42${NBSP}$`;
+  /** Each turn costs 0,42 $ and changes a versioned file, so the cost reaches the chat, the versions and the totals. */
+  const costly: AgentProvider = {
+    ...provider,
+    async *run(turn) {
+      await writeFile(path.join(turn.cwd, 'art-direction.md'), '# Direction plus chaude\n');
+      yield { type: 'init', sessionId: turn.sessionId };
+      yield { type: 'text', text: 'Réponse factice.' };
+      yield { type: 'done', text: 'Réponse factice.', isError: false, durationMs: 1, costUsd: 0.42 };
+    },
+  };
+  /** A finished brand build that cost 0,42 $, added to the state the editor reads. */
+  const BUILD: BrandBuild = {
+    id: 'e2e-build',
+    brandId: 'orbit',
+    name: 'Orbit',
+    repo: 'acme/e2e-site',
+    status: 'done',
+    activity: null,
+    files: [],
+    costUsd: 0.42,
+    createdAt: '2026-10-01T10:00:00.000Z',
+    finishedAt: '2026-10-01T10:05:00.000Z',
+  };
+
   // The same lookups with every feature on, then off: a lookup that finds nothing when its section is on would make the
   // second run prove nothing.
   async function sectionCounts(features: Features): Promise<{ counts: Record<string, number>; codexPitch: number }> {
@@ -989,7 +1071,7 @@ describe('features', () => {
         editorPort: 0,
         framePort: 0,
         quiet: true,
-        provider,
+        provider: costly,
         brandSources: { github: brandSource, gitlab: glabMissing },
         networks: { youtube: fakeNetwork() },
         features,
@@ -1003,13 +1085,70 @@ describe('features', () => {
         body: JSON.stringify({ clientId: 'e2e-client', clientSecret: 'e2e-secret' }),
       });
       assert.equal(saved.status, 200);
+      const send = async (method: string, pathname: string, body?: unknown) => {
+        const res = await fetch(`${hosted!.config.editorOrigin}${pathname}`, {
+          method,
+          headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': hosted!.editorToken },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        assert.ok(res.ok, `${method} ${pathname}: ${res.status}`);
+        return res.json();
+      };
+      await send('POST', '/api/projects', { name: 'Coûts', id: 'couts', brand: 'cadence', formats: ['16:9'], fps: 30 });
+      await send('POST', '/api/projects/couts/chats/scene:titre/messages', { text: 'Réchauffe la direction' });
+      let chat: ChatState;
+      for (let i = 0; ; i++) {
+        chat = (await send('GET', '/api/projects/couts/chats/scene:titre')) as ChatState;
+        if ((!chat.running && !chat.queued) || i === 300) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const version = chat.messages.at(-1)?.versionId;
+      assert.ok(version, 'the turn made a version');
+      const counts: Record<string, number> = {};
+      const costs = await newPage();
+      await costs.route('**/api/state', async (route) => {
+        const response = await route.fetch();
+        return route.fulfill({ response, json: { ...((await response.json()) as AppState), brandBuilds: [BUILD] } });
+      });
+      await costs.goto(`${hosted.config.editorOrigin}/#/couts/titre`);
+      await costs.getByText('Réponse factice.').waitFor({ timeout: 60_000 });
+      counts['cost top bar'] = await costs.locator('[aria-label^="Coût estimé des chats de ce projet"]').count();
+      counts['cost chat'] = await costs.locator('footer').getByText(COST, { exact: true }).count();
+      counts['model composer'] = await costs.getByRole('combobox', { name: /^(Modèle|Effort)$/ }).count();
+      await panel(costs, 'Versions');
+      // The turn changed the art direction, not the scene.
+      await costs.getByRole('button', { name: 'Tout le projet' }).click();
+      const versionLines = costs.locator('p', { has: costs.locator('time') });
+      await versionLines.getByText(version, { exact: true }).waitFor();
+      counts['cost versions'] = await versionLines.getByText(COST, { exact: true }).count();
+      await costs.getByRole('button', { name: 'Réglages', exact: true }).click();
+      const settings = costs.getByRole('dialog', { name: 'Réglages' });
+      await settings.getByRole('button', { name: 'Français' }).waitFor();
+      counts['model settings'] = await settings.getByRole('combobox', { name: /^(Modèle|Effort) \(/ }).count();
+      counts['model settings subtitle'] = await settings.getByText(/le modèle et l’effort/).count();
+      counts['cost settings hint'] = await settings.getByText(/le coût affiché/).count();
+      await costs.keyboard.press('Escape');
+      await costs.getByRole('button', { name: 'Marque « Orbit » : Prête' }).click();
+      const built = costs.getByRole('dialog', { name: 'Marque « Orbit » prête' });
+      await built.getByText('Depuis acme/e2e-site').waitFor();
+      counts['cost brand build'] = await built.getByText(COST).count();
+      await costs.goto(`${hosted.config.editorOrigin}/#/@profil`);
+      await costs.getByRole('listitem', { name: 'YouTube' }).waitFor({ timeout: 60_000 });
+      // Usage is counted per agent and dollars only for Claude Code: read it before the agent becomes Codex below.
+      if (features.agentPicker) await costs.getByRole('table').waitFor();
+      counts['cost profile'] = await costs.getByRole('columnheader', { name: 'Coût estimé' }).count();
+      // Claude Code's hint talks about money: with the costs hidden it goes too, rather than call the agent free.
+      counts['cost profile hint'] = await costs.getByText(/^Ce que Cadence a demandé à l’assistant/).count();
+      await costs.context().close();
+      // The home shows its pitch only before the first project.
+      await send('DELETE', '/api/projects/couts');
+
       const agent = await fetch(`${hosted.config.editorOrigin}/api/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': hosted.editorToken },
         body: JSON.stringify({ agent: 'codex' }),
       });
       assert.equal(agent.status, 200);
-      const counts: Record<string, number> = {};
       const page = await newPage();
       await page.goto(`${hosted.config.editorOrigin}/#/@profil`);
       const youtube = page.getByRole('listitem', { name: 'YouTube' });
@@ -1020,6 +1159,8 @@ describe('features', () => {
       }
       counts['profile GitHub'] = await page.getByRole('listitem', { name: 'GitHub' }).count();
       counts['profile keys'] = await page.getByRole('button', { name: /^(Configurer|Clés)$/ }).count();
+      // Codex counts tokens only: its hint names no cost, so it stays when the host hides the costs.
+      counts['profile usage hint'] = await page.getByText(/^Ce que Cadence a demandé à l’assistant/).count();
 
       await page.goto(`${hosted.config.editorOrigin}/#/`);
       await page.getByRole('button', { name: 'Créer un projet' }).waitFor({ timeout: 60_000 });
@@ -1046,17 +1187,90 @@ describe('features', () => {
     }
   }
 
-  it('shows the agent choice, the Git accounts and the network app keys by default', { timeout: 180_000 }, async () => {
+  it('shows every section by default', { timeout: 180_000 }, async () => {
     const { counts, codexPitch } = await sectionCounts(DEFAULT_FEATURES);
     for (const [lookup, count] of Object.entries(counts)) assert.ok(count > 0, lookup);
     assert.equal(codexPitch, 0);
   });
 
-  it('hides the agent choice, the Git accounts and the network app keys a host turns off', { timeout: 180_000 }, async () => {
-    const { counts, codexPitch } = await sectionCounts({ agentPicker: false, gitSources: false, networkApps: false });
+  it('hides every section a host turns off', { timeout: 180_000 }, async () => {
+    const { counts, codexPitch } = await sectionCounts({
+      agentPicker: false,
+      gitSources: false,
+      networkApps: false,
+      modelPicker: false,
+      costs: false,
+    });
     for (const [lookup, count] of Object.entries(counts)) assert.equal(count, 0, lookup);
     assert.equal(codexPitch, 1);
   });
+
+  for (const [flag, prefix] of [
+    ['modelPicker', 'model '],
+    ['costs', 'cost '],
+  ] as const) {
+    it(`hides only what ${flag} gates`, { timeout: 180_000 }, async () => {
+      const { counts } = await sectionCounts({ ...DEFAULT_FEATURES, [flag]: false });
+      for (const [lookup, count] of Object.entries(counts)) {
+        if (lookup.startsWith(prefix)) assert.equal(count, 0, lookup);
+        else assert.ok(count > 0, lookup);
+      }
+    });
+  }
+
+  it(
+    'sends no model without the model choice: the turn runs on the settings, outside the catalog too',
+    { timeout: 120_000 },
+    async () => {
+      const t = await makeRoot();
+      let hosted: RunningServer | undefined;
+      try {
+        const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
+        const model = 'claude-sonnet-4-6';
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(path.join(stateDir, 'settings.json'), JSON.stringify({ sceneModel: model }));
+        const models: string[] = [];
+        hosted = await startServer({
+          root: ROOT,
+          projectsDir,
+          brandsDir,
+          templatesDir,
+          stateDir,
+          editorPort: 0,
+          framePort: 0,
+          quiet: true,
+          provider: {
+            ...provider,
+            run(turn) {
+              models.push(turn.model);
+              return provider.run(turn);
+            },
+          },
+          features: { ...DEFAULT_FEATURES, modelPicker: false },
+        });
+        const created = await fetch(`${hosted.config.editorOrigin}/api/projects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': hosted.editorToken },
+          body: JSON.stringify({ name: 'Modèle', id: 'modele', brand: 'cadence', formats: ['16:9'], fps: 30 }),
+        });
+        assert.ok(created.ok, `POST /api/projects: ${created.status}`);
+        const page = await newPage();
+        await page.goto(`${hosted.config.editorOrigin}/#/modele/titre`);
+        await page.getByRole('textbox', { name: 'Message pour la scène' }).fill('Bonjour', { timeout: 60_000 });
+        const sent = page.waitForRequest((r) => r.url().endsWith('/chats/scene:titre/messages') && r.method() === 'POST');
+        await page.getByRole('button', { name: 'Envoyer' }).click();
+        const body = (await sent).postDataJSON() as Record<string, unknown>;
+        assert.equal(body.model, undefined);
+        assert.equal(body.effort, undefined);
+        await page.getByText('Réponse factice.').waitFor({ timeout: 30_000 });
+        assert.deepEqual(models, [model]);
+        await page.context().close();
+      } finally {
+        await hosted?.close();
+        await t.cleanup();
+      }
+    },
+  );
 });
 
 describe('pitch', () => {

@@ -200,6 +200,24 @@
     var(--color-stage);
 }
 
+/* Title bar hook: a host app that hides its native title bar drags its window by the top bar, and sets --titlebar-inset
+   to the width of its window buttons. A browser ignores app-region and the inset defaults to 0. */
+@utility titlebar {
+  -webkit-app-region: drag;
+  app-region: drag;
+  padding-inline-start: calc(var(--titlebar-inset, 0px) + --spacing(3));
+  & :is(a, button, input, select, textarea, [tabindex], [role='dialog'], [role='menu']) {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+}
+
+/* A layer over the top bar (modal backdrop, presentation) takes its clicks back from the window drag region. */
+@utility no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 /* Display type: Anton, upper case. */
 @utility display-caps {
   font-family: var(--font-display);

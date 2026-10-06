@@ -2,7 +2,15 @@
 import clsx from 'clsx';
 import { AlertTriangle, Brain, ChevronRight, Clock, GitCommitVertical, MessageSquarePlus, Square } from 'lucide-react';
 import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { EFFORTS, sceneIdFromChatKey, type ChatActivity, type ChatKey, type ChatMessage, type Effort } from '../../shared/types';
+import {
+  DEFAULT_FEATURES,
+  EFFORTS,
+  sceneIdFromChatKey,
+  type ChatActivity,
+  type ChatKey,
+  type ChatMessage,
+  type Effort,
+} from '../../shared/types';
 import { ignore } from '../api';
 import { BeatPills, Button, ConfirmButton, Select } from '../components/ui';
 import { useT } from '../i18n';
@@ -169,6 +177,7 @@ const AssistantMessage = memo(function AssistantMessage({ message, queued }: { m
   const models = useStore((s) => s.app?.models);
   const agentName = useStore((s) => s.app?.agent.label);
   const tempo = useStore((s) => s.project?.tempo);
+  const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const streaming = message.status === 'streaming';
   const activity = message.activity ?? [];
   const notes = message.notes ?? [];
@@ -217,7 +226,7 @@ const AssistantMessage = memo(function AssistantMessage({ message, queued }: { m
             <span className="label-caps bg-ink px-1.5 py-0.5 text-[10px] text-white">{t.conversation.chat.stopped}</span>
           )}
           {message.durationMs !== undefined && <span className="tabular-nums">{elapsed(message.durationMs)}</span>}
-          {message.costUsd !== undefined && (
+          {costs && message.costUsd !== undefined && (
             <>
               <span aria-hidden>·</span>
               <span className="tabular-nums">{usd(message.costUsd)}</span>
@@ -355,6 +364,7 @@ function Composer({ chatKey, kind, busy, queued }: { chatKey: ChatKey; kind: Cha
   const fill = useStore((s) => s.fill);
   const models = useStore((s) => s.app?.models ?? NONE);
   const language = useStore((s) => s.language);
+  const { modelPicker } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   // Select stable pieces; modelChoice() builds a fresh object.
   useStore((s) => s.picks[kind]);
   useStore((s) => s.app?.settings);
@@ -421,39 +431,43 @@ function Composer({ chatKey, kind, busy, queued }: { chatKey: ChatKey; kind: Cha
           className="block w-full resize-none bg-transparent px-3 pt-2.5 text-[14px]/[22px] text-ink outline-none placeholder:text-ink-4"
         />
         <div className="flex items-center gap-1.5 px-2 pb-2">
-          <Select
-            aria-label={texts.model}
-            quiet
-            value={choice.model}
-            onChange={(e) => {
-              const next = models.find((m) => m.id === e.target.value);
-              pick({ model: e.target.value, effort: next?.defaultEffort ?? next?.efforts?.[0] ?? choice.effort });
-            }}
-            className="w-[104px]"
-          >
-            {!spec && choice.model && <option value={choice.model}>{choice.model}</option>}
-            {models.map((m) => (
-              <option key={m.id} value={m.id} title={m.hint[language]}>
-                {m.label}
-              </option>
-            ))}
-          </Select>
-          <Select
-            aria-label={texts.effort}
-            quiet
-            value={spec?.supportsEffort === false ? '' : choice.effort}
-            disabled={spec?.supportsEffort === false}
-            onChange={(e) => pick({ effort: e.target.value as Effort })}
-            className="w-[132px]"
-            title={spec?.supportsEffort === false ? texts.noEffort(spec.label) : texts.effortHint}
-          >
-            {spec?.supportsEffort === false && <option value="">{texts.effortNone}</option>}
-            {(spec?.efforts ?? EFFORTS).map((effort) => (
-              <option key={effort} value={effort}>
-                {t.common.efforts[effort]}
-              </option>
-            ))}
-          </Select>
+          {modelPicker && (
+            <>
+              <Select
+                aria-label={texts.model}
+                quiet
+                value={choice.model}
+                onChange={(e) => {
+                  const next = models.find((m) => m.id === e.target.value);
+                  pick({ model: e.target.value, effort: next?.defaultEffort ?? next?.efforts?.[0] ?? choice.effort });
+                }}
+                className="w-[104px]"
+              >
+                {!spec && choice.model && <option value={choice.model}>{choice.model}</option>}
+                {models.map((m) => (
+                  <option key={m.id} value={m.id} title={m.hint[language]}>
+                    {m.label}
+                  </option>
+                ))}
+              </Select>
+              <Select
+                aria-label={texts.effort}
+                quiet
+                value={spec?.supportsEffort === false ? '' : choice.effort}
+                disabled={spec?.supportsEffort === false}
+                onChange={(e) => pick({ effort: e.target.value as Effort })}
+                className="w-[132px]"
+                title={spec?.supportsEffort === false ? texts.noEffort(spec.label) : texts.effortHint}
+              >
+                {spec?.supportsEffort === false && <option value="">{texts.effortNone}</option>}
+                {(spec?.efforts ?? EFFORTS).map((effort) => (
+                  <option key={effort} value={effort}>
+                    {t.common.efforts[effort]}
+                  </option>
+                ))}
+              </Select>
+            </>
+          )}
           <span className="ml-auto hidden font-mono text-[11px] text-ink-3 xl:inline">⌘↵</span>
           {busy ? (
             <Button

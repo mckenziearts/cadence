@@ -12,7 +12,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { VersionEntry, VersionSource } from '../../shared/types';
+import { DEFAULT_FEATURES, type VersionEntry, type VersionSource } from '../../shared/types';
 import { api, ignore } from '../api';
 import { Button, ConfirmButton, EmptyState, Segmented, inputClass } from '../components/ui';
 import { useT } from '../i18n';
@@ -154,6 +154,7 @@ function VersionItem(props: {
   const { entry, latest, focused, names, sceneId } = props;
   const texts = useT().conversation.versions;
   const language = useStore((s) => s.language);
+  const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const project = useStore((s) => s.project)!;
   const ref = useRef<HTMLLIElement>(null);
   const source = SOURCES[entry.source] ? entry.source : 'external';
@@ -197,7 +198,7 @@ function VersionItem(props: {
             <time dateTime={entry.createdAt} title={new Date(entry.createdAt).toLocaleString(language)}>
               {relative(entry.createdAt)}
             </time>
-            {entry.costUsd !== undefined && entry.costUsd > 0 && (
+            {costs && entry.costUsd !== undefined && entry.costUsd > 0 && (
               <>
                 <span aria-hidden>·</span>
                 <span className="tabular-nums">{usd(entry.costUsd)}</span>

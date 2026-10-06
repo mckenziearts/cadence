@@ -84,13 +84,10 @@ export async function sendMessage(key: ChatKey, text: string): Promise<boolean> 
   if (!id || !text.trim()) return false;
   const { model, effort } = modelChoice(kindOf(key));
   const supportsEffort = get().app?.models.find((m) => m.id === model)?.supportsEffort !== false;
+  // A host that hides the choice sets the models in the settings, outside the editor's catalog too: the server runs those.
+  const pick = get().app?.features.modelPicker === false ? {} : { model, ...(supportsEffort ? { effort } : {}) };
   try {
-    const state = await api.send(id, key, {
-      text: text.trim(),
-      model,
-      ...(supportsEffort ? { effort } : {}),
-      playhead: playheadFor(key),
-    });
+    const state = await api.send(id, key, { text: text.trim(), ...pick, playhead: playheadFor(key) });
     // The events may have brought this turn already, even its end: this answer is older then.
     const reply = state.messages.at(-1)?.id;
     const seen = get().chats[key]?.messages.some((m) => m.id === reply);
