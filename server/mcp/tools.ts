@@ -352,7 +352,7 @@ export function createToolServer(ctx: ToolContext): McpServer {
 
   tool(
     'set_voice_over',
-    'Set what the voice-over says over a scene, from `at` seconds into it; an empty text removes it. Cadence speaks it with the project voice (Piper) and answers when each sentence starts and ends, in scene seconds: key the animations to them (props.voiceOver.lines) and keep the scene at least as long as the voice. A scene chat can only change its own scene.',
+    'Set what the voice-over says over a scene, from `at` seconds into it; an empty text removes it. Cadence speaks it with the project voice and answers when each sentence starts and ends, in scene seconds: key the animations to them (props.voiceOver.lines) and keep the scene at least as long as the voice. A scene chat can only change its own scene.',
     {
       projectId,
       sceneId,

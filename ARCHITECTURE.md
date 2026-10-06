@@ -65,8 +65,9 @@ cadence/
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
                             worker (the analysis off the server's thread), synth + soundtracks (the preset
                             soundtracks, composed in code)
-    voiceover/              piper.ts (PiperEngine: runs the user's Piper), voices.ts (the voices offered, pinned
-                            files), wav.ts, service.ts (LocalVoiceOverService)
+    voiceover/              piper.ts (PiperEngine: runs the user's Piper), elevenlabs.ts (ElevenLabsClient: the
+                            user's own ElevenLabs key), voices.ts (the Piper voices offered, pinned files), wav.ts,
+                            service.ts (LocalVoiceOverService)
     agent/                  types.ts, claudeCode.ts (provider), guide.ts, prompts.ts, chat.ts (ChatManager)
     mcp/                    tokens.ts (McpTokens), server.ts (createMcpHandler), tools.ts, brandTools.ts
   src/
@@ -366,6 +367,7 @@ claude -p --output-format stream-json --verbose --include-partial-messages
   --restricted --tools Read,Edit,Write,Glob,Grep
   --permission-mode dontAsk --permission-prompts none
   --allowedTools <rules...>
+  --disallowedTools Read(//<stateDir>/accounts.json) Read(//<stateDir>/elevenlabs.json)
   --add-dir <brandDir> <templatesDir> <runtimeDir>
   --mcp-config <tmp>/mcp.json           {"mcpServers":{"cadence":{"type":"http","url":"<mcpUrl>","headers":{"Authorization":"Bearer <turnToken>"}}}}
   --strict-mcp-config --append-system-prompt-file <tmp>/system-prompt.md
@@ -383,7 +385,9 @@ Env: remove `ANTHROPIC_API_KEY` unless `config.useApiKey` (use the subscription 
 Rules (absolute paths use the `//` prefix): a scene chat gets `Read(//<project>/**)`, `Read(//<brandDir>/**)`,
 `Read(//<templatesDir>/**)`, `Read(//<runtimeDir>/**)`, `Glob`, `Grep`, `Edit(//<project>/scenes/<id>.tsx)`,
 `Write(//<project>/scenes/<id>.tsx)`, `mcp__cadence__<tool>` for scene tools. A project chat gets the same reads plus
-`Edit`/`Write` on `scenes/**`, `components/**`, `art-direction.md`, and every project tool.
+`Edit`/`Write` on `scenes/**`, `components/**`, `art-direction.md`, and every project tool. Every turn, the brand build's
+too, is denied the two key files: `--restricted` already keeps the file tools to its folders, the deny still holds if one
+of them ever contains the state folder (the brand build clones into it).
 
 `ChatManager`: one running turn per project (others queue); per-turn MCP token (revoked at the end); streams
 text deltas (`chat-delta`), the running reply when it changes (`chat-message`) and the whole chat when a turn starts or
@@ -428,8 +432,10 @@ shows what the agent looked at. Terminal usage: `npm run cadence -- mcp` prints 
 ## Accounts and publishing (`server/accounts/`, `server/networks/`)
 
 The Profile page (`#/@profil`: no project id starts with `@`) shows what Cadence asked Claude (`GET /api/usage`),
-lists the Git hosts (`GET /api/git-accounts`, through `BrandSource.account()`) and the networks Cadence publishes to
-(`AppState.networks`, refreshed on `accounts-changed`).
+lists the Git hosts (`GET /api/git-accounts`, through `BrandSource.account()`), the voice-over engines (`GET
+/api/voices`: Piper's install state and downloaded voices; the ElevenLabs key form, then the voice new projects start
+with and **Remove the key**; see "Voice-over") and the networks Cadence publishes to (`AppState.networks`, refreshed on
+`accounts-changed`). A project's Voice tab keeps its own engine and voice; without a key it links to the Profile.
 
 - **Usage** (`server/usage.ts`, `FileUsageLog`): one JSON line per Claude Code run Cadence starts, appended to
   `<root>/.cadence/usage.jsonl`: chat turns (project, chat key) and brand build turns (brand), each with what it added
@@ -494,8 +500,14 @@ DELETE /api/projects/:id/music                     answers ProjectState
 GET    /api/projects/:id/music/audio               audio stream (Range support)
 GET    /api/projects/:id/music/analysis            MusicAnalysis | null
 POST   /api/projects/:id/music/snap                { grid, keepBars? }, answers ProjectState
-GET    /api/voices                                 VoicesState (Piper's state, the voices offered and which are here)
+GET    /api/voices                                 VoicesState (Piper's state, the voices offered and which are here,
+                                                   elevenLabs.configured; never the key)
 POST   /api/voices/:voice/download                 answers VoiceInfo once both files are in place, md5 checked
+GET    /api/voices/elevenlabs                      { voices, models } from the saved key's account; 409 without a key
+PUT    /api/voices/elevenlabs/key                  { key }, checked against ElevenLabs before it is saved, answers
+                                                   { configured: true }; 400 when ElevenLabs refuses it
+DELETE /api/voices/elevenlabs/key                  answers { configured: false }; drops Settings.defaultVoice too
+                                                   (new projects start with Piper again)
 POST   /api/projects/:id/voice-over/sync           speaks what is missing, failures included, answers ProjectState
 GET    /api/projects/:id/voice-over/audio          ?v=, the voice-over track as audio/wav
 GET    /api/projects/:id/versions                  ?scene=, answers VersionEntry[]
@@ -523,7 +535,8 @@ DELETE /api/brands/:id                             to .cadence/trash/brands; 400
 GET    /api/brand-sources/:host                    RepoListing (host = github through gh, gitlab through glab)
 POST   /api/brand-builds                           StartBrandBuildInput, answers the BrandBuild
 DELETE /api/brand-builds/:id                       cancel
-GET    /api/settings | PUT /api/settings           Settings (a new language: SSE `language-changed`)
+GET    /api/settings | PUT /api/settings           Settings (a new language: SSE `language-changed`; defaultVoice
+                                                   checked like a project's ElevenLabs voice, null removes it)
 GET    /api/usage                                  UsageSummary (chats and brand builds since the first run counted)
 GET    /api/git-accounts                           { github: GitAccount, gitlab: GitAccount }
 PUT    /api/networks/:network/app                  { clientId, clientSecret }
@@ -587,25 +600,43 @@ background once the edits settle (`recheck`: 1.5 s after the last one, one check
 
 ## Voice-over
 
-A scene's `voiceOver` (`{ text, at }` in `project.json`) is spoken by Piper with the project's `voiceOver` settings
-(`voice`, `speed`, `musicLevel`; until someone picks one, the default voice of the on-screen language: `fr_FR-siwis-medium`
-or `en_US-joe-medium`). Piper (GPL-3.0) is never shipped: each user installs it (`pipx install piper-tts`), and
-`PiperEngine` runs `piper -m <voice>.onnx -d <tmp> --length-scale <1/speed>` with one sentence per line on stdin
-(`execFile`-style arguments, no shell), then renames each WAV into place in the order of Piper's monotonic file names.
+A scene's `voiceOver` (`{ text, at }` in `project.json`) is spoken with the project's `voiceOver` settings: Piper by
+default (`{ voice, speed, musicLevel }`; until someone picks one, the default voice of the on-screen language:
+`fr_FR-siwis-medium` or `en_US-joe-medium`), or ElevenLabs (`{ engine: 'elevenlabs', voice, model, speed, musicLevel }`,
+speed 0.7 to 1.2). Piper settings carry no `engine`, so the projects written before ElevenLabs read and save unchanged.
+A new project starts with `Settings.defaultVoice` (`{ engine: 'elevenlabs', voice, model }` in
+`<root>/.cadence/settings.json`, picked in the Profile; absent = Piper): `POST /api/projects` and `cadence create` pass
+it to `ProjectStore.create`, which writes `voiceOver` (speed 1, music level 0.3) into `project.json` once, at creation.
+Without it nothing is written, as before; a later change of the default never touches an existing project (re-speaking
+it would bill the person's account). The editor never sends it: the create schema drops a `voiceOver` field.
+Piper (GPL-3.0) is never shipped: each user installs it (`pipx install piper-tts`), and `PiperEngine` runs
+`piper -m <voice>.onnx -d <tmp> --length-scale <1/speed>` with one sentence per line on stdin (`execFile`-style
+arguments, no shell), then renames each WAV into place in the order of Piper's monotonic file names.
 
-- Voices: `server/voiceover/voices.ts` lists the single-speaker French and English voices offered, with the license
+- ElevenLabs (`ElevenLabsClient`, behind `ElevenLabsApi`; `startServer({ elevenLabs })` injects a fake in tests): the
+  person's own API key, saved by `PUT /api/voices/elevenlabs/key` in `<root>/.cadence/elevenlabs.json` with mode 600,
+  after a `GET /v2/voices` that proves ElevenLabs accepts it. Like `accounts.json`, it never reaches the browser or a
+  project (projects are versioned), and Claude Code turns are denied both files (`--disallowedTools`); Codex's
+  `workspace-write` sandbox limits writes, not reads, so a Codex turn can read them. One that no longer parses is a
+  500 that names the file without quoting it (`JSON.parse` would). One `POST /v1/text-to-speech/<voice>?output_format=pcm_24000`
+  per sentence, in order (16-bit mono PCM at 24 kHz on every plan), wrapped by `writeWav`: the cache, the track, the
+  ducking and the render do not know which engine spoke. A refused key is a 400 (401 stays for Cadence's own tokens),
+  a spent quota or a rate limit a 429, anything else a 502 carrying ElevenLabs' message, the key masked out of it.
+  Every request bills the person's account, so ElevenLabs never speaks on the automatic try below: only a sync does.
+- Piper voices: `server/voiceover/voices.ts` lists the single-speaker French and English voices offered, with the license
   of their dataset (`commercial`, `credit` for CC-BY). Downloads come from the commit of the v1.0.0 tag of
   `rhasspy/piper-voices`, md5 checked before the file is renamed in, into `<root>/.cadence/voices/`.
 - Sentences: `Intl.Segmenter` (line breaks end one too). Each sentence's WAV is cached in
-  `projects/<id>/.cadence/voice-over/<hash>.wav`, the hash covering voice, speed and text: a retouch speaks only the
-  changed sentence, and restoring a version finds its sentences again.
+  `projects/<id>/.cadence/voice-over/<hash>.wav`, the hash covering voice, speed and text (and, for ElevenLabs, the
+  engine and the model; Piper's hash is the one it always was): a retouch speaks only the changed sentence, and
+  restoring a version finds its sentences again. Piper splits in its voice's language, ElevenLabs in the video's.
 - `ProjectState` (`setVoiceOverProvider`): `voiceOver` (settings in use), `voiceOverLines` (generated sentences laid
   one after the other from `scene.start + at`, in video seconds), `voiceOverPending` (scenes with a sentence not
-  generated; they have no line at all), `voiceOverError` (why Piper last failed on the sentences still missing; null
-  while a sync tries them again, once they change, or once spoken) and `voiceOverUrl` (the track, `?v=` changes with the
-  lines). Computing it schedules one try of the missing sentences, 400 ms after the first read that finds a new set of
-  them and never during a sync: the editor and the frames read the project at will, and a read neither postpones that
-  try nor queues a second one. A failure goes to the editor (SSE `voice-over`, which then refetches the project); the
+  generated; they have no line at all), `voiceOverError` (why the engine last failed on the sentences still missing;
+  null while a sync tries them again, once they change, or once spoken) and `voiceOverUrl` (the track, `?v=` changes
+  with the lines). With Piper, computing it schedules one try of the missing sentences, 400 ms after the first read
+  that finds a new set of them and never during a sync: the editor and the frames read the project at will, and a read
+  neither postpones that try nor queues a second one. A failure goes to the editor (SSE `voice-over`, which then refetches the project); the
   same sentences are not tried again on their own, only by a sync: `POST .../voice-over/sync` (the **Generate** button
   of each pending scene in the Voice tab, a voice download), an export, or `set_voice_over`. A success sends
   `project-changed`.
@@ -687,7 +718,10 @@ contract: removing or reshaping one is a major version.
   focusable elements and menus are `no-drag`, and layers that cover it (modal backdrops, the lightbox, the
   presentation) are `no-drag` too. The header pads its start by `var(--titlebar-inset, 0px)`: the host sets
   `--titlebar-inset` on `:root` to the width of its window buttons. This is CSS, not a flag: a browser ignores
-  `app-region` and the inset defaults to 0, so nothing changes there. `tests/editor/ui.test.ts` checks both in Chromium.
+  `app-region` and the inset defaults to 0, so nothing changes there. Off the editor (the home and every page, a
+  host's too) the header is a box as wide as the page's content (`max-w-[92rem] px-6`), 16 px from the top, and the
+  strip around it drags as well; a project, even while it loads, keeps the full-width bar. A host whose window buttons
+  sit at the top left places them for the bar it shows. `tests/editor/ui.test.ts` checks both in Chromium.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand

@@ -38,7 +38,8 @@ export function Logo({ className }: { className?: string }) {
   );
 }
 
-export function TopBar() {
+/** `framed`: off the editor (home, pages), a box as wide as the page's content, under a strip of the page's paper. */
+export function TopBar({ framed = false }: { framed?: boolean }) {
   const t = useT();
   const project = useStore((s) => s.project);
   const loading = useStore((s) => s.projectLoading);
@@ -46,7 +47,12 @@ export function TopBar() {
   const page = useStore((s) => s.page);
   const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   return (
-    <header className="titlebar relative z-30 flex h-14 shrink-0 items-center gap-2 border-b-2 border-ink bg-paper pe-3">
+    <header
+      className={clsx(
+        'titlebar relative z-30 flex h-14 shrink-0 items-center gap-2 border-ink bg-paper pe-3',
+        framed ? 'border-2 shadow-hard-sm' : 'border-b-2',
+      )}
+    >
       <Tooltip label={t.shell.topBar.home}>
         <a href="#/" aria-label={t.shell.topBar.homeLink} className="focus-ring flex items-center gap-2.5 pr-2 pl-1 text-ink">
           <Logo className="size-7" />

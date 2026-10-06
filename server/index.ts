@@ -27,7 +27,7 @@ import {
   type ModelSpec,
   type NetworkId,
 } from '../src/shared/types';
-import type { AgentProvider, BrandSource, CadenceConfig, HostApi, Network, SpeechEngine } from './contracts';
+import type { AgentProvider, BrandSource, CadenceConfig, ElevenLabsApi, HostApi, Network, SpeechEngine } from './contracts';
 import { builtEditor, devEditor } from './editor';
 import { createFrameHandler } from './frames/frameServer';
 import { createVite, diagnoseFile, invalidateDirs } from './frames/vite';
@@ -49,6 +49,7 @@ import { FileTemplateStore } from './store/templates';
 import { FileVersionStore } from './store/versions';
 import { FileUsageLog } from './usage';
 import { randomToken } from './util';
+import { ElevenLabsClient } from './voiceover/elevenlabs';
 import { PiperEngine } from './voiceover/piper';
 import { LocalVoiceOverService } from './voiceover/service';
 
@@ -65,6 +66,8 @@ export type StartOptions = Partial<CadenceConfig> & {
   networks?: Partial<Record<NetworkId, Network>>;
   /** Who speaks voice-overs (tests: a fake that never runs Piper). */
   speech?: SpeechEngine;
+  /** Where ElevenLabs voice-overs go (tests: a fake that never reaches the network). */
+  elevenLabs?: ElevenLabsApi;
   /** A host app's routes: each entry is served under /api/<name>; a name must be a lowercase slug free in /api. */
   api?: HostApi;
   /** Editor sections a host app hides; a missing key stays on. UI only, see ARCHITECTURE.md "Embedding Cadence". */
@@ -115,6 +118,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     brandSources: customSources,
     networks: customNetworks,
     speech,
+    elevenLabs,
     api: hostApi,
     features,
     ...overrides
@@ -158,7 +162,14 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const seams = new PixelSeamService({ store, capture, hub });
     const music = new LocalMusicService({ config, store, hub });
     const engine = speech ?? new PiperEngine(config.piperPath);
-    const voiceOver = new LocalVoiceOverService({ config, store, brands, hub, engine });
+    const voiceOver = new LocalVoiceOverService({
+      config,
+      store,
+      brands,
+      hub,
+      engine,
+      elevenLabs: elevenLabs ?? new ElevenLabsClient(),
+    });
     const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub });
     const versions = new FileVersionStore(store);
     const assets = new FileAssetStore(store, capture);

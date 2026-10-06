@@ -159,6 +159,7 @@ async function create(args: string[]): Promise<number> {
     template: template?.id ?? null,
     formats: values.formats ? formatList(values.formats) : (template?.formats ?? ['16:9']),
     fps: values.fps ? Number(values.fps) : (template?.fps ?? 60),
+    voiceOver: (await new FileSettingsStore(config).get()).defaultVoice,
   });
   const t = m().media.cli;
   await new FileVersionStore(store)

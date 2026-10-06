@@ -1,29 +1,42 @@
-// Voice-over: Piper's state, the voice (download, license), speed and music level, then each scene's text and timing.
+// Voice-over: the engine (Piper on this machine or ElevenLabs with the person's key), the voice, speed and music level,
+// then each scene's text and timing.
 import clsx from 'clsx';
 import { AlertTriangle, AudioLines, Copy, Download, Play } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { SceneState, SceneVoiceOver, VoiceOverSettings, VoicesState } from '../../shared/types';
 import { api, ignore } from '../api';
-import { Button, IconButton, SectionTitle, Slider, Spinner, fieldBase, inputClass } from '../components/ui';
+import { ElevenLabsVoiceSelect, PIPER_INSTALL, Row } from '../components/voiceOver';
+import { Button, IconButton, SectionTitle, Segmented, Slider, Spinner, fieldBase, inputClass } from '../components/ui';
 import { useT } from '../i18n';
 import { bytes, parseDecimal, percentShort, secs, secsLabel } from '../lib/format';
 import { useStore } from '../store';
-import { applyProject, playVoiceOver } from '../store/project';
+import { applyProject, playVoiceOver, PROFILE_PAGE } from '../store/project';
 import { copyText } from '../store/ui';
 
-const PIPER_INSTALL = 'pipx install piper-tts';
+/** Each engine's speed range (the server checks the same ones). */
+const SPEEDS = { piper: [0.5, 2], elevenlabs: [0.7, 1.2] } as const;
+
+type Engine = 'piper' | 'elevenlabs';
+type Save = (patch: Partial<VoiceOverSettings>) => Promise<void>;
+
+const clampSpeed = (speed: number, engine: Engine) => Math.min(Math.max(speed, SPEEDS[engine][0]), SPEEDS[engine][1]);
 
 export function VoicePanel() {
+  const project = useStore((s) => s.project)!;
   const [voices, setVoices] = useState<VoicesState | null>(null);
+  // The engine picked but not saved yet: ElevenLabs is saved only once a voice is set.
+  const [chosen, setChosen] = useState<Engine | null>(null);
+  const saved = project.voiceOver.engine ?? 'piper';
+  const engine = chosen ?? saved;
   const load = () => void api.voices().then(setVoices).catch(ignore);
   useEffect(load, []);
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="space-y-6 px-4 py-4">
-        {voices && !voices.piper.ok && <PiperMissing />}
-        <Voice voices={voices} onDownloaded={load} />
+        {engine === 'piper' && voices && !voices.piper.ok && <PiperMissing />}
+        <Voice voices={voices} engine={engine} onEngine={setChosen} onVoices={load} />
         <Status />
-        <Script />
+        <Script engine={saved} />
       </div>
     </div>
   );
@@ -55,17 +68,74 @@ function PiperMissing() {
   );
 }
 
-function Voice({ voices, onDownloaded }: { voices: VoicesState | null; onDownloaded: () => void }) {
+function Voice(props: {
+  voices: VoicesState | null;
+  engine: Engine;
+  onEngine: (engine: Engine | null) => void;
+  onVoices: () => void;
+}) {
+  const { voices, engine, onEngine, onVoices } = props;
+  const t = useT().production.voiceOver;
+  const project = useStore((s) => s.project)!;
+  const settings = project.voiceOver;
+  const saved = settings.engine ?? 'piper';
+  // A sync speaks with the settings it started with: a change during it would bill ElevenLabs for a voice nobody hears.
+  const locked = useStore((s) => s.voiceOver.status === 'speaking') && saved === 'elevenlabs';
+  const save: Save = async (patch) => {
+    applyProject(await api.updateProject(project.id, { voiceOver: { ...settings, ...patch } }));
+    onEngine(null);
+  };
+  const choose = async (next: Engine) => {
+    onEngine(next === saved ? null : next);
+    if (next !== 'piper' || saved !== 'elevenlabs') return;
+    // The default voice of the video's language (the server knows the brand's), then this project's speed and level.
+    const reset = await api.updateProject(project.id, { voiceOver: null });
+    applyProject(reset);
+    onEngine(null);
+    const { musicLevel } = settings;
+    const speed = clampSpeed(settings.speed, 'piper');
+    if (speed !== reset.voiceOver.speed || musicLevel !== reset.voiceOver.musicLevel) {
+      applyProject(await api.updateProject(project.id, { voiceOver: { ...reset.voiceOver, speed, musicLevel } }));
+    }
+  };
+
+  return (
+    <fieldset disabled={locked} className="min-w-0 space-y-3.5">
+      <SectionTitle>{t.voice.title}</SectionTitle>
+      <div className="space-y-1.5">
+        <Segmented
+          label={t.engine.label}
+          size="sm"
+          stretch
+          value={engine}
+          // A refused switch (already reported) shows the saved engine again.
+          onChange={(next) => void choose(next).catch(() => onEngine(null))}
+          options={[
+            { value: 'piper', label: 'Piper' },
+            { value: 'elevenlabs', label: 'ElevenLabs' },
+          ]}
+        />
+        <p className="text-xs text-ink-3">{t.engine.hints[engine]}</p>
+      </div>
+      {engine === 'piper' ? (
+        <PiperVoice voices={voices} save={save} onDownloaded={onVoices} />
+      ) : voices?.elevenLabs.configured ? (
+        <ElevenLabsVoices save={save} />
+      ) : (
+        voices && <ElevenLabsNoKey />
+      )}
+      {/* Sliders for the saved engine only: ElevenLabs without a voice yet has nothing to save. */}
+      {engine === saved && <Levels engine={engine} save={save} />}
+    </fieldset>
+  );
+}
+
+function PiperVoice({ voices, save, onDownloaded }: { voices: VoicesState | null; save: Save; onDownloaded: () => void }) {
   const texts = useT().production.voiceOver.voice;
   const project = useStore((s) => s.project)!;
   const settings = project.voiceOver;
-  const [speed, setSpeed] = useState<number | null>(null);
-  const [level, setLevel] = useState<number | null>(null);
   const [downloading, setDownloading] = useState(false);
   const current = voices?.voices.find((v) => v.id === settings.voice);
-  const save = async (patch: Partial<VoiceOverSettings>) => {
-    applyProject(await api.updateProject(project.id, { voiceOver: { ...settings, ...patch } }));
-  };
   const download = async () => {
     setDownloading(true);
     try {
@@ -79,15 +149,9 @@ function Voice({ voices, onDownloaded }: { voices: VoicesState | null; onDownloa
       setDownloading(false);
     }
   };
-  const release = (value: number | null, saved: number, key: 'speed' | 'musicLevel', reset: () => void) => {
-    if (value === null) return;
-    reset();
-    if (value !== saved) void save({ [key]: value }).catch(ignore);
-  };
 
   return (
-    <section className="space-y-3.5">
-      <SectionTitle>{texts.title}</SectionTitle>
+    <>
       <select
         aria-label={texts.label}
         value={settings.voice}
@@ -131,10 +195,56 @@ function Voice({ voices, onDownloaded }: { voices: VoicesState | null; onDownloa
           </Button>
         </div>
       )}
+    </>
+  );
+}
+
+/** The key lives in the Profile with the other accounts: one line and the way there. */
+function ElevenLabsNoKey() {
+  const texts = useT().production.voiceOver.elevenLabs;
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-ink-2">{texts.noKey}</p>
+      <Button size="sm" variant="secondary" onClick={() => (location.hash = `#/${PROFILE_PAGE}`)}>
+        {texts.openProfile}
+      </Button>
+    </div>
+  );
+}
+
+function ElevenLabsVoices({ save }: { save: Save }) {
+  const texts = useT().production.voiceOver.elevenLabs;
+  const settings = useStore((s) => s.project!.voiceOver);
+  const ready = settings.engine === 'elevenlabs';
+  return (
+    <ElevenLabsVoiceSelect
+      label={texts.voiceLabel}
+      none={texts.pick}
+      value={ready ? { voice: settings.voice, model: settings.model! } : null}
+      onChange={(next) =>
+        next && void save({ engine: 'elevenlabs', ...next, speed: clampSpeed(settings.speed, 'elevenlabs') }).catch(ignore)
+      }
+    />
+  );
+}
+
+function Levels({ engine, save }: { engine: Engine; save: Save }) {
+  const texts = useT().production.voiceOver.voice;
+  const settings = useStore((s) => s.project!.voiceOver);
+  const [speed, setSpeed] = useState<number | null>(null);
+  const [level, setLevel] = useState<number | null>(null);
+  const release = (value: number | null, saved: number, key: 'speed' | 'musicLevel', reset: () => void) => {
+    if (value === null) return;
+    reset();
+    if (value !== saved) void save({ [key]: value }).catch(ignore);
+  };
+
+  return (
+    <>
       <Row label={texts.speed}>
         <Slider
-          min={0.5}
-          max={2}
+          min={SPEEDS[engine][0]}
+          max={SPEEDS[engine][1]}
           step={0.05}
           value={speed ?? settings.speed}
           label={texts.speedLabel}
@@ -159,7 +269,7 @@ function Voice({ voices, onDownloaded }: { voices: VoicesState | null; onDownloa
           {percentShort(Math.round((level ?? settings.musicLevel) * 100))}
         </span>
       </Row>
-    </section>
+    </>
   );
 }
 
@@ -183,13 +293,13 @@ function Status() {
   );
 }
 
-function Script() {
+function Script({ engine }: { engine: Engine }) {
   const texts = useT().production.voiceOver.script;
   const scenes = useStore((s) => s.project!.scenes);
   return (
     <section className="space-y-3.5">
       <SectionTitle>{texts.title}</SectionTitle>
-      <p className="text-xs text-ink-3">{texts.hint}</p>
+      <p className="text-xs text-ink-3">{texts.hint[engine]}</p>
       <ol className="space-y-4">
         {scenes.map((scene) => (
           <SceneVoice key={scene.id} scene={scene} />
@@ -228,7 +338,8 @@ function SceneVoice({ scene }: { scene: SceneState }) {
   };
 
   let timing: ReactNode = null;
-  if (pending && project.voiceOverError && !speaking) {
+  // ElevenLabs speaks on this button only: its pending scenes wait for it, failed or not.
+  if (pending && !speaking && (project.voiceOverError || project.voiceOver.engine === 'elevenlabs')) {
     timing = (
       <Button
         size="xs"
@@ -301,14 +412,5 @@ function SceneVoice({ scene }: { scene: SceneState }) {
       </div>
       {overflow > 0.05 && <p className="text-xs text-alert">{texts.overflow(secsLabel(overflow))}</p>}
     </li>
-  );
-}
-
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex min-h-7 items-center gap-2">
-      <span className="label-caps w-[108px] shrink-0 text-[11px] text-ink-2">{label}</span>
-      {children}
-    </div>
   );
 }

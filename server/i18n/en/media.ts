@@ -73,6 +73,15 @@ export default {
     downloadFailed: (name: string, error: string) => `Could not download the ${name} voice: ${error}`,
     corrupted: (name: string) => `The downloaded ${name} voice is corrupted (md5): try again`,
     noTrack: 'No voice-over generated for this project',
+    elevenLabsKeyRefused: (detail: string | null) =>
+      `ElevenLabs refuses the API key${detail ? ` (${detail})` : ''}: check it in the Profile`,
+    elevenLabsQuota: (detail: string | null) =>
+      `ElevenLabs refuses the request for now${detail ? ` (${detail})` : ''}: quota or rate limit reached, try again later or change plans`,
+    elevenLabsSaid: (detail: string) => `ElevenLabs answered: ${detail}`,
+    elevenLabsHttpStatus: (status: number) => `error ${status}`,
+    elevenLabsNoKey: 'No ElevenLabs API key saved: add yours in the Profile',
+    elevenLabsKeyUnreadable: (file: string) => `Could not read ${file}: save your ElevenLabs key again in the Profile`,
+    elevenLabsDown: 'ElevenLabs does not answer: check the Internet connection, then try again',
   },
   analyze: {
     missingFile: (file: string) => `File not found: ${file}`,

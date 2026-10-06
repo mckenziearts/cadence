@@ -51,7 +51,13 @@ export function connectEvents(): () => void {
 }
 
 async function resync(): Promise<void> {
-  set((s) => ({ frameEpoch: s.frameEpoch + 1, thumbEpoch: s.thumbEpoch + 1, versionsTick: s.versionsTick + 1 }));
+  // A voice-over that ended while the stream was down told nobody: unlock its settings (a sync still running keeps its own).
+  set((s) => ({
+    frameEpoch: s.frameEpoch + 1,
+    thumbEpoch: s.thumbEpoch + 1,
+    versionsTick: s.versionsTick + 1,
+    voiceOver: { status: 'idle' },
+  }));
   await loadApp().catch(ignore);
   if (!get().project) return;
   await refreshProject();

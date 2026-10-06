@@ -208,6 +208,8 @@ export class FixtureVoiceOverService implements VoiceOverService {
   async sync(): Promise<void> {}
   voices = unused;
   download = unused;
+  elevenLabs = unused;
+  setElevenLabsKey = unused;
 }
 
 export interface Harness {

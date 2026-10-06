@@ -55,6 +55,15 @@ export function TikTokLogo(props: LogoProps) {
   );
 }
 
+// Drawn here, not from Simple Icons: ElevenLabs' mark is two upright bars.
+export function ElevenLabsLogo(props: LogoProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden {...props}>
+      <path d="M6 2h4v20H6zM14 2h4v20h-4z" />
+    </svg>
+  );
+}
+
 export const GIT_LOGOS: Record<GitHost, typeof GitHubLogo> = { github: GitHubLogo, gitlab: GitLabLogo };
 export const NETWORK_LOGOS: Record<NetworkId, typeof GitHubLogo> = {
   youtube: YouTubeLogo,

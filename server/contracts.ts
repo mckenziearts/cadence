@@ -15,6 +15,8 @@ import type {
   ChatState,
   CreateProjectInput,
   CreateSceneInput,
+  ElevenLabsModel,
+  ElevenLabsVoice,
   FormatId,
   GitAccount,
   GitHost,
@@ -450,15 +452,31 @@ export interface SpeechEngine {
   speak(input: { model: string; sentences: string[]; lengthScale: number; files: string[] }): Promise<void>;
 }
 
+// server/voiceover/elevenlabs.ts: export class ElevenLabsClient implements ElevenLabsApi  (constructor(http?: Fetch))
+
+/** ElevenLabs with the person's own API key (tests: a fake Fetch, never the network). */
+export interface ElevenLabsApi {
+  /** The account's voices (one page of 100); a refused key is a 400. */
+  voices(key: string): Promise<ElevenLabsVoice[]>;
+  /** The models that speak text. */
+  models(key: string): Promise<ElevenLabsModel[]>;
+  /** Speaks each sentence, one request at a time, into the 24 kHz WAV file at the same index of `files`. */
+  speak(input: { key: string; voice: string; model: string; speed: number; sentences: string[]; files: string[] }): Promise<void>;
+}
+
 // server/voiceover/service.ts: export class LocalVoiceOverService implements VoiceOverService
-//   constructor(deps: { config: CadenceConfig; store: ProjectStore; brands: BrandStore; hub: Hub; engine: SpeechEngine })
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore; brands: BrandStore; hub: Hub; engine: SpeechEngine; elevenLabs: ElevenLabsApi })
 
 export interface VoiceOverService {
-  /** Piper's state and the voices Cadence offers, with which ones are downloaded. */
+  /** Piper's state and the voices Cadence offers, with which ones are downloaded, and whether an ElevenLabs key is saved. */
   voices(): Promise<VoicesState>;
   /** Download a voice into <root>/.cadence/voices/ (md5 checked); resolves once both files are in place. */
   download(id: string): Promise<VoiceInfo>;
-  /** Speak the sentences of the project not generated yet. Rejects with Piper's error (also sent to the editor). */
+  /** The voices and models of the saved ElevenLabs key's account; 409 when no key is saved. */
+  elevenLabs(): Promise<{ voices: ElevenLabsVoice[]; models: ElevenLabsModel[] }>;
+  /** Save the ElevenLabs key once ElevenLabs accepts it (its refusal passes through), or remove it with null. */
+  setElevenLabsKey(key: string | null): Promise<void>;
+  /** Speak the sentences of the project not generated yet. Rejects with the engine's error (also sent to the editor). */
   sync(projectId: string): Promise<void>;
   /** The generated voice-over as one WAV over the video, with its sentences, or null when nothing is generated. */
   track(projectId: string): Promise<VoiceOverTrack | null>;
@@ -536,6 +554,8 @@ export interface AgentTurn {
   tools: string[];
   /** Pre-approved permission rules (--allowedTools); anything else is denied without prompting. */
   allow: string[];
+  /** Permission rules denied even inside a readable directory (--disallowedTools). */
+  deny: string[];
   /** Extra readable directories (--add-dir). */
   addDirs: string[];
   /** --mcp-config mcpServers object. */

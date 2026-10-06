@@ -1,3 +1,8 @@
+import type { ReactNode } from 'react';
+import { External } from '../links';
+
+const ELEVENLABS_KEYS = 'https://elevenlabs.io/app/settings/api-keys';
+
 export default {
   title: 'Profil',
   subtitle: 'Les comptes que Cadence utilise sur cet ordinateur.',
@@ -38,6 +43,36 @@ export default {
   },
   git: 'Dépôts Git',
   gitHint: 'Pour construire une marque depuis un dépôt.',
+  voice: {
+    title: 'Voix off',
+    hint: 'Les moteurs qui disent la voix off. Chaque projet choisit le sien dans son onglet Voix.',
+    piper: {
+      ready: 'Installé, gratuit',
+      missing: 'Piper n’est pas installé',
+      install: 'Installez-le une fois dans un terminal, puis redémarrez Cadence :',
+      voices: 'Voix sur cet ordinateur',
+      none: 'Aucune voix téléchargée : un projet télécharge la sienne depuis son onglet Voix.',
+    },
+    elevenLabs: {
+      configured: 'Clé enregistrée',
+      noKey: 'Pas de clé',
+      key: 'Clé API ElevenLabs',
+      keyHint: (
+        <>
+          Créez-la dans les <External href={ELEVENLABS_KEYS}>réglages de votre compte ElevenLabs</External>.
+        </>
+      ) as ReactNode,
+      billing:
+        'Le texte de la voix off part chez ElevenLabs et chaque génération est facturée sur votre compte. Une vidéo qui vend un produit demande un forfait payant.',
+      saveKey: 'Enregistrer la clé',
+      newProjects: 'Nouveaux projets',
+      defaultLabel: 'Voix des nouveaux projets',
+      piper: 'Piper, voix de la langue',
+      defaultHint: 'Écrite dans un projet à sa création : les projets existants gardent leur voix.',
+      removeKey: 'Retirer la clé',
+      removeKeyConfirm: 'Retirer la clé ?',
+    },
+  },
   networks: 'Réseaux',
   networksHint: 'Pour publier une vidéo depuis la page Rendu.',
   checking: 'Vérification',

@@ -1,6 +1,6 @@
 // The accounts Cadence uses on this machine: Git hosts through their CLI (Cadence keeps no token for them), networks
 // through the developer app the team created on each. Keys and tokens live in .cadence/accounts.json (mode 600): never
-// sent to the browser, and out of reach of Claude's tools, which work inside a project or a brand folder.
+// sent to the browser, and denied to Claude Code's tools. Codex's sandbox limits writes only: it can read it.
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { NETWORK_IDS, type GitAccount, type GitHost, type NetworkAccount, type NetworkId } from '../../src/shared/types';

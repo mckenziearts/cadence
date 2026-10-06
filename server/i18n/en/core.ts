@@ -18,6 +18,7 @@ export default {
     effort: (value: unknown) => `Invalid effort level: ${value}`,
     language: (value: unknown) => `Invalid language: ${value}`,
     agent: (value: unknown) => `Invalid agent: ${value}`,
+    defaultVoice: 'Invalid default voice: an ElevenLabs voice and model are expected',
   },
   usage: {
     notSaved: '[cadence] Usage not recorded:',

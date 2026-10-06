@@ -80,6 +80,7 @@ export function claudeArgs(turn: AgentTurn, files: TurnFiles): string[] {
     'none',
     // Variadic options: each one must be followed by another option, never by a positional argument.
     ...(turn.allow.length ? ['--allowedTools', ...turn.allow] : []),
+    ...(turn.deny.length ? ['--disallowedTools', ...turn.deny] : []),
     ...(turn.addDirs.length ? ['--add-dir', ...turn.addDirs] : []),
     '--mcp-config',
     files.mcpConfig,

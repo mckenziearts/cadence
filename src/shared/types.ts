@@ -99,7 +99,7 @@ export interface SceneFile {
   voiceOver?: SceneVoiceOver;
 }
 
-/** A scene's voice-over: spoken sentence by sentence by the project's voice (Piper), from `at`. */
+/** A scene's voice-over: spoken sentence by sentence by the project's voice, from `at`. */
 export interface SceneVoiceOver {
   text: string;
   /** Seconds into the scene where the first sentence starts (>= 0). */
@@ -108,9 +108,13 @@ export interface SceneVoiceOver {
 
 /** The project's voice-over voice, the same for every scene. */
 export interface VoiceOverSettings {
-  /** Piper voice id, e.g. `fr_FR-siwis-medium` (see GET /api/voices). */
+  /** Who speaks: Piper on this machine, or ElevenLabs with the person's own key. Absent means Piper. */
+  engine?: 'piper' | 'elevenlabs';
+  /** A Piper voice id, e.g. `fr_FR-siwis-medium` (GET /api/voices), or an ElevenLabs voice id (GET /api/voices/elevenlabs). */
   voice: string;
-  /** 1 = the voice's own pace; 1.2 speaks 20 % faster (0.5 to 2). */
+  /** The ElevenLabs model id, e.g. `eleven_multilingual_v2`; set with ElevenLabs only. */
+  model?: string;
+  /** 1 = the voice's own pace; 1.2 speaks 20 % faster (0.5 to 2 with Piper, 0.7 to 1.2 with ElevenLabs). */
   speed: number;
   /** Music volume while the voice speaks, as a share of its usual volume (0 to 1). */
   musicLevel: number;
@@ -146,6 +150,25 @@ export interface VoicesState {
   /** Piper answers on this machine; `error` says why not. */
   piper: { ok: boolean; error?: string };
   voices: VoiceInfo[];
+  /** An ElevenLabs key is saved on this machine (the key itself never leaves the server). */
+  elevenLabs: { configured: boolean };
+}
+
+/** A voice of the person's ElevenLabs account. */
+export interface ElevenLabsVoice {
+  id: string;
+  name: string;
+  /** ElevenLabs' kind of voice: `premade`, `cloned`, `generated`, `professional`... */
+  category: string;
+  previewUrl: string | null;
+  /** Languages ElevenLabs verified the voice in (ISO codes such as `fr`, `en`); empty when it gives none. */
+  languages: string[];
+}
+
+/** An ElevenLabs model that speaks text. */
+export interface ElevenLabsModel {
+  id: string;
+  name: string;
 }
 
 export interface MusicSettings {
@@ -234,9 +257,9 @@ export interface ProjectState {
   voiceOverUrl: string | null;
   /** Generated sentences, in video seconds and in order: the music ducks under them. */
   voiceOverLines: VoiceOverLine[];
-  /** Scenes whose voice-over is not generated yet (being generated, or Piper failed). */
+  /** Scenes whose voice-over is not generated yet (being generated, or speaking failed). */
   voiceOverPending: string[];
-  /** Why Piper last failed on the sentences still missing; null while a sync tries them again, or when none failed. */
+  /** Why speaking last failed on the sentences still missing; null while a sync tries them again, or when none failed. */
   voiceOverError: string | null;
   /** Bumped whenever any code file of the project (or its brand) changes; frames re-import when it moves. */
   codeGeneration: number;
@@ -267,6 +290,8 @@ export interface CreateProjectInput {
   template?: string | null;
   /** On-screen language; null/absent = the brand's language. */
   language?: 'fr' | 'en' | null;
+  /** The settings' default voice, set by the server; absent/null = no voice-over settings written (Piper's default). */
+  voiceOver?: DefaultVoice | null;
 }
 
 export interface UpdateProjectInput {
@@ -774,6 +799,18 @@ export interface Settings extends AgentPrefs {
   agent: AgentId;
   /** Per-agent model/effort, so each assistant keeps its own. The flat fields above are Claude Code's. */
   agentPrefs?: Partial<Record<AgentId, Partial<AgentPrefs>>>;
+  /**
+   * The voice new projects start with, written into their project.json once, at creation. Absent = Piper with the
+   * default voice of the video's language; null in an update sets it back to that.
+   */
+  defaultVoice?: DefaultVoice | null;
+}
+
+/** An ElevenLabs voice and model for new projects (Profile). */
+export interface DefaultVoice {
+  engine: 'elevenlabs';
+  voice: string;
+  model: string;
 }
 
 /** The model and effort for a chat scope, for the active agent: Claude Code uses the flat fields, others use agentPrefs. */
