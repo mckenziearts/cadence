@@ -1,7 +1,7 @@
 {
   "name": "cadence",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Prompt-driven motion design studio: every scene is code, written to the millisecond, timed to the music, in every brand and format.",
   "license": "MIT",
   "author": "Arthur Monney <monneylobe@gmail.com>",
