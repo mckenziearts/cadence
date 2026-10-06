@@ -8,3 +8,5 @@ brands/*/assets
 # Written by the app (JSON.stringify), not by hand
 projects/*/project.json
 projects/*/music/*.analysis.json
+# Per-machine Claude Code settings: untracked (global gitignore) and rewritten by the tool
+.claude/settings.local.json
