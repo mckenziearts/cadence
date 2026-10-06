@@ -414,6 +414,14 @@ describe('editor', () => {
     assert.equal(await start(), '12px');
     await page.evaluate(() => document.documentElement.style.setProperty('--titlebar-inset', '78px'));
     assert.equal(await start(), '90px');
+    // Off the editor the bar is a box as wide as the page's content, 16 px down, and the strip around it drags too.
+    const box = (target: Locator) => target.evaluate((el) => el.getBoundingClientRect().toJSON() as DOMRect);
+    const [bar, title] = await Promise.all([box(header), box(page.getByRole('heading', { name: 'Projets' }))]);
+    assert.deepEqual([bar.left, bar.top], [title.left, 16]);
+    assert.equal(await region(header.locator('xpath=../..')), 'drag');
+    await open(A, page);
+    const editorBar = await box(header);
+    assert.deepEqual([editorBar.left, editorBar.top, editorBar.width], [0, 0, 1440]);
     await settings.click();
     const backdrop = page.getByRole('dialog', { name: 'Réglages' }).locator('..');
     assert.equal(await region(backdrop), 'no-drag');

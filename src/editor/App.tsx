@@ -45,6 +45,8 @@ export function App({ pages }: { pages?: Pages }) {
   const page = useStore((s) => s.page);
   const Page = page ? resolvePage(page, pages, CORE_PAGES) : null;
   const [booted, setBooted] = useState(false);
+  // Pages and the home frame the top bar to their content's width; a project, even loading, keeps the editor's.
+  const framed = !project && (Page !== null || (booted && !projectLoading));
 
   useEffect(() => {
     restoreDrafts();
@@ -90,7 +92,17 @@ export function App({ pages }: { pages?: Pages }) {
 
   return (
     <div className="flex h-full min-w-[1180px] flex-col overflow-hidden bg-white" {...drop.handlers}>
-      <TopBar />
+      {framed ? (
+        // The strip around the box still drags a host's window. 16 px over the 56 px bar is three squares of the grid,
+        // so its lines run on into the page's.
+        <div className="shrink-0 bg-grid bg-stage [-webkit-app-region:drag] [app-region:drag]">
+          <div className="mx-auto max-w-[92rem] px-6 pt-4">
+            <TopBar framed />
+          </div>
+        </div>
+      ) : (
+        <TopBar />
+      )}
       <StaleBanner />
       {project ? (
         view === 'scenes' ? (

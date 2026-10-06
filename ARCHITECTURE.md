@@ -718,7 +718,10 @@ contract: removing or reshaping one is a major version.
   focusable elements and menus are `no-drag`, and layers that cover it (modal backdrops, the lightbox, the
   presentation) are `no-drag` too. The header pads its start by `var(--titlebar-inset, 0px)`: the host sets
   `--titlebar-inset` on `:root` to the width of its window buttons. This is CSS, not a flag: a browser ignores
-  `app-region` and the inset defaults to 0, so nothing changes there. `tests/editor/ui.test.ts` checks both in Chromium.
+  `app-region` and the inset defaults to 0, so nothing changes there. Off the editor (the home and every page, a
+  host's too) the header is a box as wide as the page's content (`max-w-[92rem] px-6`), 16 px from the top, and the
+  strip around it drags as well; a project, even while it loads, keeps the full-width bar. A host whose window buttons
+  sit at the top left places them for the bar it shows. `tests/editor/ui.test.ts` checks both in Chromium.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand
