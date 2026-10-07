@@ -229,6 +229,7 @@ export function Grain({ seed = 0, t, fps = 12, opacity = 0.08, frequency = 0.85,
   const frame = seed + (t === undefined ? 0 : Math.floor(t * fps));
   return (
     <svg
+      data-cadence-decor=""
       width={width}
       height={height}
       style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none', opacity, mixBlendMode: blend }}
@@ -255,6 +256,7 @@ export interface VignetteProps {
 export function Vignette({ color = '#000000', strength = 0.45, size = 0.55 }: VignetteProps) {
   return (
     <div
+      data-cadence-decor=""
       style={{
         position: 'absolute',
         inset: 0,

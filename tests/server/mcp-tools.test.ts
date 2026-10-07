@@ -26,11 +26,23 @@ import { createMcpHandler } from '../../server/mcp/server';
 import { McpTokens } from '../../server/mcp/tokens';
 import { PROJECT_TOOLS, SCENE_TOOLS } from '../../server/mcp/tools';
 import { HttpError } from '../../server/util';
+import type { AuditFinding } from '../../src/shared/frameProtocol';
 import type { CreateSceneInput, ProjectState, SceneState } from '../../src/shared/types';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const SHEET = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 9, 9, 0xff, 0xd9]);
+/** What the frame checks find per time (null: they failed); clean at any other time. */
+const CHECKS = new Map<number, AuditFinding[] | null>([
+  [
+    0.25,
+    [
+      { kind: 'clipped', text: 'A "long" title', box: { x: 100, y: 200, width: 640, height: 96 } },
+      { kind: 'contrast', text: 'Grey label', box: { x: 100, y: 700, width: 300, height: 40 }, ratio: 2.31, required: 4.5 },
+    ],
+  ],
+  [0.5, null],
+]);
 /** A PNG of its own per time, to see the sheet get the strip's frames in order. */
 const tileAt = (t: number) => Buffer.concat([PNG, Buffer.from(String(t))]);
 
@@ -115,7 +127,7 @@ describe('MCP endpoint', () => {
       },
     } as unknown as ProjectStore;
     const capture = {
-      frames: async (id: string, req: { sceneId: string | null; times: number[]; imageFormat?: string }) => {
+      frames: async (id: string, req: { sceneId: string | null; times: number[]; imageFormat?: string; audit?: boolean }) => {
         record('frames', [id, req]);
         const png = req.imageFormat === 'png';
         return req.times.map((t) => ({
@@ -125,6 +137,7 @@ describe('MCP endpoint', () => {
           image: png ? tileAt(t) : JPEG,
           mime: png ? 'image/png' : 'image/jpeg',
           errors: t === 1.5 ? ['ReferenceError: x is not defined'] : [],
+          ...(req.audit ? { audit: CHECKS.has(t) ? CHECKS.get(t)! : [] } : {}),
         }));
       },
       contactSheet: async (tiles: Buffer[], layout: unknown) => (record('contactSheet', [tiles, layout]), SHEET),
@@ -288,6 +301,7 @@ describe('MCP endpoint', () => {
         scale: 0.5,
         imageFormat: 'jpeg',
         quality: 82,
+        audit: true,
       });
       const frames = activity.at(-1);
       assert.ok(frames?.type === 'frames');
@@ -336,6 +350,35 @@ describe('MCP endpoint', () => {
       assert.equal(calls.createScene, undefined);
     } finally {
       off();
+      await client.close();
+    }
+  });
+
+  test('render_frames checks: a block per frame with findings or failed checks, nothing for clean frames, never an error', async () => {
+    const client = await connect(tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'intro' }));
+    try {
+      const checked = await call(client, 'render_frames', { times: [0, 0.25, 0.5], format: '16:9' });
+      assert.equal(checked.isError, false);
+      assert.equal(
+        texts(checked)[0],
+        'Rendered 3 frames of scene intro "intro" (2.000 s) in 16:9 at 960\u00d7540.\n' +
+          'Checks at 0.250 s (16:9):\n' +
+          '- clipped by its container: "A \\"long\\" title" at 100,200 (640\u00d796)\n' +
+          '- contrast 2.31:1 (needs 4.5): "Grey label" at 100,700 (300\u00d740)\n' +
+          'Checks at 0.500 s (16:9): unavailable.',
+      );
+      assert.deepEqual(texts(checked).slice(1), ['t = 0.000 s', 't = 0.250 s', 't = 0.500 s']);
+
+      const failing = await call(client, 'render_frames', { times: [0.5, 1.5] });
+      assert.equal(failing.isError, false, 'checks never make a frame fail');
+      assert.match(
+        texts(failing)[0],
+        /Render errors:\nReferenceError: x is not defined\nChecks at 0\.500 s \(9:16\): unavailable\.$/,
+      );
+
+      await call(client, 'render_frames', { strip: { at: 0.25, frames: 4 } });
+      assert.equal((calls.frames.at(-1) as [string, { audit?: boolean }])[1].audit, undefined, 'strips run no checks');
+    } finally {
       await client.close();
     }
   });

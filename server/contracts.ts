@@ -5,6 +5,7 @@ import type { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { HttpBindings } from '@hono/node-server';
 import type { Hono } from 'hono';
+import type { AuditFinding } from '../src/shared/frameProtocol';
 import type {
   AssetInfo,
   BrandBuild,
@@ -347,6 +348,8 @@ export interface CapturedFrame {
   image: Buffer;
   mime: 'image/jpeg' | 'image/png';
   errors: string[];
+  /** With `audit`: what the text checks found, null when they failed (scene code can break them). */
+  audit?: AuditFinding[] | null;
 }
 
 export interface CaptureService {
@@ -362,6 +365,8 @@ export interface CaptureService {
       quality?: number;
       /** Burned-in captions when the project has them on (default true); seam checks and thumbnails pass false. */
       captions?: boolean;
+      /** Run the frame's text checks after each screenshot (render_frames). */
+      audit?: boolean;
     },
   ): Promise<CapturedFrame[]>;
   /** Small JPEG of a scene (cached per code generation + scene + format + t). */

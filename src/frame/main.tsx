@@ -15,6 +15,7 @@ import type { BrandKit } from '../shared/brandKit';
 import type { EditorToFrame, FrameApi, FrameRenderResult, FrameToEditor } from '../shared/frameProtocol';
 import { parseSoundCues, videoSoundCues, type SceneSounds, type SoundCue, type SoundProps } from '../shared/sounds';
 import { FORMATS, isFormatId, type FormatId, type FormatSpec, type ProjectState, type SceneState } from '../shared/types';
+import { auditStage } from './audit';
 import { Captions } from './captions';
 import { editorOrigins, postToEditor } from './editor';
 import { texts } from './texts';
@@ -79,6 +80,8 @@ const soundsCache = new Map<string, SceneSounds>();
 let renderErrors: string[] = [];
 let boundaryFailed = false;
 let lastErrors: string[] = [];
+/** A scene drew without throwing: the text checks have something to read. */
+let sceneDrawn = false;
 let lastPosted: string | null = null;
 let lastPostedSounds: string | null = null;
 let boundaryEpoch = 0;
@@ -474,6 +477,7 @@ function renderAt(t: number): FrameRenderResult {
   const shown = view(picked, spec);
   flushSync(() => root.render(<Stage spec={spec} view={shown} />));
   boundaryFailed = renderErrors.length > 0;
+  sceneDrawn = shown.kind === 'scene' && !boundaryFailed;
   const errors = [...(shown.kind === 'error' ? [`${shown.title}\n${shown.message}`] : []), ...renderErrors];
   // A failing sounds() is an error of the scene, which still draws.
   if (project && picked && shown.kind === 'scene') {
@@ -553,6 +557,10 @@ const api: FrameApi = {
   },
   errors: () => lastErrors,
   sounds: soundCues,
+  audit() {
+    const stage = document.querySelector<HTMLElement>('[data-cadence-stage]');
+    return sceneDrawn && stage ? auditStage(stage, FORMATS[formatOf(data?.project)]) : [];
+  },
   generation: () => loadedGeneration,
 };
 window.__cadence = api;

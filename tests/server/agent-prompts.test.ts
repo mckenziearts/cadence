@@ -17,12 +17,14 @@ test('the system prompt carries the guide, the runtime reference and one scope',
     assert.match(prompt, /# `cadence` runtime/);
     assert.doesNotMatch(prompt, /\{\{(RUNTIME_API|SCOPE)\}\}|<!-- scope|## Scope: terminal/);
   }
-  // Rules the renders depend on: seam threshold (as check_seams reports it), text is layout, locales, frozen images.
+  // Rules the renders depend on: seam threshold (as check_seams reports it), text is layout, locales, frozen images,
+  // the text checks of render_frames.
   for (const rule of [
     /under 0\.05 % of pixels is invisible/,
     /Changing on-screen text \(copy, language, size\) is a layout change/,
     /explicit locale to `Intl\.\*` and `toLocale\*\(\)`/,
     /Animated GIF, WebP and SVG images freeze on their first frame in renders/,
+    /`Checks at <t> s \(<format>\):`[^\n]*fix each one or say in your answer why it is deliberate[^\n]*clip-path or mask is not checked at all\. "unavailable" means the checks could not run/,
   ]) {
     assert.match(scene, rule);
   }

@@ -8,7 +8,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium, errors as playwrightErrors, type Browser, type BrowserContext, type Page } from 'playwright';
-import type { FrameRenderResult } from '../../src/shared/frameProtocol';
+import { z } from 'zod';
+import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { FORMATS, isFormatId, type FormatId, type ProjectState, type SceneState } from '../../src/shared/types';
 import { captureLocale } from '../config';
 import type { CadenceConfig, CapturedFrame, CaptureService, ProjectStore } from '../contracts';
@@ -159,6 +160,43 @@ export function seekFrame(page: Page, t: number, timeoutMs = RENDER_TIMEOUT_MS):
     timeoutMs,
     m().media.capture.seekTimeout(formatSeconds(t), timeoutMs / 1000),
   );
+}
+
+/** The text checks read layout only: past this, the page is stuck (its next seek times out and drops the slot). */
+const AUDIT_TIMEOUT_MS = 2_000;
+const AUDIT_TEXT_CHARS = 40;
+
+/** Scene code shares the page with the checks: what reaches the agent's summary is validated, one line per text. */
+const auditFinding = {
+  text: z.string().transform((text) =>
+    Array.from(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '))
+      .slice(0, AUDIT_TEXT_CHARS)
+      .join(''),
+  ),
+  box: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+};
+const auditFindings = z
+  .array(
+    z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('contrast'), ...auditFinding, ratio: z.number(), required: z.number() }),
+      z.object({ kind: z.enum(['clipped', 'offCanvas', 'outsideSafe', 'underCaptions']), ...auditFinding }),
+    ]),
+  )
+  .max(6);
+
+/** The checks of the frame on the page, or null when they throw, hang or return something else: never a failed frame. */
+export async function auditFrame(page: Page, timeoutMs = AUDIT_TIMEOUT_MS): Promise<AuditFinding[] | null> {
+  try {
+    const found = await withTimeout(
+      page.evaluate(() => window.__cadence!.audit()),
+      timeoutMs,
+      'audit timeout',
+    );
+    const parsed = auditFindings.safeParse(found);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -332,6 +370,7 @@ export class PlaywrightCapture implements CaptureService {
           image,
           mime: type === 'png' ? 'image/png' : 'image/jpeg',
           errors: result.errors,
+          ...(req.audit ? { audit: await auditFrame(page) } : {}),
         });
       }
       return out;

@@ -108,6 +108,7 @@ Aim for product-keynote motion: calm, precise, confident. Every frame should loo
 - Use `quality: "high"` for fine details (1 px lines, small text, alignment) and `"low"` for a quick overview of many moments.
 - Single frames miss how a motion lands. Around a contact, a hit on the beat or a cut, render a strip instead (`strip: { at }`, 12 consecutive frames by default): one contact sheet shows whether the motion settles cleanly, overshoots, jitters or pops.
 - If a frame reports render errors, fix them first.
+- Frames with text problems get `Checks at <t> s (<format>):` lines in the `render_frames` summary: text clipped by its container, partly off the canvas, large text in the safe margins, scene text under the captions, contrast under WCAG (a ratio and the one it needs). Treat them as warnings: fix each one or say in your answer why it is deliberate (a title sliding in, a mask reveal). Contrast is not checked for text over an image, gradient, svg, canvas or filter, under an overlay (card, image), outlined or shadowed, in an svg, or in colors the checks cannot read; text revealed by a clip-path or mask is not checked at all. "unavailable" means the checks could not run. Look at all of those yourself.
 - If you touched the first or last ~0.5 s of a scene, its duration or anything shared across a cut, run `check_seams` and report the result.
 - When the layout changed, render every format of the project. Changing on-screen text (copy, language, size) is a layout change.
 

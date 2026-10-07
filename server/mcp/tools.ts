@@ -4,6 +4,7 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import type { AuditFinding, AuditKind } from '../../src/shared/frameProtocol';
 import { FORMAT_IDS, FORMATS, type FormatId, type ProjectState, type SceneState, type SeamResult } from '../../src/shared/types';
 import type {
   AssetStore,
@@ -84,6 +85,19 @@ const QUALITY_SCALE = { low: 0.25, normal: 0.5, high: 1 } as const;
 const SEAM_IMAGE_THRESHOLD = 0.05;
 
 type Content = CallToolResult['content'][number];
+
+const FINDING_LABELS: Record<Exclude<AuditKind, 'contrast'>, string> = {
+  clipped: 'clipped by its container',
+  offCanvas: 'partly off the canvas',
+  outsideSafe: 'in the safe margins',
+  underCaptions: 'under the captions',
+};
+
+/** The text is JSON-quoted: scene text cannot pass for another line of the summary. */
+function describeFinding(f: AuditFinding): string {
+  const what = f.kind === 'contrast' ? `contrast ${f.ratio}:1 (needs ${f.required})` : FINDING_LABELS[f.kind];
+  return `- ${what}: ${JSON.stringify(f.text)} at ${f.box.x},${f.box.y} (${f.box.width}×${f.box.height})`;
+}
 
 export interface ToolContext {
   deps: McpDeps;
@@ -292,7 +306,8 @@ export function createToolServer(ctx: ToolContext): McpServer {
         times,
         format: chosen,
         scale,
-        ...(args.strip ? { imageFormat: 'png' as const } : { imageFormat: 'jpeg' as const, quality: 82 }),
+        // Strips look at a motion, not at the layout: no text checks.
+        ...(args.strip ? { imageFormat: 'png' as const } : { imageFormat: 'jpeg' as const, quality: 82, audit: true }),
       });
       const { width, height } = FORMATS[chosen];
       const columns = height > width ? 6 : 4;
@@ -322,7 +337,13 @@ export function createToolServer(ctx: ToolContext): McpServer {
       const rendered = args.strip
         ? `Rendered a strip of ${frames.length} frames of ${what} in ${chosen}: one contact sheet, ${Math.min(columns, frames.length)} tiles per row at ${size} each.`
         : `Rendered ${frames.length} frame${frames.length === 1 ? '' : 's'} of ${what} in ${chosen} at ${size}.`;
-      const summary = `${rendered}${errors.length ? `\nRender errors:\n${errors.join('\n\n')}` : ''}`;
+      const checks = frames.flatMap((f) => {
+        const at = `Checks at ${f.t.toFixed(3)} s (${chosen}):`;
+        if (f.audit === null) return [`${at} unavailable.`];
+        if (!f.audit?.length) return [];
+        return [at, ...f.audit.map(describeFinding)];
+      });
+      const summary = [rendered, ...(errors.length ? [`Render errors:\n${errors.join('\n\n')}`] : []), ...checks].join('\n');
       const label = (f: CapturedFrame) =>
         scene
           ? `t = ${f.t.toFixed(3)} s`

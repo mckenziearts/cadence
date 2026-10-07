@@ -419,7 +419,7 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `get_brand` | yes | yes | tokens, kit, extras, copy |
 | `get_music_context` | yes | yes | tempo, bars, phrases in scene-local seconds |
 | `list_templates` | yes | yes | scene + campaign templates |
-| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images; or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
+| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images and, per frame, text checks from the frame page (clipped, off canvas, outside the safe area, low contrast, under the captions; at most 6, never an error); or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
 | `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 % |
 | `set_scene_duration` | own scene | any | ms precision |
 | `set_voice_over` | own scene | any | text + `at` (kept when left out); speaks it, answers each sentence's start and end in scene seconds |
