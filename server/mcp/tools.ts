@@ -91,6 +91,8 @@ const MOTION_STEP = 0.25;
 const MOTION_SCENE_SAMPLES = 120;
 const MOTION_CALL_SAMPLES = 600;
 const MOTION_SCALE = 0.5;
+/** Samples per capture call: memory holds one batch of PNGs, and render_frames gets the capture slot between batches. */
+const MOTION_BATCH = 12;
 /** Percent of changing pixels under which two samples show the same picture. */
 const STILL_PERCENT = 0.01;
 /** A still stretch from this long reads as a frozen video; a shorter hold is a deliberate beat. */
@@ -142,27 +144,36 @@ function motionTimes(duration: number, step: number, fps: number): number[] {
   return [...new Set(Array.from({ length: steps + 1 }, (_, i) => roundMs(Math.min(i * step + (i % 2) / fps, duration))))];
 }
 
-/** The still runs between consecutive samples, as [from, to] scene times, and whether any pair changed. */
-async function stillRuns(frames: CapturedFrame[]): Promise<{ runs: [number, number][]; moves: boolean }> {
-  const runs: [number, number][] = [];
-  let moves = false;
-  let start: number | null = null;
-  let previous: { t: number; png: PNG } | null = null;
-  for (const frame of frames) {
+/** Consecutive samples compared as they arrive: only the previous one stays decoded. */
+class StillRuns {
+  runs: [number, number][] = [];
+  moves = false;
+  count = 0;
+  /** Time of the last sample added. */
+  last = 0;
+  private start: number | null = null;
+  private previous: PNG | null = null;
+
+  async add(frame: CapturedFrame): Promise<void> {
     // Decoding and diffing are synchronous: yield between frames so a long check does not stall the server.
     await setImmediate();
     const png = PNG.sync.read(frame.image);
-    if (previous && diffPercent(previous.png, png) < STILL_PERCENT) {
-      start ??= previous.t;
-    } else if (previous) {
-      if (start !== null) runs.push([start, previous.t]);
-      start = null;
-      moves = true;
+    if (this.previous && diffPercent(this.previous, png) < STILL_PERCENT) {
+      this.start ??= this.last;
+    } else if (this.previous) {
+      if (this.start !== null) this.runs.push([this.start, this.last]);
+      this.start = null;
+      this.moves = true;
     }
-    previous = { t: frame.t, png };
+    this.previous = png;
+    this.last = frame.t;
+    this.count++;
   }
-  if (start !== null && previous) runs.push([start, previous.t]);
-  return { runs, moves };
+
+  /** The still runs as [from, to] scene times, the one in progress ending on the last sample. */
+  done(): [number, number][] {
+    return this.start === null ? this.runs : [...this.runs, [this.start, this.last]];
+  }
 }
 
 function errorText(e: unknown): string {
@@ -468,36 +479,44 @@ export function createToolServer(ctx: ToolContext): McpServer {
         }
         const step = Math.max(callStep, scene.duration / (MOTION_SCENE_SAMPLES - 1));
         const times = motionTimes(scene.duration, step, p.fps);
-        const frames = await deps.capture.frames(p.id, {
-          sceneId: scene.id,
-          times,
-          format: chosen,
-          scale: MOTION_SCALE,
-          imageFormat: 'png',
-          // Captions change with the voice: they would pass for motion.
-          captions: false,
-          deadline,
-        });
-        const broken = frames.find((f) => f.errors.length > 0);
-        const checked = broken ? frames.slice(0, frames.indexOf(broken)) : frames;
-        const { runs, moves } = await stillRuns(checked);
-        const stretches = runs.filter(([from, to]) => roundMs(to - from) >= STILL_SECONDS);
+        const still = new StillRuns();
+        let broken: CapturedFrame | undefined;
+        let seen = 0;
+        while (seen < times.length && Date.now() < deadline) {
+          const batch = times.slice(seen, seen + MOTION_BATCH);
+          const frames = await deps.capture.frames(p.id, {
+            sceneId: scene.id,
+            times: batch,
+            format: chosen,
+            scale: MOTION_SCALE,
+            imageFormat: 'png',
+            // Captions change with the voice: they would pass for motion.
+            captions: false,
+            deadline,
+          });
+          broken = frames.find((f) => f.errors.length > 0);
+          for (const frame of broken ? frames.slice(0, frames.indexOf(broken)) : frames) await still.add(frame);
+          seen += frames.length;
+          if (broken || frames.length < batch.length) break;
+        }
+        const { count, moves } = still;
+        const stretches = still.done().filter(([from, to]) => roundMs(to - from) >= STILL_SECONDS);
         let verdict: string;
-        if (checked.length < 2) verdict = 'nothing checked.';
+        if (count < 2) verdict = 'nothing checked.';
         else if (stretches.length)
           verdict = `${stretches.map(([from, to]) => `still from ${from.toFixed(3)} s to ${to.toFixed(3)} s`).join(', ')}.`;
         else if (moves) verdict = 'moves throughout.';
         // Cut short, the rest of the scene was never seen: too early to call it a hold.
-        else if (checked.length < times.length) verdict = `still for ${checked.at(-1)!.t.toFixed(3)} s.`;
-        else verdict = `still for ${checked.at(-1)!.t.toFixed(3)} s, under ${STILL_SECONDS} s: a deliberate hold.`;
+        else if (count < times.length) verdict = `still for ${still.last.toFixed(3)} s.`;
+        else verdict = `still for ${still.last.toFixed(3)} s, under ${STILL_SECONDS} s: a deliberate hold.`;
         let line = `- ${scene.id}: ${verdict}`;
-        const before = checked.length < 2 ? '' : 'before it: ';
-        if (checked.length < 2) unchecked++;
+        const before = count < 2 ? '' : 'before it: ';
+        if (count < 2) unchecked++;
         if (broken) {
           broken.errors.forEach((e) => errors.add(e));
           line = `- ${scene.id}: stopped at ${broken.t.toFixed(3)} s by a render error; ${before}${verdict}`;
-        } else if (frames.length < times.length) {
-          line = `- ${scene.id}: stopped at ${times[frames.length].toFixed(3)} s, out of time; ${before}${verdict}`;
+        } else if (seen < times.length) {
+          line = `- ${scene.id}: stopped at ${times[seen].toFixed(3)} s, out of time; ${before}${verdict}`;
           if (scenes.length > 1) line += ' Run check_motion on this scene alone.';
         } else if (!moves && scene.duration >= STILL_SECONDS) {
           frozen = true;

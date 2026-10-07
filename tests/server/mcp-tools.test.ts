@@ -517,6 +517,12 @@ describe('MCP endpoint', () => {
       const result = await call(client, 'check_motion', args);
       return { result, summary: texts(result)[0] };
     };
+    /** Each scene's sampled times, its batches joined in call order. */
+    const sampledTimes = () => {
+      const byScene = new Map<string, number[]>();
+      for (const [, req] of motionCalls()) byScene.set(req.sceneId, [...(byScene.get(req.sceneId) ?? []), ...req.times]);
+      return byScene;
+    };
     const increasing = (times: number[]) => times.every((t, i) => i === 0 || t > times[i - 1]);
     const scene = await connect(tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'intro' }));
     const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
@@ -629,29 +635,25 @@ describe('MCP endpoint', () => {
       withScenes([60]);
       motion = litExcept([]);
       const long = await check(client, { sceneId: 'intro' });
-      const [[, longReq]] = motionCalls();
-      assert.equal(longReq.times.length, 120);
-      assert.equal(longReq.times.at(-1), 60);
+      const longTimes = sampledTimes().get('intro')!;
+      assert.equal(longTimes.length, 120);
+      assert.equal(longTimes.at(-1), 60);
       assert.match(
         long.summary,
         /\n- intro: moves throughout\. Sampled every 0\.504 s instead of 0\.250 s \(at most 120 samples per scene and 600 per call\)\.$/,
       );
       withScenes([30, 30, 30, 30, 30, 30]);
       const many = await check(client, {});
-      const sampled = motionCalls();
-      assert.deepEqual(
-        sampled.map(([, req]) => req.sceneId),
-        ['intro', 'outro', 'logo', 's3', 's4', 's5'],
-      );
-      assert.ok(sampled.reduce((sum, [, req]) => sum + req.times.length, 0) <= 600);
-      assert.ok(sampled.every(([, req]) => req.times.length <= 120 && req.times.at(-1) === 30 && increasing(req.times)));
+      const sampled = sampledTimes();
+      assert.deepEqual([...sampled.keys()], ['intro', 'outro', 'logo', 's3', 's4', 's5']);
+      assert.ok([...sampled.values()].reduce((sum, times) => sum + times.length, 0) <= 600);
+      assert.ok([...sampled.values()].every((times) => times.length <= 120 && times.at(-1) === 30 && increasing(times)));
       assert.equal(many.summary.match(/Sampled every 0\.306 s instead of 0\.250 s/g)?.length, 6);
       // A widened step can land its last sample on the scene's end once rounded: no time is sampled twice.
       withScenes([2.069, 30, 30, 30, 30, 30]);
       await check(client, {});
-      const [[, shortReq]] = motionCalls();
-      assert.deepEqual(shortReq.times.slice(-2), [1.827, 2.069]);
-      assert.ok(motionCalls().every(([, req]) => increasing(req.times)));
+      assert.deepEqual(sampledTimes().get('intro')!.slice(-2), [1.827, 2.069]);
+      assert.ok([...sampledTimes().values()].every(increasing));
 
       // Out of time (240 s, under the 300 s MCP tool timeout): the scene in progress stops, the next ones never start.
       withScenes([3, 3, 3]);
@@ -661,13 +663,8 @@ describe('MCP endpoint', () => {
         return sceneId === 'outro' ? { changed: 0 } : litExcept([])(sceneId, t);
       };
       const late = await check(client, {});
-      assert.deepEqual(
-        motionCalls().map(([, req]) => [req.sceneId, req.deadline]),
-        [
-          ['intro', deadline],
-          ['outro', deadline],
-        ],
-      );
+      assert.deepEqual([...sampledTimes().keys()], ['intro', 'outro']);
+      assert.ok(motionCalls().every(([, req]) => req.deadline === deadline));
       assert.equal(late.result.isError, false, 'a scene cut short is not frozen');
       assert.match(
         late.summary,
@@ -689,6 +686,31 @@ describe('MCP endpoint', () => {
       motion = null;
       project = saved;
       await scene.close();
+      await client.close();
+    }
+  });
+
+  test('check_motion asks the capture for small batches, never a whole long scene at once', async () => {
+    const saved = project;
+    project = { ...saved, scenes: [{ ...saved.scenes[0], duration: 10 }], duration: 10 };
+    const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
+    try {
+      const before = calls.frames?.length ?? 0;
+      // The hold starts in the first batch (samples up to 2.767 s) and ends in the second.
+      motion = litExcept([[2.5, 5.5]]);
+      const result = await call(client, 'check_motion', { sceneId: 'intro' });
+      const batches = ((calls.frames ?? []).slice(before) as [string, { times: number[] }][]).map(([, req]) => req.times);
+      assert.deepEqual(
+        batches.map((times) => times.length),
+        [12, 12, 12, 5],
+      );
+      assert.equal(batches.flat().length, new Set(batches.flat()).size);
+      assert.deepEqual([batches[0][0], batches.at(-1)!.at(-1)], [0, 10]);
+      assert.equal(result.isError, false);
+      assert.equal(texts(result)[0].split('\n').at(-1), '- intro: still from 2.500 s to 5.500 s.');
+    } finally {
+      motion = null;
+      project = saved;
       await client.close();
     }
   });
