@@ -17,10 +17,12 @@ test('the system prompt carries the guide, the runtime reference and one scope',
     assert.match(prompt, /# `cadence` runtime/);
     assert.doesNotMatch(prompt, /\{\{(RUNTIME_API|SCOPE)\}\}|<!-- scope|## Scope: terminal/);
   }
-  // Rules the renders depend on: seam threshold (as check_seams reports it), text is layout, locales, frozen images,
-  // the text checks of render_frames.
+  // Rules the renders depend on: seam threshold (as check_seams reports it), motion checks, text is layout, locales,
+  // frozen images, the text checks of render_frames.
   for (const rule of [
     /under 0\.05 % of pixels is invisible/,
+    /Run `check_motion` on each scene you created or retimed before answering/,
+    /"<scene> does not move" is a failure[^\n]*still stretches of about 2 s or more \(measured between samples[^\n]*A beat pulse \(`music\.pulse`\) counts as motion; an animated `Grain` \(with `t`\) makes the check pass but is texture, not motion: the scene must still move on its own/,
     /Changing on-screen text \(copy, language, size\) is a layout change/,
     /explicit locale to `Intl\.\*` and `toLocale\*\(\)`/,
     /Animated GIF, WebP and SVG images freeze on their first frame in renders/,

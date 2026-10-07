@@ -701,6 +701,7 @@ test('rules and labels', () => {
     'mcp__cadence__list_templates',
     'mcp__cadence__render_frames',
     'mcp__cadence__check_seams',
+    'mcp__cadence__check_motion',
     'mcp__cadence__set_scene_duration',
     'mcp__cadence__set_voice_over',
     'mcp__cadence__save_version',
@@ -724,6 +725,7 @@ test('rules and labels', () => {
     'Rendu de 3 images de la vidéo (9:16)',
   );
   assert.equal(label('mcp__cadence__render_frames', { strip: { at: 1 } }), 'Rendu de 12 images');
+  assert.equal(label('mcp__cadence__check_motion', { sceneId: 'intro' }), 'Vérification du mouvement');
   assert.equal(
     label('mcp__cadence__render_frames', { strip: { at: 1, frames: 6 }, sceneId: 'intro' }),
     'Rendu de 6 images de intro',

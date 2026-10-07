@@ -367,6 +367,8 @@ export interface CaptureService {
       captions?: boolean;
       /** Run the frame's text checks after each screenshot (render_frames). */
       audit?: boolean;
+      /** Epoch ms: no seek starts from then on, the frames already taken come back (check_motion's time budget). */
+      deadline?: number;
     },
   ): Promise<CapturedFrame[]>;
   /** Small JPEG of a scene (cached per code generation + scene + format + t). */

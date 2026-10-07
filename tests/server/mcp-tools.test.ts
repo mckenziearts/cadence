@@ -5,9 +5,10 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { after, before, describe, test } from 'node:test';
+import { after, before, describe, mock, test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { PNG as Png } from 'pngjs';
 import type {
   AssetStore,
   BrandStore,
@@ -45,6 +46,22 @@ const CHECKS = new Map<number, AuditFinding[] | null>([
 ]);
 /** A PNG of its own per time, to see the sheet get the strip's frames in order. */
 const tileAt = (t: number) => Buffer.concat([PNG, Buffer.from(String(t))]);
+/** check_motion samples while set: lit pixels per (scene, t) of a black 200×100 frame, and a render error. */
+let motion: ((sceneId: string, t: number) => { changed: number; error?: string }) | null = null;
+function motionFrame(changed: number): Buffer {
+  const png = new Png({ width: 200, height: 100 });
+  for (let i = 0; i < png.data.length; i += 4) {
+    png.data.fill(i / 4 < changed ? 255 : 0, i, i + 3);
+    png.data[i + 3] = 255;
+  }
+  return Png.sync.write(png);
+}
+/** 10 more lit pixels (0.05 %) per moving 0.25 s step; none during a hold. */
+const litExcept = (holds: [number, number][], error?: (t: number) => string | undefined) => (_sceneId: string, t: number) => {
+  let changed = 0;
+  for (let at = 0.25; at <= t + 1e-9; at += 0.25) if (!holds.some(([a, b]) => at > a && at <= b + 1e-9)) changed += 10;
+  return { changed, error: error?.(t) };
+};
 
 type Content = { type: string; text?: string; data?: string; mimeType?: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -127,8 +144,27 @@ describe('MCP endpoint', () => {
       },
     } as unknown as ProjectStore;
     const capture = {
-      frames: async (id: string, req: { sceneId: string | null; times: number[]; imageFormat?: string; audit?: boolean }) => {
+      frames: async (
+        id: string,
+        req: { sceneId: string | null; times: number[]; imageFormat?: string; audit?: boolean; deadline?: number },
+      ) => {
         record('frames', [id, req]);
+        if (motion) {
+          const out = [];
+          for (const t of req.times) {
+            if (req.deadline !== undefined && Date.now() >= req.deadline) break;
+            const { changed, error } = motion(req.sceneId!, t);
+            out.push({
+              t,
+              sceneId: req.sceneId,
+              localTime: t,
+              image: motionFrame(changed),
+              mime: 'image/png',
+              errors: error ? [error] : [],
+            });
+          }
+          return out;
+        }
         const png = req.imageFormat === 'png';
         return req.times.map((t) => ({
           t,
@@ -457,6 +493,202 @@ describe('MCP endpoint', () => {
       assert.equal(calls.frames.length, before);
     } finally {
       off();
+      await client.close();
+    }
+  });
+
+  test('check_motion: samples every 0.25 s at half size, refuses a scene that never moves, lists still stretches of 2 s or more', async () => {
+    const saved = project;
+    /** The project with scenes of these durations (intro, outro, logo, then s3, s4...). */
+    const withScenes = (durations: number[]) => {
+      let start = 0;
+      const scenes = durations.map((duration, index) => {
+        const scene = { ...saved.scenes[0], id: saved.scenes[index]?.id ?? `s${index}`, index, start, duration };
+        start += duration;
+        return scene;
+      });
+      project = { ...saved, scenes, duration: start };
+    };
+    let before = 0;
+    const motionCalls = () =>
+      (calls.frames ?? []).slice(before) as [string, { sceneId: string; times: number[]; deadline: number }][];
+    const check = async (client: Client, args: Record<string, unknown>) => {
+      before = calls.frames?.length ?? 0;
+      const result = await call(client, 'check_motion', args);
+      return { result, summary: texts(result)[0] };
+    };
+    const increasing = (times: number[]) => times.every((t, i) => i === 0 || t > times[i - 1]);
+    const scene = await connect(tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'intro' }));
+    const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
+    try {
+      // Only Date: the deadline is read from it, the HTTP transport keeps its real timers.
+      mock.timers.enable({ apis: ['Date'], now: 0 });
+      motion = () => ({ changed: 0 });
+      const frozen = await check(scene, {});
+      assert.equal(frozen.result.isError, true);
+      // Odd samples one video frame (1/60 s) late: a pulse on a 0.25 s grid is not the same value at every sample.
+      assert.deepEqual(motionCalls(), [
+        [
+          'demo',
+          {
+            sceneId: 'intro',
+            times: [0, 0.267, 0.5, 0.767, 1, 1.267, 1.5, 1.767, 2],
+            format: '9:16',
+            scale: 0.5,
+            imageFormat: 'png',
+            captions: false,
+            deadline: 240_000,
+          },
+        ],
+      ]);
+      assert.equal(
+        frozen.summary,
+        'Motion of scene intro "intro" (2.000 s) in 9:16: a sample every 0.250 s at 540×960, consecutive samples compared like check_seams. Still means under 0.01 % of pixels changing; still stretches of about 2 s or more (measured between samples) are listed.\n' +
+          '- intro does not move: add motion (a slow push-in, a drift) or shorten it.',
+      );
+      const other = await check(scene, { sceneId: 'outro' });
+      assert.equal(other.result.isError, true);
+      assert.match(other.summary, /limité à la scène « intro » : vérifie le mouvement de ta scène\./);
+      assert.equal(motionCalls().length, 0);
+
+      motion = litExcept([]);
+      const moving = await check(client, { format: '16:9' });
+      assert.equal(moving.result.isError, false);
+      assert.deepEqual(
+        motionCalls().map(([, req]) => req.sceneId),
+        ['intro', 'outro', 'logo'],
+      );
+      assert.match(moving.summary, /^Motion of 3 scenes \(6\.000 s\) in 16:9: a sample every 0\.250 s at 960×540,/);
+      assert.match(moving.summary, /\n- intro: moves throughout\.\n- outro: moves throughout\.\n- logo: moves throughout\.$/);
+
+      // A hold under 2 s is never flagged, a still stretch from 2 s is listed, a still scene under 2 s is a hold.
+      for (const [durations, holds, line] of [
+        [
+          [5],
+          [
+            [0, 1.75],
+            [2, 4.5],
+          ],
+          '- intro: still from 2.000 s to 4.500 s.',
+        ],
+        [[5], [[0.5, 2.5]], '- intro: still from 0.500 s to 2.500 s.'],
+        [[5], [[0.5, 2.25]], '- intro: moves throughout.'],
+        [[1.75], [[0, 1.75]], '- intro: still for 1.750 s, under 2 s: a deliberate hold.'],
+        [[1.996], [[0, 1.996]], '- intro: still for 1.996 s, under 2 s: a deliberate hold.'],
+      ] as [number[], [number, number][], string][]) {
+        withScenes(durations);
+        motion = litExcept(holds);
+        const listed = await check(client, { sceneId: 'intro' });
+        assert.equal(listed.result.isError, false, line);
+        assert.equal(listed.summary.split('\n').at(-1), line);
+      }
+
+      // Under 0.01 % of pixels is still: 1 of 20 000 pixels (0.005 %) is still, 2 (0.01 %) is motion.
+      withScenes([2]);
+      for (const [lit, still] of [
+        [1, true],
+        [2, false],
+      ] as const) {
+        motion = (_sceneId, t) => ({ changed: t === 1 ? lit : 0 });
+        const flicker = await check(client, { sceneId: 'intro' });
+        assert.equal(flicker.result.isError, still, `${lit} pixel(s)`);
+      }
+
+      // A render error stops that scene, reported like render_frames; the error alone never makes the result fail.
+      withScenes([3, 2]);
+      const stillThenBroken = litExcept([[0, 3]], (t) => (t >= 2.5 ? 'ReferenceError: boom' : undefined));
+      motion = (sceneId, t) => (sceneId === 'intro' ? stillThenBroken : litExcept([]))(sceneId, t);
+      const broken = await check(client, {});
+      assert.equal(broken.result.isError, false);
+      assert.match(
+        broken.summary,
+        /\n- intro: stopped at 2\.500 s by a render error; before it: still from 0\.000 s to 2\.267 s\.\n- outro: moves throughout\.\nRender errors:\nReferenceError: boom$/,
+      );
+      motion = () => ({ changed: 0, error: 'ReferenceError: boom' });
+      const failing = await check(client, {});
+      assert.equal(failing.result.isError, true, 'nothing could be checked');
+      assert.match(failing.summary, /\n- intro: stopped at 0\.000 s by a render error; nothing checked\./);
+      // Cut short, a still start is not called a hold: the rest of the scene was never seen.
+      withScenes([3]);
+      motion = litExcept([[0, 3]], (t) => (t >= 1.5 ? 'ReferenceError: boom' : undefined));
+      const cutShort = await check(client, { sceneId: 'intro' });
+      assert.match(
+        cutShort.summary,
+        /\n- intro: stopped at 1\.500 s by a render error; before it: still for 1\.267 s\.\nRender errors:/,
+      );
+      // One sample before the error compares nothing: the scene is not checked either.
+      withScenes([2]);
+      motion = litExcept([], (t) => (t >= 0.25 ? 'ReferenceError: boom' : undefined));
+      const second = await check(client, {});
+      assert.equal(second.result.isError, true, 'one sample checks nothing');
+      assert.match(second.summary, /\n- intro: stopped at 0\.267 s by a render error; nothing checked\./);
+      withScenes([2, 2]);
+      assert.equal((await check(client, {})).result.isError, true, 'no scene got two samples');
+
+      // At most 120 samples per scene and 600 per call: the step widens, no scene is dropped, and the result says so.
+      withScenes([60]);
+      motion = litExcept([]);
+      const long = await check(client, { sceneId: 'intro' });
+      const [[, longReq]] = motionCalls();
+      assert.equal(longReq.times.length, 120);
+      assert.equal(longReq.times.at(-1), 60);
+      assert.match(
+        long.summary,
+        /\n- intro: moves throughout\. Sampled every 0\.504 s instead of 0\.250 s \(at most 120 samples per scene and 600 per call\)\.$/,
+      );
+      withScenes([30, 30, 30, 30, 30, 30]);
+      const many = await check(client, {});
+      const sampled = motionCalls();
+      assert.deepEqual(
+        sampled.map(([, req]) => req.sceneId),
+        ['intro', 'outro', 'logo', 's3', 's4', 's5'],
+      );
+      assert.ok(sampled.reduce((sum, [, req]) => sum + req.times.length, 0) <= 600);
+      assert.ok(sampled.every(([, req]) => req.times.length <= 120 && req.times.at(-1) === 30 && increasing(req.times)));
+      assert.equal(many.summary.match(/Sampled every 0\.306 s instead of 0\.250 s/g)?.length, 6);
+      // A widened step can land its last sample on the scene's end once rounded: no time is sampled twice.
+      withScenes([2.069, 30, 30, 30, 30, 30]);
+      await check(client, {});
+      const [[, shortReq]] = motionCalls();
+      assert.deepEqual(shortReq.times.slice(-2), [1.827, 2.069]);
+      assert.ok(motionCalls().every(([, req]) => increasing(req.times)));
+
+      // Out of time (240 s, under the 300 s MCP tool timeout): the scene in progress stops, the next ones never start.
+      withScenes([3, 3, 3]);
+      const deadline = Date.now() + 240_000;
+      motion = (sceneId, t) => {
+        if (sceneId === 'outro' && t === 2.5) mock.timers.tick(240_000);
+        return sceneId === 'outro' ? { changed: 0 } : litExcept([])(sceneId, t);
+      };
+      const late = await check(client, {});
+      assert.deepEqual(
+        motionCalls().map(([, req]) => [req.sceneId, req.deadline]),
+        [
+          ['intro', deadline],
+          ['outro', deadline],
+        ],
+      );
+      assert.equal(late.result.isError, false, 'a scene cut short is not frozen');
+      assert.match(
+        late.summary,
+        /\n- intro: moves throughout\.\n- outro: stopped at 2\.767 s, out of time; before it: still from 0\.000 s to 2\.500 s\. Run check_motion on this scene alone\.\n- logo: not checked, out of time: run check_motion on this scene alone\.$/,
+      );
+      withScenes([3, 3]);
+      motion = (_sceneId, t) => {
+        if (t === 0) mock.timers.tick(240_000);
+        return { changed: 0 };
+      };
+      const none = await check(client, {});
+      assert.equal(none.result.isError, true, 'nothing could be checked in time');
+      assert.match(
+        none.summary,
+        /\n- intro: stopped at 0\.267 s, out of time; nothing checked\. Run check_motion on this scene alone\.\n- outro: not checked, out of time: run check_motion on this scene alone\.$/,
+      );
+    } finally {
+      mock.timers.reset();
+      motion = null;
+      project = saved;
+      await scene.close();
       await client.close();
     }
   });

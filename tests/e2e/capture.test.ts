@@ -1,5 +1,5 @@
 // PlaywrightCapture and PixelSeamService against the frame harness: agent frames, thumbnails, reference screenshots,
-// timeouts, seams, and what scene code may reach from a capture page.
+// timeouts, seams, motion checks, and what scene code may reach from a capture page.
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
@@ -8,6 +8,8 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { after, before, describe, it } from 'node:test';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
 import {
@@ -18,9 +20,10 @@ import {
   PlaywrightCapture,
   seekFrame,
 } from '../../server/capture/capture';
-import { PixelSeamService } from '../../server/capture/seams';
+import { diffPercent, PixelSeamService } from '../../server/capture/seams';
 import { captureLocale } from '../../server/config';
 import type { CaptureService } from '../../server/contracts';
+import { createToolServer, type McpDeps } from '../../server/mcp/tools';
 import { HttpError } from '../../server/util';
 import { FORMATS, SAFE_AREAS, type ProjectFile } from '../../src/shared/types';
 import { near, pixel, RecordingHub, startHarness, type Harness } from './helpers/harness';
@@ -500,6 +503,79 @@ describe('PixelSeamService', () => {
     assert.ok(diff['dark-a to dark-b'] > 0.05, `#0a0a0a to #1f1f1f: ${diff['dark-a to dark-b']} %`);
     assert.equal(diff['title to title-again'], 0);
     assert.ok(diff['title-again to title-overlay'] > 0.05, `6 % overlay: ${diff['title-again to title-overlay']} %`);
+  });
+});
+
+describe('check_motion', () => {
+  it('on real frames: a still card does not move, the slowest push-in and a beat pulse move throughout, a 2.5 s hold is listed', async (t) => {
+    const card =
+      "<div style={{ position: 'absolute', left: 560, top: 390, width: 800, height: 300, borderRadius: 32, background: '#1e293b', color: '#f8fafc', fontSize: 96, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Cadence</div>";
+    const projectId = await projectWith({
+      still: fill("background: '#0f172a'", card),
+      // 1 to 1.04 over the whole scene, linear: the low end of the guide's push-in (1.03-1.06), at constant speed.
+      'push-in': `export default function Scene({ t, duration }: { t: number; duration: number }) {
+  return <div style={{ position: 'absolute', inset: 0, background: '#0f172a', transform: \`scale(\${1 + (0.04 * t) / duration})\` }}>${card}</div>;
+}
+`,
+      hold: `export default function Scene({ t }: { t: number }) {
+  const x = -200 * (1 - Math.min(t / 0.5, 1));
+  return <div style={{ position: 'absolute', inset: 0, background: '#0f172a' }}><div style={{ position: 'absolute', inset: 0, transform: \`translateX(\${x}px)\` }}>${card}</div></div>;
+}
+`,
+      // music.pulse(t, { grid: 'half' }) with no track at tempo 120 (the harness stubs the runtime): a hit every 0.25 s,
+      // the sampling step.
+      pulse: `export default function Scene({ t }: { t: number }) {
+  const pulse = Math.exp(-6 * (t - Math.floor(t / 0.25 + 1e-6) * 0.25));
+  return <div style={{ position: 'absolute', inset: 0, background: '#0f172a', transform: \`scale(\${1 + 0.03 * pulse})\` }}>${card}</div>;
+}
+`,
+    });
+    await updateProject((p) => p.scenes.forEach((s) => (s.duration = 3)), projectId);
+
+    const server = createToolServer({
+      deps: { store: h.store, capture } as unknown as McpDeps,
+      scope: { kind: 'project', projectId },
+      token: 'e2e',
+      frameName: () => 'unused',
+    });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 'e2e', version: '1.0.0' });
+    await client.connect(clientSide);
+    try {
+      const result = (await client.callTool({ name: 'check_motion', arguments: {} })) as {
+        content: { type: string; text: string }[];
+        isError?: boolean;
+      };
+      // Samples at 0, 0.283, 0.5, 0.783 ... 3 (odd ones a frame late): hold moves from 0 to 0.5 s and is identical from
+      // the 0.5 s sample on; the pulse reads 1 on even samples and about 0.82 a frame after a hit.
+      assert.deepEqual(result.content[0].text.split('\n').slice(1), [
+        '- still does not move: add motion (a slow push-in, a drift) or shorten it.',
+        '- push-in: moves throughout.',
+        '- hold: still from 0.500 s to 3.000 s.',
+        '- pulse: moves throughout.',
+      ]);
+      assert.equal(result.isError, true);
+    } finally {
+      await client.close();
+    }
+
+    const times = Array.from({ length: 13 }, (_, i) => i / 4);
+    const frames = await capture.frames(projectId, {
+      sceneId: 'push-in',
+      times,
+      format: '16:9',
+      scale: 0.5,
+      imageFormat: 'png',
+      captions: false,
+    });
+    const pngs = frames.map((f) => PNG.sync.read(f.image));
+    const diffs = pngs.slice(1).map((png, i) => diffPercent(pngs[i], png));
+    t.diagnostic(`push-in diff % per 0.25 s pair: ${diffs.join(', ')}`);
+    assert.ok(Math.min(...diffs) >= 0.01, `slowest pair: ${Math.min(...diffs)} %`);
+
+    const late = await capture.frames(projectId, { sceneId: 'still', times: [0, 1], deadline: Date.now() - 1 });
+    assert.deepEqual(late, [], 'no seek starts past the deadline');
   });
 });
 

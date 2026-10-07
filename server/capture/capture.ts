@@ -357,6 +357,7 @@ export class PlaywrightCapture implements CaptureService {
     return this.withSlot(projectId, req.sceneId, format, scale, captions, async (page) => {
       const out: CapturedFrame[] = [];
       for (const t of req.times) {
+        if (req.deadline !== undefined && Date.now() >= req.deadline) break;
         const result = await seekFrame(page, t, this.timeoutMs);
         const image = await page.screenshot({
           type,

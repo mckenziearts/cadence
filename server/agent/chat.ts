@@ -162,6 +162,8 @@ export function activityLabel(name: string, input: Record<string, unknown>, proj
     }
     case 'check_seams':
       return words.seams;
+    case 'check_motion':
+      return words.motion;
     case 'get_project':
       return words.project;
     case 'get_brand':

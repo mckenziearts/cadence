@@ -37,7 +37,7 @@ export function claudeEnv(source: NodeJS.ProcessEnv, useApiKey: boolean): NodeJS
     if (!NESTED_SESSION_VARS.has(name) && !NESTED_SESSION_PREFIX.test(name)) env[name] = value;
   }
   if (!useApiKey) delete env.ANTHROPIC_API_KEY;
-  // render_frames and check_seams capture real frames; allow long tool calls and large image results.
+  // render_frames, check_seams and check_motion capture real frames; allow long tool calls and large image results.
   env.MCP_TOOL_TIMEOUT = '300000';
   env.MAX_MCP_OUTPUT_TOKENS = '120000';
   return env;
