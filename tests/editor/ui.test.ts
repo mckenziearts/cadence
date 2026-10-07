@@ -700,8 +700,10 @@ describe('editor', () => {
       await panel(page, 'Voix');
       const srt = page.getByRole('button', { name: 'Télécharger les sous-titres SRT' });
       const vtt = page.getByRole('button', { name: 'Télécharger les sous-titres VTT' });
-      await page.getByText('Pas encore de phrase : écrivez la voix off d’une scène.').waitFor();
+      const none = page.getByText('Pas encore de phrase : écrivez la voix off d’une scène.');
+      await none.waitFor();
       assert.ok((await srt.isDisabled()) && (await vtt.isDisabled()), 'no sentence: the route answers 404');
+      for (const button of [srt, vtt]) assert.equal(await button.getAttribute('aria-describedby'), await none.getAttribute('id'));
 
       speechError = 'Piper a échoué (code 1)';
       const text = page.getByRole('textbox', { name: 'Voix off de « Parole »' });
@@ -714,6 +716,7 @@ describe('editor', () => {
       speechError = null;
       await generate.click();
       await page.getByText(`1${NBSP}phrase, de 0,00${NBSP}s à 1,00${NBSP}s`).waitFor({ timeout: 30_000 });
+      assert.equal(await srt.getAttribute('aria-describedby'), null);
 
       for (const [button, format] of [
         [srt, 'srt'],

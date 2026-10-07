@@ -2,7 +2,7 @@
 // then each scene's text and timing.
 import clsx from 'clsx';
 import { AlertTriangle, AudioLines, Copy, Download, Play } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import type { SceneState, SceneVoiceOver, VoiceOverSettings, VoicesState } from '../../shared/types';
 import { api, ignore } from '../api';
 import { ElevenLabsVoiceSelect, PIPER_INSTALL, Row } from '../components/voiceOver';
@@ -48,6 +48,7 @@ function Subtitles() {
   const project = useStore((s) => s.project)!;
   // The route's 409 and 404, known ahead: no click for a refusal.
   const hint = project.voiceOverPending.length ? texts.notSpoken : project.voiceOverLines.length ? null : texts.none;
+  const hintId = useId();
   const burn = (captions: boolean) => void api.updateProject(project.id, { captions }).then(applyProject).catch(ignore);
   // Fetched rather than linked: a refusal shows its message instead of saving it as the file.
   const download = async (format: 'srt' | 'vtt') => {
@@ -72,13 +73,18 @@ function Subtitles() {
             icon={<Download className="size-3.5" />}
             disabled={hint !== null}
             aria-label={texts.download(format.toUpperCase())}
+            aria-describedby={hint ? hintId : undefined}
             onClick={() => void download(format).catch(ignore)}
           >
             {format.toUpperCase()}
           </Button>
         ))}
       </div>
-      {hint && <p className="text-xs text-ink-3">{hint}</p>}
+      {hint && (
+        <p id={hintId} className="text-xs text-ink-3">
+          {hint}
+        </p>
+      )}
     </section>
   );
 }
