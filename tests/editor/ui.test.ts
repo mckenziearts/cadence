@@ -1277,6 +1277,52 @@ describe('preview', () => {
     await page.waitForFunction((hash) => location.hash === hash, `#/${A}/${second.id}`);
     await page.context().close();
   });
+
+  it("schedules the scene's sound effects in the preview and in Present", { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-s`;
+    await api('POST', '/api/projects', { name: 'Sons', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    await api('POST', `/api/projects/${id}/scenes`, {
+      name: 'Sons',
+      code: "import type { SoundCue } from 'cadence';\n\nexport const sounds = (): SoundCue[] => [\n  { at: 0, sound: 'impact' },\n  { at: 0.4, sound: 'pop' },\n  { at: 0.8, sound: 'whoosh', gain: 0.5 },\n];\n\nexport default function Sons() {\n  return <p>Sons</p>;\n}\n",
+    });
+    // The scene opens the video, so its cue at 0 is also Present's opening cue.
+    await api('DELETE', `/api/projects/${id}/scenes/titre`);
+    const page = await newPage();
+    // Nobody hears the headless browser: each scheduled source is recorded with its lead over the audio clock.
+    await page.addInitScript(() => {
+      const starts: { duration: number; lead: number; offset: number }[] = [];
+      Object.assign(window, { starts });
+      const start = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function (this: AudioBufferSourceNode, when = 0, offset = 0, ...rest: number[]) {
+        starts.push({ duration: this.buffer?.duration ?? 0, lead: when - this.context.currentTime, offset });
+        return start.call(this, when, offset, ...rest);
+      };
+    });
+    type Start = { duration: number; lead: number; offset: number };
+    const starts = () => page.evaluate(() => (window as unknown as { starts: Start[] }).starts);
+    const startsReach = (count: number, timeout: number) =>
+      page.waitForFunction((count) => (window as unknown as { starts: unknown[] }).starts.length >= count, count, { timeout });
+    await open(`${id}/sons`, page);
+    const ready = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(ready, null, { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+    await startsReach(3, 10_000);
+    await page.waitForTimeout(500);
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    const heard = await starts();
+    assert.equal(heard.length, 3, JSON.stringify(heard));
+    for (const { lead } of heard) assert.ok(lead >= -0.01 && lead <= 0.16, JSON.stringify(heard));
+    // By length: the pop, the whoosh, then the impact, which opens the scene even though the first tick comes late.
+    const [popped, whooshed, impact] = [...heard].sort((a, b) => a.duration - b.duration);
+    assert.equal(heard[0].duration, impact.duration, JSON.stringify(heard));
+    assert.ok(impact.offset < 0.1, JSON.stringify(heard));
+    assert.deepEqual([popped.offset, whooshed.offset], [0, 0], JSON.stringify(heard));
+    await page.evaluate(() => ((window as unknown as { starts: unknown[] }).starts.length = 0));
+    await page.getByRole('button', { name: 'Présenter', exact: true }).click();
+    await startsReach(1, 15_000);
+    assert.equal((await starts())[0].duration, impact.duration, 'a cold Present plays its opening cue');
+    await page.context().close();
+  });
 });
 
 describe('features', () => {

@@ -5,8 +5,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { chatKeyForScene, FORMATS, type FormatId } from '../../shared/types';
 import { useT } from '../i18n';
 import { bars, secsLabel } from '../lib/format';
+import { useSoundPlayer, type SoundPlayer } from '../lib/sounds';
 import { SAFE_AREAS, sceneBars } from '../lib/timeline';
-import { currentScene, get, sceneAt, set, useStore } from '../store';
+import { currentScene, get, previewDuration, sceneAt, set, useStore } from '../store';
 import { prefill } from '../store/chat';
 import { setFormat, setPlaying } from '../store/project';
 import { FrameView, type FrameHandle } from './FrameView';
@@ -18,12 +19,13 @@ const PAD = 32;
 
 export function Stage() {
   const t = useT();
+  const sounds = useSoundPlayer();
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label={t.shell.stage.label}>
       <StageHeader />
-      <Preview />
+      <Preview sounds={sounds} />
       <Transport />
-      <PlaybackEngine />
+      <PlaybackEngine sounds={sounds} />
     </section>
   );
 }
@@ -95,7 +97,7 @@ function StageHeader() {
   );
 }
 
-function Preview() {
+function Preview({ sounds }: { sounds: SoundPlayer }) {
   const t = useT();
   const app = useStore((s) => s.app)!;
   const project = useStore((s) => s.project)!;
@@ -106,6 +108,7 @@ function Preview() {
   const reload = useStore((s) => s.frameReload);
   const generation = useStore((s) => s.generation);
   const safeArea = useStore((s) => s.safeArea);
+  const duration = useStore((s) => previewDuration(s));
   const area = useRef<HTMLDivElement>(null);
   const frame = useRef<FrameHandle>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
@@ -133,8 +136,14 @@ function Preview() {
   // Each reload re-imports the scenes and the brand, and a page never frees modules (about 0.3 MB per code change):
   // a fresh page every 100 generations bounds that.
   const key = `${project.id}:${epoch}:${Math.floor(generation / 100)}`;
-  useEffect(() => setReady(false), [key]);
+  useEffect(() => {
+    setReady(false);
+    sounds.forget();
+  }, [key, sounds]);
   const onErrors = useCallback((errors: string[]) => set({ frameErrors: errors }), []);
+  const shownSceneId = mode === 'scene' ? sceneId : null;
+  const scenes = mode === 'scene' ? 1 : project.scenes.length;
+  useEffect(() => sounds.show({ sceneId: shownSceneId, duration, scenes }), [sounds, shownSceneId, duration, scenes]);
 
   const spec = FORMATS[format];
   const fit = Math.max(0, Math.min((box.w - PAD * 2) / spec.width, (box.h - PAD * 2) / spec.height));
@@ -162,7 +171,7 @@ function Preview() {
             frameOrigin={app.frameOrigin}
             projectId={project.id}
             mode="editor"
-            sceneId={mode === 'scene' ? sceneId : null}
+            sceneId={shownSceneId}
             format={format}
             initialTime={get().time}
             reload={reload}
@@ -171,6 +180,7 @@ function Preview() {
             className="pointer-events-none block size-full border-0"
             onReady={() => setReady(true)}
             onErrors={onErrors}
+            onSounds={(id, cues) => sounds.receive(id, cues)}
           />
           {safeArea && <SafeAreaOverlay format={format} scale={fit} />}
           {!ready && (

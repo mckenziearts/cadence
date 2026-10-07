@@ -31,6 +31,8 @@ interface Props {
   style?: CSSProperties;
   onReady?: () => void;
   onErrors?: (errors: string[]) => void;
+  /** The frame's `sounds` messages, unchecked: scene code can post one itself. */
+  onSounds?: (sceneId: unknown, cues: unknown) => void;
 }
 
 /** Mount it with a `key` per project (and per reconnect epoch): the page itself is loaded once. */
@@ -93,6 +95,8 @@ export function FrameView(props: Props) {
         latest.current.onReady?.();
       } else if (message.type === 'errors') {
         latest.current.onErrors?.(message.errors);
+      } else if (message.type === 'sounds') {
+        latest.current.onSounds?.(message.sceneId, message.cues);
       }
     };
     window.addEventListener('message', onMessage);

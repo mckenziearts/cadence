@@ -586,6 +586,13 @@ that starts before the range is trimmed, one that runs past it is cut. When no c
 at all; otherwise the track is one more `-filter_complex` input, alone or mixed with the music and the voice by
 `amix=normalize=0`, through the same limiter and fade, so a video with neither music nor voice-over still gets audio.
 A missing or non-44.1 kHz library file fails the render naming it.
+The preview and Present play the same cues: the frame posts `{type: 'sounds', sceneId, cues}` whenever they change
+(scene seconds in scene mode, video seconds for the whole video), and the editor ignores a message for a scene it does not
+show and checks the cues again with the same caps. `src/editor/lib/sounds.ts` decodes the library once per page, then
+at each playback frame schedules on Web Audio the cues of the next 0.15 s, through one limiter, at most 64 sounding at
+once. A cue whose peak the playhead passed (the first frame after play, a seek, a loop or a dropped frame) lands at
+most 0.1 s after its cue; later than that it is skipped, so a seek past a cue's peak skips it in the preview, where the
+MP4 mixes its tail. Pause, mute and a change of cues stop the sounds already playing.
 Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`. Deleting one moves it to the project's
 `.cadence/trash/` (`RenderService.remove`); what the networks received stays in `publications.json`.
 
