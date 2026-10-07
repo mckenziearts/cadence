@@ -10,16 +10,26 @@ import { fileURLToPath } from 'node:url';
 import { setLanguage, m } from '../../server/i18n';
 import { writeSounds } from '../../server/sounds/library';
 import { readWav } from '../../server/voiceover/wav';
-import { MAX_SOUND_CUES, SOUND_NAMES, SOUND_PEAKS, parseSoundCues } from '../../src/shared/sounds';
+import {
+  MAX_SOUND_CUES,
+  SOUND_NAMES,
+  SOUND_PEAKS,
+  parseSoundCues,
+  videoSoundCues,
+  type SoundName,
+} from '../../src/shared/sounds';
 
 const DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src/editor/sounds');
+
+/** Peak levels in dBFS: the loudest, impact, keeps 0.2 dB under the -1 dBFS ceiling. */
+const LEVELS: Record<SoundName, number> = { click: -6, key: -8, pop: -4, whoosh: -3, impact: -1.2 };
 
 test('the library has the five sounds', () => {
   assert.deepEqual([...SOUND_NAMES], ['click', 'key', 'pop', 'whoosh', 'impact']);
 });
 
 for (const name of SOUND_NAMES) {
-  test(`${name}.wav: 16-bit mono at 44.1 kHz, under 1.5 s, at -1 dBFS or lower, loudest sample at its declared peak`, () => {
+  test(`${name}.wav: 16-bit mono at 44.1 kHz, under 1.5 s, peak at ${LEVELS[name]} dBFS, loudest sample at its declared peak`, () => {
     const data = readFileSync(path.join(DIR, `${name}.wav`));
     assert.equal(data.readUInt16LE(22), 1, 'mono');
     assert.equal(data.readUInt16LE(34), 16, '16-bit');
@@ -29,8 +39,11 @@ for (const name of SOUND_NAMES) {
     let loudest = 0;
     for (let i = 1; i < samples.length; i++) if (Math.abs(samples[i]) > Math.abs(samples[loudest])) loudest = i;
     const dbfs = 20 * Math.log10(Math.abs(samples[loudest]) / 32768);
-    assert.ok(dbfs <= -1, `${dbfs.toFixed(2)} dBFS`);
-    assert.ok(Math.abs(loudest / sampleRate - SOUND_PEAKS[name]) <= 0.005, `peak at ${(loudest / sampleRate).toFixed(4)} s`);
+    assert.ok(Math.abs(dbfs - LEVELS[name]) < 0.01, `${dbfs.toFixed(3)} dBFS`);
+    assert.ok(
+      Math.abs(loudest / sampleRate - SOUND_PEAKS[name]) <= 1 / sampleRate,
+      `peak at ${(loudest / sampleRate).toFixed(6)} s`,
+    );
   });
 }
 
@@ -104,10 +117,45 @@ for (const [label, cue] of invalid) {
   });
 }
 
+test('parseSoundCues shows the unknown sound it received as a literal, or its type when it is no string', () => {
+  for (const language of ['en', 'fr'] as const) {
+    setLanguage(language);
+    const result = parseSoundCues([{ at: 1, sound: 'boing' }], 4, texts());
+    assert.ok('error' in result && /"boing" \(click, key, pop, whoosh, impact\)/.test(result.error), JSON.stringify(result));
+  }
+  setLanguage('en');
+  for (const [sound, shown] of [
+    [3, 'unknown sound number'],
+    [undefined, 'unknown sound undefined'],
+    [{ name: 'pop' }, 'unknown sound object'],
+    ['a\nb', 'unknown sound "a\\nb"'],
+  ] as const) {
+    const result = parseSoundCues([{ at: 1, sound }], 4, texts());
+    assert.ok('error' in result && result.error.includes(shown), JSON.stringify(result));
+  }
+});
+
 test('parseSoundCues refuses anything but an array', () => {
   setLanguage('en');
   for (const value of [undefined, null, {}, 'click', 3]) {
     const result = parseSoundCues(value, 4, texts());
     assert.ok('error' in result && result.error.length > 0, JSON.stringify(result));
   }
+});
+
+test('videoSoundCues shifts each scene by its start, rounds, skips scenes in error and sorts', () => {
+  assert.deepEqual(
+    videoSoundCues([
+      { start: 0, sounds: { cues: [{ at: 1.5, sound: 'whoosh', gain: 1 }] } },
+      { start: 0.1, sounds: { cues: [{ at: 0.2, sound: 'pop', gain: 0.5 }] } },
+      { start: 2, sounds: { error: 'sounds() threw' } },
+      { start: 1, sounds: { cues: [{ at: 0, sound: 'click', gain: 1 }] } },
+    ]),
+    [
+      { at: 0.3, sound: 'pop', gain: 0.5 },
+      { at: 1, sound: 'click', gain: 1 },
+      { at: 1.5, sound: 'whoosh', gain: 1 },
+    ],
+  );
+  assert.deepEqual(videoSoundCues([]), []);
 });

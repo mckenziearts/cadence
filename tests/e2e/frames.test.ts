@@ -42,6 +42,9 @@ function seek(page: Page, t: number): Promise<FrameRenderResult> {
   return page.evaluate((time) => window.__cadence!.seek(time), t);
 }
 
+/** A scene time on the video timeline, rounded to the nanosecond like the frame: scene starts are not always binary fractions. */
+const videoTime = (start: number, local: number) => Math.round((start + local) * 1e9) / 1e9;
+
 async function colorAt(page: Page, x: number, y: number): Promise<[number, number, number]> {
   return pixel(await page.screenshot({ type: 'png' }), x / 2, y / 2);
 }
@@ -343,6 +346,191 @@ describe('frame page', () => {
   });
 });
 
+describe('scene sounds', () => {
+  const draw = (color: string) =>
+    `export default function Scene() {\n  return <div style={{ position: 'absolute', inset: 0, background: '${color}' }} />;\n}\n`;
+
+  it('returns the cues of the shown scenes on the frame timeline, sorted, from a plain call with the props but t', async () => {
+    await addScene('pad', `export const sounds = () => [{ at: 0.25, sound: 'pop' }];\n${draw('#000000')}`, 0.25);
+    await addScene(
+      'beats',
+      "export function sounds(props) {\n  if ('t' in props) throw new Error('t in the props of sounds()');\n" +
+        "  if (this !== undefined) throw new Error('sounds() called as a method');\n" +
+        "  return [{ at: props.music.beat(1), sound: 'click' }, { at: props.music.beat(0), sound: 'whoosh', gain: 0.5 }];\n}\n" +
+        draw('#ff8800'),
+    );
+    await h.store.syncCode(id);
+    const start = (await h.store.get(id)).scenes.find((s) => s.id === 'beats')!.start;
+    // Off the video's 120 BPM grid: without a track the runtime's beats start with the scene, not with the video.
+    assert.equal(start % 0.5, 0.25, 'the scene starts between two video beats');
+    const beats = [
+      { at: 0, sound: 'whoosh', gain: 0.5 },
+      { at: 0.5, sound: 'click', gain: 1 },
+    ];
+
+    const whole = await open({});
+    assert.deepEqual(await whole.evaluate(() => window.__cadence!.sounds()), [
+      { at: start, sound: 'pop', gain: 1 },
+      ...beats.map((cue) => ({ ...cue, at: videoTime(start, cue.at) })),
+    ]);
+    await whole.context().close();
+
+    // Scene seconds in scene mode, like render, seek and duration.
+    const single = await open({ scene: 'beats' });
+    assert.deepEqual(await single.evaluate(() => window.__cadence!.sounds()), beats);
+    assert.deepEqual((await seek(single, 0.5)).errors, []);
+    await single.context().close();
+  });
+
+  it('turns a sounds() that throws, is not a function or returns an invalid cue into a render error, and still draws', async () => {
+    await addScene('sounds-throws', `export function sounds() {\n  throw new Error('Pas de son ici');\n}\n${draw('#00ff00')}`);
+    await addScene('sounds-opaque', `export function sounds() {\n  throw Object.create(null);\n}\n${draw('#00ff00')}`);
+    await addScene(
+      'sounds-message',
+      `export function sounds() {\n  const e = new Error();\n  delete e.stack;\n  Object.defineProperty(e, 'message', { value: Object.create(null) });\n  throw e;\n}\n${draw('#00ff00')}`,
+    );
+    await addScene('sounds-value', `export const sounds = 3;\n${draw('#00ff00')}`);
+    await addScene(
+      'sounds-invalid',
+      `export const sounds = () => [{ at: 0.2, sound: 'click' }, { at: 0.4, sound: 'boing' }];\n${draw('#00ff00')}`,
+    );
+    await h.store.syncCode(id);
+    for (const [scene, message] of [
+      ['sounds-throws', /Pas de son ici/],
+      ['sounds-opaque', /\nobject$/],
+      ['sounds-message', /\nobject$/],
+      ['sounds-value', /doit être une fonction \(props\) => SoundCue\[\]/],
+      ['sounds-invalid', /son 1 : son inconnu "boing" \(click, key, pop, whoosh, impact\)/],
+    ] as const) {
+      const page = await open({ scene });
+      const result = await seek(page, 0.5);
+      assert.equal(result.errors.length, 1, scene);
+      assert.match(result.errors[0], new RegExp(`Erreur dans sounds\\(\\) · scenes/${scene}\\.tsx`));
+      assert.match(result.errors[0], message);
+      assert.deepEqual(await page.evaluate(() => window.__cadence!.errors()), result.errors);
+      assert.ok(near(await colorAt(page, 960, 540), [0, 255, 0]), `${scene} still draws`);
+      assert.deepEqual(await page.evaluate(() => window.__cadence!.sounds()), []);
+      await page.context().close();
+    }
+  });
+
+  it('keeps the cues of the other scenes and reports a failing sounds() only inside its scene in whole-video mode', async () => {
+    const { scenes } = await h.store.get(id);
+    const startOf = (sceneId: string) => scenes.find((s) => s.id === sceneId)!.start;
+    const page = await open({});
+    assert.deepEqual(await page.evaluate(() => window.__cadence!.sounds()), [
+      { at: videoTime(startOf('pad'), 0.25), sound: 'pop', gain: 1 },
+      { at: startOf('beats'), sound: 'whoosh', gain: 0.5 },
+      { at: videoTime(startOf('beats'), 0.5), sound: 'click', gain: 1 },
+    ]);
+    assert.deepEqual((await seek(page, startOf('beats') + 0.5)).errors, []);
+    const failing = await seek(page, startOf('sounds-throws') + 0.5);
+    assert.equal(failing.sceneId, 'sounds-throws');
+    assert.equal(failing.errors.length, 1);
+    assert.match(failing.errors[0], /^Erreur dans sounds\(\) · scenes\/sounds-throws\.tsx\n.*Pas de son ici/);
+    await page.context().close();
+  });
+
+  it('adds no cues while the project fails to load, and gives them back once it loads', async () => {
+    await addScene('sounds-offline', `export const sounds = () => [{ at: 0.5, sound: 'pop' }];\n${draw('#00ff00')}`);
+    await h.store.syncCode(id);
+    const page = await open({ scene: 'sounds-offline' });
+    const cues = await page.evaluate(() => window.__cadence!.sounds());
+    assert.deepEqual(cues, [{ at: 0.5, sound: 'pop', gain: 1 }]);
+    const project = (url: URL) => url.pathname === `/frame-api/projects/${id}`;
+    await page.route(project, (route) => route.fulfill({ status: 503, json: { error: 'serveur absent' } }));
+    await page.evaluate(() => window.__cadence!.reload());
+    const failed = await seek(page, 0.5);
+    assert.equal(failed.errors.length, 1);
+    assert.match(failed.errors[0], /Impossible de charger le projet .*serveur absent/);
+    assert.deepEqual(await page.evaluate(() => window.__cadence!.sounds()), []);
+
+    await page.unroute(project);
+    await page.evaluate(() => window.__cadence!.reload());
+    assert.deepEqual((await seek(page, 0.5)).errors, []);
+    assert.deepEqual(await page.evaluate(() => window.__cadence!.sounds()), cues);
+    await page.context().close();
+  });
+
+  it('re-evaluates sounds() after a reload that only changed the scene duration', async () => {
+    await addScene('sounds-duration', `export const sounds = () => [{ at: 0.5, sound: 'pop' }];\n${draw('#00ff00')}`);
+    await h.store.syncCode(id);
+    const page = await open({ scene: 'sounds-duration' });
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    assert.equal((await page.evaluate(() => window.__cadence!.sounds())).length, 1);
+
+    const generation = h.store.generation(id);
+    const file = path.join(h.store.dir(id), 'project.json');
+    const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
+    project.scenes.find((s) => s.id === 'sounds-duration')!.duration = 0.4;
+    await writeFile(file, JSON.stringify(project, null, 2));
+    assert.equal(await h.store.syncCode(id), false, 'a duration change is no code change');
+    await page.evaluate((g) => window.__cadence!.reload(g), generation);
+    const result = await seek(page, 0.2);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0], /son 0 : at doit être un nombre de secondes entre 0 et 0\.4/);
+    assert.deepEqual(await page.evaluate(() => window.__cadence!.sounds()), []);
+    await page.context().close();
+  });
+
+  it('does not keep the cues of an old module rendered while set-scene imports the new one', async () => {
+    await addScene('sounds-stale', `export const sounds = () => [{ at: 0.25, sound: 'pop' }];\n${draw('#00ff00')}`);
+    await addScene('sounds-other', draw('#0000ff'));
+    await h.store.syncCode(id);
+    const page = await open({ scene: 'sounds-stale' });
+    assert.equal((await page.evaluate(() => window.__cadence!.sounds()))[0].sound, 'pop');
+    await page.evaluate(() => window.__cadence!.setScene('sounds-other'));
+
+    await writeFile(
+      h.store.sceneFile(id, 'sounds-stale'),
+      `export const sounds = () => [{ at: 0.5, sound: 'key' }];\n${draw('#00ff00')}`,
+    );
+    await sync(page);
+    // The editor keeps sending render during playback, outside the queue that set-scene runs in.
+    const cues = await page.evaluate(async () => {
+      const api = window.__cadence!;
+      let done = false;
+      const switched = api.setScene('sounds-stale').then(() => (done = true));
+      while (!done) {
+        api.render(0);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      await switched;
+      return api.sounds();
+    });
+    assert.deepEqual(cues, [{ at: 0.5, sound: 'key', gain: 1 }]);
+    await page.context().close();
+  });
+
+  it('does not remount a scene on every render when only its sounds() fails', async () => {
+    await addScene(
+      'sounds-mounts',
+      "import { useState } from 'react';\nexport const sounds = 3;\nexport default function Scene() {\n" +
+        '  useState(() => (window.mounts = (window.mounts ?? 0) + 1));\n' +
+        "  return <div style={{ position: 'absolute', inset: 0, background: '#00ff00' }} />;\n}\n",
+    );
+    await h.store.syncCode(id);
+    const page = await open({ scene: 'sounds-mounts' });
+    for (const t of [0.1, 0.2, 0.3]) assert.equal((await seek(page, t)).errors.length, 1);
+    assert.equal(await page.evaluate(() => (window as unknown as { mounts: number }).mounts), 1);
+    await page.context().close();
+  });
+
+  it('adds no cues and no sounds() error for a scene that fails to compile', async () => {
+    await addScene(
+      'sounds-broken',
+      "export const sounds = () => [{ at: 0.5, sound: 'pop' }];\nexport default function Broken() {\n  return <div>;\n}\n",
+    );
+    await h.store.syncCode(id);
+    const page = await open({ scene: 'sounds-broken' });
+    const result = await seek(page, 0.1);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0], /Erreur de compilation · scenes\/sounds-broken\.tsx/);
+    assert.deepEqual(await page.evaluate(() => window.__cadence!.sounds()), []);
+    await page.context().close();
+  });
+});
+
 describe('frame CSP', () => {
   it('lets Vite modules, style tags, fonts and images work but blocks other origins', async () => {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 0.5 });
@@ -489,6 +677,114 @@ describe('postMessage bridge', () => {
 
     await post({ source: 'cadence-editor', type: 'reload', generation: h.store.generation(id) });
     assert.equal((await waitFor(page, 'reloaded')).data.generation, h.store.generation(id));
+    await context.close();
+  });
+
+  it('posts the sound cues after ready and after a reload that changed them', async () => {
+    await addScene('bridge-sounds', `export const sounds = () => [{ at: 0.5, sound: 'pop' }];\nexport default () => null;\n`);
+    await h.store.syncCode(id);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(h.editorPage(`${h.config.frameOrigin}/frame.html?project=${id}&scene=bridge-sounds&format=16:9&mode=editor`));
+    const first = await waitFor(page, 'sounds');
+    assert.equal(first.origin, h.config.frameOrigin);
+    assert.equal(first.data.sceneId, 'bridge-sounds');
+    assert.deepEqual(first.data.cues, [{ at: 0.5, sound: 'pop', gain: 1 }]);
+    const types = await page.evaluate(() => (window as unknown as { received: Received[] }).received.map((m) => m.data.type));
+    assert.ok(types.indexOf('ready') < types.indexOf('sounds'), types.join(', '));
+
+    const post = (message: object) =>
+      page.evaluate((m) => (document.getElementById('frame') as HTMLIFrameElement).contentWindow!.postMessage(m, '*'), message);
+    await post({ source: 'cadence-editor', type: 'reload', generation: h.store.generation(id) });
+    await waitFor(page, 'reloaded');
+    const count = () =>
+      page.evaluate(
+        () => (window as unknown as { received: Received[] }).received.filter((m) => m.data.type === 'sounds').length,
+      );
+    assert.equal(await count(), 1, 'same cues: no new message');
+
+    await writeFile(
+      h.store.sceneFile(id, 'bridge-sounds'),
+      `export const sounds = () => [{ at: 0.25, sound: 'key', gain: 0.8 }];\nexport default () => null;\n`,
+    );
+    assert.equal(await h.store.syncCode(id), true);
+    await post({ source: 'cadence-editor', type: 'reload', generation: h.store.generation(id) });
+    await waitFor(page, 'reloaded', 2);
+    assert.equal(await count(), 2);
+    assert.deepEqual((await waitFor(page, 'sounds', 2)).data.cues, [{ at: 0.25, sound: 'key', gain: 0.8 }]);
+
+    await writeFile(
+      h.store.sceneFile(id, 'bridge-sounds'),
+      `export function sounds() {\n  throw new Error('plus de son');\n}\nexport default () => null;\n`,
+    );
+    assert.equal(await h.store.syncCode(id), true);
+    await post({ source: 'cadence-editor', type: 'reload', generation: h.store.generation(id) });
+    assert.deepEqual((await waitFor(page, 'sounds', 3)).data.cues, [], 'no stale cues once sounds() fails');
+    await context.close();
+  });
+
+  it('posts new cues after set-format when sounds() depends on the format', async () => {
+    await addScene(
+      'format-sounds',
+      `export const sounds = (p) => [{ at: p.format === '9:16' ? 0.5 : 0.25, sound: 'pop' }];\nexport default () => null;\n`,
+    );
+    await h.store.syncCode(id);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(h.editorPage(`${h.config.frameOrigin}/frame.html?project=${id}&scene=format-sounds&format=16:9&mode=editor`));
+    assert.deepEqual((await waitFor(page, 'sounds')).data.cues, [{ at: 0.25, sound: 'pop', gain: 1 }]);
+
+    const post = (message: object) =>
+      page.evaluate((m) => (document.getElementById('frame') as HTMLIFrameElement).contentWindow!.postMessage(m, '*'), message);
+    await post({ source: 'cadence-editor', type: 'set-format', format: '9:16' });
+    assert.deepEqual((await waitFor(page, 'sounds', 2)).data.cues, [{ at: 0.5, sound: 'pop', gain: 1 }]);
+    await post({ source: 'cadence-editor', type: 'set-format', format: '16:9' });
+    assert.deepEqual((await waitFor(page, 'sounds', 3)).data.cues, [{ at: 0.25, sound: 'pop', gain: 1 }]);
+    await context.close();
+  });
+
+  it('posts the cues of the shown scene after set-scene', async () => {
+    const code = `export const sounds = () => [{ at: 0.1, sound: 'key' }, { at: 0.3, sound: 'impact', gain: 0.4 }];\nexport default () => null;\n`;
+    await addScene('set-scene-sounds', code);
+    await addScene('set-scene-twin', code);
+    await h.store.syncCode(id);
+    const start = (await h.store.get(id)).scenes.find((s) => s.id === 'set-scene-sounds')!.start;
+    const own = [
+      { at: 0.1, sound: 'key', gain: 1 },
+      { at: 0.3, sound: 'impact', gain: 0.4 },
+    ];
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(h.editorPage(`${h.config.frameOrigin}/frame.html?project=${id}&format=16:9&mode=editor`));
+    const whole = await waitFor(page, 'sounds');
+    assert.equal(whole.data.sceneId, null);
+    const cues = whole.data.cues as unknown[];
+    assert.ok(cues.length > own.length, 'the whole video has the cues of the other scenes too');
+    for (const cue of own) {
+      const inVideo = { ...cue, at: videoTime(start, cue.at) };
+      assert.ok(cues.some((c) => JSON.stringify(c) === JSON.stringify(inVideo)));
+    }
+
+    const post = (message: object) =>
+      page.evaluate((m) => (document.getElementById('frame') as HTMLIFrameElement).contentWindow!.postMessage(m, '*'), message);
+    await post({ source: 'cadence-editor', type: 'set-scene', sceneId: 'set-scene-sounds' });
+    const shown = await waitFor(page, 'sounds', 2);
+    assert.equal(shown.data.sceneId, 'set-scene-sounds');
+    assert.deepEqual(shown.data.cues, own);
+
+    await post({ source: 'cadence-editor', type: 'set-scene', sceneId: 'set-scene-sounds' });
+    // seek is queued behind set-scene: once it answers, set-scene has run.
+    await post({ source: 'cadence-editor', type: 'seek', t: 0, requestId: 'after-same-scene' });
+    await waitFor(page, 'seeked');
+    const count = await page.evaluate(
+      () => (window as unknown as { received: Received[] }).received.filter((m) => m.data.type === 'sounds').length,
+    );
+    assert.equal(count, 2, 'same scene: no new message');
+
+    await post({ source: 'cadence-editor', type: 'set-scene', sceneId: 'set-scene-twin' });
+    const twin = await waitFor(page, 'sounds', 3);
+    assert.equal(twin.data.sceneId, 'set-scene-twin', 'the same cues from another scene are a new message');
+    assert.deepEqual(twin.data.cues, own);
     await context.close();
   });
 

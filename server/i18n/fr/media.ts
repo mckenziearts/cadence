@@ -118,7 +118,7 @@ export default {
       tooMany: (max: number) => `sounds() renvoie plus de ${max} sons`,
       notObject: (index: number) => `son ${index} : un objet { at, sound, gain? } est attendu`,
       at: (index: number, duration: number) => `son ${index} : at doit être un nombre de secondes entre 0 et ${duration}`,
-      sound: (index: number, known: string) => `son ${index} : son inconnu (${known})`,
+      sound: (index: number, received: string, known: string) => `son ${index} : son inconnu ${received} (${known})`,
       gain: (index: number) => `son ${index} : gain doit être un nombre entre 0 et 1`,
     },
   },

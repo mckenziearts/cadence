@@ -117,7 +117,7 @@ export default {
       tooMany: (max: number) => `sounds() returns more than ${max} cues`,
       notObject: (index: number) => `sound cue ${index}: expected an object { at, sound, gain? }`,
       at: (index: number, duration: number) => `sound cue ${index}: at must be a number of seconds from 0 to ${duration}`,
-      sound: (index: number, known: string) => `sound cue ${index}: unknown sound (${known})`,
+      sound: (index: number, received: string, known: string) => `sound cue ${index}: unknown sound ${received} (${known})`,
       gain: (index: number) => `sound cue ${index}: gain must be a number from 0 to 1`,
     },
   },

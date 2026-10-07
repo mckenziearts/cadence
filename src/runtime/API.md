@@ -23,7 +23,8 @@ interface SceneProps {
 }
 ```
 Types exported: `SceneProps, SceneInfo, VoiceOverInfo, Music, MusicGrid, MusicSection, Easing, Point ({x, y}), BrandKit, FormatId,
-Orientation, FormatInfo, SafeArea, Anchor, CursorKey, Stage3DPose, RGBA` and every component's `<Name>Props`.
+Orientation, FormatInfo, SafeArea, Anchor, CursorKey, Stage3DPose, RGBA, SoundProps, SoundCue, SoundName` and every
+component's `<Name>Props`.
 
 ## Time & animation
 
@@ -182,6 +183,49 @@ const cardIn = progress(t, music.beat(0), music.beat(2), ease.outExpo);
 the sentence that says it: `progress(t, voiceOver.lines[0]?.start ?? 0, (voiceOver.lines[0]?.start ?? 0) + 0.4)`. The
 voice is set with the `set_voice_over` tool, never in the scene's code; keep the scene at least as long as its last
 `end`. Timing is per sentence, not per word.
+
+## Sound effects (scene seconds; a sound per meaningful contact, not per beat)
+
+A scene declares its sound effects next to its component with
+`export function sounds(props: SoundProps): SoundCue[]`. `SoundProps` is `SceneProps` without `t`: the same `music`,
+`voiceOver`, format and brand the component gets. A cue is `{ at, sound, gain? }`: `at` in scene seconds (0 to
+duration), `sound` one of the five names below, `gain` from 0 to 1 (1 when left out; 0.3 to 0.6 for secondary
+sounds). `at` is the contact, the instant the sound is loudest: the press of a click, the landing of an impact, the
+loudest point of a whoosh (Cadence starts each file early so its peak lands on `at`).
+
+- `click`: a cursor press, a toggle, a checkbox: at the press (the click time you give `Cursor`).
+- `key`: a keystroke; for typing, a few keys on the words that matter, never one per character.
+- `pop`: a small element appearing: a tag, a badge, a notification, a counter settling.
+- `whoosh`: a fast move: a camera move, a whip pan, a card flying in; `at` is where the move is fastest or lands.
+- `impact`: a heavy landing: a headline slamming in, the logo, the hit of the scene on a downbeat.
+
+Share timing with the component through one function, so the sound and the motion cannot drift apart:
+
+```tsx
+import { cursorPress, progress, ease, type SceneProps, type SoundCue, type SoundProps } from 'cadence';
+
+function timing({ music }: SoundProps) {
+  return { cardIn: music.beat(0), save: music.bar(1) };              // the card lands, then the click on Save
+}
+
+export function sounds(props: SoundProps): SoundCue[] {
+  const { cardIn, save } = timing(props);
+  return [{ at: cardIn + 0.3, sound: 'whoosh', gain: 0.5 }, { at: save, sound: 'click' }];
+}
+
+export default function Save(props: SceneProps) {
+  const { cardIn, save } = timing(props);
+  const enter = progress(props.t, cardIn, cardIn + 0.6, ease.outExpo);
+  const pressed = cursorPress(props.t, [save]) > 0.5;
+  // ...
+}
+```
+
+- A sound per meaningful contact, not per beat: two to four per scene is plenty, the music already carries the beat.
+  When a moment does not deserve a sound, leave it silent.
+- `sounds()` is pure like the component and runs without rendering a frame: key it to `music` and `voiceOver.lines`,
+  never to state, and never change the props it gets (the component draws from the same objects). A `sounds` export that is not a function, a throw or an invalid cue is a render error of the scene
+  (`render_frames` reports it; the scene still draws).
 
 ## 3D stage
 

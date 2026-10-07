@@ -61,7 +61,7 @@ const RECIPES: Record<SoundName, Recipe> = {
   },
   impact: {
     seconds: 1.2,
-    level: -1,
+    level: -1.2,
     compose: (bus, rand) => {
       kick(bus, LEAD, rand, { from: 130, to: 38, drop: 0.05, decay: 0.3, drive: 3, click: 0.6 });
       snare(bus, LEAD, rand, { tone: 120, decay: 0.12, snap: 0.5, vel: 0.5 });
@@ -102,7 +102,7 @@ export async function writeSounds(dir: string): Promise<void> {
       m().media.sounds.written(
         file.padEnd(11),
         (sound.samples.length / SR).toFixed(2),
-        sound.peakAt.toFixed(4),
+        sound.peakAt.toFixed(6),
         sound.peak.toFixed(1),
       ),
     );

@@ -99,6 +99,7 @@ Aim for product-keynote motion: calm, precise, confident. Every frame should loo
 - **UI demos.** `Cursor` glides with in-out easing and a small overshoot; `hovered` comes before `pressed`, with a `ClickRipple` on the press; typed text runs at 25–40 characters per second (`typed`, `TypeOn`); focus rings and carets follow the cursor.
 - **Kinetic type.** `SwapWords` for headline changes, `SplitText` for per-word or per-character entrances; animate position and opacity, not letter-spacing.
 - **Numbers.** `Counter` with `ease.outExpo`, landing on a beat.
+- **Sound.** Declare sound effects in the scene with `export function sounds(props)` (see Sound effects in the runtime reference): a `click` on the presses that matter, a `whoosh` on a camera move or a card flying in, an `impact` on the logo landing. Key them to the same times as the motion through one shared function, one sound per meaningful contact and never one per beat; when in doubt, leave it silent.
 - **Finish.** `Grain` on large gradients (no banding), `Vignette` gently; whole-pixel positions at rest so 1 px lines and text stay crisp.
 
 ## Check your work

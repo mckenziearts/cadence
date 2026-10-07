@@ -87,3 +87,4 @@ export {
   type VignetteProps,
 } from './chrome';
 export type { SceneProps, SceneInfo, VoiceOverInfo, Point, BrandKit, FormatId, Orientation } from './types';
+export type { SoundCue, SoundName, SoundProps } from '../shared/sounds';
