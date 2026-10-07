@@ -117,11 +117,13 @@ test('mutating API requests need the editor token', async () => {
 test('API reads: Sec-Fetch-Site same-origin, none or absent only', async () => {
   for (const site of ['same-origin', 'none'])
     assert.equal((await request('/api/state', { headers: { 'sec-fetch-site': site } })).status, 200, site);
-  for (const site of ['same-site', 'cross-site']) {
-    const res = await request('/api/state', { headers: { 'sec-fetch-site': site } });
-    assert.equal(res.status, 403, site);
-    assert.deepEqual(JSON.parse(res.body), { error: 'Requête inter-sites refusée' });
-  }
+  // The subtitles download too: scene code in the frame must not read the voice-over text.
+  for (const route of ['/api/state', '/api/projects/demo/subtitles?format=srt'])
+    for (const site of ['same-site', 'cross-site']) {
+      const res = await request(route, { headers: { 'sec-fetch-site': site } });
+      assert.equal(res.status, 403, `${route} ${site}`);
+      assert.deepEqual(JSON.parse(res.body), { error: 'Requête inter-sites refusée' });
+    }
 });
 
 test('/api/events also accepts ?token=', async () => {

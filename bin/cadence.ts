@@ -26,6 +26,8 @@ async function main(argv: string[]): Promise<number> {
       return analyze(args);
     case 'soundtracks':
       return soundtracks(args);
+    case 'sounds':
+      return sounds(args);
     case 'new':
       return create(args);
     case 'list':
@@ -138,6 +140,13 @@ async function soundtracks(args: string[]): Promise<number> {
   const { writeSoundtracks } = await import('../server/music/soundtracks');
   const config = loadConfig();
   await writeSoundtracks(`${config.root}/src/editor/soundtracks`, config.ffmpegPath, positionals);
+  return 0;
+}
+
+async function sounds(args: string[]): Promise<number> {
+  parse(args, {});
+  const { writeSounds } = await import('../server/sounds/library');
+  await writeSounds(`${loadConfig().root}/src/editor/sounds`);
   return 0;
 }
 

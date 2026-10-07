@@ -31,6 +31,16 @@ interface Props {
   style?: CSSProperties;
   onReady?: () => void;
   onErrors?: (errors: string[]) => void;
+  /** The frame's `sounds` messages, unchecked: scene code can post one itself. */
+  onSounds?: (sceneId: unknown, cues: unknown) => void;
+}
+
+/**
+ * The errors of an `errors` message. Scene code can post one itself: anything but a list of texts would take the error
+ * banner, and the editor, down.
+ */
+export function frameErrors(errors: unknown): string[] | null {
+  return Array.isArray(errors) && errors.every((error): error is string => typeof error === 'string') ? errors : null;
 }
 
 /** Mount it with a `key` per project (and per reconnect epoch): the page itself is loaded once. */
@@ -92,7 +102,10 @@ export function FrameView(props: Props) {
         bridge.sync();
         latest.current.onReady?.();
       } else if (message.type === 'errors') {
-        latest.current.onErrors?.(message.errors);
+        const errors = frameErrors(message.errors);
+        if (errors) latest.current.onErrors?.(errors);
+      } else if (message.type === 'sounds') {
+        latest.current.onSounds?.(message.sceneId, message.cues);
       }
     };
     window.addEventListener('message', onMessage);

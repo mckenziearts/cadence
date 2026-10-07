@@ -60,6 +60,8 @@ const token = document.querySelector<HTMLMetaElement>('meta[name="cadence-token"
 interface Options {
   /** Don't toast the error (the caller shows it its own way, or it is expected). */
   quiet?: boolean;
+  /** The body as text: the route answers a file, not JSON. */
+  text?: boolean;
 }
 
 async function request<T>(method: string, url: string, body?: unknown, options: Options = {}): Promise<T> {
@@ -81,7 +83,7 @@ async function request<T>(method: string, url: string, body?: unknown, options: 
     } catch {
       data = null;
     }
-    if (res.ok) return data as T;
+    if (res.ok) return (options.text ? text : data) as T;
     const { error: message, code } = (data ?? {}) as { error?: unknown; code?: unknown };
     error = new ApiError(typeof message === 'string' ? message : t().shell.api.failed(res.status, method, url), res.status);
     // A restarted server has a new token that only a fresh page carries.
@@ -163,6 +165,7 @@ export const api = {
   elevenLabs: () => get<{ voices: ElevenLabsVoice[]; models: ElevenLabsModel[] }>('/api/voices/elevenlabs', { quiet: true }),
   saveElevenLabsKey: (key: string) => put<{ configured: true }>('/api/voices/elevenlabs/key', { key }, { quiet: true }),
   removeElevenLabsKey: () => del<{ configured: false }>('/api/voices/elevenlabs/key'),
+  subtitles: (id: string, format: 'srt' | 'vtt') => get<string>(`${p(id)}/subtitles${q({ format })}`, { text: true }),
 
   versions: (id: string, sceneId?: string | null) => get<VersionEntry[]>(`${p(id)}/versions${q({ scene: sceneId })}`),
   saveVersion: (id: string, label: string) => post<VersionEntry | null>(`${p(id)}/versions`, { label }),

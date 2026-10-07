@@ -4,6 +4,7 @@ import { Pause, Play, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../i18n';
 import { secs } from '../lib/format';
+import { useSoundPlayer } from '../lib/sounds';
 import { frameStart, playbackTime } from '../lib/timeline';
 import { duckedVolume, followVoice } from '../lib/voiceOver';
 import { get, set, useStore } from '../store';
@@ -19,6 +20,7 @@ export function Present() {
   const frame = useRef<FrameHandle>(null);
   const audio = useRef<HTMLAudioElement>(null);
   const voice = useRef<HTMLAudioElement>(null);
+  const sounds = useSoundPlayer();
   const timeRef = useRef(0);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -40,8 +42,14 @@ export function Present() {
       frame.current?.seek(timeRef.current);
       if (audio.current && project.musicUrl) audio.current.currentTime = offset + timeRef.current;
       if (voice.current) voice.current.currentTime = timeRef.current;
+      sounds.reset(timeRef.current);
     },
-    [total, offset, project.musicUrl],
+    [total, offset, project.musicUrl, sounds],
+  );
+
+  useEffect(
+    () => sounds.show({ sceneId: null, duration: total, scenes: project.scenes.length }),
+    [sounds, total, project.scenes.length],
   );
 
   // Fullscreen is requested by the button that opened this (it needs the click's user activation).
@@ -65,10 +73,12 @@ export function Present() {
     if (!playing) {
       a?.pause();
       voice.current?.pause();
+      sounds.reset(timeRef.current);
       frame.current?.seek(timeRef.current);
       return;
     }
     if (timeRef.current >= total - 1e-3) jump(0);
+    sounds.play(timeRef.current);
     if (a && project.musicUrl) {
       a.volume = project.music?.volume ?? 1;
       a.currentTime = offset + timeRef.current;
@@ -87,6 +97,7 @@ export function Present() {
       }
       timeRef.current = t;
       followVoice(voice.current, t);
+      sounds.tick(t, true);
       const current = get().project ?? project;
       if (a && current.musicUrl) a.volume = duckedVolume(current, current.music?.volume ?? 1, t);
       // Whole frames, like the editor's deck: one render per project frame, not per display refresh.
@@ -103,8 +114,9 @@ export function Present() {
       cancelAnimationFrame(raf);
       a?.pause();
       voice.current?.pause();
+      sounds.reset(timeRef.current);
     };
-  }, [playing, total, offset, project.musicUrl, project.music?.volume, project.voiceOverUrl, project.fps, jump]);
+  }, [playing, total, offset, project.musicUrl, project.music?.volume, project.voiceOverUrl, project.fps, jump, sounds]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -160,6 +172,7 @@ export function Present() {
         title={t.shell.present.frame}
         className="pointer-events-none absolute inset-0 size-full border-0"
         onReady={() => setReady(true)}
+        onSounds={(id, cues) => sounds.receive(id, cues)}
       />
       {project.musicUrl && <audio ref={audio} src={project.musicUrl} preload="auto" />}
       {project.voiceOverUrl && <audio ref={voice} src={project.voiceOverUrl} preload="auto" />}

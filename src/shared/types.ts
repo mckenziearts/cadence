@@ -215,6 +215,8 @@ export interface ProjectFile {
   music: MusicSettings | null;
   /** The voice-over voice; null/absent = the default voice of the video's language. */
   voiceOver?: VoiceOverSettings | null;
+  /** Subtitles drawn in the video (preview, frames and MP4); absent means off. */
+  captions?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -261,6 +263,8 @@ export interface ProjectState {
   voiceOverPending: string[];
   /** Why speaking last failed on the sentences still missing; null while a sync tries them again, or when none failed. */
   voiceOverError: string | null;
+  /** See ProjectFile.captions. */
+  captions: boolean;
   /** Bumped whenever any code file of the project (or its brand) changes; frames re-import when it moves. */
   codeGeneration: number;
   createdAt: string;
@@ -303,6 +307,7 @@ export interface UpdateProjectInput {
   language?: 'fr' | 'en' | null;
   /** null = back to the default voice of the video's language. */
   voiceOver?: VoiceOverSettings | null;
+  captions?: boolean;
 }
 
 export interface CreateSceneInput {

@@ -27,6 +27,7 @@ const TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.woff2': 'font/woff2',
   '.m4a': 'audio/mp4',
+  '.wav': 'audio/wav',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
 };

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 import * as cadence from '../../src/runtime/index';
+import type { SoundCue, SoundName, SoundProps } from '../../src/runtime/index';
+import { SOUND_NAMES } from '../../src/shared/sounds';
 
 // The exports ARCHITECTURE.md promises to scenes, templates and the frame page.
 const REQUIRED = [
@@ -32,4 +34,26 @@ test('API.md warns about what renders do differently from the preview', () => {
   ]) {
     assert.ok(api.replace(/\s+/g, ' ').includes(rule), rule);
   }
+});
+
+test('the runtime exports the sound types, and API.md documents sound effects', () => {
+  // Type-checked by `npm run typecheck`: what a scene writes, `gain` left out.
+  const sounds = (props: SoundProps): SoundCue[] => [{ at: props.music.beat(1), sound: 'click' satisfies SoundName }];
+  assert.equal(typeof sounds, 'function');
+  assert.equal('SOUND_NAMES' in cadence, false, 'types only');
+
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## Sound effects'));
+  assert.ok(api.includes('## Sound effects'));
+  for (const rule of [
+    'export function sounds(props: SoundProps): SoundCue[]',
+    '`at` is the contact',
+    'the loudest point of a whoosh',
+    '`gain`',
+    'one function',
+    'a sound per meaningful contact, not per beat',
+  ]) {
+    assert.ok(section.includes(rule), rule);
+  }
+  for (const name of SOUND_NAMES) assert.ok(section.includes(`- \`${name}\``), name);
 });

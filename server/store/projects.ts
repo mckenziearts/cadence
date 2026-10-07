@@ -112,6 +112,7 @@ const projectFileSchema = z.object({
     .default([]),
   music: musicSchema.nullable().default(null),
   voiceOver: voiceOverSchema.nullable().default(null),
+  captions: z.boolean().default(false),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
 });
@@ -252,6 +253,7 @@ export class FileProjectStore implements ProjectStore {
       musicUrl: data.music ? `/api/projects/${id}/music/audio?file=${encodeURIComponent(data.music.file)}` : null,
       musicGrid: data.music ? await this.resolveMusicGrid(id) : null,
       ...(await this.resolveVoiceOver(id, data, scenes)),
+      captions: data.captions ?? false,
       codeGeneration: this.generation(id),
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
@@ -356,6 +358,10 @@ export class FileProjectStore implements ProjectStore {
       if (patch.tempo !== undefined) data.tempo = parseTempo(patch.tempo);
       if (patch.language !== undefined) data.language = parseLanguage(patch.language);
       if (patch.voiceOver !== undefined) data.voiceOver = patch.voiceOver && parseVoiceOver(patch.voiceOver);
+      if (patch.captions !== undefined) {
+        if (parseCaptions(patch.captions)) data.captions = true;
+        else delete data.captions;
+      }
       return previous;
     });
     if (patch.name !== undefined || brand !== undefined || patch.formats !== undefined) this.events.emit('list-changed');
@@ -579,6 +585,7 @@ export class FileProjectStore implements ProjectStore {
       })),
       music: data.music ? { ...data.music, start: roundMs(data.music.start) } : null,
       ...(data.voiceOver ? { voiceOver: data.voiceOver } : {}),
+      ...(data.captions ? { captions: true } : {}),
       createdAt: data.createdAt ?? stamp!,
       updatedAt: data.updatedAt ?? stamp!,
     };
@@ -766,6 +773,11 @@ function parseTempo(value: unknown): number {
     throw new HttpError(400, m().api.projects.tempo(value));
   }
   return Math.round(value * 100) / 100;
+}
+
+function parseCaptions(value: unknown): boolean {
+  if (typeof value !== 'boolean') throw new HttpError(400, m().api.projects.captions(value));
+  return value;
 }
 
 function parseVoiceOver(value: unknown): VoiceOverSettings {

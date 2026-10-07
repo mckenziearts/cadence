@@ -38,7 +38,7 @@ This document is the contract between modules. Shared types: `src/shared/types.t
 
 ```
 cadence/
-  bin/cadence.ts            CLI: start, render, analyze, new, list, doctor, mcp, soundtracks
+  bin/cadence.ts            CLI: start, render, analyze, new, list, doctor, mcp, soundtracks, sounds
   index.html                editor page (served on the EDITOR origin only)
   frame.html                frame page (served on the FRAME origin only)
   kit.html                  kit sheet of a brand (FRAME origin only, see "Brand builds")
@@ -61,25 +61,29 @@ cadence/
     networks/               youtube.ts, linkedin.ts, instagram.ts (through Facebook Login), tiktok.ts (drafts)
     api/                    Hono routes under /api (index.ts = createApi)
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
-    capture/                capture.ts (Playwright), seams.ts (pixelmatch), render.ts (ffmpeg)
+    capture/                capture.ts (Playwright), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
                             worker (the analysis off the server's thread), synth + soundtracks (the preset
                             soundtracks, composed in code)
     voiceover/              piper.ts (PiperEngine: runs the user's Piper), elevenlabs.ts (ElevenLabsClient: the
                             user's own ElevenLabs key), voices.ts (the Piper voices offered, pinned files), wav.ts,
                             service.ts (LocalVoiceOverService)
+    sounds/                 library.ts (the sound effects, written by `sounds`), track.ts (the sounds track of an MP4)
     agent/                  types.ts, claudeCode.ts (provider), guide.ts, prompts.ts, chat.ts (ChatManager)
     mcp/                    tokens.ts (McpTokens), server.ts (createMcpHandler), tools.ts, brandTools.ts
   src/
-    shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks)
+    shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks),
+                            subtitles.ts (subtitle cues from the voice-over sentences, SRT and WebVTT)
     runtime/                the `cadence` module scenes import (+ API.md, the reference the agent reads)
     frame/main.tsx          frame page app
+    frame/captions.tsx      burned-in captions over the scene
     frame/kit.tsx           kit sheet app (kit.html)
     frame/texts.ts          the frame and kit pages' error texts, in the page's <html lang>
     frame/editor.ts         the editor that embeds a frame or kit page: its origins, and the one to post to
     editor/                 editor app (React + Tailwind v4, French and English UI); index.ts is what a host app imports
     editor/i18n/            useT() and t(), the fr/ and en/ dictionaries by area, links.tsx
     editor/soundtracks/     preset soundtracks (AAC) and presets.json, written by `soundtracks`
+    editor/sounds/          the sound effects scenes cue (16-bit mono WAV, 44.1 kHz), written by `sounds`
   brands/<id>/              brands (see "Brands"): cadence ships, the others stay on each machine
   templates/scenes/<id>/    scene templates (template.json + scene.tsx)
   templates/projects/<id>/  campaign templates (template.json + optional art-direction.md)
@@ -147,6 +151,13 @@ not use UDP (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`), servi
 closed. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first frame)
 and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE` (default `fr-FR`, checked at start);
 the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
+Contact sheets (`sheet.ts`) lay the strip's PNG tiles out as data URLs in a context of their own, JavaScript off and
+every request aborted: that page loads nothing and is not the frame origin.
+One limit stays: scene code runs in the capture page's main world, next to `window.__cadence`, and Playwright runs in
+the server process, so every console message, page error and value a page returns to `page.evaluate` reaches Node
+whole. A hostile scene can make the server's memory grow (hundreds of MB from a few large messages): a local denial of
+service, with no data leaving the machine. The checks in the page and in Node bound honest code only; running capture
+in a child process would close it (open question, for an ADR).
 
 Reference captures (`screenshotUrl`) check every request by origin: host names are resolved, link-local,
 unspecified and multicast addresses (IPv4-mapped included) are refused, and so are Cadence's own ports; other
@@ -179,7 +190,7 @@ so imports are fresh.
 ```
 projects/<id>/
   project.json          ProjectFile (name, brand, fps, formats, tempo, language, scenes[] (voiceOver?), music,
-                        voiceOver)
+                        voiceOver, captions)
   art-direction.md      the look every scene follows (copied from the brand, then edited)
   scenes/<scene>.tsx    one component per scene (default export)
   components/           shared components/constants for this project (relative imports)
@@ -189,7 +200,9 @@ projects/<id>/
   .cadence/             internal, gitignored: chats/ (project.json, scene-<id>.json, archive/), versions/,
                         thumbs/ (<scene>-<16x9>-<t>-g<run>.<gen>-<sig>.jpg), frames/ (what the agent rendered),
                         seams.json (version 2), publications.json (Publication[], newest first), trash/,
-                        voice-over/ (<hash>.wav per spoken sentence, track.wav)
+                        voice-over/ (<hash>.wav per spoken sentence, track.wav), sounds/ (<job id>.wav, the
+                        sounds track of a running render: removed when it ends, one a killed render left is swept
+                        after an hour with the .part files; nothing else in the folder is touched)
 ```
 
 State files (chats, `publications.json`, `<root>/.cadence/settings.json` and `accounts.json`) count as empty only when
@@ -415,8 +428,9 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `get_brand` | yes | yes | tokens, kit, extras, copy |
 | `get_music_context` | yes | yes | tempo, bars, phrases in scene-local seconds |
 | `list_templates` | yes | yes | scene + campaign templates |
-| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images |
+| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images and, per frame, text checks from the frame page (clipped, off canvas, outside the safe area, low contrast, under the captions; at most 6, never an error); or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
 | `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 % |
+| `check_motion` | own scene | any (every scene by default) | half-size PNG samples every 0.25 s (≤ 120 per scene, ≤ 600 per call, the step widens beyond), captured 12 at a time and diffed as they arrive (memory holds one batch, and `render_frames` can take the capture slot in between), odd samples one video frame late so a beat pulse is not sampled on its hits, consecutive samples diffed like `check_seams`; lists still stretches of about 2 s or more, measured between samples (under 0.01 % of pixels changing), an error when a scene of ≥ 2 s never moves; a render error stops that scene; a 240 s budget (`deadline` on `CaptureService.frames`) stops the scene in progress ("out of time") and the next ones ("not checked"); also an error when no scene could be checked |
 | `set_scene_duration` | own scene | any | ms precision |
 | `set_voice_over` | own scene | any | text + `at` (kept when left out); speaks it, answers each sentence's start and end in scene seconds |
 | `create_scene`, `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene` | no | yes | `create_scene` takes a template id or TSX code |
@@ -424,8 +438,8 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `capture_reference` | no | yes | screenshot an http(s) URL into assets/refs/ |
 | `save_version` | yes | yes | named snapshot |
 
-Project-only tools are not even registered for scene tokens. `render_frames` saves JPEGs (PNG when asked) to
-`.cadence/frames/` and reports them with `tokens.reportActivity()` so the chat
+Project-only tools are not even registered for scene tokens. `render_frames` saves the JPEGs it returns (the frames,
+or the strip's contact sheet) to `.cadence/frames/` and reports them with `tokens.reportActivity()` so the chat
 shows what the agent looked at. Terminal usage: `npm run cadence -- mcp` prints the
 `claude mcp add --transport http cadence <mcpUrl> --header "Authorization: Bearer <token>"` command.
 
@@ -478,7 +492,7 @@ GET    /api/state                                  AppState
 GET    /api/events                                 SSE ServerEvent stream
 GET    /api/projects/:id                           ProjectState
 POST   /api/projects                               CreateProjectInput (language?), answers ProjectState
-PATCH  /api/projects/:id                           UpdateProjectInput (language: fr | en | null, voiceOver), answers ProjectState
+PATCH  /api/projects/:id                           UpdateProjectInput (language: fr | en | null, voiceOver, captions), answers ProjectState
 DELETE /api/projects/:id                           to projects/.trash; 409 while a turn, a render or an upload of it runs
 GET    /api/projects/:id/art-direction             { text }
 PUT    /api/projects/:id/art-direction             { text }
@@ -510,6 +524,8 @@ DELETE /api/voices/elevenlabs/key                  answers { configured: false }
                                                    (new projects start with Piper again)
 POST   /api/projects/:id/voice-over/sync           speaks what is missing, failures included, answers ProjectState
 GET    /api/projects/:id/voice-over/audio          ?v=, the voice-over track as audio/wav
+GET    /api/projects/:id/subtitles                 ?format=srt|vtt, the voice-over sentences as a `<id>.srt` / `<id>.vtt`
+                                                   attachment; 409 while a scene is not spoken, 404 without any sentence
 GET    /api/projects/:id/versions                  ?scene=, answers VersionEntry[]
 POST   /api/projects/:id/versions                  { label }, answers VersionEntry | null
 POST   /api/projects/:id/versions/:vid/restore     { sceneId? }, answers VersionEntry (409 while a turn runs)
@@ -567,6 +583,21 @@ fails the job (« Le projet a changé pendant le lancement du rendu »). Audio (
 `music.start`, AAC 192 k, `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length. With a
 voice-over, its track is a second input (see "Voice-over"), unless no sentence falls in the rendered range, and the
 audio goes through `-filter_complex`, voice alone or mixed, ending with the same limiter.
+Sound effects: before capture, the render reads `__cadence.sounds()` on its first page (the cues of every scene, in
+video seconds) and checks them again in Node (`parseSoundCues`, at most 1000 cues per scene and 10,000 per video),
+since scene code can replace `__cadence`. `server/sounds/track.ts` places each library file so its peak lands on its
+cue, times its gain, sums them in 32 bits and clamps them into a mono WAV exactly as long as the rendered range: a cue
+that starts before the range is trimmed, one that runs past it is cut. When no cue is heard in the range there is no sounds input
+at all; otherwise the track is one more `-filter_complex` input, alone or mixed with the music and the voice by
+`amix=normalize=0`, through the same limiter and fade, so a video with neither music nor voice-over still gets audio.
+A missing or non-44.1 kHz library file fails the render naming it.
+The preview and Present play the same cues: the frame posts `{type: 'sounds', sceneId, cues}` whenever they change
+(scene seconds in scene mode, video seconds for the whole video), and the editor ignores a message for a scene it does not
+show and checks the cues again with the same caps. `src/editor/lib/sounds.ts` decodes the library once per page, then
+at each playback frame schedules on Web Audio the cues of the next 0.15 s, through one limiter, at most 64 sounding at
+once. A cue whose peak the playhead passed (the first frame after play, a seek, a loop or a dropped frame) lands at
+most 0.1 s after its cue; later than that it is skipped, so a seek past a cue's peak skips it in the preview, where the
+MP4 mixes its tail. Pause, mute and a change of cues stop the sounds already playing.
 Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`. Deleting one moves it to the project's
 `.cadence/trash/` (`RenderService.remove`); what the networks received stays in `publications.json`.
 
@@ -651,6 +682,19 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   into garbage); the voice alone and the mix with the music both end with `alimiter=limit=0.95:level=disabled` (the
   default auto-level would undo the ducking). A range where no sentence falls gets no voice input at all, so the MP4
   does not depend on what a given ffmpeg does with an input sought past its end.
+- Subtitles: `subtitleCues` (`src/shared/subtitles.ts`) cuts each sentence into cues of at most `maxChars` (84 for
+  the files: two lines of 42) at breakable spaces only (a non-breaking space keeps `« oui »` whole), balanced and
+  ending after punctuation when one is near the middle, timed in proportion to their characters; where sentences
+  overlap, the one that started last shows. The download reads the lines and
+  never syncs: with ElevenLabs a sync bills the person (with Piper, the read may try the missing sentences like any
+  other). With `captions` on (off by default), the frame page burns them in (`src/frame/captions.tsx`): the cue of the
+  video time over the scene, outside its error boundary, centered in the bottom band of the format's safe area, at
+  44 / 52 / 48 px for landscape / portrait / square with `maxChars` 84 / 42 / 48 so a cue fits on two lines. The
+  preview, the agent's frames and the MP4 show them; seam checks and thumbnails open the page with `captions=0` (part
+  of the capture slot key), since they look at the scene. A scene that fails to compile shows the error page alone,
+  without them.
+  The Voice tab's Subtitles section sets `captions` and downloads the files; it disables them while the route would
+  answer 409 or 404, and fetches them rather than linking them, so a refusal shows its message instead of a file.
 - Scenes get `voiceOver` (`{ text, lines }` in scene seconds) in their props; the agent sets text and timing with
   `set_voice_over` and reads the sentence times in its turn context and `get_project`.
 
@@ -662,6 +706,7 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
 - `new <name> --brand <id> [--template <id>] [--formats ...] [--fps 60]`
 - `list`, `doctor`, `mcp`
 - `soundtracks [preset...]` (recomposes the preset soundtracks, about 2 min)
+- `sounds` (rewrites the sound effects in `src/editor/sounds`)
 
 `render` starts a quiet server on free ports (`port 0`).
 

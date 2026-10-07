@@ -8,12 +8,14 @@ import net from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium, errors as playwrightErrors, type Browser, type BrowserContext, type Page } from 'playwright';
-import type { FrameRenderResult } from '../../src/shared/frameProtocol';
+import { z } from 'zod';
+import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { FORMATS, isFormatId, type FormatId, type ProjectState, type SceneState } from '../../src/shared/types';
 import { captureLocale } from '../config';
 import type { CadenceConfig, CapturedFrame, CaptureService, ProjectStore } from '../contracts';
 import { language, m } from '../i18n';
 import { formatSeconds, HttpError, KeyedMutex, roundMs, shortHash, writeFileAtomic } from '../util';
+import { contactSheet } from './sheet';
 
 export const CHROMIUM_ARGS = [
   '--force-color-profile=srgb',
@@ -127,13 +129,14 @@ async function openIsolatedPage(
 export async function openFramePage(
   browser: Browser,
   frameOrigin: string,
-  opts: { projectId: string; sceneId: string | null; format: FormatId; scale: number },
+  opts: { projectId: string; sceneId: string | null; format: FormatId; scale: number; captions?: boolean },
 ): Promise<FramePage> {
   const { width, height } = FORMATS[opts.format];
   const { context, page, problems } = await openIsolatedPage(browser, frameOrigin, { width, height, scale: opts.scale });
   try {
     const params = new URLSearchParams({ project: opts.projectId, format: opts.format, mode: 'capture' });
     if (opts.sceneId) params.set('scene', opts.sceneId);
+    if (opts.captions === false) params.set('captions', '0');
     await page.goto(`${frameOrigin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
     if (!(await page.evaluate(() => window.__cadence !== undefined))) {
       throw new Error(m().media.capture.frameNotStarted(problems));
@@ -157,6 +160,43 @@ export function seekFrame(page: Page, t: number, timeoutMs = RENDER_TIMEOUT_MS):
     timeoutMs,
     m().media.capture.seekTimeout(formatSeconds(t), timeoutMs / 1000),
   );
+}
+
+/** The text checks read layout only: past this, the page is stuck (its next seek times out and drops the slot). */
+const AUDIT_TIMEOUT_MS = 2_000;
+const AUDIT_TEXT_CHARS = 40;
+
+/** Scene code shares the page with the checks: what reaches the agent's summary is validated, one line per text. */
+const auditFinding = {
+  text: z.string().transform((text) =>
+    Array.from(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '))
+      .slice(0, AUDIT_TEXT_CHARS)
+      .join(''),
+  ),
+  box: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+};
+const auditFindings = z
+  .array(
+    z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('contrast'), ...auditFinding, ratio: z.number(), required: z.number() }),
+      z.object({ kind: z.enum(['clipped', 'offCanvas', 'outsideSafe', 'underCaptions']), ...auditFinding }),
+    ]),
+  )
+  .max(6);
+
+/** The checks of the frame on the page, or null when they throw, hang or return something else: never a failed frame. */
+export async function auditFrame(page: Page, timeoutMs = AUDIT_TIMEOUT_MS): Promise<AuditFinding[] | null> {
+  try {
+    const found = await withTimeout(
+      page.evaluate(() => window.__cadence!.audit()),
+      timeoutMs,
+      'audit timeout',
+    );
+    const parsed = auditFindings.safeParse(found);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -238,7 +278,7 @@ export class PlaywrightCapture implements CaptureService {
   }
 
   /**
-   * Run `fn` on the page kept for (project, scene/whole, format, scale), one caller at a time, after bringing the
+   * Run `fn` on the page kept for (project, scene/whole, format, scale, captions), one caller at a time, after bringing the
    * page to the store's current code generation (and scene). Pages are recycled after 150 uses or 30 code generations,
    * after any failure (timeout, crash) and after a few idle minutes.
    */
@@ -247,10 +287,11 @@ export class PlaywrightCapture implements CaptureService {
     sceneId: string | null,
     format: FormatId,
     scale: number,
+    captions: boolean,
     fn: (page: Page) => Promise<T>,
   ): Promise<T> {
     // The language is in the key: frame pages pick theirs at load, a switch must open fresh ones.
-    const key = `${projectId}|${sceneId ? 'scene' : 'whole'}|${format}|${scale}|${language()}`;
+    const key = `${projectId}|${sceneId ? 'scene' : 'whole'}|${format}|${scale}|${captions}|${language()}`;
     return this.locks.run(key, async () => {
       const generation = this.store.generation(projectId);
       let slot = this.slots.get(key);
@@ -259,7 +300,13 @@ export class PlaywrightCapture implements CaptureService {
         slot = undefined;
       }
       if (!slot) {
-        const opened = await openFramePage(await this.browser(), this.config.frameOrigin, { projectId, sceneId, format, scale });
+        const opened = await openFramePage(await this.browser(), this.config.frameOrigin, {
+          projectId,
+          sceneId,
+          format,
+          scale,
+          captions,
+        });
         slot = { ...opened, uses: 0, generation, generations: 0 };
         this.slots.set(key, slot);
       }
@@ -305,9 +352,12 @@ export class PlaywrightCapture implements CaptureService {
     const scale = req.scale ?? 0.5;
     if (!(scale >= 0.1 && scale <= 4)) throw new HttpError(400, m().media.invalidScale(scale));
     const type = req.imageFormat ?? 'jpeg';
-    return this.withSlot(projectId, req.sceneId, format, scale, async (page) => {
+    // Without captions in the project, both pages draw the same frames: share the one seams and thumbnails use.
+    const captions = project.captions && req.captions !== false;
+    return this.withSlot(projectId, req.sceneId, format, scale, captions, async (page) => {
       const out: CapturedFrame[] = [];
       for (const t of req.times) {
+        if (req.deadline !== undefined && Date.now() >= req.deadline) break;
         const result = await seekFrame(page, t, this.timeoutMs);
         const image = await page.screenshot({
           type,
@@ -321,6 +371,7 @@ export class PlaywrightCapture implements CaptureService {
           image,
           mime: type === 'png' ? 'image/png' : 'image/jpeg',
           errors: result.errors,
+          ...(req.audit ? { audit: await auditFrame(page) } : {}),
         });
       }
       return out;
@@ -342,7 +393,7 @@ export class PlaywrightCapture implements CaptureService {
     const file = path.join(dir, `${prefix}g${this.run}.${project.codeGeneration}-${sceneSignature(project, scene)}.jpg`);
     const cached = await fs.readFile(file).catch(() => null);
     if (cached) return cached;
-    const [frame] = await this.frames(projectId, { sceneId, times: [t], format, scale: 0.25, quality: 80 });
+    const [frame] = await this.frames(projectId, { sceneId, times: [t], format, scale: 0.25, quality: 80, captions: false });
     if (frame.errors.length === 0) {
       await writeFileAtomic(file, frame.image);
       // Older versions of this thumbnail will never be asked for again.
@@ -379,6 +430,10 @@ export class PlaywrightCapture implements CaptureService {
     } finally {
       await context.close().catch(() => undefined);
     }
+  }
+
+  async contactSheet(tiles: Buffer[], layout: { columns: number; gap: number }): Promise<Buffer> {
+    return contactSheet(await this.browser(), tiles, layout);
   }
 
   async screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean }): Promise<Buffer> {

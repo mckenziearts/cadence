@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Page } from 'playwright';
+import { MAX_SOUND_CUES, MAX_VIDEO_SOUND_CUES, parseSoundCues } from '../../src/shared/sounds';
 import {
   FORMATS,
   isFormatId,
@@ -20,6 +21,7 @@ import {
 import { DUCK_RAMP_S, voiceSpans } from '../../src/shared/voiceOver';
 import type { CadenceConfig, Hub, MusicService, ProjectStore, RenderService, VoiceOverService } from '../contracts';
 import { m } from '../i18n';
+import { soundTrack } from '../sounds/track';
 import { assertId, formatSeconds, HttpError, nowIso, pathExists, resolveInside } from '../util';
 import { launchChromium, openFramePage, RENDER_TIMEOUT_MS, seekFrame, withTimeout, type FramePage } from './capture';
 
@@ -33,6 +35,13 @@ const PRESETS: Record<RenderQuality, { crf: number; preset: string; jpeg: number
 const BLOCK = 8;
 const FADE_OUT_S = 0.6;
 const PROGRESS_INTERVAL_MS = 100;
+/** Characters of a thrown `sounds()` message a failed render shows. */
+const ERROR_CHARS = 200;
+/**
+ * What a render writes in .cadence/sounds: `<job id>.wav` (randomUUID) and the temporary file of writeFileAtomic. The
+ * sweep leaves anything else alone: the folder may hold what a copied project brought, or link elsewhere.
+ */
+const TRACK_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.wav(\.\d+\.[0-9a-f]{8}\.tmp)?$/;
 
 class RenderCancelled extends Error {}
 
@@ -87,7 +96,12 @@ export class FfmpegRenderService implements RenderService {
   async files(projectId: string): Promise<RenderFile[]> {
     const dir = this.rendersDir(projectId);
     const entries = await fs.readdir(dir).catch(() => [] as string[]);
-    await Promise.all(entries.filter((name) => name.endsWith('.part')).map((name) => dropStalePart(path.join(dir, name))));
+    const sounds = this.soundsDir(projectId);
+    const tracks = await fs.readdir(sounds).catch(() => [] as string[]);
+    await Promise.all([
+      ...entries.filter((name) => name.endsWith('.part')).map((name) => dropStale(path.join(dir, name))),
+      ...tracks.filter((name) => TRACK_FILE.test(name)).map((name) => dropStale(path.join(sounds, name))),
+    ]);
     const names = entries.filter((name) => name.endsWith('.mp4'));
     const files = await Promise.all(
       names.map(async (name) => {
@@ -128,6 +142,11 @@ export class FfmpegRenderService implements RenderService {
 
   private rendersDir(projectId: string): string {
     return path.join(this.deps.store.dir(assertId(projectId, m().api.ids.project)), 'renders');
+  }
+
+  /** The sounds track of each running render, removed once it ends. */
+  private soundsDir(projectId: string): string {
+    return path.join(this.deps.store.dir(assertId(projectId, m().api.ids.project)), '.cadence', 'sounds');
   }
 
   private enqueue(project: ProjectState, format: FormatId, request: RenderRequest): RenderJob {
@@ -209,6 +228,7 @@ export class FfmpegRenderService implements RenderService {
 
     const browser = await launchChromium();
     let kill = () => {};
+    let sounds: string | null = null;
     try {
       const workers = Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2), Math.ceil(total / BLOCK)));
       const pixelRatio = (request.scale ?? 1) * (request.supersample ? 2 : 1);
@@ -236,6 +256,14 @@ export class FfmpegRenderService implements RenderService {
         track && track.lines.some((l) => l.end > from && l.start < from + duration)
           ? { file: track.file, start: from, intervals: voiceSpans(track.lines, from), musicLevel: track.musicLevel }
           : null;
+      sounds = await soundTrack({
+        cues: await soundCues(pages[0].page, project),
+        from,
+        duration,
+        library: path.join(config.root, 'src', 'editor', 'sounds'),
+        // The job id: never the same file as another render's, even one of another Cadence on the same folder.
+        file: path.join(this.soundsDir(job.projectId), `${job.id}.wav`),
+      });
       job.framesTotal = total;
       this.emit(state, true);
       abort.signal.throwIfAborted();
@@ -251,6 +279,7 @@ export class FfmpegRenderService implements RenderService {
           preset: preset.preset,
           audio,
           voice,
+          sounds,
           duration,
           output: partial,
         }),
@@ -329,17 +358,48 @@ export class FfmpegRenderService implements RenderService {
       kill();
       await browser.close().catch(() => undefined);
       await fs.rm(partial, { force: true });
+      if (sounds) await fs.rm(sounds, { force: true });
     }
   }
 }
 
 /**
- * A render killed with its process (crash, SIGKILL) leaves its .part file. A live one, even from another Cadence on the
- * same folder, is written to every few seconds: one untouched for an hour is left over.
+ * The `sounds()` cues of the whole video (render pages show it all: video seconds), checked again here since scene code
+ * can replace `window.__cadence`: the frame caps each scene, this caps their sum, and the video whatever its number of
+ * scenes (the mix is synchronous). Scene starts are rounded to the
+ * millisecond, so a cue at the very end of the last scene may pass the video's duration by half of one. A `sounds()`
+ * that throws is reported by the first line of its message, without the stack and its local URLs.
  */
-async function dropStalePart(file: string): Promise<void> {
-  const stat = await fs.stat(file).catch(() => null);
-  if (stat && Date.now() - stat.mtimeMs > 60 * 60_000) await fs.rm(file, { force: true });
+export async function soundCues(page: Page, project: ProjectState) {
+  const value = await withTimeout(
+    page
+      .evaluate(() => window.__cadence!.sounds())
+      .catch((e: unknown) => {
+        const message = e instanceof Error ? e.message : String(e);
+        const line = Array.from(message.slice(0, 2 * ERROR_CHARS).split('\n')[0])
+          .slice(0, ERROR_CHARS)
+          .join('');
+        throw new Error(m().media.render.invalidSounds(line));
+      }),
+    RENDER_TIMEOUT_MS,
+    m().media.render.soundsTimeout(RENDER_TIMEOUT_MS / 1000),
+  );
+  const max = Math.min(MAX_SOUND_CUES * project.scenes.length, MAX_VIDEO_SOUND_CUES);
+  const parsed = parseSoundCues(value, project.duration + 0.001, m().media.sounds.cues, max);
+  if ('error' in parsed) throw new Error(m().media.render.invalidSounds(parsed.error));
+  return parsed.cues;
+}
+
+/**
+ * A render killed with its process (crash, SIGKILL) leaves its .part file, its sounds track and maybe the temporary file
+ * of that track. A live render, even from another Cadence on the same folder, writes its .part every few seconds: a
+ * file untouched for an hour is left over. A track that old may still feed a long render, but ffmpeg opened it when it
+ * started, and removing an open file does not cut it off (Cadence refuses to run on Windows). Only plain files go: a
+ * link or a folder under one of these names stays.
+ */
+async function dropStale(file: string): Promise<void> {
+  const stat = await fs.lstat(file).catch(() => null);
+  if (stat?.isFile() && Date.now() - stat.mtimeMs > 60 * 60_000) await fs.rm(file, { force: true });
 }
 
 /** Frames of the request in this state of the project (the range is clamped to the video). */
@@ -404,7 +464,7 @@ function normalizeRequest(project: ProjectState, req: RenderRequest): RenderRequ
   };
 }
 
-function ffmpegArgs(o: {
+export function ffmpegArgs(o: {
   fps: number;
   width: number;
   height: number;
@@ -415,6 +475,8 @@ function ffmpegArgs(o: {
   audio: { file: string; start: number; volume: number } | null;
   /** The voice-over track from `start` (video seconds), and when it speaks in output seconds. */
   voice: { file: string; start: number; intervals: [number, number][]; musicLevel: number } | null;
+  /** The sounds track, which starts at the range start. */
+  sounds: string | null;
   /** Seconds: frames / fps. */
   duration: number;
   output: string;
@@ -433,10 +495,18 @@ function ffmpegArgs(o: {
     '-i',
     'pipe:0',
   ];
-  if (o.audio) args.push('-ss', o.audio.start.toFixed(3), '-i', o.audio.file);
-  if (o.voice) args.push('-ss', o.voice.start.toFixed(3), '-i', o.voice.file);
+  let inputs = 1;
+  const input = (file: string, seek?: number) => {
+    if (seek !== undefined) args.push('-ss', seek.toFixed(3));
+    args.push('-i', file);
+    return inputs++;
+  };
+  const musicInput = o.audio ? input(o.audio.file, o.audio.start) : null;
+  const voiceInput = o.voice ? input(o.voice.file, o.voice.start) : null;
+  const soundsInput = o.sounds ? input(o.sounds) : null;
+  const mixed = Boolean(o.voice || o.sounds);
   args.push('-map', '0:v:0');
-  if (o.audio && !o.voice) args.push('-map', '1:a:0?');
+  if (o.audio && !mixed) args.push('-map', `${musicInput}:a:0?`);
   const k = o.supersample ? 2 : 1;
   args.push(
     // Screenshots are full-range BT.601 JPEGs; the video is limited-range BT.709 (lanczos also handles supersampling).
@@ -466,26 +536,32 @@ function ffmpegArgs(o: {
   // loudnorm first so `volume` stays relative to a normalized track; the fade comes last so nothing undoes it.
   // loudnorm runs at 192 kHz: newer ffmpeg resamples to it on its own, 5.1 (Debian 12) fails unless asked to.
   const normalize = (lufs: number) => ['aresample=192000', `loudnorm=I=${lufs}:TP=-1.5:LRA=11`, 'aresample=48000'];
-  if (o.audio && !o.voice) {
+  if (o.audio && !mixed) {
     args.push('-af', [...normalize(-14), `volume=${o.audio.volume}`, fadeOut].join(','), '-c:a', 'aac', '-b:a', '192k');
-  } else if (o.voice) {
+  } else if (mixed) {
     const chains: string[] = [];
+    const labels: string[] = [];
     if (o.audio) {
-      const duck = o.voice.intervals.length
+      const duck = o.voice?.intervals.length
         ? [`volume='${duckExpression(o.voice.intervals, o.voice.musicLevel)}':eval=frame`]
         : [];
-      chains.push(`[1:a]${[...normalize(-14), `volume=${o.audio.volume}`, ...duck].join(',')}[music]`);
+      chains.push(`[${musicInput}:a]${[...normalize(-14), `volume=${o.audio.volume}`, ...duck].join(',')}[music]`);
+      labels.push('[music]');
     }
-    // Piper already evens out each sentence; loudnorm would not do: on the digital silence between sentences, it outputs
-    // garbage that the limiter turns into noise. The limiter, on the voice alone too, only catches peaks: its default
-    // auto-level would lift everything back to 0 dB, ducking included.
+    // Piper already evens out each sentence, and the sounds are levelled in their library; loudnorm would not do: on the
+    // digital silence between sentences, it outputs garbage that the limiter turns into noise. The limiter, on the voice
+    // alone too, only catches peaks: its default auto-level would lift everything back to 0 dB, ducking included.
     const limiter = 'alimiter=limit=0.95:level=disabled';
-    chains.push(`[${o.audio ? 2 : 1}:a]aresample=48000[voice]`);
-    chains.push(
-      o.audio
-        ? `[music][voice]amix=inputs=2:duration=longest:normalize=0,${limiter},${fadeOut}[audio]`
-        : `[voice]${limiter},${fadeOut}[audio]`,
-    );
+    if (o.voice) {
+      chains.push(`[${voiceInput}:a]aresample=48000[voice]`);
+      labels.push('[voice]');
+    }
+    if (o.sounds) {
+      chains.push(`[${soundsInput}:a]aresample=48000[sounds]`);
+      labels.push('[sounds]');
+    }
+    const mix = labels.length > 1 ? `amix=inputs=${labels.length}:duration=longest:normalize=0,` : '';
+    chains.push(`${labels.join('')}${mix}${limiter},${fadeOut}[audio]`);
     args.push('-filter_complex', chains.join(';'), '-map', '[audio]', '-c:a', 'aac', '-b:a', '192k');
   }
   args.push('-t', o.duration.toFixed(6), '-movflags', '+faststart', '-f', 'mp4', o.output);

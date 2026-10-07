@@ -124,5 +124,6 @@ est déterministe, que les campagnes sont cohérentes et que les blocs partagés
 
 Pour regarder le résultat : créer un projet depuis une campagne
 (`npm run cadence -- new "Teaser" --brand cadence --template teaser-produit --formats 16:9,9:16`), l'ouvrir dans
-l'éditeur, puis demander au chat de rendre des images (`render_frames`) et de vérifier les raccords
-(`check_seams`), ou exporter la vidéo (`npm run cadence -- render <projet> --quality draft`).
+l'éditeur, puis demander au chat de rendre des images (`render_frames`), de vérifier les raccords
+(`check_seams`) et le mouvement de chaque scène (`check_motion`), ou exporter la vidéo
+(`npm run cadence -- render <projet> --quality draft`).

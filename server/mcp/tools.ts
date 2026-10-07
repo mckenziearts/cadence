@@ -3,13 +3,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { setImmediate } from 'node:timers/promises';
+import { PNG } from 'pngjs';
 import { z } from 'zod';
+import type { AuditFinding, AuditKind } from '../../src/shared/frameProtocol';
 import { FORMAT_IDS, FORMATS, type FormatId, type ProjectState, type SceneState, type SeamResult } from '../../src/shared/types';
 import type {
   AssetStore,
   BrandStore,
   CadenceConfig,
   CaptureService,
+  CapturedFrame,
   McpScope,
   McpTokenIssuer,
   MusicService,
@@ -20,6 +24,7 @@ import type {
   VoiceOverService,
 } from '../contracts';
 import { barSeconds, projectOverview, sceneTable, voiceOverSummary } from '../agent/prompts';
+import { diffPercent } from '../capture/seams';
 import { m } from '../i18n';
 import { HttpError, assertId, roundMs } from '../util';
 import { BRAND_TOOLS, registerBrandTools } from './brandTools';
@@ -57,6 +62,7 @@ export const SCENE_TOOLS = [
   'list_templates',
   'render_frames',
   'check_seams',
+  'check_motion',
   'set_scene_duration',
   'set_voice_over',
   'save_version',
@@ -73,11 +79,41 @@ export const PROJECT_TOOLS = [
 ];
 
 const MAX_FRAMES = 8;
+export const STRIP_FRAMES = 12;
+const STRIP_MIN = 4;
+const STRIP_MAX = 24;
+const STRIP_SCALE = 0.25;
+const STRIP_GAP = 4;
 const QUALITY_SCALE = { low: 0.25, normal: 0.5, high: 1 } as const;
 /** Percent of pixels from which a cut shows (every shipped template cut is under it): send the frames to look at. */
 const SEAM_IMAGE_THRESHOLD = 0.05;
+const MOTION_STEP = 0.25;
+const MOTION_SCENE_SAMPLES = 120;
+const MOTION_CALL_SAMPLES = 600;
+const MOTION_SCALE = 0.5;
+/** Samples per capture call: memory holds one batch of PNGs, and render_frames gets the capture slot between batches. */
+const MOTION_BATCH = 12;
+/** Percent of changing pixels under which two samples show the same picture. */
+const STILL_PERCENT = 0.01;
+/** A still stretch from this long reads as a frozen video; a shorter hold is a deliberate beat. */
+const STILL_SECONDS = 2;
+/** Under the 300 s MCP tool timeout: past it the client has given up, and the capture slot is still held. */
+const MOTION_DEADLINE_MS = 240_000;
 
 type Content = CallToolResult['content'][number];
+
+const FINDING_LABELS: Record<Exclude<AuditKind, 'contrast'>, string> = {
+  clipped: 'clipped by its container',
+  offCanvas: 'partly off the canvas',
+  outsideSafe: 'in the safe margins',
+  underCaptions: 'under the captions',
+};
+
+/** The text is JSON-quoted: scene text cannot pass for another line of the summary. */
+function describeFinding(f: AuditFinding): string {
+  const what = f.kind === 'contrast' ? `contrast ${f.ratio}:1 (needs ${f.required})` : FINDING_LABELS[f.kind];
+  return `- ${what}: ${JSON.stringify(f.text)} at ${f.box.x},${f.box.y} (${f.box.width}×${f.box.height})`;
+}
 
 export interface ToolContext {
   deps: McpDeps;
@@ -92,6 +128,52 @@ const text = (value: string): CallToolResult => ({ content: [{ type: 'text', tex
 function image(data: Buffer, mimeType?: string): Content {
   const type = mimeType ?? (data[0] === 0x89 && data[1] === 0x50 ? 'image/png' : 'image/jpeg');
   return { type: 'image', data: data.toString('base64'), mimeType: type };
+}
+
+/** One time per video frame centred on `at`, clamped to what can be rendered; clamped duplicates collapse. */
+function stripTimes(at: number, frames: number, fps: number, clamp: (t: number) => number): number[] {
+  const half = Math.floor(frames / 2);
+  return [...new Set(Array.from({ length: frames }, (_, i) => clamp(at + (i - half) / fps)))];
+}
+
+/** Scene-local times every `step` from 0, the last one on the scene's last frame; rounded duplicates collapse. */
+function motionTimes(duration: number, step: number, fps: number): number[] {
+  // The epsilon keeps a duration that is a whole number of steps from getting one more sample.
+  const steps = Math.max(1, Math.ceil(duration / step - 1e-9));
+  // Odd samples one video frame late: on a step that matches the beat grid, music.pulse would read 1 at every sample.
+  return [...new Set(Array.from({ length: steps + 1 }, (_, i) => roundMs(Math.min(i * step + (i % 2) / fps, duration))))];
+}
+
+/** Consecutive samples compared as they arrive: only the previous one stays decoded. */
+class StillRuns {
+  runs: [number, number][] = [];
+  moves = false;
+  count = 0;
+  /** Time of the last sample added. */
+  last = 0;
+  private start: number | null = null;
+  private previous: PNG | null = null;
+
+  async add(frame: CapturedFrame): Promise<void> {
+    // Decoding and diffing are synchronous: yield between frames so a long check does not stall the server.
+    await setImmediate();
+    const png = PNG.sync.read(frame.image);
+    if (this.previous && diffPercent(this.previous, png) < STILL_PERCENT) {
+      this.start ??= this.last;
+    } else if (this.previous) {
+      if (this.start !== null) this.runs.push([this.start, this.last]);
+      this.start = null;
+      this.moves = true;
+    }
+    this.previous = png;
+    this.last = frame.t;
+    this.count++;
+  }
+
+  /** The still runs as [from, to] scene times, the one in progress ending on the last sample. */
+  done(): [number, number][] {
+    return this.start === null ? this.runs : [...this.runs, [this.start, this.last]];
+  }
 }
 
 function errorText(e: unknown): string {
@@ -236,59 +318,98 @@ export function createToolServer(ctx: ToolContext): McpServer {
 
   tool(
     'render_frames',
-    `Render frames exactly as the final video shows them, and look at them. Check every change: t = 0, t = duration and each moment you changed. Times are scene-local seconds (0 … duration); with wholeVideo they are video seconds and each frame shows the scene playing then. Up to ${MAX_FRAMES} frames per call.`,
+    `Render frames exactly as the final video shows them, and look at them. Check every change: t = 0, t = duration and each moment you changed. Times are scene-local seconds (0 … duration); with wholeVideo they are video seconds and each frame shows the scene playing then. Pass either times (up to ${MAX_FRAMES} frames) or strip: consecutive frames around one moment in a single contact sheet, to see a motion settle.`,
     {
       projectId,
       sceneId,
       wholeVideo: z.boolean().optional().describe('Render video times instead of one scene.'),
-      times: z.array(z.number().min(0)).min(1).max(MAX_FRAMES).describe('Seconds, e.g. [0, 0.8, 1.6, 3.32]'),
+      times: z.array(z.number().min(0)).min(1).max(MAX_FRAMES).optional().describe('Seconds, e.g. [0, 0.8, 1.6, 3.32]'),
+      strip: z
+        .object({
+          at: z.number().min(0).describe('Seconds at the middle of the strip, e.g. a contact, a hit on the beat or a cut.'),
+          frames: z
+            .number()
+            .int()
+            .min(STRIP_MIN)
+            .max(STRIP_MAX)
+            .optional()
+            .describe(`Consecutive frames (one per video frame); default ${STRIP_FRAMES}.`),
+        })
+        .optional()
+        .describe('Consecutive frames around `at`, returned as one contact sheet at quarter size. Instead of times.'),
       format,
       quality: z
         .enum(['low', 'normal', 'high'])
         .optional()
-        .describe('low = quarter size (quick overview), normal = half size (default), high = full size (fine lines, small text)'),
+        .describe(
+          'low = quarter size (quick overview), normal = half size (default), high = full size (fine lines, small text). Ignored by strip.',
+        ),
     },
     async (args) => {
       const p = await project(args.projectId);
       if (args.wholeVideo && args.sceneId) throw new HttpError(400, m().agent.mcpTools.sceneOrVideo);
+      if (!args.times === !args.strip) throw new HttpError(400, m().agent.mcpTools.timesOrStrip);
       const scene = args.wholeVideo ? null : targetScene(p, args.sceneId, m().agent.mcpTools.renderOwnScene);
       const chosen = args.format ?? p.formats[0];
-      const scale = QUALITY_SCALE[args.quality ?? 'normal'];
+      const scale = args.strip ? STRIP_SCALE : QUALITY_SCALE[args.quality ?? 'normal'];
       const limit = scene ? scene.duration : p.duration;
-      const times = args.times.map((t) => roundMs(Math.min(t, limit)));
+      const clamp = (t: number) => roundMs(Math.min(Math.max(t, 0), limit));
+      const times = args.strip
+        ? stripTimes(args.strip.at, args.strip.frames ?? STRIP_FRAMES, p.fps, clamp)
+        : args.times!.map(clamp);
       const frames = await deps.capture.frames(p.id, {
         sceneId: scene?.id ?? null,
         times,
         format: chosen,
         scale,
-        imageFormat: 'jpeg',
-        quality: 82,
+        // Strips look at a motion, not at the layout: no text checks.
+        ...(args.strip ? { imageFormat: 'png' as const } : { imageFormat: 'jpeg' as const, quality: 82, audit: true }),
       });
+      const { width, height } = FORMATS[chosen];
+      const columns = height > width ? 6 : 4;
+      const sheet = args.strip
+        ? await deps.capture.contactSheet(
+            frames.map((f) => f.image),
+            { columns, gap: STRIP_GAP },
+          )
+        : null;
+      const images = sheet ? [{ image: sheet, mime: 'image/jpeg' as const }] : frames;
 
       const dir = path.join(p.dir, '.cadence', 'frames');
       await fs.mkdir(dir, { recursive: true });
       const urls: string[] = [];
-      for (const frame of frames) {
-        const name = ctx.frameName(frame.mime === 'image/png' ? 'png' : 'jpg');
-        await fs.writeFile(path.join(dir, name), frame.image);
+      for (const shot of images) {
+        const name = ctx.frameName(shot.mime === 'image/png' ? 'png' : 'jpg');
+        await fs.writeFile(path.join(dir, name), shot.image);
         urls.push(`/api/projects/${p.id}/agent-frames/${name}`);
       }
       deps.tokens.reportActivity(token, { type: 'frames', sceneId: scene?.id ?? null, times, urls });
 
-      const size = `${Math.round(FORMATS[chosen].width * scale)}×${Math.round(FORMATS[chosen].height * scale)}`;
+      const size = `${Math.round(width * scale)}×${Math.round(height * scale)}`;
       const what = scene
         ? `scene ${scene.id} "${scene.name}" (${scene.duration.toFixed(3)} s)`
         : `the whole video (${p.duration.toFixed(3)} s)`;
       const errors = [...new Set(frames.flatMap((f) => f.errors))];
-      const summary = `Rendered ${frames.length} frame${frames.length === 1 ? '' : 's'} of ${what} in ${chosen} at ${size}.${
-        errors.length ? `\nRender errors:\n${errors.join('\n\n')}` : ''
-      }`;
-      const content: Content[] = [{ type: 'text', text: summary }];
-      for (const f of frames) {
-        const label = scene
+      const rendered = args.strip
+        ? `Rendered a strip of ${frames.length} frames of ${what} in ${chosen}: one contact sheet, ${Math.min(columns, frames.length)} tiles per row at ${size} each.`
+        : `Rendered ${frames.length} frame${frames.length === 1 ? '' : 's'} of ${what} in ${chosen} at ${size}.`;
+      const checks = frames.flatMap((f) => {
+        const at = `Checks at ${f.t.toFixed(3)} s (${chosen}):`;
+        if (f.audit === null) return [`${at} unavailable.`];
+        if (!f.audit?.length) return [];
+        return [at, ...f.audit.map(describeFinding)];
+      });
+      const summary = [rendered, ...(errors.length ? [`Render errors:\n${errors.join('\n\n')}`] : []), ...checks].join('\n');
+      const label = (f: CapturedFrame) =>
+        scene
           ? `t = ${f.t.toFixed(3)} s`
           : `video t = ${f.t.toFixed(3)} s → scene ${f.sceneId ?? '?'} at ${f.localTime.toFixed(3)} s`;
-        content.push({ type: 'text', text: label }, image(f.image, f.mime));
+      const content: Content[] = [{ type: 'text', text: summary }];
+      if (sheet) {
+        const tiles = frames.map((f, i) => `${i + 1}. ${label(f)}`).join('\n');
+        content.push({ type: 'text', text: `Tiles, left to right then top to bottom:\n${tiles}` }, image(sheet, 'image/jpeg'));
+      } else {
+        for (const f of frames) content.push({ type: 'text', text: label(f) }, image(f.image, f.mime));
       }
       return { content, isError: frames.length > 0 && frames.every((f) => f.errors.length > 0) };
     },
@@ -328,6 +449,95 @@ export function createToolServer(ctx: ToolContext): McpServer {
         }
       }
       return { content };
+    },
+    true,
+  );
+
+  tool(
+    'check_motion',
+    `Find where a scene stops moving: samples every ${MOTION_STEP} s at half size (at most ${MOTION_SCENE_SAMPLES} per scene and ${MOTION_CALL_SAMPLES} per call; beyond, the step widens), consecutive samples compared like check_seams. Lists still stretches of about ${STILL_SECONDS} s or more (measured between samples); a scene of ${STILL_SECONDS} s or more that never moves is an error, as is a call where no scene could be checked. With a scene: that scene; without: every scene.`,
+    { projectId, sceneId, format },
+    async (args) => {
+      const deadline = Date.now() + MOTION_DEADLINE_MS;
+      const p = await project(args.projectId);
+      const scenes =
+        scope.kind === 'scene' || args.sceneId ? [targetScene(p, args.sceneId, m().agent.mcpTools.checkOwnMotion)] : p.scenes;
+      const chosen = args.format ?? p.formats[0];
+      const total = scenes.reduce((sum, s) => sum + s.duration, 0);
+      // Every scene gets at least 2 samples, the rest share the call budget. ponytail: past 300 scenes the call
+      // exceeds it; split the call by scene if projects ever get that long.
+      const callStep = Math.max(MOTION_STEP, total / Math.max(1, MOTION_CALL_SAMPLES - 2 * scenes.length));
+      const lines: string[] = [];
+      const errors = new Set<string>();
+      let frozen = false;
+      let unchecked = 0;
+      for (const scene of scenes) {
+        if (Date.now() >= deadline) {
+          unchecked++;
+          lines.push(`- ${scene.id}: not checked, out of time: run check_motion on this scene alone.`);
+          continue;
+        }
+        const step = Math.max(callStep, scene.duration / (MOTION_SCENE_SAMPLES - 1));
+        const times = motionTimes(scene.duration, step, p.fps);
+        const still = new StillRuns();
+        let broken: CapturedFrame | undefined;
+        let seen = 0;
+        while (seen < times.length && Date.now() < deadline) {
+          const batch = times.slice(seen, seen + MOTION_BATCH);
+          const frames = await deps.capture.frames(p.id, {
+            sceneId: scene.id,
+            times: batch,
+            format: chosen,
+            scale: MOTION_SCALE,
+            imageFormat: 'png',
+            // Captions change with the voice: they would pass for motion.
+            captions: false,
+            deadline,
+          });
+          broken = frames.find((f) => f.errors.length > 0);
+          for (const frame of broken ? frames.slice(0, frames.indexOf(broken)) : frames) await still.add(frame);
+          seen += frames.length;
+          if (broken || frames.length < batch.length) break;
+        }
+        const { count, moves } = still;
+        const stretches = still.done().filter(([from, to]) => roundMs(to - from) >= STILL_SECONDS);
+        let verdict: string;
+        if (count < 2) verdict = 'nothing checked.';
+        else if (stretches.length)
+          verdict = `${stretches.map(([from, to]) => `still from ${from.toFixed(3)} s to ${to.toFixed(3)} s`).join(', ')}.`;
+        else if (moves) verdict = 'moves throughout.';
+        // Cut short, the rest of the scene was never seen: too early to call it a hold.
+        else if (count < times.length) verdict = `still for ${still.last.toFixed(3)} s.`;
+        else verdict = `still for ${still.last.toFixed(3)} s, under ${STILL_SECONDS} s: a deliberate hold.`;
+        let line = `- ${scene.id}: ${verdict}`;
+        const before = count < 2 ? '' : 'before it: ';
+        if (count < 2) unchecked++;
+        if (broken) {
+          broken.errors.forEach((e) => errors.add(e));
+          line = `- ${scene.id}: stopped at ${broken.t.toFixed(3)} s by a render error; ${before}${verdict}`;
+        } else if (seen < times.length) {
+          line = `- ${scene.id}: stopped at ${times[seen].toFixed(3)} s, out of time; ${before}${verdict}`;
+          if (scenes.length > 1) line += ' Run check_motion on this scene alone.';
+        } else if (!moves && scene.duration >= STILL_SECONDS) {
+          frozen = true;
+          line = `- ${scene.id} does not move: add motion (a slow push-in, a drift) or shorten it.`;
+        }
+        if (step > MOTION_STEP) {
+          line += ` Sampled every ${step.toFixed(3)} s instead of ${MOTION_STEP.toFixed(3)} s (at most ${MOTION_SCENE_SAMPLES} samples per scene and ${MOTION_CALL_SAMPLES} per call).`;
+        }
+        lines.push(line);
+      }
+      const { width, height } = FORMATS[chosen];
+      const what =
+        scenes.length === 1
+          ? `scene ${scenes[0].id} "${scenes[0].name}" (${scenes[0].duration.toFixed(3)} s)`
+          : `${scenes.length} scenes (${total.toFixed(3)} s)`;
+      const summary = [
+        `Motion of ${what} in ${chosen}: a sample every ${MOTION_STEP.toFixed(3)} s at ${Math.round(width * MOTION_SCALE)}×${Math.round(height * MOTION_SCALE)}, consecutive samples compared like check_seams. Still means under ${STILL_PERCENT} % of pixels changing; still stretches of about ${STILL_SECONDS} s or more (measured between samples) are listed.`,
+        ...lines,
+        ...(errors.size ? [`Render errors:\n${[...errors].join('\n\n')}`] : []),
+      ].join('\n');
+      return { content: [{ type: 'text', text: summary }], isError: frozen || (unchecked > 0 && unchecked === scenes.length) };
     },
     true,
   );

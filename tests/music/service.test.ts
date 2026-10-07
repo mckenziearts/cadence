@@ -59,6 +59,7 @@ class FakeStore {
       voiceOverLines: [],
       voiceOverPending: [],
       voiceOverError: null,
+      captions: false,
       codeGeneration: 0,
     };
   }

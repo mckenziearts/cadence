@@ -100,6 +100,9 @@ test('serves the editor from a production build: no Vite module, React productio
   assert.equal(res.headers.get('cache-control'), 'public, max-age=31536000, immutable');
   const js = await res.text();
   assert.match(js, /Minified React error/, "React's production build");
+  const wav = /\/assets\/pop-[\w-]+\.wav/.exec(js)?.[0];
+  assert.ok(wav, 'the sound effects are bundled assets');
+  assert.equal((await fetch(`${editorOrigin}${wav}`)).headers.get('content-type'), 'audio/wav');
   for (const url of ['/src/editor/main.tsx', '/@vite/client', '/assets/missing.js', `/@fs${path.resolve('package.json')}`]) {
     assert.equal((await fetch(`${editorOrigin}${url}`)).status, 404, url);
   }

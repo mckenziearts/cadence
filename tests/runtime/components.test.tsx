@@ -429,6 +429,11 @@ describe('drawing and annotations', () => {
     assert.equal(seedOf(render(<Grain seed={3} />)), '3');
     assert.equal(seedOf(render(<Grain seed={3} t={1} fps={12} />)), '15');
   });
+
+  test('Grain and Vignette mark their root as decor: the frame text checks look through them', () => {
+    assert.match(render(<Grain />), /^<svg data-cadence-decor=""/);
+    assert.match(render(<Vignette />), /^<div data-cadence-decor=""/);
+  });
 });
 
 describe('cursor', () => {

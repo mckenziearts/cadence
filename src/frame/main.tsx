@@ -13,7 +13,10 @@ import { createRoot } from 'react-dom/client';
 import type { FrameProjectData } from '../../server/frames/frameServer';
 import type { BrandKit } from '../shared/brandKit';
 import type { EditorToFrame, FrameApi, FrameRenderResult, FrameToEditor } from '../shared/frameProtocol';
+import { parseSoundCues, videoSoundCues, type SceneSounds, type SoundCue, type SoundProps } from '../shared/sounds';
 import { FORMATS, isFormatId, type FormatId, type FormatSpec, type ProjectState, type SceneState } from '../shared/types';
+import { auditStage } from './audit';
+import { Captions } from './captions';
 import { editorOrigins, postToEditor } from './editor';
 import { texts } from './texts';
 
@@ -32,6 +35,8 @@ const queryFormat = query.get('format');
 let requestedFormat: FormatId | null = isFormatId(queryFormat) ? queryFormat : null;
 let sceneId: string | null = query.get('scene') || null;
 let currentT = Number(query.get('t')) || 0;
+// Seam checks and thumbnails open the page with captions=0: they look at the scene, and a caption would hide part of it.
+const captionsShown = query.get('captions') !== '0';
 
 // After the base font styles, so the brand theme wins.
 const brandStyle = document.createElement('style');
@@ -44,6 +49,8 @@ interface LoadedScene {
   /** `<generation>-<codeVersion>`: the module is re-imported when it changes. */
   key: string;
   Comp: ComponentType<SceneProps> | null;
+  /** The module's `sounds` export, checked when it is called. */
+  sounds: unknown;
   error: string | null;
 }
 
@@ -68,9 +75,15 @@ let loadedGeneration = 0;
 let scenes = new Map<string, LoadedScene>();
 const musicCache = new Map<string, Music>();
 const voiceOverCache = new Map<string, VoiceOverInfo>();
+/** Per scene and format, like the props `sounds()` gets; cleared with the music on every load. */
+const soundsCache = new Map<string, SceneSounds>();
 let renderErrors: string[] = [];
+let boundaryFailed = false;
 let lastErrors: string[] = [];
+/** A scene drew without throwing: the text checks have something to read. */
+let sceneDrawn = false;
 let lastPosted: string | null = null;
+let lastPostedSounds: string | null = null;
 let boundaryEpoch = 0;
 /** src last decoded per <img>: scenes may swap the src of the same element over time. */
 const decodedSrc = new WeakMap<HTMLImageElement, string>();
@@ -93,15 +106,20 @@ function cleanLine(line: string): string {
 }
 
 function formatError(e: unknown): string {
-  if (!(e instanceof Error)) return String(e);
-  const stack = (e.stack ?? '')
-    .split('\n')
-    .slice(1, 6)
-    .filter((line) => !line.includes('/node_modules/') && !line.includes('/src/frame/'))
-    .map(cleanLine)
-    .filter(Boolean)
-    .join('\n');
-  return stack ? `${e.message}\n${stack}` : e.message;
+  try {
+    if (!(e instanceof Error)) return String(e);
+    const stack = (e.stack ?? '')
+      .split('\n')
+      .slice(1, 6)
+      .filter((line) => !line.includes('/node_modules/') && !line.includes('/src/frame/'))
+      .map(cleanLine)
+      .filter(Boolean)
+      .join('\n');
+    return String(stack ? `${e.message}\n${stack}` : e.message);
+  } catch {
+    // Scene code can throw anything: a value with no string form, an Error whose getters throw.
+    return typeof e;
+  }
 }
 
 function ErrorOverlay(props: { title: string; message: string }) {
@@ -204,23 +222,25 @@ async function describeImportError(dir: string, scene: SceneState, e: unknown): 
 
 async function importScene(project: ProjectState, scene: SceneState, key: string): Promise<LoadedScene> {
   try {
-    const mod = (await import(/* @vite-ignore */ `${scene.url}?g=${key}`)) as { default?: unknown };
+    const mod = (await import(/* @vite-ignore */ `${scene.url}?g=${key}`)) as { default?: unknown; sounds?: unknown };
     const Comp = mod.default;
     if (typeof Comp !== 'function' && (typeof Comp !== 'object' || Comp === null)) {
       throw new Error(texts.sceneExport(scene.id));
     }
-    return { key, Comp: Comp as ComponentType<SceneProps>, error: null };
+    return { key, Comp: Comp as ComponentType<SceneProps>, sounds: mod.sounds, error: null };
   } catch (e) {
-    return { key, Comp: null, error: await describeImportError(project.dir, scene, e) };
+    return { key, Comp: null, sounds: undefined, error: await describeImportError(project.dir, scene, e) };
   }
 }
 
-/** Import the scenes this frame shows (one in scene mode, all in whole-video mode) whose code changed. */
+/** The scenes this frame shows: one in scene mode, all in whole-video mode. */
+const shownScenes = (project: ProjectState) => (sceneId ? project.scenes.filter((s) => s.id === sceneId) : project.scenes);
+
+/** Import the shown scenes whose code changed. */
 async function loadScenes(project: ProjectState, current: Map<string, LoadedScene>): Promise<Map<string, LoadedScene>> {
   const next = new Map(current);
-  const wanted = sceneId ? project.scenes.filter((s) => s.id === sceneId) : project.scenes;
   await Promise.all(
-    wanted.map(async (scene) => {
+    shownScenes(project).map(async (scene) => {
       const key = `${project.codeGeneration}-${scene.codeVersion}`;
       if (next.get(scene.id)?.key !== key) next.set(scene.id, await importScene(project, scene, key));
     }),
@@ -241,6 +261,7 @@ async function load(): Promise<void> {
   setAssetBase(`/@fs${next.project.dir}/assets/`);
   musicCache.clear();
   voiceOverCache.clear();
+  soundsCache.clear();
 }
 
 async function reloadNow(generation: number): Promise<void> {
@@ -319,6 +340,67 @@ function voiceOverFor(project: ProjectState, scene: SceneState): VoiceOverInfo {
   return voiceOver;
 }
 
+/** Everything the scene component gets but `t`: also what `sounds()` gets, so its cues match the render. */
+function sceneProps(project: ProjectState, scene: SceneState, spec: FormatSpec, brand: BrandKit): SoundProps {
+  return {
+    duration: scene.duration,
+    width: spec.width,
+    height: spec.height,
+    format: spec.id,
+    orientation: spec.orientation,
+    fps: project.fps,
+    music: musicFor(project, scene),
+    voiceOver: voiceOverFor(project, scene),
+    scene: { id: scene.id, name: scene.name, index: scene.index, count: project.scenes.length, start: scene.start },
+    brand,
+  };
+}
+
+function evaluateSounds(project: ProjectState, scene: SceneState, spec: FormatSpec): SceneSounds {
+  const loaded = scenes.get(scene.id);
+  if (!loaded?.Comp || !kit || loaded.sounds === undefined) return { cues: [] };
+  // Called on its own: `this` in a scene's sounds() must not reach the frame's record of the scene.
+  const { sounds } = loaded;
+  if (typeof sounds !== 'function') return { error: texts.soundsExport(scene.id) };
+  try {
+    return parseSoundCues(sounds(sceneProps(project, scene, spec, kit)), scene.duration, texts.soundCues);
+  } catch (e) {
+    return { error: formatError(e) };
+  }
+}
+
+function soundsOf(project: ProjectState, scene: SceneState, spec: FormatSpec): SceneSounds {
+  const loaded = scenes.get(scene.id);
+  // The module version is in the key: a render during set-scene's import must not pin the old module's cues.
+  const key = `${scene.id}|${loaded?.key}|${spec.id}`;
+  let sounds = soundsCache.get(key);
+  if (!sounds) {
+    sounds = evaluateSounds(project, scene, spec);
+    if (loaded) soundsCache.set(key, sounds);
+  }
+  return sounds;
+}
+
+/** The cues of the shown scenes on the frame's timeline, like `render`: video seconds, scene seconds in scene mode. */
+function soundCues(): Required<SoundCue>[] {
+  // A failed reload keeps the last project to draw from, but the frame shows the failure, not its scenes.
+  if (!data || loadError) return [];
+  const { project } = data;
+  const spec = FORMATS[formatOf(project)];
+  return videoSoundCues(
+    shownScenes(project).map((scene) => ({ start: sceneId ? 0 : scene.start, sounds: soundsOf(project, scene, spec) })),
+  );
+}
+
+function postSounds(): void {
+  if (!embedded) return;
+  const message: FrameToEditor = { source: 'cadence-frame', type: 'sounds', sceneId, cues: soundCues() };
+  const signature = JSON.stringify(message);
+  if (signature === lastPostedSounds) return;
+  lastPostedSounds = signature;
+  post(message);
+}
+
 function view(picked: Picked | null, spec: FormatSpec): View {
   if (loadError) return { kind: 'error', title: 'Projet indisponible', message: loadError };
   if (!data) return { kind: 'empty' };
@@ -333,19 +415,7 @@ function view(picked: Picked | null, spec: FormatSpec): View {
   const loaded = scenes.get(scene.id);
   if (!loaded || !kit) return { kind: 'empty' };
   if (!loaded.Comp) return { kind: 'error', title: texts.compileError(label), message: loaded.error ?? '' };
-  const props: SceneProps = {
-    t: local,
-    duration: scene.duration,
-    width: spec.width,
-    height: spec.height,
-    format: spec.id,
-    orientation: spec.orientation,
-    fps: project.fps,
-    music: musicFor(project, scene),
-    voiceOver: voiceOverFor(project, scene),
-    scene: { id: scene.id, name: scene.name, index: scene.index, count: project.scenes.length, start: scene.start },
-    brand: kit,
-  };
+  const props: SceneProps = { t: local, ...sceneProps(project, scene, spec, kit) };
   return { kind: 'scene', label, key: `${scene.id}:${loaded.key}:${boundaryEpoch}`, Comp: loaded.Comp, props };
 }
 
@@ -388,6 +458,10 @@ function Stage(props: { spec: FormatSpec; view: View }) {
       }}
     >
       {content}
+      {/* Outside the scene's error boundary: a scene that throws keeps its captions. */}
+      {view.kind === 'scene' && captionsShown && data?.project.captions && (
+        <Captions lines={data.project.voiceOverLines} spec={spec} t={tidy(view.props.scene.start + view.props.t)} />
+      )}
     </div>
   );
 }
@@ -395,14 +469,21 @@ function Stage(props: { spec: FormatSpec; view: View }) {
 function renderAt(t: number): FrameRenderResult {
   currentT = Number.isFinite(t) ? t : 0;
   // Remount the error boundary after a failure: the scene may only throw at some times.
-  if (lastErrors.length > 0) boundaryEpoch++;
+  if (boundaryFailed) boundaryEpoch++;
   renderErrors = [];
   const project = data?.project;
   const picked = project ? pickScene(project, currentT) : null;
   const spec = FORMATS[formatOf(project)];
   const shown = view(picked, spec);
   flushSync(() => root.render(<Stage spec={spec} view={shown} />));
+  boundaryFailed = renderErrors.length > 0;
+  sceneDrawn = shown.kind === 'scene' && !boundaryFailed;
   const errors = [...(shown.kind === 'error' ? [`${shown.title}\n${shown.message}`] : []), ...renderErrors];
+  // A failing sounds() is an error of the scene, which still draws.
+  if (project && picked && shown.kind === 'scene') {
+    const sounds = soundsOf(project, picked.scene, spec);
+    if ('error' in sounds) errors.push(`${texts.soundsError(shown.label)}\n${sounds.error}`);
+  }
   lastErrors = errors;
   const signature = errors.join('\n\u0000\n');
   if (signature !== lastPosted) {
@@ -437,6 +518,7 @@ const ready: Promise<void> = serial(async () => {
   await Promise.all(BASE_FACES.map((face) => document.fonts.load(face).catch(() => undefined)));
   await reloadNow(0);
   post({ source: 'cadence-frame', type: 'ready', generation: loadedGeneration });
+  postSounds();
 });
 
 const api: FrameApi = {
@@ -451,6 +533,7 @@ const api: FrameApi = {
   reload: (generation = 0) =>
     serial(async () => {
       await reloadNow(generation);
+      postSounds();
       post({ source: 'cadence-frame', type: 'reloaded', generation: loadedGeneration });
     }),
   setScene: (id) =>
@@ -458,12 +541,14 @@ const api: FrameApi = {
       sceneId = id;
       if (data) scenes = await loadScenes(data.project, scenes);
       renderAt(0);
+      postSounds();
     }),
   setFormat: (format) =>
     serial(async () => {
       if (!isFormatId(format)) throw new Error(`Format inconnu : ${String(format)}`);
       requestedFormat = format;
       renderAt(currentT);
+      postSounds();
     }),
   duration() {
     if (!data) return 0;
@@ -471,6 +556,11 @@ const api: FrameApi = {
     return data.project.scenes.find((s) => s.id === sceneId)?.duration ?? 0;
   },
   errors: () => lastErrors,
+  sounds: soundCues,
+  audit() {
+    const stage = document.querySelector<HTMLElement>('[data-cadence-stage]');
+    return sceneDrawn && stage ? auditStage(stage, FORMATS[formatOf(data?.project)]) : [];
+  },
   generation: () => loadedGeneration,
 };
 window.__cadence = api;

@@ -5,6 +5,7 @@ import type { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { HttpBindings } from '@hono/node-server';
 import type { Hono } from 'hono';
+import type { AuditFinding } from '../src/shared/frameProtocol';
 import type {
   AssetInfo,
   BrandBuild,
@@ -347,6 +348,8 @@ export interface CapturedFrame {
   image: Buffer;
   mime: 'image/jpeg' | 'image/png';
   errors: string[];
+  /** With `audit`: what the text checks found, null when they failed (scene code can break them). */
+  audit?: AuditFinding[] | null;
 }
 
 export interface CaptureService {
@@ -360,6 +363,12 @@ export interface CaptureService {
       scale?: number;
       imageFormat?: 'jpeg' | 'png';
       quality?: number;
+      /** Burned-in captions when the project has them on (default true); seam checks and thumbnails pass false. */
+      captions?: boolean;
+      /** Run the frame's text checks after each screenshot (render_frames). */
+      audit?: boolean;
+      /** Epoch ms: no seek starts from then on, the frames already taken come back (check_motion's time budget). */
+      deadline?: number;
     },
   ): Promise<CapturedFrame[]>;
   /** Small JPEG of a scene (cached per code generation + scene + format + t). */
@@ -368,6 +377,8 @@ export interface CaptureService {
   screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean }): Promise<Buffer>;
   /** JPEG of a brand's kit sheet (kit.html, sandboxed), with what failed to render or load there. */
   kitSheet(brandId: string, opts?: { scale?: number }): Promise<{ image: Buffer; problems: string[]; loaded: boolean }>;
+  /** One JPEG of PNG tiles of one size in reading order, `columns` per row, `gap` px apart (render_frames strips). */
+  contactSheet(tiles: Buffer[], layout: { columns: number; gap: number }): Promise<Buffer>;
   close(): Promise<void>;
 }
 

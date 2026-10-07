@@ -2,6 +2,7 @@
 // - the editor (cross-origin iframe: postMessage only, origins checked on both sides),
 // - headless capture (Playwright: window.__cadence directly).
 import type { BrandKit } from './brandKit';
+import type { SoundCue } from './sounds';
 import type { FormatId } from './types';
 
 export interface FrameRenderResult {
@@ -11,6 +12,20 @@ export interface FrameRenderResult {
   sceneId: string | null;
   /** Scene-local time that was rendered. */
   localTime: number;
+}
+
+/** What the frame's text checks flag; render_frames reports them to the agent as warnings. */
+export type AuditKind = 'clipped' | 'offCanvas' | 'outsideSafe' | 'contrast' | 'underCaptions';
+
+export interface AuditFinding {
+  kind: AuditKind;
+  /** The first 40 characters of the text, whitespace collapsed. */
+  text: string;
+  /** Canvas px. */
+  box: { x: number; y: number; width: number; height: number };
+  /** Contrast only: the WCAG ratio (2 decimals) and the one the text needs (4.5, or 3 for large text). */
+  ratio?: number;
+  required?: number;
 }
 
 export interface FrameApi {
@@ -28,6 +43,16 @@ export interface FrameApi {
   /** Length of what this frame shows, in seconds. */
   duration(): number;
   errors(): string[];
+  /**
+   * The `sounds()` cues of the shown scenes on this frame's timeline (video seconds, scene seconds in scene mode), sorted;
+   * a scene whose `sounds()` fails adds none.
+   */
+  sounds(): Required<SoundCue>[];
+  /**
+   * Checks of the visible text of the frame last rendered, worst first, 6 at most (capture mode: client rects are canvas
+   * px). Reads layout and styles only; nothing when the frame shows an error.
+   */
+  audit(): AuditFinding[];
   /** Code generation currently loaded. */
   generation(): number;
 }
@@ -43,6 +68,8 @@ export type FrameToEditor =
   | { source: 'cadence-frame'; type: 'ready'; generation: number }
   | { source: 'cadence-frame'; type: 'reloaded'; generation: number }
   | { source: 'cadence-frame'; type: 'errors'; errors: string[] }
+  /** `cues` as `FrameApi.sounds()` for `sceneId` (null: the whole video); sent on change only, so it holds until the next. */
+  | { source: 'cadence-frame'; type: 'sounds'; sceneId: string | null; cues: Required<SoundCue>[] }
   | { source: 'cadence-frame'; type: 'seeked'; requestId: string; result: FrameRenderResult };
 
 /**

@@ -219,6 +219,7 @@ test('update, art direction, remove to .trash', async () => {
   assert.equal(updated.tempo, 128);
   await rejectsWithStatus(store.update(p.id, { tempo: 10 }), 400);
   await rejectsWithStatus(store.update(p.id, { brand: 'inconnue' }), 400);
+  await rejectsWithStatus(store.update(p.id, { captions: 'yes' as never }), 400, /Sous-titres invalides/);
 
   await store.writeArtDirection(p.id, '# Nouveau\n');
   assert.equal(await store.readArtDirection(p.id), '# Nouveau\n');

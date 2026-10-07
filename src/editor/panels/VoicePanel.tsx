@@ -2,11 +2,11 @@
 // then each scene's text and timing.
 import clsx from 'clsx';
 import { AlertTriangle, AudioLines, Copy, Download, Play } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import type { SceneState, SceneVoiceOver, VoiceOverSettings, VoicesState } from '../../shared/types';
 import { api, ignore } from '../api';
 import { ElevenLabsVoiceSelect, PIPER_INSTALL, Row } from '../components/voiceOver';
-import { Button, IconButton, SectionTitle, Segmented, Slider, Spinner, fieldBase, inputClass } from '../components/ui';
+import { Button, Checkbox, IconButton, SectionTitle, Segmented, Slider, Spinner, fieldBase, inputClass } from '../components/ui';
 import { useT } from '../i18n';
 import { bytes, parseDecimal, percentShort, secs, secsLabel } from '../lib/format';
 import { useStore } from '../store';
@@ -36,9 +36,56 @@ export function VoicePanel() {
         {engine === 'piper' && voices && !voices.piper.ok && <PiperMissing />}
         <Voice voices={voices} engine={engine} onEngine={setChosen} onVoices={load} />
         <Status />
+        <Subtitles />
         <Script engine={saved} />
       </div>
     </div>
+  );
+}
+
+function Subtitles() {
+  const texts = useT().production.voiceOver.subtitles;
+  const project = useStore((s) => s.project)!;
+  // The route's 409 and 404, known ahead: no click for a refusal.
+  const hint = project.voiceOverPending.length ? texts.notSpoken : project.voiceOverLines.length ? null : texts.none;
+  const hintId = useId();
+  const burn = (captions: boolean) => void api.updateProject(project.id, { captions }).then(applyProject).catch(ignore);
+  // Fetched rather than linked: a refusal shows its message instead of saving it as the file.
+  const download = async (format: 'srt' | 'vtt') => {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([await api.subtitles(project.id, format)]));
+    link.download = `${project.id}.${format}`;
+    link.click();
+    // Some browsers read the blob after click() returns.
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  };
+
+  return (
+    <section className="space-y-3.5">
+      <SectionTitle>{texts.title}</SectionTitle>
+      <Checkbox checked={project.captions} onChange={burn} label={texts.burn} description={texts.burnHint} />
+      <div className="flex gap-2">
+        {(['srt', 'vtt'] as const).map((format) => (
+          <Button
+            key={format}
+            size="sm"
+            variant="secondary"
+            icon={<Download className="size-3.5" />}
+            disabled={hint !== null}
+            aria-label={texts.download(format.toUpperCase())}
+            aria-describedby={hint ? hintId : undefined}
+            onClick={() => void download(format).catch(ignore)}
+          >
+            {format.toUpperCase()}
+          </Button>
+        ))}
+      </div>
+      {hint && (
+        <p id={hintId} className="text-xs text-ink-3">
+          {hint}
+        </p>
+      )}
+    </section>
   );
 }
 

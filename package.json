@@ -21,7 +21,7 @@
     "doctor": "tsx bin/cadence.ts doctor",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test \"tests/**/*.test.ts\" \"tests/**/*.test.tsx\"",
-    "test:unit": "node --import tsx --test \"tests/runtime/**/*.test.ts\" \"tests/runtime/**/*.test.tsx\" \"tests/music/**/*.test.ts\" \"tests/server/**/*.test.ts\" \"tests/brands/**/*.test.tsx\" \"tests/templates/**/*.test.tsx\" tests/editor/helpers.test.tsx tests/editor/routing.test.ts",
+    "test:unit": "node --import tsx --test \"tests/runtime/**/*.test.ts\" \"tests/runtime/**/*.test.tsx\" \"tests/music/**/*.test.ts\" \"tests/server/**/*.test.ts\" \"tests/brands/**/*.test.tsx\" \"tests/templates/**/*.test.tsx\" \"tests/frame/**/*.test.tsx\" tests/editor/helpers.test.tsx tests/editor/routing.test.ts tests/editor/sounds.test.ts",
     "test:e2e": "node --import tsx --test \"tests/e2e/**/*.test.ts\"",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

@@ -97,6 +97,7 @@ export default {
     fps: (value: unknown) => `Images par seconde invalides : ${value} (24, 30 ou 60)`,
     language: (value: unknown) => `Langue invalide : ${String(value)} (fr, en ou null)`,
     tempo: (value: unknown) => `Tempo invalide : ${value} (entre 30 et 300 BPM)`,
+    captions: (value: unknown) => `Sous-titres invalides : ${String(value)} (true ou false)`,
     duration: (value: unknown) => `Durée invalide : ${value}`,
     /** Path of a validation issue on the whole file. */
     root: 'racine',

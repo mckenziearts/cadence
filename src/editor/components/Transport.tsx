@@ -4,6 +4,7 @@ import { Keyboard, Pause, Play, Repeat, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { useT } from '../i18n';
 import { secs, secsLabel } from '../lib/format';
+import type { SoundPlayer } from '../lib/sounds';
 import { frameStart, playbackTime, rulerStep, timelineMarks } from '../lib/timeline';
 import { duckedVolume, followVoice } from '../lib/voiceOver';
 import { currentScene, get, previewDuration, set, useStore } from '../store';
@@ -13,7 +14,7 @@ import { IconButton, Kbd, Popover, Segmented, Tooltip } from './ui';
 // Playback
 
 /** Advances the playhead while playing, a frame at a time. With music, the picture keeps within a frame of the sound. */
-export function PlaybackEngine() {
+export function PlaybackEngine({ sounds }: { sounds: SoundPlayer }) {
   const audio = useRef<HTMLAudioElement>(null);
   const voice = useRef<HTMLAudioElement>(null);
   const url = useStore((s) => s.project?.musicUrl ?? null);
@@ -31,8 +32,10 @@ export function PlaybackEngine() {
     if (!playing) {
       a?.pause();
       voice.current?.pause();
+      sounds.reset(get().time);
       return;
     }
+    sounds.play(get().time);
     /** Video time at playhead 0 of what the preview shows. */
     const shown = () => {
       const s = get();
@@ -65,12 +68,14 @@ export function PlaybackEngine() {
       clock = playbackTime(clock, (now - last) / 1000, heard, s.project.fps);
       last = now;
       followVoice(voice.current, shown() + clock);
+      sounds.tick(clock, !s.muted);
       if (a && withAudio()) a.volume = duckedVolume(s.project, s.volumeDraft ?? s.project.music?.volume ?? 1, shown() + clock);
       if (clock >= duration - 1e-4) {
         if (s.loop && duration > 0) {
           clock = 0;
           seek(0);
           syncAudio();
+          sounds.reset(0);
         } else {
           seek(duration);
           set({ playing: false });
@@ -91,6 +96,7 @@ export function PlaybackEngine() {
         last = performance.now();
         syncAudio();
         followVoice(voice.current, shown() + clock);
+        sounds.reset(clock);
       }
     });
     return () => {
@@ -98,8 +104,9 @@ export function PlaybackEngine() {
       unsubscribe();
       a?.pause();
       voice.current?.pause();
+      sounds.reset(clock);
     };
-  }, [playing]);
+  }, [playing, sounds]);
 
   return (
     <>

@@ -99,14 +99,18 @@ Aim for product-keynote motion: calm, precise, confident. Every frame should loo
 - **UI demos.** `Cursor` glides with in-out easing and a small overshoot; `hovered` comes before `pressed`, with a `ClickRipple` on the press; typed text runs at 25–40 characters per second (`typed`, `TypeOn`); focus rings and carets follow the cursor.
 - **Kinetic type.** `SwapWords` for headline changes, `SplitText` for per-word or per-character entrances; animate position and opacity, not letter-spacing.
 - **Numbers.** `Counter` with `ease.outExpo`, landing on a beat.
+- **Sound.** Declare sound effects in the scene with `export function sounds(props)` (see Sound effects in the runtime reference): a `click` on the presses that matter, a `whoosh` on a camera move or a card flying in, an `impact` on the logo landing. Key them to the same times as the motion through one shared function, one sound per meaningful contact and never one per beat; when in doubt, leave it silent.
 - **Finish.** `Grain` on large gradients (no banding), `Vignette` gently; whole-pixel positions at rest so 1 px lines and text stay crisp.
 
 ## Check your work
 
 - After every change, `render_frames` the moments that matter: `t = 0`, `t = duration` and each moment you changed (mid-move and settled). Look critically: clipping, overflow, collisions, alignment, contrast, empty frames, anything that contradicts the art direction. Fix what you see before answering.
 - Use `quality: "high"` for fine details (1 px lines, small text, alignment) and `"low"` for a quick overview of many moments.
+- Single frames miss how a motion lands. Around a contact, a hit on the beat or a cut, render a strip instead (`strip: { at }`, 12 consecutive frames by default): one contact sheet shows whether the motion settles cleanly, overshoots, jitters or pops.
 - If a frame reports render errors, fix them first.
+- Frames with text problems get `Checks at <t> s (<format>):` lines in the `render_frames` summary: text clipped by its container, partly off the canvas, large text in the safe margins, scene text under the captions, contrast under WCAG (a ratio and the one it needs). Treat them as warnings: fix each one or say in your answer why it is deliberate (a title sliding in, a mask reveal). Contrast is not checked for text over an image, gradient, svg, canvas or filter, under an overlay (card, image), outlined or shadowed, in an svg, or in colors the checks cannot read; text revealed by a clip-path or mask is not checked at all. "unavailable" means the checks could not run. Look at all of those yourself.
 - If you touched the first or last ~0.5 s of a scene, its duration or anything shared across a cut, run `check_seams` and report the result.
+- Run `check_motion` on each scene you created or retimed before answering. "<scene> does not move" is a failure: add motion (a slow push-in, a drift) or shorten the scene. It also lists still stretches of about 2 s or more (measured between samples, so a hold of just over 2 s can go unlisted): give them motion or say in your answer why the hold is deliberate. A beat pulse (`music.pulse`) counts as motion; an animated `Grain` (with `t`) makes the check pass but is texture, not motion: the scene must still move on its own. A hold under 2 s is never flagged.
 - When the layout changed, render every format of the project. Changing on-screen text (copy, language, size) is a layout change.
 
 {{SCOPE}}

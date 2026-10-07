@@ -67,19 +67,27 @@ export function readWav(data: Buffer): Pcm {
 }
 
 export function writeWav({ sampleRate, samples }: Pcm): Buffer {
-  const out = Buffer.alloc(44 + samples.length * 2);
-  out.write('RIFF', 0, 'ascii');
-  out.writeUInt32LE(36 + samples.length * 2, 4);
-  out.write('WAVEfmt ', 8, 'ascii');
-  out.writeUInt32LE(16, 16);
-  out.writeUInt16LE(1, 20);
-  out.writeUInt16LE(1, 22);
-  out.writeUInt32LE(sampleRate, 24);
-  out.writeUInt32LE(sampleRate * 2, 28);
-  out.writeUInt16LE(2, 32);
-  out.writeUInt16LE(16, 34);
-  out.write('data', 36, 'ascii');
-  out.writeUInt32LE(samples.length * 2, 40);
-  for (let i = 0; i < samples.length; i++) out.writeInt16LE(samples[i], 44 + i * 2);
-  return out;
+  const wav = silentWav(sampleRate, samples.length);
+  wav.samples.set(samples);
+  return wav.data;
+}
+
+/** A WAV of `length` zero samples, and a view of its samples to write them in place, without a copy. */
+export function silentWav(sampleRate: number, length: number): { data: Buffer; samples: Int16Array } {
+  // Buffer.alloc never comes from the shared pool: the samples start at an even offset, as an Int16Array needs.
+  const data = Buffer.alloc(44 + length * 2);
+  data.write('RIFF', 0, 'ascii');
+  data.writeUInt32LE(36 + length * 2, 4);
+  data.write('WAVEfmt ', 8, 'ascii');
+  data.writeUInt32LE(16, 16);
+  data.writeUInt16LE(1, 20);
+  data.writeUInt16LE(1, 22);
+  data.writeUInt32LE(sampleRate, 24);
+  data.writeUInt32LE(sampleRate * 2, 28);
+  data.writeUInt16LE(2, 32);
+  data.writeUInt16LE(16, 34);
+  data.write('data', 36, 'ascii');
+  data.writeUInt32LE(length * 2, 40);
+  // Typed arrays use the platform's byte order: little-endian, as WAV wants, on the x64 and arm64 machines Cadence runs on.
+  return { data, samples: new Int16Array(data.buffer, data.byteOffset + 44, length) };
 }

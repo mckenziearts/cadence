@@ -168,9 +168,9 @@ async function open(hash: string, page?: Page): Promise<Page> {
 
 const panel = (page: Page, name: string) => page.getByRole('group', { name: 'Panneau' }).getByRole('button', { name }).click();
 
-/** Answers the page's GET of project A through `edit` (music, code generation) without touching the files. */
-async function rewriteProject(page: Page, edit: (project: ProjectState) => ProjectState): Promise<void> {
-  await page.route(`**/api/projects/${A}`, async (route) => {
+/** Answers the page's GET of a project (A by default) through `edit` (music, code generation) without touching the files. */
+async function rewriteProject(page: Page, edit: (project: ProjectState) => ProjectState, id = A): Promise<void> {
+  await page.route(`**/api/projects/${id}`, async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
     const response = await route.fetch();
     return route.fulfill({ response, json: edit((await response.json()) as ProjectState) });
@@ -685,6 +685,69 @@ describe('editor', () => {
       const at = await page.getByRole('slider', { name: 'Tête de lecture' }).getAttribute('aria-valuetext');
       const t = Number(at!.replace(',', '.').replace(/[^\d.]/g, ''));
       assert.ok(t >= 0.5 && t < 1.5, `the playhead starts at the voice: ${at}`);
+      await page.context().close();
+    },
+  );
+
+  it(
+    'sets the subtitles in Voix: downloads once every scene is spoken, burned into the preview once checked',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-st`;
+      await api('POST', '/api/projects', { name: 'Sous-titres', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Parole', duration: 3 });
+      const page = await open(`${id}/${scene.id}`);
+      await panel(page, 'Voix');
+      const srt = page.getByRole('button', { name: 'Télécharger les sous-titres SRT' });
+      const vtt = page.getByRole('button', { name: 'Télécharger les sous-titres VTT' });
+      const none = page.getByText('Pas encore de phrase : écrivez la voix off d’une scène.');
+      await none.waitFor();
+      assert.ok((await srt.isDisabled()) && (await vtt.isDisabled()), 'no sentence: the route answers 404');
+      for (const button of [srt, vtt]) assert.equal(await button.getAttribute('aria-describedby'), await none.getAttribute('id'));
+
+      speechError = 'Piper a échoué (code 1)';
+      const text = page.getByRole('textbox', { name: 'Voix off de « Parole »' });
+      await text.fill('Bonjour tout le monde.');
+      await text.blur();
+      const generate = page.getByRole('button', { name: 'Générer la voix off de « Parole »' });
+      await generate.waitFor({ timeout: 30_000 });
+      await page.getByText('Les sous-titres se téléchargent une fois la voix off de chaque scène générée.').waitFor();
+      assert.ok(await srt.isDisabled(), 'a scene not spoken: the route answers 409');
+      speechError = null;
+      await generate.click();
+      await page.getByText(`1${NBSP}phrase, de 0,00${NBSP}s à 1,00${NBSP}s`).waitFor({ timeout: 30_000 });
+      assert.equal(await srt.getAttribute('aria-describedby'), null);
+
+      for (const [button, format] of [
+        [srt, 'srt'],
+        [vtt, 'vtt'],
+      ] as const) {
+        const [file] = await Promise.all([page.waitForEvent('download'), button.click()]);
+        assert.equal(file.suggestedFilename(), `${id}.${format}`);
+        const saved = await readFile((await file.path())!, 'utf8');
+        const served = await fetch(`${server.config.editorOrigin}/api/projects/${id}/subtitles?format=${format}`);
+        assert.equal(saved, await served.text());
+        assert.match(saved, /Bonjour tout le monde\./);
+      }
+
+      // A refusal the panel could not see coming (the text changed meanwhile) shows its message, never a file.
+      await page.route('**/subtitles?**', (route) => route.fulfill({ status: 409, json: { error: 'Voix off pas prête' } }));
+      let downloads = 0;
+      page.on('download', () => downloads++);
+      await srt.click();
+      await page.getByText('Voix off pas prête').waitFor();
+      assert.equal(downloads, 0);
+
+      const caption = page.frameLocator('iframe[src*="/frame.html"]').locator('[data-cadence-captions]');
+      const burn = page.getByRole('checkbox', { name: /Incruster dans la vidéo/ });
+      // Checked once the server saved it, like the other voice settings.
+      await burn.click();
+      await caption.filter({ hasText: 'Bonjour tout le monde.' }).waitFor({ timeout: 30_000 });
+      assert.ok(await burn.isChecked());
+      assert.equal((await api<ProjectState>('GET', `/api/projects/${id}`)).captions, true);
+      await burn.click();
+      await caption.waitFor({ state: 'detached', timeout: 30_000 });
+      assert.equal((await api<ProjectState>('GET', `/api/projects/${id}`)).captions, false);
       await page.context().close();
     },
   );
@@ -1215,6 +1278,206 @@ describe('preview', () => {
     assert.ok(renders > 0 && renders <= seconds * 30 + 3, `${renders} renders in ${seconds.toFixed(1)} s`);
     // Stopped: the selection catches up with the playhead.
     await page.waitForFunction((hash) => location.hash === hash, `#/${A}/${second.id}`);
+    await page.context().close();
+  });
+
+  type Start = { duration: number; lead: number; offset: number };
+
+  /** A project whose one scene, `name`, plays `cues` and opens the video. */
+  async function soundProject(id: string, name: string, cues: { at: number; sound: string; gain?: number }[], duration?: number) {
+    await api('POST', '/api/projects', { name, id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    await api('POST', `/api/projects/${id}/scenes`, {
+      name,
+      duration,
+      code: `import type { SoundCue } from 'cadence';\n\nexport const sounds = (): SoundCue[] => ${JSON.stringify(cues)};\n\nexport default function Scene() {\n  return <p>${name}</p>;\n}\n`,
+    });
+    await api('DELETE', `/api/projects/${id}/scenes/titre`);
+  }
+
+  /** Nobody hears the headless browser: each source the page schedules is recorded with its lead over the audio clock. */
+  async function recordStarts(page: Page) {
+    await page.addInitScript(() => {
+      const starts: Start[] = [];
+      Object.assign(window, { starts });
+      const start = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function (this: AudioBufferSourceNode, when = 0, offset = 0, ...rest: number[]) {
+        starts.push({ duration: this.buffer?.duration ?? 0, lead: when - this.context.currentTime, offset });
+        return start.call(this, when, offset, ...rest);
+      };
+    });
+    return {
+      starts: () => page.evaluate(() => (window as unknown as { starts: Start[] }).starts),
+      startsReach: (count: number, timeout: number) =>
+        page.waitForFunction((count) => (window as unknown as { starts: unknown[] }).starts.length >= count, count, { timeout }),
+    };
+  }
+
+  /** Once the playhead reads `t` seconds or more. */
+  const playheadPast = (page: Page, t: number) =>
+    page.waitForFunction(
+      (t) => {
+        const at = document.querySelector('[role="slider"][aria-label="Tête de lecture"]')?.getAttribute('aria-valuetext');
+        return at != null && Number(at.replace(',', '.').replace(/[^\d.]/g, '')) >= t;
+      },
+      t,
+      { timeout: 10_000 },
+    );
+
+  it("schedules the scene's sound effects in the preview and in Present", { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-s`;
+    // The scene opens the video, so its cue at 0 is also Present's opening cue.
+    await soundProject(id, 'Sons', [
+      { at: 0, sound: 'impact' },
+      { at: 0.4, sound: 'pop' },
+      { at: 0.8, sound: 'whoosh', gain: 0.5 },
+    ]);
+    const page = await newPage();
+    const { starts, startsReach } = await recordStarts(page);
+    await open(`${id}/sons`, page);
+    const ready = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(ready, null, { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+    await startsReach(3, 10_000);
+    await page.waitForTimeout(500);
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    const heard = await starts();
+    assert.equal(heard.length, 3, JSON.stringify(heard));
+    for (const { lead } of heard) assert.ok(lead >= -0.01 && lead <= 0.16, JSON.stringify(heard));
+    // By length: the pop, the whoosh, then the impact, which opens the scene even though the first tick comes late.
+    const [popped, whooshed, impact] = [...heard].sort((a, b) => a.duration - b.duration);
+    assert.equal(heard[0].duration, impact.duration, JSON.stringify(heard));
+    assert.ok(impact.offset < 0.1, JSON.stringify(heard));
+    assert.deepEqual([popped.offset, whooshed.offset], [0, 0], JSON.stringify(heard));
+    await page.evaluate(() => ((window as unknown as { starts: unknown[] }).starts.length = 0));
+    await page.getByRole('button', { name: 'Présenter', exact: true }).click();
+    await startsReach(1, 15_000);
+    assert.equal((await starts())[0].duration, impact.duration, 'a cold Present plays its opening cue');
+    await page.context().close();
+  });
+
+  it('plays no sound effect while the preview is muted, and the next cue once unmuted', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-sm`;
+    await soundProject(
+      id,
+      'Muet',
+      [
+        { at: 0.2, sound: 'pop' },
+        { at: 2, sound: 'pop' },
+      ],
+      4,
+    );
+    const page = await newPage();
+    const { starts, startsReach } = await recordStarts(page);
+    // The mute button comes with a soundtrack. Its file is missing, so the playhead follows the wall clock.
+    await rewriteProject(
+      page,
+      (project) => ({
+        ...project,
+        music: { file: 'music/a.wav', start: 0, volume: 1 },
+        musicUrl: `/api/projects/${id}/music/audio?file=music%2Fa.wav`,
+      }),
+      id,
+    );
+    await open(`${id}/muet`, page);
+    const ready = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(ready, null, { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Couper le son' }).click();
+    await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+    await playheadPast(page, 0.8);
+    assert.deepEqual(await starts(), [], 'muted: the cue at 0.2 s is not heard');
+    await page.getByRole('button', { name: 'Réactiver le son' }).click();
+    await startsReach(1, 10_000);
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    const heard = await starts();
+    // Only the cue at 2 s, scheduled ahead: the one passed while muted is not owed.
+    assert.equal(heard.length, 1, JSON.stringify(heard));
+    assert.ok(heard[0].lead >= -0.01 && heard[0].lead <= 0.16 && heard[0].offset === 0, JSON.stringify(heard));
+    await page.context().close();
+  });
+
+  it('plays the opening cue again at each loop restart, never twice', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-sb`;
+    await soundProject(id, 'Boucle', [{ at: 0, sound: 'pop' }], 1);
+    const page = await newPage();
+    const { starts } = await recordStarts(page);
+    await open(`${id}/boucle`, page);
+    const ready = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(ready, null, { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Lecture en boucle (L)' }).waitFor();
+    // A pass begins each time the playhead jumps back.
+    type Loops = { restarts: number; time: number };
+    await page.evaluate(() => {
+      const slider = document.querySelector('[role="slider"][aria-label="Tête de lecture"]')!;
+      const loops: Loops = { restarts: 0, time: 0 };
+      Object.assign(window, { loops });
+      // Inline: tsx would wrap a named helper in a `__name` call the page does not define.
+      new MutationObserver(() => {
+        const t = Number(
+          slider
+            .getAttribute('aria-valuetext')!
+            .replace(',', '.')
+            .replace(/[^\d.]/g, ''),
+        );
+        if (t < loops.time) loops.restarts++;
+        loops.time = t;
+      }).observe(slider, { attributeFilter: ['aria-valuetext'] });
+    });
+    const loops = () => page.evaluate(() => (window as unknown as { loops: Loops }).loops);
+    await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+    // Paused inside the third pass, well after its opening cue and well before the next restart.
+    await page.waitForFunction(
+      () => {
+        const { loops } = window as unknown as { loops: Loops };
+        return loops.restarts >= 2 && loops.time >= 0.3;
+      },
+      null,
+      { timeout: 15_000 },
+    );
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    const { restarts } = await loops();
+    const heard = await starts();
+    assert.equal(heard.length, restarts + 1, `${restarts} restarts: ${JSON.stringify(heard)}`);
+    await page.context().close();
+  });
+
+  it('schedules the cues again from where the playhead is moved back while playing', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-sk`;
+    // Long enough that no loop restart comes into it.
+    await soundProject(id, 'Retour', [{ at: 0.3, sound: 'pop' }], 6);
+    const page = await newPage();
+    const { starts, startsReach } = await recordStarts(page);
+    await open(`${id}/retour`, page);
+    const ready = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(ready, null, { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+    await startsReach(1, 10_000);
+    await playheadPast(page, 0.8);
+    const scrubber = (await page.getByRole('slider', { name: 'Tête de lecture' }).boundingBox())!;
+    await page.mouse.click(scrubber.x + 1, scrubber.y + scrubber.height / 2);
+    await playheadPast(page, 0.8);
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    const heard = await starts();
+    assert.equal(heard.length, 2, JSON.stringify(heard));
+    assert.ok(heard[1].lead >= -0.01 && heard[1].lead <= 0.16, JSON.stringify(heard));
+    await page.context().close();
+  });
+
+  it('stays up when scene code posts a malformed errors message', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-x`;
+    await api('POST', '/api/projects', { name: 'Erreurs', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    await api('POST', `/api/projects/${id}/scenes`, {
+      name: 'Erreurs',
+      code: "export default function Erreurs() {\n  for (const errors of [1, [{}], [null, 'x']]) parent.postMessage({ source: 'cadence-frame', type: 'errors', errors }, '*');\n  return <p>Erreurs</p>;\n}\n",
+    });
+    const page = await newPage();
+    const crashes: string[] = [];
+    page.on('pageerror', (error) => crashes.push(error.message));
+    await open(`${id}/erreurs`, page);
+    const ready = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(ready, null, { timeout: 30_000 });
+    await page.waitForTimeout(500);
+    assert.deepEqual(crashes, []);
+    await page.getByRole('button', { name: 'Lecture', exact: true }).waitFor({ timeout: 1_000 });
     await page.context().close();
   });
 });

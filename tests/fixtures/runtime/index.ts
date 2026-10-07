@@ -22,5 +22,13 @@ export function createMusic(input: {
   sceneStart: number;
   sceneDuration: number;
 }) {
-  return { hasTrack: input.grid !== null, bpm: input.tempo, beatLength: 60 / input.tempo, sceneStart: input.sceneStart };
+  const beatLength = 60 / input.tempo;
+  return {
+    hasTrack: input.grid !== null,
+    bpm: input.tempo,
+    beatLength,
+    sceneStart: input.sceneStart,
+    // The real runtime without a track: a steady grid that starts with the scene.
+    beat: (n: number) => n * beatLength,
+  };
 }

@@ -33,6 +33,7 @@ export default {
       render: (count: number, of: string | null, format: string | null) =>
         `Rendu ${count === 1 ? 'd’une image' : `de ${count} images`}${of === null ? '' : ` de ${of}`}${format === null ? '' : ` (${format})`}`,
       seams: 'Vérification des raccords',
+      motion: 'Vérification du mouvement',
       project: 'Lecture de la structure du projet',
       brand: 'Lecture de la marque',
       music: 'Lecture de la grille musicale',
@@ -104,8 +105,10 @@ export default {
     otherScene: (sceneId: string, denied: string) => `Ce chat est limité à la scène « ${sceneId} » : ${denied}`,
     sceneIdNeeded: (scenes: string[]) => `Précise sceneId. Scènes : ${scenes.join(', ') || 'aucune'}.`,
     sceneOrVideo: 'Choisis sceneId ou wholeVideo, pas les deux.',
+    timesOrStrip: 'Passe soit times, soit strip, pas les deux.',
     renderOwnScene: 'rends ta scène, ou toute la vidéo avec wholeVideo: true.',
     checkOwnSeams: 'vérifie les raccords de ta scène.',
+    checkOwnMotion: 'vérifie le mouvement de ta scène.',
     setOwnDuration: 'change la durée de ta scène ; le chat du projet règle les autres.',
     setOwnVoiceOver: 'écris la voix off de ta scène ; le chat du projet règle les autres.',
     badUrl: (url: string) => `Adresse invalide : ${url} (seules les adresses http(s) peuvent être capturées).`,

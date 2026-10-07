@@ -5,9 +5,10 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { after, before, describe, test } from 'node:test';
+import { after, before, describe, mock, test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { PNG as Png } from 'pngjs';
 import type {
   AssetStore,
   BrandStore,
@@ -26,10 +27,41 @@ import { createMcpHandler } from '../../server/mcp/server';
 import { McpTokens } from '../../server/mcp/tokens';
 import { PROJECT_TOOLS, SCENE_TOOLS } from '../../server/mcp/tools';
 import { HttpError } from '../../server/util';
+import type { AuditFinding } from '../../src/shared/frameProtocol';
 import type { CreateSceneInput, ProjectState, SceneState } from '../../src/shared/types';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const SHEET = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 9, 9, 0xff, 0xd9]);
+/** What the frame checks find per time (null: they failed); clean at any other time. */
+const CHECKS = new Map<number, AuditFinding[] | null>([
+  [
+    0.25,
+    [
+      { kind: 'clipped', text: 'A "long" title', box: { x: 100, y: 200, width: 640, height: 96 } },
+      { kind: 'contrast', text: 'Grey label', box: { x: 100, y: 700, width: 300, height: 40 }, ratio: 2.31, required: 4.5 },
+    ],
+  ],
+  [0.5, null],
+]);
+/** A PNG of its own per time, to see the sheet get the strip's frames in order. */
+const tileAt = (t: number) => Buffer.concat([PNG, Buffer.from(String(t))]);
+/** check_motion samples while set: lit pixels per (scene, t) of a black 200×100 frame, and a render error. */
+let motion: ((sceneId: string, t: number) => { changed: number; error?: string }) | null = null;
+function motionFrame(changed: number): Buffer {
+  const png = new Png({ width: 200, height: 100 });
+  for (let i = 0; i < png.data.length; i += 4) {
+    png.data.fill(i / 4 < changed ? 255 : 0, i, i + 3);
+    png.data[i + 3] = 255;
+  }
+  return Png.sync.write(png);
+}
+/** 10 more lit pixels (0.05 %) per moving 0.25 s step; none during a hold. */
+const litExcept = (holds: [number, number][], error?: (t: number) => string | undefined) => (_sceneId: string, t: number) => {
+  let changed = 0;
+  for (let at = 0.25; at <= t + 1e-9; at += 0.25) if (!holds.some(([a, b]) => at > a && at <= b + 1e-9)) changed += 10;
+  return { changed, error: error?.(t) };
+};
 
 type Content = { type: string; text?: string; data?: string; mimeType?: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -65,6 +97,7 @@ function makeProject(dir: string): ProjectState {
     voiceOverLines: [],
     voiceOverPending: [],
     voiceOverError: null,
+    captions: false,
     codeGeneration: 1,
     createdAt: '',
     updatedAt: '',
@@ -111,17 +144,39 @@ describe('MCP endpoint', () => {
       },
     } as unknown as ProjectStore;
     const capture = {
-      frames: async (id: string, req: { sceneId: string | null; times: number[] }) => {
+      frames: async (
+        id: string,
+        req: { sceneId: string | null; times: number[]; imageFormat?: string; audit?: boolean; deadline?: number },
+      ) => {
         record('frames', [id, req]);
+        if (motion) {
+          const out = [];
+          for (const t of req.times) {
+            if (req.deadline !== undefined && Date.now() >= req.deadline) break;
+            const { changed, error } = motion(req.sceneId!, t);
+            out.push({
+              t,
+              sceneId: req.sceneId,
+              localTime: t,
+              image: motionFrame(changed),
+              mime: 'image/png',
+              errors: error ? [error] : [],
+            });
+          }
+          return out;
+        }
+        const png = req.imageFormat === 'png';
         return req.times.map((t) => ({
           t,
           sceneId: req.sceneId ?? 'outro',
           localTime: req.sceneId ? t : t - 2,
-          image: JPEG,
-          mime: 'image/jpeg',
+          image: png ? tileAt(t) : JPEG,
+          mime: png ? 'image/png' : 'image/jpeg',
           errors: t === 1.5 ? ['ReferenceError: x is not defined'] : [],
+          ...(req.audit ? { audit: CHECKS.has(t) ? CHECKS.get(t)! : [] } : {}),
         }));
       },
+      contactSheet: async (tiles: Buffer[], layout: unknown) => (record('contactSheet', [tiles, layout]), SHEET),
       kitSheet: async (brandId: string) => (
         record('kitSheet', brandId),
         { image: JPEG, problems: ['Button : boom'], loaded: true }
@@ -282,6 +337,7 @@ describe('MCP endpoint', () => {
         scale: 0.5,
         imageFormat: 'jpeg',
         quality: 82,
+        audit: true,
       });
       const frames = activity.at(-1);
       assert.ok(frames?.type === 'frames');
@@ -334,6 +390,331 @@ describe('MCP endpoint', () => {
     }
   });
 
+  test('render_frames checks: a block per frame with findings or failed checks, nothing for clean frames, never an error', async () => {
+    const client = await connect(tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'intro' }));
+    try {
+      const checked = await call(client, 'render_frames', { times: [0, 0.25, 0.5], format: '16:9' });
+      assert.equal(checked.isError, false);
+      assert.equal(
+        texts(checked)[0],
+        'Rendered 3 frames of scene intro "intro" (2.000 s) in 16:9 at 960\u00d7540.\n' +
+          'Checks at 0.250 s (16:9):\n' +
+          '- clipped by its container: "A \\"long\\" title" at 100,200 (640\u00d796)\n' +
+          '- contrast 2.31:1 (needs 4.5): "Grey label" at 100,700 (300\u00d740)\n' +
+          'Checks at 0.500 s (16:9): unavailable.',
+      );
+      assert.deepEqual(texts(checked).slice(1), ['t = 0.000 s', 't = 0.250 s', 't = 0.500 s']);
+
+      const failing = await call(client, 'render_frames', { times: [0.5, 1.5] });
+      assert.equal(failing.isError, false, 'checks never make a frame fail');
+      assert.match(
+        texts(failing)[0],
+        /Render errors:\nReferenceError: x is not defined\nChecks at 0\.500 s \(9:16\): unavailable\.$/,
+      );
+
+      await call(client, 'render_frames', { strip: { at: 0.25, frames: 4 } });
+      assert.equal((calls.frames.at(-1) as [string, { audit?: boolean }])[1].audit, undefined, 'strips run no checks');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('render_frames strip: one contact sheet around a moment, times clamped and deduplicated', async () => {
+    const token = tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'intro' });
+    const off = tokens.onActivity(token, (a) => activity.push(a));
+    const client = await connect(token);
+    try {
+      const end = await call(client, 'render_frames', { strip: { at: 2, frames: 4 } });
+      assert.equal(end.isError, false);
+      const [, req] = calls.frames.at(-1) as [string, Record<string, unknown>];
+      assert.deepEqual(req, { sceneId: 'intro', times: [1.967, 1.983, 2], format: '9:16', scale: 0.25, imageFormat: 'png' });
+      assert.match(
+        texts(end)[0],
+        /^Rendered a strip of 3 frames of scene intro "intro" \(2\.000 s\) in 9:16: one contact sheet, 3 tiles per row at 270×480 each\.$/,
+      );
+      assert.equal(texts(end)[1], 'Tiles, left to right then top to bottom:\n1. t = 1.967 s\n2. t = 1.983 s\n3. t = 2.000 s');
+      const images = end.content.filter((c) => c.type === 'image');
+      assert.equal(images.length, 1);
+      assert.equal(images[0].mimeType, 'image/jpeg');
+      assert.deepEqual(Buffer.from(images[0].data!, 'base64'), SHEET);
+      assert.deepEqual(calls.contactSheet.at(-1), [[1.967, 1.983, 2].map(tileAt), { columns: 6, gap: 4 }]);
+      const frames = activity.at(-1);
+      assert.ok(frames?.type === 'frames');
+      assert.deepEqual(frames.times, [1.967, 1.983, 2]);
+      assert.equal(frames.urls.length, 1);
+      assert.match(frames.urls[0], /\.jpg$/);
+      const saved = path.join(project.dir, '.cadence', 'frames', path.basename(frames.urls[0]));
+      assert.deepEqual(await fs.readFile(saved), SHEET, 'the editor chat shows the image the agent got');
+
+      const landscape = await call(client, 'render_frames', { strip: { at: 1.5 }, format: '16:9' });
+      const times = (calls.frames.at(-1) as [string, { times: number[] }])[1].times;
+      assert.equal(times.length, 12, 'twelve frames by default, beyond the 8-frame limit of times');
+      assert.deepEqual([times[0], times[6], times[11]], [1.4, 1.5, 1.583]);
+      assert.match(texts(landscape)[0], /4 tiles per row at 480×270 each\.\nRender errors:\nReferenceError: x is not defined/);
+      assert.deepEqual(calls.contactSheet.at(-1), [times.map(tileAt), { columns: 4, gap: 4 }]);
+
+      const portrait = await call(client, 'render_frames', { strip: { at: 1 } });
+      assert.match(texts(portrait)[0], /12 frames .* 6 tiles per row at 270×480 each\./);
+      assert.deepEqual((calls.contactSheet.at(-1) as unknown[])[1], { columns: 6, gap: 4 });
+      const square = await call(client, 'render_frames', { strip: { at: 1 }, format: '1:1' });
+      assert.match(texts(square)[0], /in 1:1: one contact sheet, 4 tiles per row at 270×270 each\./);
+      assert.deepEqual((calls.contactSheet.at(-1) as unknown[])[1], { columns: 4, gap: 4 });
+
+      const start = await call(client, 'render_frames', { strip: { at: 0 } });
+      assert.deepEqual((calls.frames.at(-1) as [string, { times: number[] }])[1].times, [0, 0.017, 0.033, 0.05, 0.067, 0.083]);
+      assert.equal(start.isError, false);
+
+      const odd = await call(client, 'render_frames', { strip: { at: 1, frames: 5 }, quality: 'high' });
+      assert.equal(odd.isError, false);
+      const [, oddReq] = calls.frames.at(-1) as [string, { times: number[]; scale: number }];
+      assert.deepEqual(oddReq.times, [0.967, 0.983, 1, 1.017, 1.033], 'an odd count centres on at');
+      assert.equal(oddReq.scale, 0.25, 'quality leaves strip tiles at quarter size');
+      await call(client, 'render_frames', { strip: { at: 1, frames: 24 } });
+      assert.equal((calls.frames.at(-1) as [string, { times: number[] }])[1].times.length, 24);
+      project.fps = 24;
+      try {
+        await call(client, 'render_frames', { strip: { at: 1, frames: 4 } });
+      } finally {
+        project.fps = 60;
+      }
+      const at24 = (calls.frames.at(-1) as [string, { times: number[] }])[1].times;
+      assert.deepEqual(at24, [0.917, 0.958, 1, 1.042], 'one tile per video frame at 24 fps');
+
+      const before = calls.frames.length;
+      for (const args of [{}, { times: [0], strip: { at: 1 } }]) {
+        const rejected = await call(client, 'render_frames', args);
+        assert.equal(rejected.isError, true, JSON.stringify(args));
+        assert.equal(texts(rejected)[0], 'Passe soit times, soit strip, pas les deux.');
+      }
+      for (const strip of [{ at: 1, frames: 3 }, { at: 1, frames: 25 }, { at: 1, frames: 4.5 }, { at: -1 }]) {
+        const rejected = await call(client, 'render_frames', { strip });
+        assert.equal(rejected.isError, true, JSON.stringify(strip));
+      }
+      assert.equal(calls.frames.length, before);
+    } finally {
+      off();
+      await client.close();
+    }
+  });
+
+  test('check_motion: samples every 0.25 s at half size, refuses a scene that never moves, lists still stretches of 2 s or more', async () => {
+    const saved = project;
+    /** The project with scenes of these durations (intro, outro, logo, then s3, s4...). */
+    const withScenes = (durations: number[]) => {
+      let start = 0;
+      const scenes = durations.map((duration, index) => {
+        const scene = { ...saved.scenes[0], id: saved.scenes[index]?.id ?? `s${index}`, index, start, duration };
+        start += duration;
+        return scene;
+      });
+      project = { ...saved, scenes, duration: start };
+    };
+    let before = 0;
+    const motionCalls = () =>
+      (calls.frames ?? []).slice(before) as [string, { sceneId: string; times: number[]; deadline: number }][];
+    const check = async (client: Client, args: Record<string, unknown>) => {
+      before = calls.frames?.length ?? 0;
+      const result = await call(client, 'check_motion', args);
+      return { result, summary: texts(result)[0] };
+    };
+    /** Each scene's sampled times, its batches joined in call order. */
+    const sampledTimes = () => {
+      const byScene = new Map<string, number[]>();
+      for (const [, req] of motionCalls()) byScene.set(req.sceneId, [...(byScene.get(req.sceneId) ?? []), ...req.times]);
+      return byScene;
+    };
+    const increasing = (times: number[]) => times.every((t, i) => i === 0 || t > times[i - 1]);
+    const scene = await connect(tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'intro' }));
+    const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
+    try {
+      // Only Date: the deadline is read from it, the HTTP transport keeps its real timers.
+      mock.timers.enable({ apis: ['Date'], now: 0 });
+      motion = () => ({ changed: 0 });
+      const frozen = await check(scene, {});
+      assert.equal(frozen.result.isError, true);
+      // Odd samples one video frame (1/60 s) late: a pulse on a 0.25 s grid is not the same value at every sample.
+      assert.deepEqual(motionCalls(), [
+        [
+          'demo',
+          {
+            sceneId: 'intro',
+            times: [0, 0.267, 0.5, 0.767, 1, 1.267, 1.5, 1.767, 2],
+            format: '9:16',
+            scale: 0.5,
+            imageFormat: 'png',
+            captions: false,
+            deadline: 240_000,
+          },
+        ],
+      ]);
+      assert.equal(
+        frozen.summary,
+        'Motion of scene intro "intro" (2.000 s) in 9:16: a sample every 0.250 s at 540×960, consecutive samples compared like check_seams. Still means under 0.01 % of pixels changing; still stretches of about 2 s or more (measured between samples) are listed.\n' +
+          '- intro does not move: add motion (a slow push-in, a drift) or shorten it.',
+      );
+      const other = await check(scene, { sceneId: 'outro' });
+      assert.equal(other.result.isError, true);
+      assert.match(other.summary, /limité à la scène « intro » : vérifie le mouvement de ta scène\./);
+      assert.equal(motionCalls().length, 0);
+
+      motion = litExcept([]);
+      const moving = await check(client, { format: '16:9' });
+      assert.equal(moving.result.isError, false);
+      assert.deepEqual(
+        motionCalls().map(([, req]) => req.sceneId),
+        ['intro', 'outro', 'logo'],
+      );
+      assert.match(moving.summary, /^Motion of 3 scenes \(6\.000 s\) in 16:9: a sample every 0\.250 s at 960×540,/);
+      assert.match(moving.summary, /\n- intro: moves throughout\.\n- outro: moves throughout\.\n- logo: moves throughout\.$/);
+
+      // A hold under 2 s is never flagged, a still stretch from 2 s is listed, a still scene under 2 s is a hold.
+      for (const [durations, holds, line] of [
+        [
+          [5],
+          [
+            [0, 1.75],
+            [2, 4.5],
+          ],
+          '- intro: still from 2.000 s to 4.500 s.',
+        ],
+        [[5], [[0.5, 2.5]], '- intro: still from 0.500 s to 2.500 s.'],
+        [[5], [[0.5, 2.25]], '- intro: moves throughout.'],
+        [[1.75], [[0, 1.75]], '- intro: still for 1.750 s, under 2 s: a deliberate hold.'],
+        [[1.996], [[0, 1.996]], '- intro: still for 1.996 s, under 2 s: a deliberate hold.'],
+      ] as [number[], [number, number][], string][]) {
+        withScenes(durations);
+        motion = litExcept(holds);
+        const listed = await check(client, { sceneId: 'intro' });
+        assert.equal(listed.result.isError, false, line);
+        assert.equal(listed.summary.split('\n').at(-1), line);
+      }
+
+      // Under 0.01 % of pixels is still: 1 of 20 000 pixels (0.005 %) is still, 2 (0.01 %) is motion.
+      withScenes([2]);
+      for (const [lit, still] of [
+        [1, true],
+        [2, false],
+      ] as const) {
+        motion = (_sceneId, t) => ({ changed: t === 1 ? lit : 0 });
+        const flicker = await check(client, { sceneId: 'intro' });
+        assert.equal(flicker.result.isError, still, `${lit} pixel(s)`);
+      }
+
+      // A render error stops that scene, reported like render_frames; the error alone never makes the result fail.
+      withScenes([3, 2]);
+      const stillThenBroken = litExcept([[0, 3]], (t) => (t >= 2.5 ? 'ReferenceError: boom' : undefined));
+      motion = (sceneId, t) => (sceneId === 'intro' ? stillThenBroken : litExcept([]))(sceneId, t);
+      const broken = await check(client, {});
+      assert.equal(broken.result.isError, false);
+      assert.match(
+        broken.summary,
+        /\n- intro: stopped at 2\.500 s by a render error; before it: still from 0\.000 s to 2\.267 s\.\n- outro: moves throughout\.\nRender errors:\nReferenceError: boom$/,
+      );
+      motion = () => ({ changed: 0, error: 'ReferenceError: boom' });
+      const failing = await check(client, {});
+      assert.equal(failing.result.isError, true, 'nothing could be checked');
+      assert.match(failing.summary, /\n- intro: stopped at 0\.000 s by a render error; nothing checked\./);
+      // Cut short, a still start is not called a hold: the rest of the scene was never seen.
+      withScenes([3]);
+      motion = litExcept([[0, 3]], (t) => (t >= 1.5 ? 'ReferenceError: boom' : undefined));
+      const cutShort = await check(client, { sceneId: 'intro' });
+      assert.match(
+        cutShort.summary,
+        /\n- intro: stopped at 1\.500 s by a render error; before it: still for 1\.267 s\.\nRender errors:/,
+      );
+      // One sample before the error compares nothing: the scene is not checked either.
+      withScenes([2]);
+      motion = litExcept([], (t) => (t >= 0.25 ? 'ReferenceError: boom' : undefined));
+      const second = await check(client, {});
+      assert.equal(second.result.isError, true, 'one sample checks nothing');
+      assert.match(second.summary, /\n- intro: stopped at 0\.267 s by a render error; nothing checked\./);
+      withScenes([2, 2]);
+      assert.equal((await check(client, {})).result.isError, true, 'no scene got two samples');
+
+      // At most 120 samples per scene and 600 per call: the step widens, no scene is dropped, and the result says so.
+      withScenes([60]);
+      motion = litExcept([]);
+      const long = await check(client, { sceneId: 'intro' });
+      const longTimes = sampledTimes().get('intro')!;
+      assert.equal(longTimes.length, 120);
+      assert.equal(longTimes.at(-1), 60);
+      assert.match(
+        long.summary,
+        /\n- intro: moves throughout\. Sampled every 0\.504 s instead of 0\.250 s \(at most 120 samples per scene and 600 per call\)\.$/,
+      );
+      withScenes([30, 30, 30, 30, 30, 30]);
+      const many = await check(client, {});
+      const sampled = sampledTimes();
+      assert.deepEqual([...sampled.keys()], ['intro', 'outro', 'logo', 's3', 's4', 's5']);
+      assert.ok([...sampled.values()].reduce((sum, times) => sum + times.length, 0) <= 600);
+      assert.ok([...sampled.values()].every((times) => times.length <= 120 && times.at(-1) === 30 && increasing(times)));
+      assert.equal(many.summary.match(/Sampled every 0\.306 s instead of 0\.250 s/g)?.length, 6);
+      // A widened step can land its last sample on the scene's end once rounded: no time is sampled twice.
+      withScenes([2.069, 30, 30, 30, 30, 30]);
+      await check(client, {});
+      assert.deepEqual(sampledTimes().get('intro')!.slice(-2), [1.827, 2.069]);
+      assert.ok([...sampledTimes().values()].every(increasing));
+
+      // Out of time (240 s, under the 300 s MCP tool timeout): the scene in progress stops, the next ones never start.
+      withScenes([3, 3, 3]);
+      const deadline = Date.now() + 240_000;
+      motion = (sceneId, t) => {
+        if (sceneId === 'outro' && t === 2.5) mock.timers.tick(240_000);
+        return sceneId === 'outro' ? { changed: 0 } : litExcept([])(sceneId, t);
+      };
+      const late = await check(client, {});
+      assert.deepEqual([...sampledTimes().keys()], ['intro', 'outro']);
+      assert.ok(motionCalls().every(([, req]) => req.deadline === deadline));
+      assert.equal(late.result.isError, false, 'a scene cut short is not frozen');
+      assert.match(
+        late.summary,
+        /\n- intro: moves throughout\.\n- outro: stopped at 2\.767 s, out of time; before it: still from 0\.000 s to 2\.500 s\. Run check_motion on this scene alone\.\n- logo: not checked, out of time: run check_motion on this scene alone\.$/,
+      );
+      withScenes([3, 3]);
+      motion = (_sceneId, t) => {
+        if (t === 0) mock.timers.tick(240_000);
+        return { changed: 0 };
+      };
+      const none = await check(client, {});
+      assert.equal(none.result.isError, true, 'nothing could be checked in time');
+      assert.match(
+        none.summary,
+        /\n- intro: stopped at 0\.267 s, out of time; nothing checked\. Run check_motion on this scene alone\.\n- outro: not checked, out of time: run check_motion on this scene alone\.$/,
+      );
+    } finally {
+      mock.timers.reset();
+      motion = null;
+      project = saved;
+      await scene.close();
+      await client.close();
+    }
+  });
+
+  test('check_motion asks the capture for small batches, never a whole long scene at once', async () => {
+    const saved = project;
+    project = { ...saved, scenes: [{ ...saved.scenes[0], duration: 10 }], duration: 10 };
+    const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
+    try {
+      const before = calls.frames?.length ?? 0;
+      // The hold starts in the first batch (samples up to 2.767 s) and ends in the second.
+      motion = litExcept([[2.5, 5.5]]);
+      const result = await call(client, 'check_motion', { sceneId: 'intro' });
+      const batches = ((calls.frames ?? []).slice(before) as [string, { times: number[] }][]).map(([, req]) => req.times);
+      assert.deepEqual(
+        batches.map((times) => times.length),
+        [12, 12, 12, 5],
+      );
+      assert.equal(batches.flat().length, new Set(batches.flat()).size);
+      assert.deepEqual([batches[0][0], batches.at(-1)!.at(-1)], [0, 10]);
+      assert.equal(result.isError, false);
+      assert.equal(texts(result)[0].split('\n').at(-1), '- intro: still from 2.500 s to 5.500 s.');
+    } finally {
+      motion = null;
+      project = saved;
+      await client.close();
+    }
+  });
+
   test('project scope: structure tools, explicit scene or whole video', async () => {
     const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
     try {
@@ -363,6 +744,20 @@ describe('MCP endpoint', () => {
       assert.match(texts(vague)[0], /Précise sceneId/);
       const missingScene = await call(client, 'render_frames', { sceneId: 'ghost', times: [0] });
       assert.match(texts(missingScene)[0], /Aucune scène « ghost »/);
+
+      const videoEnd = await call(client, 'render_frames', { wholeVideo: true, strip: { at: 6, frames: 4 } });
+      assert.equal(videoEnd.isError, false);
+      const [, videoReq] = calls.frames.at(-1) as [string, { sceneId: string | null; times: number[] }];
+      assert.equal(videoReq.sceneId, null);
+      assert.deepEqual(videoReq.times, [5.967, 5.983, 6]);
+      assert.match(texts(videoEnd)[0], /^Rendered a strip of 3 frames of the whole video \(6\.000 s\) in 9:16:/);
+      assert.equal(
+        texts(videoEnd)[1],
+        'Tiles, left to right then top to bottom:\n' +
+          '1. video t = 5.967 s \u2192 scene outro at 3.967 s\n' +
+          '2. video t = 5.983 s \u2192 scene outro at 3.983 s\n' +
+          '3. video t = 6.000 s \u2192 scene outro at 4.000 s',
+      );
 
       const badUrl = await call(client, 'capture_reference', { url: 'file:///etc/passwd' });
       assert.equal(badUrl.isError, true);

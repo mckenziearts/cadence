@@ -117,20 +117,18 @@ export class PixelSeamService implements SeamService {
    * decodes and the comparison together (about 70 ms per 1080p cut): only the seam dialog (`detail`) draws it.
    */
   private async compare(project: ProjectState, from: SceneState, to: SceneState, format: FormatId, drawDiff = false) {
-    const shot = { format, scale: SEAM_SCALE, imageFormat: 'png' as const };
+    const shot = { format, scale: SEAM_SCALE, imageFormat: 'png' as const, captions: false };
     const [a] = await this.deps.capture.frames(project.id, { ...shot, sceneId: from.id, times: [from.duration] });
     const [b] = await this.deps.capture.frames(project.id, { ...shot, sceneId: to.id, times: [0] });
     const pa = PNG.sync.read(a.image);
     const pb = PNG.sync.read(b.image);
     const diff = drawDiff ? new PNG({ width: pa.width, height: pa.height }) : null;
-    // Strict: about 2 levels on a channel, anti-aliased pixels included (a moved or re-weighted glyph is a real jump).
-    const differing = pixelmatch(pa.data, pb.data, diff?.data, pa.width, pa.height, { threshold: 0.01, includeAA: true });
     const error = [...a.errors, ...b.errors][0];
     const result: SeamResult = {
       from: from.id,
       to: to.id,
       format,
-      diffPercent: Math.round((differing / (pa.width * pa.height)) * 100_000) / 1000,
+      diffPercent: diffPercent(pa, pb, diff),
       checkedAt: nowIso(),
       ...(error ? { error: firstLine(error) } : {}),
     };
@@ -163,6 +161,15 @@ export class PixelSeamService implements SeamService {
     await writeJsonAtomic(seamsFile(project.dir), file);
     this.deps.hub.send({ type: 'seams', projectId: project.id, results: this.cached(project.id) });
   }
+}
+
+/**
+ * Percent of pixels that differ between two images of the same size, to the thousandth, drawn into `diff` when given.
+ * Strict: about 2 levels on a channel, anti-aliased pixels included (a moved or re-weighted glyph is a real jump).
+ */
+export function diffPercent(a: PNG, b: PNG, diff?: PNG | null): number {
+  const differing = pixelmatch(a.data, b.data, diff?.data, a.width, a.height, { threshold: 0.01, includeAA: true });
+  return Math.round((differing / (a.width * a.height)) * 100_000) / 1000;
 }
 
 function firstLine(e: unknown): string {

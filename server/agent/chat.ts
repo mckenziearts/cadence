@@ -40,7 +40,7 @@ import type {
   VersionStore,
 } from '../contracts';
 import { m } from '../i18n';
-import { PROJECT_TOOLS, SCENE_TOOLS } from '../mcp/tools';
+import { PROJECT_TOOLS, SCENE_TOOLS, STRIP_FRAMES } from '../mcp/tools';
 import { NO_TOKENS, addedSince } from '../usage';
 import {
   HttpError,
@@ -155,12 +155,15 @@ export function activityLabel(name: string, input: Record<string, unknown>, proj
   const scene = str(input.sceneId, words.scene);
   switch (tool) {
     case 'render_frames': {
-      const count = Array.isArray(input.times) ? input.times.length : 0;
+      const strip = input.strip as { frames?: unknown } | undefined;
+      const count = Array.isArray(input.times) ? input.times.length : strip ? Number(strip.frames) || STRIP_FRAMES : 0;
       const of = input.wholeVideo ? words.video : typeof input.sceneId === 'string' ? input.sceneId : null;
       return words.render(count, of, typeof input.format === 'string' ? input.format : null);
     }
     case 'check_seams':
       return words.seams;
+    case 'check_motion':
+      return words.motion;
     case 'get_project':
       return words.project;
     case 'get_brand':

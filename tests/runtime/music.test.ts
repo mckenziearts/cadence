@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createMusic } from '../../src/runtime/index';
 import type { MusicGridData } from '../../src/shared/types';
+import { createMusic as createFixtureMusic } from '../fixtures/runtime/index';
 
 const close = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≉ ${b}`);
 
@@ -53,6 +54,18 @@ describe('music without a track', () => {
     close(m.phrase(1), 8);
     close(m.bars(2), 4);
     close(m.bars(0.5), 1);
+  });
+
+  test('the frame e2e fixture beat() follows this rule', () => {
+    for (const tempo of [120, 90]) {
+      for (const sceneStart of [0, 10.25]) {
+        const input = { grid: null, tempo, musicStart: 0, sceneStart, sceneDuration: 3 };
+        const real = createMusic(input);
+        const fixture = createFixtureMusic(input);
+        assert.equal(fixture.beatLength, real.beatLength);
+        for (const n of [-1, 0, 1, 2.5, 7]) close(fixture.beat(n), real.beat(n));
+      }
+    }
   });
 
   test('snap to every grid', () => {

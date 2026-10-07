@@ -39,6 +39,10 @@ export default {
     invalidRange: 'Plage de rendu invalide',
     noScene: 'Le projet n’a aucune scène à rendre',
     noDetail: 'aucun détail',
+    soundMissing: (file: string) => `Effet sonore introuvable : ${file}`,
+    soundFormat: (file: string, rate: number) => `Effet sonore au mauvais format : ${file} (${rate} Hz attendus)`,
+    invalidSounds: (error: string) => `Sons de la vidéo invalides : ${error}`,
+    soundsTimeout: (seconds: number) => `sounds() a dépassé ${seconds} s (boucle infinie ?)`,
   },
   music: {
     projectNotFound: (id: string) => `Projet introuvable : ${id}`,
@@ -74,6 +78,7 @@ export default {
     downloadFailed: (name: string, error: string) => `Téléchargement de la voix ${name} impossible : ${error}`,
     corrupted: (name: string) => `La voix ${name} téléchargée est corrompue (md5) : réessayez`,
     noTrack: 'Aucune voix off générée pour ce projet',
+    notSpoken: 'Une scène a une voix off pas encore générée : générez la voix off, puis téléchargez les sous-titres',
     elevenLabsKeyRefused: (detail: string | null) =>
       `ElevenLabs refuse la clé API${detail ? ` (${detail})` : ''} : vérifiez-la dans le Profil`,
     elevenLabsQuota: (detail: string | null) =>
@@ -108,6 +113,18 @@ export default {
     unknown: (ids: string, known: string) => `Ambiance inconnue : ${ids} (${known})`,
     written: (file: string, bars: number, duration: number, lufs: string, peak: string) =>
       `${file} ${bars} mesures \u00b7 ${duration} s \u00b7 ${lufs} LUFS \u00b7 crête ${peak} dBFS`,
+  },
+  sounds: {
+    written: (file: string, duration: string, peakAt: string, peak: string) =>
+      `${file} ${duration} s \u00b7 plus fort à ${peakAt} s \u00b7 crête ${peak} dBFS`,
+    cues: {
+      notArray: 'sounds() doit renvoyer un tableau de sons',
+      tooMany: (max: number) => `sounds() renvoie plus de ${max} sons`,
+      notObject: (index: number) => `son ${index} : un objet { at, sound, gain? } est attendu`,
+      at: (index: number, duration: number) => `son ${index} : at doit être un nombre de secondes entre 0 et ${duration}`,
+      sound: (index: number, received: string, known: string) => `son ${index} : son inconnu ${received} (${known})`,
+      gain: (index: number) => `son ${index} : gain doit être un nombre entre 0 et 1`,
+    },
   },
   brands: {
     build: {
@@ -219,6 +236,7 @@ Usage : npm run cadence -- <commande> [options]
                                                exporte la vidéo en MP4 (tous les formats du projet par défaut)
   analyze <audio> [--json]                     analyse une musique (tempo, temps, mesures, phrases)
   soundtracks [ambiance\u2026]                      recompose les ambiances du panneau Musique (src/editor/soundtracks)
+  sounds                                       réécrit les effets sonores que les scènes peuvent jouer (src/editor/sounds)
   new <nom> [--brand <id>] [--template <id>] [--formats 16:9,9:16] [--fps 60]
                                                crée un projet
   list                                         liste les projets
