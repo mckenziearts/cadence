@@ -94,7 +94,9 @@ export function FrameView(props: Props) {
         bridge.sync();
         latest.current.onReady?.();
       } else if (message.type === 'errors') {
-        latest.current.onErrors?.(message.errors);
+        // Scene code can post one itself: anything but a list of texts would take the error banner, and the editor, down.
+        const { errors } = message;
+        if (Array.isArray(errors) && errors.every((error) => typeof error === 'string')) latest.current.onErrors?.(errors);
       } else if (message.type === 'sounds') {
         latest.current.onSounds?.(message.sceneId, message.cues);
       }

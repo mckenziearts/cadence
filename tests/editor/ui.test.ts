@@ -1323,6 +1323,25 @@ describe('preview', () => {
     assert.equal((await starts())[0].duration, impact.duration, 'a cold Present plays its opening cue');
     await page.context().close();
   });
+
+  it('stays up when scene code posts a malformed errors message', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-x`;
+    await api('POST', '/api/projects', { name: 'Erreurs', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    await api('POST', `/api/projects/${id}/scenes`, {
+      name: 'Erreurs',
+      code: "export default function Erreurs() {\n  for (const errors of [1, [{}], [null, 'x']]) parent.postMessage({ source: 'cadence-frame', type: 'errors', errors }, '*');\n  return <p>Erreurs</p>;\n}\n",
+    });
+    const page = await newPage();
+    const crashes: string[] = [];
+    page.on('pageerror', (error) => crashes.push(error.message));
+    await open(`${id}/erreurs`, page);
+    const ready = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(ready, null, { timeout: 30_000 });
+    await page.waitForTimeout(500);
+    assert.deepEqual(crashes, []);
+    await page.getByRole('button', { name: 'Lecture', exact: true }).waitFor({ timeout: 1_000 });
+    await page.context().close();
+  });
 });
 
 describe('features', () => {
