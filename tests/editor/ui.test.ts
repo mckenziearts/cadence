@@ -690,6 +690,66 @@ describe('editor', () => {
   );
 
   it(
+    'sets the subtitles in Voix: downloads once every scene is spoken, burned into the preview once checked',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-st`;
+      await api('POST', '/api/projects', { name: 'Sous-titres', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Parole', duration: 3 });
+      const page = await open(`${id}/${scene.id}`);
+      await panel(page, 'Voix');
+      const srt = page.getByRole('button', { name: 'Télécharger les sous-titres SRT' });
+      const vtt = page.getByRole('button', { name: 'Télécharger les sous-titres VTT' });
+      await page.getByText('Pas encore de phrase : écrivez la voix off d’une scène.').waitFor();
+      assert.ok((await srt.isDisabled()) && (await vtt.isDisabled()), 'no sentence: the route answers 404');
+
+      speechError = 'Piper a échoué (code 1)';
+      const text = page.getByRole('textbox', { name: 'Voix off de « Parole »' });
+      await text.fill('Bonjour tout le monde.');
+      await text.blur();
+      const generate = page.getByRole('button', { name: 'Générer la voix off de « Parole »' });
+      await generate.waitFor({ timeout: 30_000 });
+      await page.getByText('Les sous-titres se téléchargent une fois la voix off de chaque scène générée.').waitFor();
+      assert.ok(await srt.isDisabled(), 'a scene not spoken: the route answers 409');
+      speechError = null;
+      await generate.click();
+      await page.getByText(`1${NBSP}phrase, de 0,00${NBSP}s à 1,00${NBSP}s`).waitFor({ timeout: 30_000 });
+
+      for (const [button, format] of [
+        [srt, 'srt'],
+        [vtt, 'vtt'],
+      ] as const) {
+        const [file] = await Promise.all([page.waitForEvent('download'), button.click()]);
+        assert.equal(file.suggestedFilename(), `${id}.${format}`);
+        const saved = await readFile((await file.path())!, 'utf8');
+        const served = await fetch(`${server.config.editorOrigin}/api/projects/${id}/subtitles?format=${format}`);
+        assert.equal(saved, await served.text());
+        assert.match(saved, /Bonjour tout le monde\./);
+      }
+
+      // A refusal the panel could not see coming (the text changed meanwhile) shows its message, never a file.
+      await page.route('**/subtitles?**', (route) => route.fulfill({ status: 409, json: { error: 'Voix off pas prête' } }));
+      let downloads = 0;
+      page.on('download', () => downloads++);
+      await srt.click();
+      await page.getByText('Voix off pas prête').waitFor();
+      assert.equal(downloads, 0);
+
+      const caption = page.frameLocator('iframe[src*="/frame.html"]').locator('[data-cadence-captions]');
+      const burn = page.getByRole('checkbox', { name: /Incruster dans la vidéo/ });
+      // Checked once the server saved it, like the other voice settings.
+      await burn.click();
+      await caption.filter({ hasText: 'Bonjour tout le monde.' }).waitFor({ timeout: 30_000 });
+      assert.ok(await burn.isChecked());
+      assert.equal((await api<ProjectState>('GET', `/api/projects/${id}`)).captions, true);
+      await burn.click();
+      await caption.waitFor({ state: 'detached', timeout: 30_000 });
+      assert.equal((await api<ProjectState>('GET', `/api/projects/${id}`)).captions, false);
+      await page.context().close();
+    },
+  );
+
+  it(
     'sends Voix to the Profile for the ElevenLabs key, picks a voice, and speaks a scene only on Générer',
     { timeout: 90_000 },
     async () => {

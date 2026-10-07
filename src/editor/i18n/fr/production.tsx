@@ -149,6 +149,14 @@ export default {
       speaking: 'Génération de la voix...',
       failed: 'La voix off n’a pas pu être générée',
     },
+    subtitles: {
+      title: 'Sous-titres',
+      burn: 'Incruster dans la vidéo',
+      burnHint: 'Dans l’aperçu, les images que regarde l’agent et le MP4.',
+      download: (format: string) => `Télécharger les sous-titres ${format}`,
+      notSpoken: 'Les sous-titres se téléchargent une fois la voix off de chaque scène générée.',
+      none: 'Pas encore de phrase : écrivez la voix off d’une scène.',
+    },
   },
   brand: {
     written: { fr: 'Textes en français', en: 'Textes en anglais' },

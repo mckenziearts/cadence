@@ -401,7 +401,10 @@ projects already made. Without a choice (the default), new projects start with P
   voice starts.
 - Timing is per sentence, not per word. A sentence can run past the end of its scene into the next one, and the Voice
   tab says so: lengthen the scene (or shorten the text).
-- No subtitles yet: the on-screen text is whatever the scenes draw.
+- Subtitles come from the same sentences. Under **Subtitles** in the Voice tab, **SRT** and **VTT** download them for
+  the whole video once every scene is spoken, ready for YouTube or a video player. **Burn into the video** draws them
+  over the picture, at the bottom of the format's safe area: the preview, the frames Claude looks at and the MP4 show
+  them.
 
 ## Command line
 

@@ -156,6 +156,14 @@ export default {
       speaking: 'Generating the voice...',
       failed: 'The voice-over could not be generated',
     },
+    subtitles: {
+      title: 'Subtitles',
+      burn: 'Burn into the video',
+      burnHint: 'In the preview, the frames the agent looks at and the MP4.',
+      download: (format: string) => `Download the ${format} subtitles`,
+      notSpoken: "Subtitles download once every scene's voice-over is generated.",
+      none: "No sentence yet: write a scene's voice-over.",
+    },
   },
   brand: {
     written: { fr: 'Written in French', en: 'Written in English' },

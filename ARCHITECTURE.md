@@ -665,6 +665,8 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   preview, the agent's frames and the MP4 show them; seam checks and thumbnails open the page with `captions=0` (part
   of the capture slot key), since they look at the scene. A scene that fails to compile shows the error page alone,
   without them.
+  The Voice tab's Subtitles section sets `captions` and downloads the files; it disables them while the route would
+  answer 409 or 404, and fetches them rather than linking them, so a refusal shows its message instead of a file.
 - Scenes get `voiceOver` (`{ text, lines }` in scene seconds) in their props; the agent sets text and timing with
   `set_voice_over` and reads the sentence times in its turn context and `get_project`.
 
