@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 import type { Page } from 'playwright';
+import { RENDER_TIMEOUT_MS } from '../../server/capture/capture';
 import { ffmpegArgs, soundCues } from '../../server/capture/render';
 import { setLanguage } from '../../server/i18n';
 import { soundTrack } from '../../server/sounds/track';
@@ -118,6 +119,26 @@ test('writes the track atomically to the file it is given', async () => {
   assert.equal(readWav(await fs.readFile(output)).samples[100], 1);
 });
 
+test('writes a 16-bit mono WAV whose bytes are its header and its little-endian samples', async () => {
+  const file = (await soundTrack({ cues: [click(0, 100, 0.5)], from: 0, duration: 0.01, library, file: output }))!;
+  const samples = Array.from({ length: 441 }, (_, i) => (i < 100 ? 0 : Math.round((i - 99) * 0.5)));
+  const expected = Buffer.alloc(44 + 882);
+  expected.write('RIFF', 0, 'ascii');
+  expected.writeUInt32LE(36 + 882, 4);
+  expected.write('WAVEfmt ', 8, 'ascii');
+  expected.writeUInt32LE(16, 16);
+  expected.writeUInt16LE(1, 20);
+  expected.writeUInt16LE(1, 22);
+  expected.writeUInt32LE(SR, 24);
+  expected.writeUInt32LE(SR * 2, 28);
+  expected.writeUInt16LE(2, 32);
+  expected.writeUInt16LE(16, 34);
+  expected.write('data', 36, 'ascii');
+  expected.writeUInt32LE(882, 40);
+  samples.forEach((sample, i) => expected.writeInt16LE(sample, 44 + 2 * i));
+  assert.deepEqual(await fs.readFile(file), expected);
+});
+
 test('fails naming the library file that is missing, without its folder', async () => {
   setLanguage('en');
   await fs.rm(path.join(library, 'pop.wav'));
@@ -157,6 +178,17 @@ test('caps the cues of a video of many scenes at a fixed total, which keeps the 
   await assert.rejects(soundCues(page(cues(MAX_VIDEO_SOUND_CUES + 1)), project(20)), {
     message: `Invalid sounds in the video: sounds() returns more than ${MAX_VIDEO_SOUND_CUES} cues`,
   });
+});
+
+test('fails a render whose sounds() never answers with the timeout message, not a hang', { timeout: 5_000 }, async (t) => {
+  setLanguage('en');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const hung = { evaluate: () => new Promise(() => {}) } as unknown as Page;
+  const rejection = assert.rejects(soundCues(hung, project(1)), {
+    message: `sounds() took more than ${RENDER_TIMEOUT_MS / 1000} s (infinite loop?)`,
+  });
+  t.mock.timers.tick(RENDER_TIMEOUT_MS);
+  await rejection;
 });
 
 test('reports a sounds() that throws by the first line of its message, cut to 200 characters', async () => {

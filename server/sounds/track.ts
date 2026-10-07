@@ -6,7 +6,7 @@ import { SOUND_PEAKS, type SoundCue, type SoundName } from '../../src/shared/sou
 import { m } from '../i18n';
 import { SR } from '../music/synth';
 import { writeFileAtomic } from '../util';
-import { readWav, writeWav } from '../voiceover/wav';
+import { readWav, silentWav } from '../voiceover/wav';
 
 /**
  * Writes the sounds of `cues` (checked, video seconds) heard from `from` for `duration` seconds to `file`, and returns
@@ -44,8 +44,8 @@ export async function soundTrack(o: {
   for (const { source, gain, start, first, end } of placed) {
     for (let j = first; j < end; j++) mix[start + j] += Math.round(source[j] * gain);
   }
-  const samples = new Int16Array(length);
-  for (let i = 0; i < length; i++) samples[i] = Math.max(-32768, Math.min(32767, mix[i]));
-  await writeFileAtomic(o.file, writeWav({ sampleRate: SR, samples }));
+  const wav = silentWav(SR, length);
+  for (let i = 0; i < length; i++) wav.samples[i] = Math.max(-32768, Math.min(32767, mix[i]));
+  await writeFileAtomic(o.file, wav.data);
   return o.file;
 }
