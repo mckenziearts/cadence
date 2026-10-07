@@ -71,6 +71,17 @@ test('subtitleCues: opening punctuation stays with the word after it, closing pu
   }
 });
 
+test('subtitleCues: a non-breaking space never splits a cue and stays in its text', () => {
+  assert.deepEqual(
+    subtitleCues([line('Il répond «\u00a0oui\u00a0» et repart.', 0, 2.8)], { maxChars: 14 }).map((c) => c.text),
+    ['Il répond', '«\u00a0oui\u00a0» et', 'repart.'],
+  );
+  assert.deepEqual(
+    subtitleCues([line('Vraiment\u202f!', 0, 1)], { maxChars: 84 }).map((c) => c.text),
+    ['Vraiment\u202f!'],
+  );
+});
+
 test('subtitleCues: punctuation written against a word cut for length stays on its first or last piece', () => {
   const texts = (text: string, maxChars: number) => subtitleCues([line(text, 0, 3)], { maxChars }).map((c) => c.text);
   assert.deepEqual(texts('Anticonstitutionnellement. Puis', 25), ['Anticonstitutionnellemen', 't. Puis']);
@@ -139,5 +150,12 @@ test('toVtt: WEBVTT header, dot milliseconds, text escaped', () => {
       { start: 3600, end: 3601.0005, text: 'A <b> & C' },
     ]),
     'WEBVTT\n\n00:00:01.250 --> 00:00:03.000\nBonjour.\n\n01:00:00.000 --> 01:00:01.001\nA &lt;b&gt; &amp; C\n',
+  );
+});
+
+test('toVtt: an arrow in a sentence never reads as a timing line', () => {
+  assert.equal(
+    toVtt([{ start: 0, end: 1, text: 'Avant --> après' }]),
+    'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nAvant --&gt; après\n',
   );
 });

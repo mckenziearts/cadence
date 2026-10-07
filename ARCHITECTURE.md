@@ -678,8 +678,9 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   default auto-level would undo the ducking). A range where no sentence falls gets no voice input at all, so the MP4
   does not depend on what a given ffmpeg does with an input sought past its end.
 - Subtitles: `subtitleCues` (`src/shared/subtitles.ts`) cuts each sentence into cues of at most `maxChars` (84 for
-  the files: two lines of 42), balanced and ending after punctuation when one is near the middle, timed in proportion
-  to their characters; where sentences overlap, the one that started last shows. The download reads the lines and
+  the files: two lines of 42) at breakable spaces only (a non-breaking space keeps `« oui »` whole), balanced and
+  ending after punctuation when one is near the middle, timed in proportion to their characters; where sentences
+  overlap, the one that started last shows. The download reads the lines and
   never syncs: with ElevenLabs a sync bills the person (with Piper, the read may try the missing sentences like any
   other). With `captions` on (off by default), the frame page burns them in (`src/frame/captions.tsx`): the cue of the
   video time over the scene, outside its error boundary, centered in the bottom band of the format's safe area, at

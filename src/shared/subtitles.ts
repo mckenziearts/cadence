@@ -62,7 +62,9 @@ export function toVtt(cues: SubtitleCue[]): string {
 function splitText(text: string, maxChars: number): string[] {
   const words: string[] = [];
   let opening = '';
-  for (const word of text.split(/\s+/).filter(Boolean)) {
+  // French puts a non-breaking space inside `« »` and before `!`, `?`, `:`: it joins its neighbours into one word,
+  // and stays in the cue.
+  for (const word of text.split(/[^\S\u00a0\u202f]+/).filter(Boolean)) {
     // French spaces off `«` and `»`, `!`, `?`, `:`: an opening mark stays with the word after it, never ending a cue,
     // and the others with the word before, never opening one.
     if (OPENING_ONLY.test(word)) opening += `${word} `;
