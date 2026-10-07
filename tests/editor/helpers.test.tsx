@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { MusicGridData, ProjectState, SceneState } from '../../src/shared/types';
+import { frameErrors } from '../../src/editor/components/FrameView';
 import {
   bars,
   bytes,
@@ -241,4 +242,10 @@ test('markdown renders structure and never raw HTML', () => {
   assert.match(html, /<pre><code>const a = 1;<\/code><\/pre>/);
   assert.ok(!html.includes('<script>'));
   assert.ok(html.includes('&lt;script&gt;'));
+});
+
+test('frame errors: a list of texts passes, anything else scene code posts is refused', () => {
+  assert.deepEqual(frameErrors(['a', 'b']), ['a', 'b']);
+  assert.deepEqual(frameErrors([]), []);
+  for (const value of [undefined, null, 1, 'a', {}, [{}], [null, 'x'], [1]]) assert.equal(frameErrors(value), null);
 });
