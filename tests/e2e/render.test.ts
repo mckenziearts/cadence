@@ -1,7 +1,8 @@
-// FfmpegRenderService against the frame harness: MP4 length, frame count, colors, soundtrack, cancel, files.
+// FfmpegRenderService against the frame harness: MP4 length, frame count, colors, soundtrack, voice-over, sound effects,
+// cancel, files.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { lutimes, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { promisify } from 'node:util';
@@ -119,6 +120,21 @@ async function setDuration(sceneId: string, duration: number): Promise<void> {
   const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
   project.scenes.find((s) => s.id === sceneId)!.duration = duration;
   await writeFile(file, JSON.stringify(project, null, 2));
+}
+
+/** Adds `export const sounds = () => <cues>` to scenes; the returned function puts their code back. */
+async function withSounds(cues: Record<string, string>): Promise<() => Promise<void>> {
+  const saved = await Promise.all(
+    Object.entries(cues).map(async ([sceneId, list]) => {
+      const file = h.store.sceneFile(id, sceneId);
+      const code = await readFile(file, 'utf8');
+      await writeFile(file, `export const sounds = () => ${list};\n${code}`);
+      return [file, code] as const;
+    }),
+  );
+  return async () => {
+    await Promise.all(saved.map(([file, code]) => writeFile(file, code)));
+  };
 }
 
 /** A render service whose store reads go through `onRead` (read 1: start(), read 2: the job itself). */
@@ -322,6 +338,85 @@ export default function A({ voiceOver }: SceneProps) {
     }
   });
 
+  it('plays the sounds the scenes declare at their times, and gives a range without any cue no sounds at all', async () => {
+    // A pop at 0.1 s in scene a (heard until about 0.35 s) and a click at 0.3 s of scene b, 0.8 s in the video.
+    const restore = await withSounds({ a: "[{ at: 0.1, sound: 'pop' }]", b: "[{ at: 0.3, sound: 'click', gain: 0.8 }]" });
+    try {
+      const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' });
+      const stream = (await probe(file)).streams.find((s) => s.codec_type === 'audio');
+      assert.deepEqual([stream?.codec_name, stream?.sample_rate], ['aac', '48000']);
+      const [pop, between, click] = await Promise.all([rmsDb(file, 0.08, 0.2), rmsDb(file, 0.45, 0.7), rmsDb(file, 0.78, 0.86)]);
+      // ffmpeg 8.1: the click measures -36.4 dB, lowered by the fade-out it falls under; the gap between them is digital
+      // silence (-inf), so -50 dB still tells a sound from none.
+      assert.ok(pop > -50, `pop ${pop} dB`);
+      assert.ok(click > -50, `click ${click} dB`);
+      assert.ok(between < -60, `silence between them, ${between} dB`);
+      assert.deepEqual(await readdir(path.join(h.store.dir(id), '.cadence', 'sounds')), [], 'the track is not kept');
+
+      const range = (await renderOne({ formats: ['16:9'], quality: 'draft', range: { from: 0.4, to: 0.7 } })).file;
+      assert.equal(
+        (await probe(range)).streams.some((s) => s.codec_type === 'audio'),
+        false,
+      );
+    } finally {
+      await restore();
+    }
+  });
+
+  it('fails the render with the message of the frame when a scene declares an invalid cue', async () => {
+    // Scene a's cue still gets a track written: the failed render removes it too.
+    const restore = await withSounds({ a: "[{ at: 0.1, sound: 'pop' }]", b: "[{ at: 0.1, sound: 'boing' }]" });
+    try {
+      const [queued] = await renders.start(id, { formats: ['16:9'], quality: 'draft' });
+      const job = await renders.wait(queued.id);
+      assert.equal(job.status, 'error');
+      assert.match(job.error!, /Erreur dans sounds\(\) \u00b7 scenes\/b\.tsx\nson 0 : son inconnu "boing"/);
+      assert.deepEqual(await readdir(path.join(h.store.dir(id), '.cadence', 'sounds')), []);
+    } finally {
+      await restore();
+    }
+  });
+
+  it('keeps sounds over the music, the voice or both under the limiter ceiling', async () => {
+    const dir = path.join(h.store.dir(id), 'sounds-test');
+    await mkdir(dir, { recursive: true });
+    const tone = path.join(dir, 'tone.wav');
+    await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4', '-ar', '44100', tone]);
+    const voice = path.join(dir, 'loud.wav');
+    const speech = Int16Array.from({ length: 22050 }, (_, i) => Math.round(32767 * Math.sin((2 * Math.PI * 440 * i) / 22050)));
+    await writeFile(voice, writeWav({ sampleRate: 22050, samples: speech }));
+    const projectFile = path.join(h.store.dir(id), 'project.json');
+    const saved = await readFile(projectFile, 'utf8');
+    const restore = await withSounds({ a: "[{ at: 0.2, sound: 'impact' }, { at: 0.25, sound: 'impact' }]" });
+    try {
+      for (const mix of [['music'], ['voice'], ['music', 'voice']]) {
+        const project = JSON.parse(saved) as ProjectFile;
+        project.music = mix.includes('music') ? { file: 'sounds-test/tone.wav', start: 0, volume: 1 } : null;
+        await writeFile(projectFile, JSON.stringify(project, null, 2));
+        if (mix.includes('music')) music.audio.set(id, tone);
+        else music.audio.delete(id);
+        if (mix.includes('voice')) {
+          voiceOver.tracks.set(id, {
+            file: voice,
+            lines: [{ sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4 }],
+            musicLevel: 0.3,
+          });
+        } else voiceOver.tracks.delete(id);
+        const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' });
+        const peak = await peakDb(file);
+        // ffmpeg 8.1, with the limiter then without it: music + sounds -0.283 / +0.75 dBFS, voice + sounds -0.190 / +4.44,
+        // music + voice + sounds -0.236 / +3.98. AAC adds up to 0.26 dB over the limiter's -0.45: 0 dBFS is the line.
+        assert.ok(peak < 0, `${mix.join(' + ')} + sounds: peak ${peak} dBFS`);
+      }
+    } finally {
+      voiceOver.tracks.delete(id);
+      music.audio.delete(id);
+      await writeFile(projectFile, saved);
+      await restore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('renders other formats, scales and ranges with even dimensions, cropped rather than stretched', async () => {
     // 1350 × 0.5 = 675 rows: the video keeps 674 of them (twice that when supersampling), never resampled to 676.
     for (const supersample of [false, true]) {
@@ -408,6 +503,50 @@ export default function A({ voiceOver }: SceneProps) {
     const parts = (await readdir(dir)).filter((n) => n.endsWith('.part'));
     assert.deepEqual(parts, ['live-16x9.mp4.part']);
     await rm(live);
+  });
+
+  it('removes the sounds track and temporary file a killed render left, never a live one', async () => {
+    const dir = path.join(h.store.dir(id), '.cadence', 'sounds');
+    await mkdir(dir, { recursive: true });
+    const killed = ['0f6e3a52-58c4-4b8e-9d0b-6f1f4c2a7e11.wav', '0f6e3a52-58c4-4b8e-9d0b-6f1f4c2a7e11.wav.123.0a1b2c3d.tmp'];
+    const live = '5b2d9c40-1e7a-4f3b-8c6d-2a9e8f7b3c55.wav';
+    for (const name of [...killed, live]) await writeFile(path.join(dir, name), 'x');
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
+    for (const name of killed) await utimes(path.join(dir, name), twoHoursAgo, twoHoursAgo);
+    await renders.files(id);
+    assert.deepEqual(await readdir(dir), [live]);
+    await rm(path.join(dir, live));
+  });
+
+  it('leaves the links, folders and files no render wrote, however old, and still lists the videos', async () => {
+    const project = h.store.dir(id);
+    const sounds = path.join(project, '.cadence', 'sounds');
+    const elsewhere = path.join(project, 'sweep-test');
+    await mkdir(sounds, { recursive: true });
+    await mkdir(elsewhere, { recursive: true });
+    const foreign = path.join(elsewhere, 'kept.wav');
+    await writeFile(foreign, 'x');
+    const kept = {
+      file: path.join(sounds, 'notes.wav'),
+      folder: path.join(sounds, '7c1e2d3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f.wav'),
+      link: path.join(sounds, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.wav'),
+      part: path.join(project, 'renders', 'folder-16x9.mp4.part'),
+    };
+    await writeFile(kept.file, 'x');
+    await mkdir(kept.folder);
+    await mkdir(kept.part, { recursive: true });
+    await symlink(foreign, kept.link);
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
+    for (const file of [foreign, kept.file, kept.folder, kept.part]) await utimes(file, twoHoursAgo, twoHoursAgo);
+    await lutimes(kept.link, twoHoursAgo, twoHoursAgo);
+    try {
+      await renders.files(id);
+      assert.deepEqual((await readdir(sounds)).sort(), [kept.folder, kept.link, kept.file].map((f) => path.basename(f)).sort());
+      assert.ok((await readdir(path.join(project, 'renders'))).includes('folder-16x9.mp4.part'));
+      assert.deepEqual(await readdir(elsewhere), ['kept.wav']);
+    } finally {
+      for (const file of [...Object.values(kept), elsewhere]) await rm(file, { recursive: true, force: true });
+    }
   });
 
   it('moves a deleted video to the project trash, once', async () => {

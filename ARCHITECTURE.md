@@ -38,7 +38,7 @@ This document is the contract between modules. Shared types: `src/shared/types.t
 
 ```
 cadence/
-  bin/cadence.ts            CLI: start, render, analyze, new, list, doctor, mcp, soundtracks
+  bin/cadence.ts            CLI: start, render, analyze, new, list, doctor, mcp, soundtracks, sounds
   index.html                editor page (served on the EDITOR origin only)
   frame.html                frame page (served on the FRAME origin only)
   kit.html                  kit sheet of a brand (FRAME origin only, see "Brand builds")
@@ -68,6 +68,7 @@ cadence/
     voiceover/              piper.ts (PiperEngine: runs the user's Piper), elevenlabs.ts (ElevenLabsClient: the
                             user's own ElevenLabs key), voices.ts (the Piper voices offered, pinned files), wav.ts,
                             service.ts (LocalVoiceOverService)
+    sounds/                 library.ts (the sound effects, written by `sounds`), track.ts (the sounds track of an MP4)
     agent/                  types.ts, claudeCode.ts (provider), guide.ts, prompts.ts, chat.ts (ChatManager)
     mcp/                    tokens.ts (McpTokens), server.ts (createMcpHandler), tools.ts, brandTools.ts
   src/
@@ -82,6 +83,7 @@ cadence/
     editor/                 editor app (React + Tailwind v4, French and English UI); index.ts is what a host app imports
     editor/i18n/            useT() and t(), the fr/ and en/ dictionaries by area, links.tsx
     editor/soundtracks/     preset soundtracks (AAC) and presets.json, written by `soundtracks`
+    editor/sounds/          the sound effects scenes cue (16-bit mono WAV, 44.1 kHz), written by `sounds`
   brands/<id>/              brands (see "Brands"): cadence ships, the others stay on each machine
   templates/scenes/<id>/    scene templates (template.json + scene.tsx)
   templates/projects/<id>/  campaign templates (template.json + optional art-direction.md)
@@ -193,7 +195,9 @@ projects/<id>/
   .cadence/             internal, gitignored: chats/ (project.json, scene-<id>.json, archive/), versions/,
                         thumbs/ (<scene>-<16x9>-<t>-g<run>.<gen>-<sig>.jpg), frames/ (what the agent rendered),
                         seams.json (version 2), publications.json (Publication[], newest first), trash/,
-                        voice-over/ (<hash>.wav per spoken sentence, track.wav)
+                        voice-over/ (<hash>.wav per spoken sentence, track.wav), sounds/ (<job id>.wav, the
+                        sounds track of a running render: removed when it ends, one a killed render left is swept
+                        after an hour with the .part files; nothing else in the folder is touched)
 ```
 
 State files (chats, `publications.json`, `<root>/.cadence/settings.json` and `accounts.json`) count as empty only when
@@ -574,6 +578,14 @@ fails the job (« Le projet a changé pendant le lancement du rendu »). Audio (
 `music.start`, AAC 192 k, `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length. With a
 voice-over, its track is a second input (see "Voice-over"), unless no sentence falls in the rendered range, and the
 audio goes through `-filter_complex`, voice alone or mixed, ending with the same limiter.
+Sound effects: before capture, the render reads `__cadence.sounds()` on its first page (the cues of every scene, in
+video seconds) and checks them again in Node (`parseSoundCues`, at most 1000 cues per scene and 10,000 per video),
+since scene code can replace `__cadence`. `server/sounds/track.ts` places each library file so its peak lands on its
+cue, times its gain, sums them in 32 bits and clamps them into a mono WAV exactly as long as the rendered range: a cue
+that starts before the range is trimmed, one that runs past it is cut. When no cue is heard in the range there is no sounds input
+at all; otherwise the track is one more `-filter_complex` input, alone or mixed with the music and the voice by
+`amix=normalize=0`, through the same limiter and fade, so a video with neither music nor voice-over still gets audio.
+A missing or non-44.1 kHz library file fails the render naming it.
 Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`. Deleting one moves it to the project's
 `.cadence/trash/` (`RenderService.remove`); what the networks received stays in `publications.json`.
 
@@ -681,6 +693,7 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
 - `new <name> --brand <id> [--template <id>] [--formats ...] [--fps 60]`
 - `list`, `doctor`, `mcp`
 - `soundtracks [preset...]` (recomposes the preset soundtracks, about 2 min)
+- `sounds` (rewrites the sound effects in `src/editor/sounds`)
 
 `render` starts a quiet server on free ports (`port 0`).
 

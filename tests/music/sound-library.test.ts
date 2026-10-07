@@ -89,6 +89,14 @@ test('parseSoundCues accepts the maximum number of cues and refuses one more', (
   assert.ok('error' in result && result.error.includes('1000'), JSON.stringify(result));
 });
 
+test('parseSoundCues takes another maximum when the caller gives one', () => {
+  setLanguage('en');
+  const cues = Array.from({ length: 2 * MAX_SOUND_CUES }, () => ({ at: 0, sound: 'pop' }));
+  assert.ok('cues' in parseSoundCues(cues, 1, texts(), 2 * MAX_SOUND_CUES));
+  const result = parseSoundCues([...cues, { at: 0, sound: 'pop' }], 1, texts(), 2 * MAX_SOUND_CUES);
+  assert.ok('error' in result && result.error.includes('2000'), JSON.stringify(result));
+});
+
 const invalid: [string, unknown][] = [
   ['not an object', 'click'],
   ['null', null],
@@ -133,6 +141,14 @@ test('parseSoundCues shows the unknown sound it received as a literal, or its ty
     const result = parseSoundCues([{ at: 1, sound }], 4, texts());
     assert.ok('error' in result && result.error.includes(shown), JSON.stringify(result));
   }
+});
+
+test('parseSoundCues shows only the first 40 characters of an unknown sound', () => {
+  setLanguage('en');
+  // Emoji take two UTF-16 units each: a cut by units would show 20 of them.
+  const result = parseSoundCues([{ at: 1, sound: `${'\u{1F600}'.repeat(41)}${'x'.repeat(10_000)}` }], 4, texts());
+  assert.ok('error' in result, JSON.stringify(result));
+  assert.ok(result.error.includes(`unknown sound "${'\u{1F600}'.repeat(40)}" (`), result.error);
 });
 
 test('parseSoundCues refuses anything but an array', () => {

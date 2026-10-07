@@ -39,6 +39,10 @@ export default {
     invalidRange: 'Plage de rendu invalide',
     noScene: 'Le projet n’a aucune scène à rendre',
     noDetail: 'aucun détail',
+    soundMissing: (file: string) => `Effet sonore introuvable : ${file}`,
+    soundFormat: (file: string, rate: number) => `Effet sonore au mauvais format : ${file} (${rate} Hz attendus)`,
+    invalidSounds: (error: string) => `Sons de la vidéo invalides : ${error}`,
+    soundsTimeout: (seconds: number) => `sounds() a dépassé ${seconds} s (boucle infinie ?)`,
   },
   music: {
     projectNotFound: (id: string) => `Projet introuvable : ${id}`,

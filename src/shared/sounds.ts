@@ -15,6 +15,13 @@ export const SOUND_PEAKS: Record<SoundName, number> = {
 };
 
 export const MAX_SOUND_CUES = 1000;
+/** The cues of a whole video, whatever its number of scenes: their 16-bit samples sum in 32 bits without wrapping. */
+export const MAX_VIDEO_SOUND_CUES = 10_000;
+/**
+ * Characters of an unknown sound name an error shows, like the text checks of a frame. Twice as many UTF-16 units always
+ * hold that many characters: only those are split into characters, never a whole huge name.
+ */
+const RECEIVED_CHARS = 40;
 
 export interface SoundCue {
   /** Seconds, scene-local in `sounds()`: the contact, where the sound is loudest. */
@@ -42,17 +49,24 @@ export interface SoundCueTexts {
 
 const isSoundName = (value: unknown): value is SoundName => SOUND_NAMES.includes(value as SoundName);
 
-/** Checks what a `sounds()` returned against a scene of `duration` seconds; `gain` defaults to 1. */
-export function parseSoundCues(value: unknown, duration: number, texts: SoundCueTexts): SceneSounds {
+/** Checks what a `sounds()` returned against a scene of `duration` seconds, or `max` cues; `gain` defaults to 1. */
+export function parseSoundCues(value: unknown, duration: number, texts: SoundCueTexts, max = MAX_SOUND_CUES): SceneSounds {
   if (!Array.isArray(value)) return { error: texts.notArray };
-  if (value.length > MAX_SOUND_CUES) return { error: texts.tooMany(MAX_SOUND_CUES) };
+  if (value.length > max) return { error: texts.tooMany(max) };
   const cues: Required<SoundCue>[] = [];
   for (const [index, cue] of value.entries()) {
     if (typeof cue !== 'object' || cue === null) return { error: texts.notObject(index) };
     const { at, sound, gain = 1 } = cue as Record<string, unknown>;
     if (typeof at !== 'number' || !(at >= 0 && at <= duration)) return { error: texts.at(index, duration) };
     if (!isSoundName(sound)) {
-      const received = typeof sound === 'string' ? JSON.stringify(sound) : typeof sound;
+      const received =
+        typeof sound === 'string'
+          ? JSON.stringify(
+              Array.from(sound.slice(0, 2 * RECEIVED_CHARS))
+                .slice(0, RECEIVED_CHARS)
+                .join(''),
+            )
+          : typeof sound;
       return { error: texts.sound(index, received, SOUND_NAMES.join(', ')) };
     }
     if (typeof gain !== 'number' || !(gain >= 0 && gain <= 1)) return { error: texts.gain(index) };

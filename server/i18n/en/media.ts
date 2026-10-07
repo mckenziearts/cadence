@@ -40,6 +40,10 @@ export default {
     invalidRange: 'Invalid render range',
     noScene: 'The project has no scene to render',
     noDetail: 'no detail',
+    soundMissing: (file: string) => `Sound effect not found: ${file}`,
+    soundFormat: (file: string, rate: number) => `Sound effect in the wrong format: ${file} (${rate} Hz expected)`,
+    invalidSounds: (error: string) => `Invalid sounds in the video: ${error}`,
+    soundsTimeout: (seconds: number) => `sounds() took more than ${seconds} s (infinite loop?)`,
   },
   music: {
     projectNotFound: (id: string) => `Project not found: ${id}`,
