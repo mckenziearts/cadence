@@ -153,6 +153,11 @@ and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE`
 the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
 Contact sheets (`sheet.ts`) lay the strip's PNG tiles out as data URLs in a context of their own, JavaScript off and
 every request aborted: that page loads nothing and is not the frame origin.
+One limit stays: scene code runs in the capture page's main world, next to `window.__cadence`, and Playwright runs in
+the server process, so every console message, page error and value a page returns to `page.evaluate` reaches Node
+whole. A hostile scene can make the server's memory grow (hundreds of MB from a few large messages): a local denial of
+service, with no data leaving the machine. The checks in the page and in Node bound honest code only; running capture
+in a child process would close it (open question, for an ADR).
 
 Reference captures (`screenshotUrl`) check every request by origin: host names are resolved, link-local,
 unspecified and multicast addresses (IPv4-mapped included) are refused, and so are Cadence's own ports; other
