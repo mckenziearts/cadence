@@ -10,6 +10,7 @@ import type {
   BrandStore,
   CadenceConfig,
   CaptureService,
+  CapturedFrame,
   McpScope,
   McpTokenIssuer,
   MusicService,
@@ -73,6 +74,11 @@ export const PROJECT_TOOLS = [
 ];
 
 const MAX_FRAMES = 8;
+export const STRIP_FRAMES = 12;
+const STRIP_MIN = 4;
+const STRIP_MAX = 24;
+const STRIP_SCALE = 0.25;
+const STRIP_GAP = 4;
 const QUALITY_SCALE = { low: 0.25, normal: 0.5, high: 1 } as const;
 /** Percent of pixels from which a cut shows (every shipped template cut is under it): send the frames to look at. */
 const SEAM_IMAGE_THRESHOLD = 0.05;
@@ -92,6 +98,12 @@ const text = (value: string): CallToolResult => ({ content: [{ type: 'text', tex
 function image(data: Buffer, mimeType?: string): Content {
   const type = mimeType ?? (data[0] === 0x89 && data[1] === 0x50 ? 'image/png' : 'image/jpeg');
   return { type: 'image', data: data.toString('base64'), mimeType: type };
+}
+
+/** One time per video frame centred on `at`, clamped to what can be rendered; clamped duplicates collapse. */
+function stripTimes(at: number, frames: number, fps: number, clamp: (t: number) => number): number[] {
+  const half = Math.floor(frames / 2);
+  return [...new Set(Array.from({ length: frames }, (_, i) => clamp(at + (i - half) / fps)))];
 }
 
 function errorText(e: unknown): string {
@@ -236,59 +248,91 @@ export function createToolServer(ctx: ToolContext): McpServer {
 
   tool(
     'render_frames',
-    `Render frames exactly as the final video shows them, and look at them. Check every change: t = 0, t = duration and each moment you changed. Times are scene-local seconds (0 … duration); with wholeVideo they are video seconds and each frame shows the scene playing then. Up to ${MAX_FRAMES} frames per call.`,
+    `Render frames exactly as the final video shows them, and look at them. Check every change: t = 0, t = duration and each moment you changed. Times are scene-local seconds (0 … duration); with wholeVideo they are video seconds and each frame shows the scene playing then. Pass either times (up to ${MAX_FRAMES} frames) or strip: consecutive frames around one moment in a single contact sheet, to see a motion settle.`,
     {
       projectId,
       sceneId,
       wholeVideo: z.boolean().optional().describe('Render video times instead of one scene.'),
-      times: z.array(z.number().min(0)).min(1).max(MAX_FRAMES).describe('Seconds, e.g. [0, 0.8, 1.6, 3.32]'),
+      times: z.array(z.number().min(0)).min(1).max(MAX_FRAMES).optional().describe('Seconds, e.g. [0, 0.8, 1.6, 3.32]'),
+      strip: z
+        .object({
+          at: z.number().min(0).describe('Seconds at the middle of the strip, e.g. a contact, a hit on the beat or a cut.'),
+          frames: z
+            .number()
+            .int()
+            .min(STRIP_MIN)
+            .max(STRIP_MAX)
+            .optional()
+            .describe(`Consecutive frames (one per video frame); default ${STRIP_FRAMES}.`),
+        })
+        .optional()
+        .describe('Consecutive frames around `at`, returned as one contact sheet at quarter size. Instead of times.'),
       format,
       quality: z
         .enum(['low', 'normal', 'high'])
         .optional()
-        .describe('low = quarter size (quick overview), normal = half size (default), high = full size (fine lines, small text)'),
+        .describe(
+          'low = quarter size (quick overview), normal = half size (default), high = full size (fine lines, small text). Ignored by strip.',
+        ),
     },
     async (args) => {
       const p = await project(args.projectId);
       if (args.wholeVideo && args.sceneId) throw new HttpError(400, m().agent.mcpTools.sceneOrVideo);
+      if (!args.times === !args.strip) throw new HttpError(400, m().agent.mcpTools.timesOrStrip);
       const scene = args.wholeVideo ? null : targetScene(p, args.sceneId, m().agent.mcpTools.renderOwnScene);
       const chosen = args.format ?? p.formats[0];
-      const scale = QUALITY_SCALE[args.quality ?? 'normal'];
+      const scale = args.strip ? STRIP_SCALE : QUALITY_SCALE[args.quality ?? 'normal'];
       const limit = scene ? scene.duration : p.duration;
-      const times = args.times.map((t) => roundMs(Math.min(t, limit)));
+      const clamp = (t: number) => roundMs(Math.min(Math.max(t, 0), limit));
+      const times = args.strip
+        ? stripTimes(args.strip.at, args.strip.frames ?? STRIP_FRAMES, p.fps, clamp)
+        : args.times!.map(clamp);
       const frames = await deps.capture.frames(p.id, {
         sceneId: scene?.id ?? null,
         times,
         format: chosen,
         scale,
-        imageFormat: 'jpeg',
-        quality: 82,
+        ...(args.strip ? { imageFormat: 'png' as const } : { imageFormat: 'jpeg' as const, quality: 82 }),
       });
+      const { width, height } = FORMATS[chosen];
+      const columns = height > width ? 6 : 4;
+      const sheet = args.strip
+        ? await deps.capture.contactSheet(
+            frames.map((f) => f.image),
+            { columns, gap: STRIP_GAP },
+          )
+        : null;
+      const images = sheet ? [{ image: sheet, mime: 'image/jpeg' as const }] : frames;
 
       const dir = path.join(p.dir, '.cadence', 'frames');
       await fs.mkdir(dir, { recursive: true });
       const urls: string[] = [];
-      for (const frame of frames) {
-        const name = ctx.frameName(frame.mime === 'image/png' ? 'png' : 'jpg');
-        await fs.writeFile(path.join(dir, name), frame.image);
+      for (const shot of images) {
+        const name = ctx.frameName(shot.mime === 'image/png' ? 'png' : 'jpg');
+        await fs.writeFile(path.join(dir, name), shot.image);
         urls.push(`/api/projects/${p.id}/agent-frames/${name}`);
       }
       deps.tokens.reportActivity(token, { type: 'frames', sceneId: scene?.id ?? null, times, urls });
 
-      const size = `${Math.round(FORMATS[chosen].width * scale)}×${Math.round(FORMATS[chosen].height * scale)}`;
+      const size = `${Math.round(width * scale)}×${Math.round(height * scale)}`;
       const what = scene
         ? `scene ${scene.id} "${scene.name}" (${scene.duration.toFixed(3)} s)`
         : `the whole video (${p.duration.toFixed(3)} s)`;
       const errors = [...new Set(frames.flatMap((f) => f.errors))];
-      const summary = `Rendered ${frames.length} frame${frames.length === 1 ? '' : 's'} of ${what} in ${chosen} at ${size}.${
-        errors.length ? `\nRender errors:\n${errors.join('\n\n')}` : ''
-      }`;
-      const content: Content[] = [{ type: 'text', text: summary }];
-      for (const f of frames) {
-        const label = scene
+      const rendered = args.strip
+        ? `Rendered a strip of ${frames.length} frames of ${what} in ${chosen}: one contact sheet, ${Math.min(columns, frames.length)} tiles per row at ${size} each.`
+        : `Rendered ${frames.length} frame${frames.length === 1 ? '' : 's'} of ${what} in ${chosen} at ${size}.`;
+      const summary = `${rendered}${errors.length ? `\nRender errors:\n${errors.join('\n\n')}` : ''}`;
+      const label = (f: CapturedFrame) =>
+        scene
           ? `t = ${f.t.toFixed(3)} s`
           : `video t = ${f.t.toFixed(3)} s → scene ${f.sceneId ?? '?'} at ${f.localTime.toFixed(3)} s`;
-        content.push({ type: 'text', text: label }, image(f.image, f.mime));
+      const content: Content[] = [{ type: 'text', text: summary }];
+      if (sheet) {
+        const tiles = frames.map((f, i) => `${i + 1}. ${label(f)}`).join('\n');
+        content.push({ type: 'text', text: `Tiles, left to right then top to bottom:\n${tiles}` }, image(sheet, 'image/jpeg'));
+      } else {
+        for (const f of frames) content.push({ type: 'text', text: label(f) }, image(f.image, f.mime));
       }
       return { content, isError: frames.length > 0 && frames.every((f) => f.errors.length > 0) };
     },

@@ -30,6 +30,9 @@ import type { CreateSceneInput, ProjectState, SceneState } from '../../src/share
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const SHEET = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 9, 9, 0xff, 0xd9]);
+/** A PNG of its own per time, to see the sheet get the strip's frames in order. */
+const tileAt = (t: number) => Buffer.concat([PNG, Buffer.from(String(t))]);
 
 type Content = { type: string; text?: string; data?: string; mimeType?: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -112,17 +115,19 @@ describe('MCP endpoint', () => {
       },
     } as unknown as ProjectStore;
     const capture = {
-      frames: async (id: string, req: { sceneId: string | null; times: number[] }) => {
+      frames: async (id: string, req: { sceneId: string | null; times: number[]; imageFormat?: string }) => {
         record('frames', [id, req]);
+        const png = req.imageFormat === 'png';
         return req.times.map((t) => ({
           t,
           sceneId: req.sceneId ?? 'outro',
           localTime: req.sceneId ? t : t - 2,
-          image: JPEG,
-          mime: 'image/jpeg',
+          image: png ? tileAt(t) : JPEG,
+          mime: png ? 'image/png' : 'image/jpeg',
           errors: t === 1.5 ? ['ReferenceError: x is not defined'] : [],
         }));
       },
+      contactSheet: async (tiles: Buffer[], layout: unknown) => (record('contactSheet', [tiles, layout]), SHEET),
       kitSheet: async (brandId: string) => (
         record('kitSheet', brandId),
         { image: JPEG, problems: ['Button : boom'], loaded: true }
@@ -335,6 +340,84 @@ describe('MCP endpoint', () => {
     }
   });
 
+  test('render_frames strip: one contact sheet around a moment, times clamped and deduplicated', async () => {
+    const token = tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'intro' });
+    const off = tokens.onActivity(token, (a) => activity.push(a));
+    const client = await connect(token);
+    try {
+      const end = await call(client, 'render_frames', { strip: { at: 2, frames: 4 } });
+      assert.equal(end.isError, false);
+      const [, req] = calls.frames.at(-1) as [string, Record<string, unknown>];
+      assert.deepEqual(req, { sceneId: 'intro', times: [1.967, 1.983, 2], format: '9:16', scale: 0.25, imageFormat: 'png' });
+      assert.match(
+        texts(end)[0],
+        /^Rendered a strip of 3 frames of scene intro "intro" \(2\.000 s\) in 9:16: one contact sheet, 3 tiles per row at 270×480 each\.$/,
+      );
+      assert.equal(texts(end)[1], 'Tiles, left to right then top to bottom:\n1. t = 1.967 s\n2. t = 1.983 s\n3. t = 2.000 s');
+      const images = end.content.filter((c) => c.type === 'image');
+      assert.equal(images.length, 1);
+      assert.equal(images[0].mimeType, 'image/jpeg');
+      assert.deepEqual(Buffer.from(images[0].data!, 'base64'), SHEET);
+      assert.deepEqual(calls.contactSheet.at(-1), [[1.967, 1.983, 2].map(tileAt), { columns: 6, gap: 4 }]);
+      const frames = activity.at(-1);
+      assert.ok(frames?.type === 'frames');
+      assert.deepEqual(frames.times, [1.967, 1.983, 2]);
+      assert.equal(frames.urls.length, 1);
+      assert.match(frames.urls[0], /\.jpg$/);
+      const saved = path.join(project.dir, '.cadence', 'frames', path.basename(frames.urls[0]));
+      assert.deepEqual(await fs.readFile(saved), SHEET, 'the editor chat shows the image the agent got');
+
+      const landscape = await call(client, 'render_frames', { strip: { at: 1.5 }, format: '16:9' });
+      const times = (calls.frames.at(-1) as [string, { times: number[] }])[1].times;
+      assert.equal(times.length, 12, 'twelve frames by default, beyond the 8-frame limit of times');
+      assert.deepEqual([times[0], times[6], times[11]], [1.4, 1.5, 1.583]);
+      assert.match(texts(landscape)[0], /4 tiles per row at 480×270 each\.\nRender errors:\nReferenceError: x is not defined/);
+      assert.deepEqual(calls.contactSheet.at(-1), [times.map(tileAt), { columns: 4, gap: 4 }]);
+
+      const portrait = await call(client, 'render_frames', { strip: { at: 1 } });
+      assert.match(texts(portrait)[0], /12 frames .* 6 tiles per row at 270×480 each\./);
+      assert.deepEqual((calls.contactSheet.at(-1) as unknown[])[1], { columns: 6, gap: 4 });
+      const square = await call(client, 'render_frames', { strip: { at: 1 }, format: '1:1' });
+      assert.match(texts(square)[0], /in 1:1: one contact sheet, 4 tiles per row at 270×270 each\./);
+      assert.deepEqual((calls.contactSheet.at(-1) as unknown[])[1], { columns: 4, gap: 4 });
+
+      const start = await call(client, 'render_frames', { strip: { at: 0 } });
+      assert.deepEqual((calls.frames.at(-1) as [string, { times: number[] }])[1].times, [0, 0.017, 0.033, 0.05, 0.067, 0.083]);
+      assert.equal(start.isError, false);
+
+      const odd = await call(client, 'render_frames', { strip: { at: 1, frames: 5 }, quality: 'high' });
+      assert.equal(odd.isError, false);
+      const [, oddReq] = calls.frames.at(-1) as [string, { times: number[]; scale: number }];
+      assert.deepEqual(oddReq.times, [0.967, 0.983, 1, 1.017, 1.033], 'an odd count centres on at');
+      assert.equal(oddReq.scale, 0.25, 'quality leaves strip tiles at quarter size');
+      await call(client, 'render_frames', { strip: { at: 1, frames: 24 } });
+      assert.equal((calls.frames.at(-1) as [string, { times: number[] }])[1].times.length, 24);
+      project.fps = 24;
+      try {
+        await call(client, 'render_frames', { strip: { at: 1, frames: 4 } });
+      } finally {
+        project.fps = 60;
+      }
+      const at24 = (calls.frames.at(-1) as [string, { times: number[] }])[1].times;
+      assert.deepEqual(at24, [0.917, 0.958, 1, 1.042], 'one tile per video frame at 24 fps');
+
+      const before = calls.frames.length;
+      for (const args of [{}, { times: [0], strip: { at: 1 } }]) {
+        const rejected = await call(client, 'render_frames', args);
+        assert.equal(rejected.isError, true, JSON.stringify(args));
+        assert.equal(texts(rejected)[0], 'Passe soit times, soit strip, pas les deux.');
+      }
+      for (const strip of [{ at: 1, frames: 3 }, { at: 1, frames: 25 }, { at: 1, frames: 4.5 }, { at: -1 }]) {
+        const rejected = await call(client, 'render_frames', { strip });
+        assert.equal(rejected.isError, true, JSON.stringify(strip));
+      }
+      assert.equal(calls.frames.length, before);
+    } finally {
+      off();
+      await client.close();
+    }
+  });
+
   test('project scope: structure tools, explicit scene or whole video', async () => {
     const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
     try {
@@ -364,6 +447,20 @@ describe('MCP endpoint', () => {
       assert.match(texts(vague)[0], /Précise sceneId/);
       const missingScene = await call(client, 'render_frames', { sceneId: 'ghost', times: [0] });
       assert.match(texts(missingScene)[0], /Aucune scène « ghost »/);
+
+      const videoEnd = await call(client, 'render_frames', { wholeVideo: true, strip: { at: 6, frames: 4 } });
+      assert.equal(videoEnd.isError, false);
+      const [, videoReq] = calls.frames.at(-1) as [string, { sceneId: string | null; times: number[] }];
+      assert.equal(videoReq.sceneId, null);
+      assert.deepEqual(videoReq.times, [5.967, 5.983, 6]);
+      assert.match(texts(videoEnd)[0], /^Rendered a strip of 3 frames of the whole video \(6\.000 s\) in 9:16:/);
+      assert.equal(
+        texts(videoEnd)[1],
+        'Tiles, left to right then top to bottom:\n' +
+          '1. video t = 5.967 s \u2192 scene outro at 3.967 s\n' +
+          '2. video t = 5.983 s \u2192 scene outro at 3.983 s\n' +
+          '3. video t = 6.000 s \u2192 scene outro at 4.000 s',
+      );
 
       const badUrl = await call(client, 'capture_reference', { url: 'file:///etc/passwd' });
       assert.equal(badUrl.isError, true);

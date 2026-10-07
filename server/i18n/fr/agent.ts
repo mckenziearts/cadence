@@ -104,6 +104,7 @@ export default {
     otherScene: (sceneId: string, denied: string) => `Ce chat est limité à la scène « ${sceneId} » : ${denied}`,
     sceneIdNeeded: (scenes: string[]) => `Précise sceneId. Scènes : ${scenes.join(', ') || 'aucune'}.`,
     sceneOrVideo: 'Choisis sceneId ou wholeVideo, pas les deux.',
+    timesOrStrip: 'Passe soit times, soit strip, pas les deux.',
     renderOwnScene: 'rends ta scène, ou toute la vidéo avec wholeVideo: true.',
     checkOwnSeams: 'vérifie les raccords de ta scène.',
     setOwnDuration: 'change la durée de ta scène ; le chat du projet règle les autres.',

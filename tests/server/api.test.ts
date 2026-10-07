@@ -146,6 +146,7 @@ beforeEach(async () => {
     thumbnail: async (id: string, sceneId: string, opts: unknown) => (record('thumbnail', { id, sceneId, opts }), JPEG),
     screenshotUrl: async () => PNG,
     kitSheet: async () => ({ image: JPEG, problems: [], loaded: true }),
+    contactSheet: async () => JPEG,
     close: async () => undefined,
   } satisfies CaptureService;
   const seams = {

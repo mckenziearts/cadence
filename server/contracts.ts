@@ -370,6 +370,8 @@ export interface CaptureService {
   screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean }): Promise<Buffer>;
   /** JPEG of a brand's kit sheet (kit.html, sandboxed), with what failed to render or load there. */
   kitSheet(brandId: string, opts?: { scale?: number }): Promise<{ image: Buffer; problems: string[]; loaded: boolean }>;
+  /** One JPEG of PNG tiles of one size in reading order, `columns` per row, `gap` px apart (render_frames strips). */
+  contactSheet(tiles: Buffer[], layout: { columns: number; gap: number }): Promise<Buffer>;
   close(): Promise<void>;
 }
 

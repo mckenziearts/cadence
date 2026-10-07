@@ -410,6 +410,7 @@ describe('PixelSeamService', () => {
       thumbnail: capture.thumbnail.bind(capture),
       screenshotUrl: capture.screenshotUrl.bind(capture),
       kitSheet: capture.kitSheet.bind(capture),
+      contactSheet: capture.contactSheet.bind(capture),
       close: async () => undefined,
     };
     const hub = new RecordingHub();

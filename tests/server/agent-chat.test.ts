@@ -723,6 +723,11 @@ test('rules and labels', () => {
     label('mcp__cadence__render_frames', { times: [0, 1, 2], wholeVideo: true, format: '9:16' }),
     'Rendu de 3 images de la vidéo (9:16)',
   );
+  assert.equal(label('mcp__cadence__render_frames', { strip: { at: 1 } }), 'Rendu de 12 images');
+  assert.equal(
+    label('mcp__cadence__render_frames', { strip: { at: 1, frames: 6 }, sceneId: 'intro' }),
+    'Rendu de 6 images de intro',
+  );
   assert.equal(label('mcp__cadence__set_scene_duration', { seconds: 3.32 }), 'Durée réglée à 3,32 s');
   assert.equal(label('mcp__cadence__snap_cuts_to_music', { grid: 'phrase' }), 'Coupes calées sur les phrases');
   assert.equal(label('mcp__cadence__set_voice_over', { text: 'Bonjour.' }), 'Voix off écrite et générée');

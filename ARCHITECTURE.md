@@ -61,7 +61,7 @@ cadence/
     networks/               youtube.ts, linkedin.ts, instagram.ts (through Facebook Login), tiktok.ts (drafts)
     api/                    Hono routes under /api (index.ts = createApi)
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
-    capture/                capture.ts (Playwright), seams.ts (pixelmatch), render.ts (ffmpeg)
+    capture/                capture.ts (Playwright), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
                             worker (the analysis off the server's thread), synth + soundtracks (the preset
                             soundtracks, composed in code)
@@ -149,6 +149,8 @@ not use UDP (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`), servi
 closed. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first frame)
 and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE` (default `fr-FR`, checked at start);
 the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
+Contact sheets (`sheet.ts`) lay the strip's PNG tiles out as data URLs in a context of their own, JavaScript off and
+every request aborted: that page loads nothing and is not the frame origin.
 
 Reference captures (`screenshotUrl`) check every request by origin: host names are resolved, link-local,
 unspecified and multicast addresses (IPv4-mapped included) are refused, and so are Cadence's own ports; other
@@ -417,7 +419,7 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `get_brand` | yes | yes | tokens, kit, extras, copy |
 | `get_music_context` | yes | yes | tempo, bars, phrases in scene-local seconds |
 | `list_templates` | yes | yes | scene + campaign templates |
-| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images |
+| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images; or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
 | `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 % |
 | `set_scene_duration` | own scene | any | ms precision |
 | `set_voice_over` | own scene | any | text + `at` (kept when left out); speaks it, answers each sentence's start and end in scene seconds |
@@ -426,8 +428,8 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `capture_reference` | no | yes | screenshot an http(s) URL into assets/refs/ |
 | `save_version` | yes | yes | named snapshot |
 
-Project-only tools are not even registered for scene tokens. `render_frames` saves JPEGs (PNG when asked) to
-`.cadence/frames/` and reports them with `tokens.reportActivity()` so the chat
+Project-only tools are not even registered for scene tokens. `render_frames` saves the JPEGs it returns (the frames,
+or the strip's contact sheet) to `.cadence/frames/` and reports them with `tokens.reportActivity()` so the chat
 shows what the agent looked at. Terminal usage: `npm run cadence -- mcp` prints the
 `claude mcp add --transport http cadence <mcpUrl> --header "Authorization: Bearer <token>"` command.
 

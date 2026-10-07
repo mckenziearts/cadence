@@ -101,6 +101,7 @@ export default {
     otherScene: (sceneId: string, denied: string) => `This chat is limited to scene "${sceneId}": ${denied}`,
     sceneIdNeeded: (scenes: string[]) => `Pass sceneId. Scenes: ${scenes.join(', ') || 'none'}.`,
     sceneOrVideo: 'Choose sceneId or wholeVideo, not both.',
+    timesOrStrip: 'Pass either times or strip, not both.',
     renderOwnScene: 'render your scene, or the whole video with wholeVideo: true.',
     checkOwnSeams: 'check the cuts of your scene.',
     setOwnDuration: 'change the duration of your scene; the project chat sets the others.',

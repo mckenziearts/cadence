@@ -14,6 +14,7 @@ import { captureLocale } from '../config';
 import type { CadenceConfig, CapturedFrame, CaptureService, ProjectStore } from '../contracts';
 import { language, m } from '../i18n';
 import { formatSeconds, HttpError, KeyedMutex, roundMs, shortHash, writeFileAtomic } from '../util';
+import { contactSheet } from './sheet';
 
 export const CHROMIUM_ARGS = [
   '--force-color-profile=srgb',
@@ -389,6 +390,10 @@ export class PlaywrightCapture implements CaptureService {
     } finally {
       await context.close().catch(() => undefined);
     }
+  }
+
+  async contactSheet(tiles: Buffer[], layout: { columns: number; gap: number }): Promise<Buffer> {
+    return contactSheet(await this.browser(), tiles, layout);
   }
 
   async screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean }): Promise<Buffer> {
