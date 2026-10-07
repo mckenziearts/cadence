@@ -74,6 +74,7 @@ export default {
     downloadFailed: (name: string, error: string) => `Téléchargement de la voix ${name} impossible : ${error}`,
     corrupted: (name: string) => `La voix ${name} téléchargée est corrompue (md5) : réessayez`,
     noTrack: 'Aucune voix off générée pour ce projet',
+    notSpoken: 'Une scène a une voix off pas encore générée : générez la voix off, puis téléchargez les sous-titres',
     elevenLabsKeyRefused: (detail: string | null) =>
       `ElevenLabs refuse la clé API${detail ? ` (${detail})` : ''} : vérifiez-la dans le Profil`,
     elevenLabsQuota: (detail: string | null) =>

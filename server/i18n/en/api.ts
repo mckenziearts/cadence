@@ -95,6 +95,7 @@ export default {
     fps: (value: unknown) => `Invalid frame rate: ${value} (24, 30 or 60)`,
     language: (value: unknown) => `Invalid language: ${String(value)} (fr, en or null)`,
     tempo: (value: unknown) => `Invalid tempo: ${value} (between 30 and 300 BPM)`,
+    captions: (value: unknown) => `Invalid captions setting: ${String(value)} (true or false)`,
     duration: (value: unknown) => `Invalid duration: ${value}`,
     root: 'root',
     artDirection: `# Art direction

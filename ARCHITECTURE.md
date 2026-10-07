@@ -71,7 +71,8 @@ cadence/
     agent/                  types.ts, claudeCode.ts (provider), guide.ts, prompts.ts, chat.ts (ChatManager)
     mcp/                    tokens.ts (McpTokens), server.ts (createMcpHandler), tools.ts, brandTools.ts
   src/
-    shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks)
+    shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks),
+                            subtitles.ts (subtitle cues from the voice-over sentences, SRT and WebVTT)
     runtime/                the `cadence` module scenes import (+ API.md, the reference the agent reads)
     frame/main.tsx          frame page app
     frame/kit.tsx           kit sheet app (kit.html)
@@ -179,7 +180,7 @@ so imports are fresh.
 ```
 projects/<id>/
   project.json          ProjectFile (name, brand, fps, formats, tempo, language, scenes[] (voiceOver?), music,
-                        voiceOver)
+                        voiceOver, captions)
   art-direction.md      the look every scene follows (copied from the brand, then edited)
   scenes/<scene>.tsx    one component per scene (default export)
   components/           shared components/constants for this project (relative imports)
@@ -478,7 +479,7 @@ GET    /api/state                                  AppState
 GET    /api/events                                 SSE ServerEvent stream
 GET    /api/projects/:id                           ProjectState
 POST   /api/projects                               CreateProjectInput (language?), answers ProjectState
-PATCH  /api/projects/:id                           UpdateProjectInput (language: fr | en | null, voiceOver), answers ProjectState
+PATCH  /api/projects/:id                           UpdateProjectInput (language: fr | en | null, voiceOver, captions), answers ProjectState
 DELETE /api/projects/:id                           to projects/.trash; 409 while a turn, a render or an upload of it runs
 GET    /api/projects/:id/art-direction             { text }
 PUT    /api/projects/:id/art-direction             { text }
@@ -510,6 +511,8 @@ DELETE /api/voices/elevenlabs/key                  answers { configured: false }
                                                    (new projects start with Piper again)
 POST   /api/projects/:id/voice-over/sync           speaks what is missing, failures included, answers ProjectState
 GET    /api/projects/:id/voice-over/audio          ?v=, the voice-over track as audio/wav
+GET    /api/projects/:id/subtitles                 ?format=srt|vtt, the voice-over sentences as a `<id>.srt` / `<id>.vtt`
+                                                   attachment; 409 while a scene is not spoken, 404 without any sentence
 GET    /api/projects/:id/versions                  ?scene=, answers VersionEntry[]
 POST   /api/projects/:id/versions                  { label }, answers VersionEntry | null
 POST   /api/projects/:id/versions/:vid/restore     { sceneId? }, answers VersionEntry (409 while a turn runs)
@@ -651,6 +654,11 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   into garbage); the voice alone and the mix with the music both end with `alimiter=limit=0.95:level=disabled` (the
   default auto-level would undo the ducking). A range where no sentence falls gets no voice input at all, so the MP4
   does not depend on what a given ffmpeg does with an input sought past its end.
+- Subtitles: `subtitleCues` (`src/shared/subtitles.ts`) cuts each sentence into cues of at most `maxChars` (84 for
+  the files: two lines of 42), balanced and ending after punctuation when one is near the middle, timed in proportion
+  to their characters; where sentences overlap, the one that started last shows. The download reads the lines and
+  never syncs: with ElevenLabs a sync bills the person (with Piper, the read may try the missing sentences like any
+  other). `captions` (off by default) stores the choice of burned-in captions; nothing draws them yet.
 - Scenes get `voiceOver` (`{ text, lines }` in scene seconds) in their props; the agent sets text and timing with
   `set_voice_over` and reads the sentence times in its turn context and `get_project`.
 

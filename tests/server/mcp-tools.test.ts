@@ -65,6 +65,7 @@ function makeProject(dir: string): ProjectState {
     voiceOverLines: [],
     voiceOverPending: [],
     voiceOverError: null,
+    captions: false,
     codeGeneration: 1,
     createdAt: '',
     updatedAt: '',

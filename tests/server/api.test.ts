@@ -684,6 +684,72 @@ test('voice-overs: the default voice goes into project.json at creation only, ne
   assert.ok(!(await file('hand-edited')).includes('voiceOver'));
 });
 
+test('captions: off by default and for older project.json files, saved through PATCH', async () => {
+  const file = path.join(store.dir('demo'), 'project.json');
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).captions, undefined);
+  assert.equal((await json('GET', '/api/projects/demo')).body.captions, false);
+  assert.equal((await json('PATCH', '/api/projects/demo', { captions: true })).body.captions, true);
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).captions, true);
+  assert.equal((await store.get('demo')).captions, true);
+  assert.equal((await json('PATCH', '/api/projects/demo', { captions: 'yes' })).status, 400);
+  assert.equal((await json('PATCH', '/api/projects/demo', { captions: false })).body.captions, false);
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).captions, undefined);
+  assert.equal((await store.get('demo')).captions, false);
+});
+
+test('subtitles: SRT and VTT of the voice-over sentences as downloads, without ever speaking', async () => {
+  let lines = [{ sceneId: 'titre', text: 'Bonjour.', start: 1.25, end: 3 }];
+  let pending: string[] = [];
+  store.setVoiceOverProvider(async () => ({
+    voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
+    voiceOverUrl: null,
+    voiceOverLines: lines,
+    voiceOverPending: pending,
+    voiceOverError: null,
+  }));
+
+  const srt = await call('GET', '/api/projects/demo/subtitles?format=srt');
+  assert.equal(srt.status, 200);
+  assert.equal(srt.headers.get('content-disposition'), 'attachment; filename="demo.srt"');
+  assert.match(srt.headers.get('content-type')!, /^application\/x-subrip/);
+  assert.equal(srt.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(await srt.text(), '1\n00:00:01,250 --> 00:00:03,000\nBonjour.\n');
+  const vtt = await call('GET', '/api/projects/demo/subtitles?format=vtt');
+  assert.equal(vtt.headers.get('content-disposition'), 'attachment; filename="demo.vtt"');
+  assert.match(vtt.headers.get('content-type')!, /^text\/vtt/);
+  assert.equal(await vtt.text(), 'WEBVTT\n\n00:00:01.250 --> 00:00:03.000\nBonjour.\n');
+  lines = [
+    {
+      sceneId: 'titre',
+      text: 'Cadence anime chaque phrase de la voix off et la place exactement sous la scène qui la porte, sans effort.',
+      start: 0,
+      end: 6,
+    },
+  ];
+  assert.equal(
+    await (await call('GET', '/api/projects/demo/subtitles?format=srt')).text(),
+    '1\n00:00:00,000 --> 00:00:03,086\nCadence anime chaque phrase de la voix off et la place\n\n' +
+      '2\n00:00:03,086 --> 00:00:06,000\nexactement sous la scène qui la porte, sans effort.\n',
+  );
+
+  assert.equal((await json('GET', '/api/projects/demo/subtitles?format=ass')).status, 400);
+  assert.equal((await json('GET', '/api/projects/demo/subtitles')).status, 400);
+  assert.equal((await json('GET', '/api/projects/nope/subtitles?format=srt')).status, 404);
+
+  pending = ['titre'];
+  const unspoken = await json('GET', '/api/projects/demo/subtitles?format=srt');
+  assert.equal(unspoken.status, 409);
+  assert.equal(
+    unspoken.body.error,
+    'Une scène a une voix off pas encore générée : générez la voix off, puis téléchargez les sous-titres',
+  );
+  lines = [];
+  assert.equal((await json('GET', '/api/projects/demo/subtitles?format=srt')).status, 409);
+  pending = [];
+  assert.equal((await json('GET', '/api/projects/demo/subtitles?format=vtt')).status, 404);
+  assert.equal(calls.syncVoiceOver, undefined);
+});
+
 test('versions: manual save, list, restore', async () => {
   let res = await json('POST', '/api/projects/demo/versions', {});
   assert.equal(res.body.id, 'v0001');

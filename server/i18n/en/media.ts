@@ -73,6 +73,7 @@ export default {
     downloadFailed: (name: string, error: string) => `Could not download the ${name} voice: ${error}`,
     corrupted: (name: string) => `The downloaded ${name} voice is corrupted (md5): try again`,
     noTrack: 'No voice-over generated for this project',
+    notSpoken: 'A scene has a voice-over not generated yet: generate the voice-over, then download the subtitles',
     elevenLabsKeyRefused: (detail: string | null) =>
       `ElevenLabs refuses the API key${detail ? ` (${detail})` : ''}: check it in the Profile`,
     elevenLabsQuota: (detail: string | null) =>

@@ -7,6 +7,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { z } from 'zod';
+import { subtitleCues, toSrt, toVtt } from '../../src/shared/subtitles';
 import {
   AGENT_IDS,
   EFFORTS,
@@ -39,6 +40,8 @@ const MUSIC_LIMIT = 201 * MB;
 const ASSET_LIMIT = 51 * MB;
 /** POST routes that take a multipart file with their own, larger body limit. */
 const UPLOAD_ROUTE = /^\/api\/projects\/[^/]+\/(music|assets)$/;
+/** Two lines of 42 characters, the usual limit of subtitle files. */
+const SUBTITLE_MAX_CHARS = 84;
 const ZOD_LOCALES = { fr: z.locales.fr(), en: z.locales.en() };
 
 const idSchema = z.string().regex(ID_PATTERN);
@@ -82,6 +85,7 @@ const schemas = {
     tempo: z.number().min(30).max(300).optional(),
     language: languageSchema.optional(),
     voiceOver: voiceOverSchema.nullable().optional(),
+    captions: z.boolean().optional(),
   }),
   text: z.object({ text: z.string().max(200_000) }),
   createScene: z.object({
@@ -366,6 +370,20 @@ export function createApi(deps: ApiDeps) {
     const track = await deps.voiceOver.track(await existingProject(c));
     if (!track) throw new HttpError(404, m().media.voiceOver.noTrack);
     return sendFile(c, track.file, 'audio/wav');
+  });
+  app.get('/projects/:id/subtitles', async (c) => {
+    const format = c.req.query('format') ?? '';
+    if (format !== 'srt' && format !== 'vtt') throw new HttpError(400, m().api.routes.invalidParam('format', format));
+    // Never speaks: with ElevenLabs a sync bills the person (a Piper read may try its missing sentences, like any read).
+    const project = await store.get(await existingProject(c));
+    if (project.voiceOverPending.length) throw new HttpError(409, m().media.voiceOver.notSpoken);
+    if (!project.voiceOverLines.length) throw new HttpError(404, m().media.voiceOver.noTrack);
+    const cues = subtitleCues(project.voiceOverLines, { maxChars: SUBTITLE_MAX_CHARS });
+    return c.body(format === 'srt' ? toSrt(cues) : toVtt(cues), 200, {
+      'Content-Type': format === 'srt' ? 'application/x-subrip; charset=utf-8' : 'text/vtt; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${project.id}.${format}"`,
+      'X-Content-Type-Options': 'nosniff',
+    });
   });
 
   // Versions

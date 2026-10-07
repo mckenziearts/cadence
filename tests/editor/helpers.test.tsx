@@ -144,6 +144,7 @@ function project(durations: number[], musicGrid: MusicGridData | null = null, st
     voiceOverLines: [],
     voiceOverPending: [],
     voiceOverError: null,
+    captions: false,
     codeGeneration: 0,
     createdAt: '',
     updatedAt: '',
