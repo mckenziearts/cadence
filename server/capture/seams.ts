@@ -117,7 +117,7 @@ export class PixelSeamService implements SeamService {
    * decodes and the comparison together (about 70 ms per 1080p cut): only the seam dialog (`detail`) draws it.
    */
   private async compare(project: ProjectState, from: SceneState, to: SceneState, format: FormatId, drawDiff = false) {
-    const shot = { format, scale: SEAM_SCALE, imageFormat: 'png' as const };
+    const shot = { format, scale: SEAM_SCALE, imageFormat: 'png' as const, captions: false };
     const [a] = await this.deps.capture.frames(project.id, { ...shot, sceneId: from.id, times: [from.duration] });
     const [b] = await this.deps.capture.frames(project.id, { ...shot, sceneId: to.id, times: [0] });
     const pa = PNG.sync.read(a.image);

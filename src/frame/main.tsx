@@ -14,6 +14,7 @@ import type { FrameProjectData } from '../../server/frames/frameServer';
 import type { BrandKit } from '../shared/brandKit';
 import type { EditorToFrame, FrameApi, FrameRenderResult, FrameToEditor } from '../shared/frameProtocol';
 import { FORMATS, isFormatId, type FormatId, type FormatSpec, type ProjectState, type SceneState } from '../shared/types';
+import { Captions } from './captions';
 import { editorOrigins, postToEditor } from './editor';
 import { texts } from './texts';
 
@@ -32,6 +33,8 @@ const queryFormat = query.get('format');
 let requestedFormat: FormatId | null = isFormatId(queryFormat) ? queryFormat : null;
 let sceneId: string | null = query.get('scene') || null;
 let currentT = Number(query.get('t')) || 0;
+// Seam checks and thumbnails open the page with captions=0: they look at the scene, and a caption would hide part of it.
+const captionsShown = query.get('captions') !== '0';
 
 // After the base font styles, so the brand theme wins.
 const brandStyle = document.createElement('style');
@@ -388,6 +391,10 @@ function Stage(props: { spec: FormatSpec; view: View }) {
       }}
     >
       {content}
+      {/* Outside the scene's error boundary: a scene that throws keeps its captions. */}
+      {view.kind === 'scene' && captionsShown && data?.project.captions && (
+        <Captions lines={data.project.voiceOverLines} spec={spec} t={tidy(view.props.scene.start + view.props.t)} />
+      )}
     </div>
   );
 }

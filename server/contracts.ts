@@ -360,6 +360,8 @@ export interface CaptureService {
       scale?: number;
       imageFormat?: 'jpeg' | 'png';
       quality?: number;
+      /** Burned-in captions when the project has them on (default true); seam checks and thumbnails pass false. */
+      captions?: boolean;
     },
   ): Promise<CapturedFrame[]>;
   /** Small JPEG of a scene (cached per code generation + scene + format + t). */

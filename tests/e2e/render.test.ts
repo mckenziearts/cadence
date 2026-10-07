@@ -265,6 +265,33 @@ export default function A({ voiceOver }: SceneProps) {
     }
   });
 
+  it('burns the captions into the MP4 when the project has them on', async () => {
+    const projectFile = path.join(h.store.dir(id), 'project.json');
+    const saved = await readFile(projectFile, 'utf8');
+    await writeFile(projectFile, JSON.stringify({ ...(JSON.parse(saved) as ProjectFile), captions: true }, null, 2));
+    h.store.voiceOverLines.set(id, [{ sceneId: 'a', text: 'Bonjour tout le monde.', start: 0.1, end: 0.4 }]);
+    try {
+      const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' });
+      // Across the middle of the caption box, which ends at the bottom of the safe area (1008 px): its dark background
+      // shows between the words over the red scene.
+      const row = async (t: number) => {
+        const frame = await frameAt(file, t);
+        return Array.from({ length: 41 }, (_, i) => pixel(frame, 760 + i * 10, 975));
+      };
+      assert.ok(
+        (await row(0.2)).some((p) => near(p, [71, 0, 0], 20)),
+        'the caption box while the sentence is said',
+      );
+      assert.ok(
+        (await row(0.45)).every((p) => near(p, [255, 0, 0], 6)),
+        'only red once it ends',
+      );
+    } finally {
+      h.store.voiceOverLines.delete(id);
+      await writeFile(projectFile, saved);
+    }
+  });
+
   it('limits a full-scale voice alone, and gives a range without any sentence no voice at all', async () => {
     const dir = path.join(h.store.dir(id), 'voice-test');
     await mkdir(dir, { recursive: true });

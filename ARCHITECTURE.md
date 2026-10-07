@@ -75,6 +75,7 @@ cadence/
                             subtitles.ts (subtitle cues from the voice-over sentences, SRT and WebVTT)
     runtime/                the `cadence` module scenes import (+ API.md, the reference the agent reads)
     frame/main.tsx          frame page app
+    frame/captions.tsx      burned-in captions over the scene
     frame/kit.tsx           kit sheet app (kit.html)
     frame/texts.ts          the frame and kit pages' error texts, in the page's <html lang>
     frame/editor.ts         the editor that embeds a frame or kit page: its origins, and the one to post to
@@ -658,7 +659,12 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   the files: two lines of 42), balanced and ending after punctuation when one is near the middle, timed in proportion
   to their characters; where sentences overlap, the one that started last shows. The download reads the lines and
   never syncs: with ElevenLabs a sync bills the person (with Piper, the read may try the missing sentences like any
-  other). `captions` (off by default) stores the choice of burned-in captions; nothing draws them yet.
+  other). With `captions` on (off by default), the frame page burns them in (`src/frame/captions.tsx`): the cue of the
+  video time over the scene, outside its error boundary, centered in the bottom band of the format's safe area, at
+  44 / 52 / 48 px for landscape / portrait / square with `maxChars` 84 / 42 / 48 so a cue fits on two lines. The
+  preview, the agent's frames and the MP4 show them; seam checks and thumbnails open the page with `captions=0` (part
+  of the capture slot key), since they look at the scene. A scene that fails to compile shows the error page alone,
+  without them.
 - Scenes get `voiceOver` (`{ text, lines }` in scene seconds) in their props; the agent sets text and timing with
   `set_voice_over` and reads the sentence times in its turn context and `get_project`.
 

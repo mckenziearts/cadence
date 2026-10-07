@@ -127,13 +127,14 @@ async function openIsolatedPage(
 export async function openFramePage(
   browser: Browser,
   frameOrigin: string,
-  opts: { projectId: string; sceneId: string | null; format: FormatId; scale: number },
+  opts: { projectId: string; sceneId: string | null; format: FormatId; scale: number; captions?: boolean },
 ): Promise<FramePage> {
   const { width, height } = FORMATS[opts.format];
   const { context, page, problems } = await openIsolatedPage(browser, frameOrigin, { width, height, scale: opts.scale });
   try {
     const params = new URLSearchParams({ project: opts.projectId, format: opts.format, mode: 'capture' });
     if (opts.sceneId) params.set('scene', opts.sceneId);
+    if (opts.captions === false) params.set('captions', '0');
     await page.goto(`${frameOrigin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
     if (!(await page.evaluate(() => window.__cadence !== undefined))) {
       throw new Error(m().media.capture.frameNotStarted(problems));
@@ -238,7 +239,7 @@ export class PlaywrightCapture implements CaptureService {
   }
 
   /**
-   * Run `fn` on the page kept for (project, scene/whole, format, scale), one caller at a time, after bringing the
+   * Run `fn` on the page kept for (project, scene/whole, format, scale, captions), one caller at a time, after bringing the
    * page to the store's current code generation (and scene). Pages are recycled after 150 uses or 30 code generations,
    * after any failure (timeout, crash) and after a few idle minutes.
    */
@@ -247,10 +248,11 @@ export class PlaywrightCapture implements CaptureService {
     sceneId: string | null,
     format: FormatId,
     scale: number,
+    captions: boolean,
     fn: (page: Page) => Promise<T>,
   ): Promise<T> {
     // The language is in the key: frame pages pick theirs at load, a switch must open fresh ones.
-    const key = `${projectId}|${sceneId ? 'scene' : 'whole'}|${format}|${scale}|${language()}`;
+    const key = `${projectId}|${sceneId ? 'scene' : 'whole'}|${format}|${scale}|${captions}|${language()}`;
     return this.locks.run(key, async () => {
       const generation = this.store.generation(projectId);
       let slot = this.slots.get(key);
@@ -259,7 +261,13 @@ export class PlaywrightCapture implements CaptureService {
         slot = undefined;
       }
       if (!slot) {
-        const opened = await openFramePage(await this.browser(), this.config.frameOrigin, { projectId, sceneId, format, scale });
+        const opened = await openFramePage(await this.browser(), this.config.frameOrigin, {
+          projectId,
+          sceneId,
+          format,
+          scale,
+          captions,
+        });
         slot = { ...opened, uses: 0, generation, generations: 0 };
         this.slots.set(key, slot);
       }
@@ -305,7 +313,9 @@ export class PlaywrightCapture implements CaptureService {
     const scale = req.scale ?? 0.5;
     if (!(scale >= 0.1 && scale <= 4)) throw new HttpError(400, m().media.invalidScale(scale));
     const type = req.imageFormat ?? 'jpeg';
-    return this.withSlot(projectId, req.sceneId, format, scale, async (page) => {
+    // Without captions in the project, both pages draw the same frames: share the one seams and thumbnails use.
+    const captions = project.captions && req.captions !== false;
+    return this.withSlot(projectId, req.sceneId, format, scale, captions, async (page) => {
       const out: CapturedFrame[] = [];
       for (const t of req.times) {
         const result = await seekFrame(page, t, this.timeoutMs);
@@ -342,7 +352,7 @@ export class PlaywrightCapture implements CaptureService {
     const file = path.join(dir, `${prefix}g${this.run}.${project.codeGeneration}-${sceneSignature(project, scene)}.jpg`);
     const cached = await fs.readFile(file).catch(() => null);
     if (cached) return cached;
-    const [frame] = await this.frames(projectId, { sceneId, times: [t], format, scale: 0.25, quality: 80 });
+    const [frame] = await this.frames(projectId, { sceneId, times: [t], format, scale: 0.25, quality: 80, captions: false });
     if (frame.errors.length === 0) {
       await writeFileAtomic(file, frame.image);
       // Older versions of this thumbnail will never be asked for again.
