@@ -732,6 +732,10 @@ contract: removing or reshaping one is a major version.
   replaced page is a screen the host maintains against each core release, so replacements stay rare. Host pages keep
   their own fr and en strings and read the language with `useStore((s) => s.language)`. `tests/editor/routing.test.ts`
   checks the hash parsing and the resolution, `tests/server/editor-root.test.ts` a host page in Chromium.
+- `profile`: `<App profile={false} />` takes the Profile entry off the top bar, for a host that keeps the person on one
+  of its pages for now (a sign-in first). It only hides the entry: `#/@profil` still opens, so a host that must keep
+  the person out gates the hash itself. The default (`true`) changes nothing. `tests/server/editor-root.test.ts` checks
+  it in Chromium.
 - CSS: the host stylesheet imports the core's (`@import '<core>/src/editor/styles.css';`) and adds `@source './';` for
   its own files. Tailwind only generates the classes it finds in scanned sources, and the core stylesheet scans
   `src/editor/` only: without its own `@source`, the host's screens come out unstyled.
