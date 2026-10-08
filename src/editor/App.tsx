@@ -94,9 +94,9 @@ export function App({ pages }: { pages?: Pages }) {
     <div className="flex h-full min-w-[1180px] flex-col overflow-hidden bg-white" {...drop.handlers}>
       {framed ? (
         // The strip around the box still drags a host's window. 16 px over the 56 px bar is three squares of the grid,
-        // so its lines run on into the page's.
+        // so its lines run on into the page's. A host's window may keep the box its full width (--titlebar-max-width).
         <div className="shrink-0 bg-grid bg-stage [-webkit-app-region:drag] [app-region:drag]">
-          <div className="mx-auto max-w-[92rem] px-6 pt-4">
+          <div className="mx-auto max-w-[var(--titlebar-max-width,92rem)] px-6 pt-4">
             <TopBar framed />
           </div>
         </div>
