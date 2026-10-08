@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import readline from 'node:readline';
-import { EFFORTS, type AgentStatus, type Effort, type ModelSpec, type UsageTokens } from '../../src/shared/types';
+import { AGENT_NAMES, EFFORTS, type AgentStatus, type Effort, type ModelSpec, type UsageTokens } from '../../src/shared/types';
 import type { CadenceConfig } from '../contracts';
 import { m } from '../i18n';
 import { AsyncQueue } from '../util';
@@ -116,7 +116,11 @@ export class CodexProvider implements AgentProvider {
   readonly label = LABEL;
   private statusCache: { at: number; value: Promise<AgentStatus> } | null = null;
 
-  constructor(private config: CadenceConfig) {}
+  /** `agent` is the name the turn errors give it: null when the host hides the agent choice (`agentName()`). */
+  constructor(
+    private config: CadenceConfig,
+    private agent: string | null = AGENT_NAMES.codex,
+  ) {}
 
   status(): Promise<AgentStatus> {
     if (!this.statusCache || Date.now() - this.statusCache.at > 30_000) {
@@ -203,7 +207,7 @@ export class CodexProvider implements AgentProvider {
         // turn.completed/turn.failed already produced the done event; this only covers an abort or a crash before it.
         finish({
           type: 'done',
-          text: aborted ? m().agent.codex.stopped : crashText(code, stderr),
+          text: aborted ? m().agent.codex.stopped : crashText(this.agent, code, stderr),
           isError: !aborted,
           durationMs: 0,
           subtype: aborted ? 'aborted' : 'crashed',
@@ -225,10 +229,10 @@ function exec(file: string, args: string[]): Promise<{ stdout: string; code: num
   });
 }
 
-function crashText(code: number | null, stderr: string): string {
+function crashText(agent: string | null, code: number | null, stderr: string): string {
   const tail = stderr.trim().split('\n').slice(-6).join('\n');
-  if (AUTH_ERROR.test(tail)) return `${m().agent.codex.notLoggedIn}\n\n${tail}`;
-  return m().agent.codex.crashed(code, tail);
+  if (AUTH_ERROR.test(tail)) return `${agent ? m().agent.codex.notLoggedIn : m().agent.refused}\n\n${tail}`;
+  return m().agent.codex.crashed(agent, code, tail);
 }
 
 /**

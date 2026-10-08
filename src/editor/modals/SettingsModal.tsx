@@ -7,17 +7,20 @@ import { useT } from '../i18n';
 import { set, useStore, NONE } from '../store';
 import { resolvePick } from '../store/chat';
 import { closeModal, toast } from '../store/ui';
+import { useAgentName, useClaudeCodeHints } from '../components/agents';
 
 /** Each language under its own name, whatever the interface language. */
 const LANGUAGE_NAMES = { fr: 'Français', en: 'English' } as const;
 
 export function SettingsModal() {
   const t = useT();
+  const agent = useAgentName();
   const app = useStore((s) => s.app)!;
   const language = useStore((s) => s.language);
   const { modelPicker, costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
-  // Claude Code's hint is about the cost shown: with the costs hidden it goes too.
-  const agentHint = app.agent.detail ?? (costs ? t.settings.agentHint : undefined);
+  const claudeCodeHints = useClaudeCodeHints();
+  // Claude Code's hint is about its session and the cost shown: another agent, or the costs hidden, and it goes.
+  const agentHint = app.agent.detail ?? (costs && claudeCodeHints ? t.settings.agentHint : undefined);
   // The scene/project defaults shown are the active agent's; saving routes them back to that agent.
   const seed = (): Settings => {
     const scene = resolvePick(app.settings, app.models, 'scene');
@@ -71,7 +74,7 @@ export function SettingsModal() {
       <div className="space-y-6">
         <section className="space-y-2">
           <SectionTitle>{t.settings.language}</SectionTitle>
-          <p className="-mt-1 text-xs text-ink-3">{t.settings.languageHint}</p>
+          <p className="-mt-1 text-xs text-ink-3">{t.settings.languageHint(agent)}</p>
           <Segmented
             label={t.settings.language}
             size="sm"
@@ -109,7 +112,7 @@ export function SettingsModal() {
             <div className="min-w-0 text-[13px]">
               <p className="font-medium text-ink">
                 {(app.agent.ok ? t.settings.agentReady : t.settings.agentDown)(
-                  app.agent.version ? `${app.agent.label} ${app.agent.version}` : app.agent.label,
+                  agent === null ? null : app.agent.version ? `${app.agent.label} ${app.agent.version}` : app.agent.label,
                 )}
               </p>
               {agentHint && <p className="mt-0.5 text-xs leading-relaxed text-ink-3">{agentHint}</p>}

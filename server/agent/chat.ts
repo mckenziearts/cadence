@@ -7,6 +7,7 @@ import {
   ID_PATTERN,
   MODEL_ID_PATTERN,
   MODELS,
+  agentName,
   agentPicks,
   isFormatId,
   sceneIdFromChatKey,
@@ -15,6 +16,7 @@ import {
   type ChatMessage,
   type ChatState,
   type Effort,
+  type Features,
   type Playhead,
   type ProjectState,
   type SceneState,
@@ -72,6 +74,8 @@ export interface ChatDeps {
   tokens: McpTokenIssuer;
   settings: SettingsStore;
   usage: UsageLog;
+  /** The host's editor features: without the agent choice, the messages name no agent. */
+  features: Features;
 }
 
 type Dirs = { brand: string; templates: string; runtime: string };
@@ -237,7 +241,9 @@ export class ChatManager implements ChatService {
     if (effort !== undefined && !EFFORTS.includes(effort)) throw new HttpError(400, m().agent.chat.invalidEffort(effort));
     const id = chatId(projectId, key);
     if (this.stopping) throw new HttpError(503, m().agent.chat.stopping);
-    if (this.turns.has(id) || this.reserved.has(id)) throw new HttpError(409, m().agent.chat.busy);
+    if (this.turns.has(id) || this.reserved.has(id)) {
+      throw new HttpError(409, m().agent.chat.busy(agentName((await this.deps.settings.get()).agent, this.deps.features)));
+    }
     this.reserved.add(id);
     let turn: Turn;
     try {
@@ -634,7 +640,7 @@ export class ChatManager implements ChatService {
             reply.status = 'stopped';
           } else if (ev.isError) {
             reply.status = 'error';
-            reply.error = ev.text || m().agent.chat.failed;
+            reply.error = ev.text || m().agent.chat.failed(agentName(agent, this.deps.features));
             // Claude Code often streams the error as text too: show it once.
             if (reply.text.trim() && reply.error.includes(reply.text.trim())) reply.text = '';
           } else {

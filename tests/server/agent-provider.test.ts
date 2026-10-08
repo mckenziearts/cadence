@@ -173,9 +173,9 @@ const EXPECTED: AgentEvent[] = [
   },
 ];
 
-function parse(lines: string[]): AgentEvent[] {
+function parse(lines: string[], agent?: string | null): AgentEvent[] {
   const events: AgentEvent[] = [];
-  const parser = new StreamJsonParser((e) => events.push(e));
+  const parser = new StreamJsonParser((e) => events.push(e), agent);
   for (const line of lines) parser.line(line);
   return events;
 }
@@ -239,6 +239,19 @@ describe('StreamJsonParser', () => {
       sessionId: undefined,
       subtype: 'error_max_turns',
     });
+  });
+
+  test('says "Notre IA" when the host hides the agent, and never sends the person to a CLI login', () => {
+    const [failed] = parse(
+      [JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, result: 'balance 0' })],
+      null,
+    );
+    assert.equal((failed as { text: string }).text, 'Notre IA a renvoyé une erreur (error_max_turns) : balance 0');
+    const [refused] = parse(
+      [JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'authentication_error: 401' })],
+      null,
+    );
+    assert.equal((refused as { text: string }).text, 'Notre IA a refusé la connexion : réessayez.\n\nauthentication_error: 401');
   });
 });
 
@@ -346,6 +359,7 @@ process.stdin.on('end', () => {
   fs.writeFileSync(path.join(__dirname, 'call.json'), JSON.stringify({ args, stdin, cwd: process.cwd(), mcp, guide }));
   if (stdin === 'HANG') return setInterval(() => {}, 1000);
   if (stdin === 'CRASH') { process.stderr.write('boom: something broke\\n'); process.exit(3); }
+  if (stdin === 'LOGGED_OUT') { process.stderr.write('Not logged in\\n'); process.exit(1); }
   process.stdout.write(fs.readFileSync(path.join(__dirname, 'stream.jsonl'), 'utf8'));
 });
 `;
@@ -358,8 +372,8 @@ process.stdin.on('end', () => {
   });
   after(() => fs.rm(dir, { recursive: true, force: true }));
 
-  const provider = (overrides: Partial<CadenceConfig> = {}) =>
-    new ClaudeCodeProvider({ claudePath: bin, useApiKey: false, agentLog: null, ...overrides } as CadenceConfig);
+  const provider = (overrides: Partial<CadenceConfig> = {}, agent?: string | null) =>
+    new ClaudeCodeProvider({ claudePath: bin, useApiKey: false, agentLog: null, ...overrides } as CadenceConfig, agent);
 
   async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
     const out: AgentEvent[] = [];
@@ -398,7 +412,20 @@ process.stdin.on('end', () => {
   test('a crash without result reports the end of stderr in French', async () => {
     const [done] = await collect(provider().run(turn({ cwd: dir, prompt: 'CRASH' })));
     assert.ok(done.type === 'done' && done.isError && done.subtype === 'crashed');
-    assert.match((done as { text: string }).text, /s’est arrêté de façon inattendue \(code 3\) :\nboom: something broke/);
+    assert.match(
+      (done as { text: string }).text,
+      /^Claude Code s’est arrêté de façon inattendue \(code 3\) :\nboom: something broke/,
+    );
+  });
+
+  test('a crash says "Notre IA" when the host hides the agent', async () => {
+    const [crashed] = await collect(provider({}, null).run(turn({ cwd: dir, prompt: 'CRASH' })));
+    assert.equal(
+      (crashed as { text: string }).text,
+      'Notre IA s’est arrêtée de façon inattendue (code 3) :\nboom: something broke',
+    );
+    const [refused] = await collect(provider({}, null).run(turn({ cwd: dir, prompt: 'LOGGED_OUT' })));
+    assert.equal((refused as { text: string }).text, 'Notre IA a refusé la connexion : réessayez.\n\nNot logged in');
   });
 
   test('a missing binary ends the turn with a French error', async () => {

@@ -39,7 +39,7 @@ export default {
         ? `Le projet ${names[0]} utilise cette marque : supprimez-le ou changez sa marque d'abord.`
         : `Les projets ${names.join(', ')} utilisent cette marque : supprimez-les ou changez leur marque d'abord.`;
     },
-    agentBusy: "Claude travaille sur ce projet : arrêtez d'abord la réponse en cours.",
+    agentBusy: (agent: string | null) => `${agent ?? 'Notre IA'} travaille sur ce projet : arrêtez d'abord la réponse en cours.`,
     invalidJson: 'Corps de requête JSON invalide',
     issue: (path: string, message: string) => `${path} : ${message}`,
     invalidBody: (issues: string[]) => `Requête invalide \u2014 ${issues.join(' ; ')}`,
@@ -104,7 +104,7 @@ export default {
     /** art-direction.md of a new project whose brand has none. */
     artDirection: `# Direction artistique
 
-Claude relit ce document avant chaque modification. Décrivez ici le style commun à toutes les scènes.
+Ce document est relu avant chaque modification. Décrivez ici le style commun à toutes les scènes.
 
 ## Palette
 - Fond : la couleur \`background\` de la marque ; cartes et panneaux en \`surface\`.

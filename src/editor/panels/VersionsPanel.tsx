@@ -19,6 +19,7 @@ import { useT } from '../i18n';
 import { relative, usd } from '../lib/format';
 import { currentScene, set, useStore } from '../store';
 import { toast } from '../store/ui';
+import { useAgentName } from '../components/agents';
 
 const SOURCES: Record<VersionSource, { icon: LucideIcon; tone: string }> = {
   agent: { icon: Sparkles, tone: 'bg-now text-ink' },
@@ -31,6 +32,7 @@ const SOURCES: Record<VersionSource, { icon: LucideIcon; tone: string }> = {
 
 export function VersionsPanel() {
   const t = useT();
+  const agent = useAgentName();
   const project = useStore((s) => s.project)!;
   const scene = useStore((s) => currentScene(s));
   const tick = useStore((s) => s.versionsTick);
@@ -123,7 +125,7 @@ export function VersionsPanel() {
           </div>
         ) : entries.length === 0 ? (
           <EmptyState icon={<History className="size-5" />} title={t.conversation.versions.emptyTitle}>
-            {t.conversation.versions.empty}
+            {t.conversation.versions.empty(agent)}
           </EmptyState>
         ) : (
           <ol className="relative space-y-1 px-2 py-3 xl:px-3">
@@ -152,14 +154,16 @@ function VersionItem(props: {
   sceneId: string | null;
 }) {
   const { entry, latest, focused, names, sceneId } = props;
-  const texts = useT().conversation.versions;
+  const t = useT();
+  const texts = t.conversation.versions;
+  const agent = useAgentName();
   const language = useStore((s) => s.language);
   const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const project = useStore((s) => s.project)!;
   const ref = useRef<HTMLLIElement>(null);
   const source = SOURCES[entry.source] ? entry.source : 'external';
   const Icon = SOURCES[source].icon;
-  const sourceLabel = texts.sources[source];
+  const sourceLabel = source === 'agent' ? t.conversation.chat.author(agent) : texts.sources[source];
   const touched = entry.scenes.map((id) => names.get(id) ?? id);
 
   useEffect(() => {

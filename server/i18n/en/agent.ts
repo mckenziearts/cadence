@@ -3,20 +3,21 @@ import type fr from '../fr/agent';
 
 export default {
   internalError: (error: string) => `Internal error: ${error}`,
+  refused: 'Our AI refused the connection: try again.',
   chat: {
     invalidKey: (key: string) => `Invalid chat: ${key}`,
     empty: 'The message is empty.',
     invalidModel: (model: string) => `Invalid model: ${model}`,
     invalidEffort: (effort: string) => `Invalid effort level: ${effort}`,
     stopping: 'Cadence is shutting down.',
-    busy: 'Claude is still working on the previous message of this chat.',
+    busy: (agent: string | null) => `${agent ?? 'Our AI'} is still working on the previous message of this chat.`,
     sceneNotFound: (sceneId: string) => `Scene not found: ${sceneId}`,
     stopFirst: 'Stop the current answer first.',
     projectNotFound: (projectId: string) => `Project not found: ${projectId}`,
-    interrupted: 'Answer interrupted: Cadence stopped while Claude was writing it.',
+    interrupted: 'Answer interrupted: Cadence stopped while it was being written.',
     sceneGone: (sceneId: string) => `Scene "${sceneId}" no longer exists.`,
     outsideChanges: 'Changes outside the chat',
-    failed: 'Claude Code stopped on an error.',
+    failed: (agent: string | null) => `${agent ?? 'Our AI'} stopped on an error.`,
     seam: (r: SeamResult) =>
       `${r.from} to ${r.to} (${r.format}): ${r.diffPercent.toFixed(2)}%${r.error ? ` (error: ${r.error})` : ''}`,
     notSaved: '[cadence] Chat not saved:',
@@ -62,10 +63,10 @@ export default {
     spawnFailed: (bin: string, error: string) =>
       `Could not start Claude Code ("${bin}"): ${error}. Install Claude Code or set CLAUDE_PATH.`,
     stopped: 'Stopped.',
-    crashed: (code: number | null, tail: string) =>
-      `Claude Code stopped unexpectedly${code === null ? '' : ` (code ${code})`}${tail ? `:\n${tail}` : '.'}`,
-    returnedError: (kind: string, text: string) =>
-      text ? `Claude Code returned an error${kind}: ${text}` : `Claude Code returned an error${kind}.`,
+    crashed: (agent: string | null, code: number | null, tail: string) =>
+      `${agent ?? 'Our AI'} stopped unexpectedly${code === null ? '' : ` (code ${code})`}${tail ? `:\n${tail}` : '.'}`,
+    returnedError: (agent: string | null, kind: string, text: string) =>
+      `${agent ?? 'Our AI'} returned an error${kind}${text ? `: ${text}` : '.'}`,
   },
   codex: {
     notLoggedIn: 'Codex is not logged in: open a terminal, run "codex login", then try again.',
@@ -74,8 +75,8 @@ export default {
     loggedIn: 'Logged in to ChatGPT',
     spawnFailed: (bin: string, error: string) => `Could not start Codex ("${bin}"): ${error}. Install Codex or set CODEX_PATH.`,
     stopped: 'Stopped.',
-    crashed: (code: number | null, tail: string) =>
-      `Codex stopped unexpectedly${code === null ? '' : ` (code ${code})`}${tail ? `:\n${tail}` : '.'}`,
+    crashed: (agent: string | null, code: number | null, tail: string) =>
+      `${agent ?? 'Our AI'} stopped unexpectedly${code === null ? '' : ` (code ${code})`}${tail ? `:\n${tail}` : '.'}`,
   },
   grok: {
     notFound: (bin: string, error: string) => `Grok not found ("${bin}"): install it, or set GROK_PATH. (${error})`,

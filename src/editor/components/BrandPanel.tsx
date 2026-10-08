@@ -9,6 +9,7 @@ import { useT } from '../i18n';
 import { useStore } from '../store';
 import { copyText } from '../store/ui';
 import { SectionTitle, Spinner } from './ui';
+import { useAgentName } from './agents';
 
 const COLORS: (keyof BrandFile['colors'])[] = [
   'background',
@@ -28,6 +29,7 @@ type KitInfo = Extract<KitToEditor, { type: 'kit' }>;
 
 export function BrandPanel({ brandId }: { brandId: string }) {
   const texts = useT().production.brand;
+  const agent = useAgentName();
   const frameOrigin = useStore((s) => s.app?.frameOrigin ?? '');
   const [brand, setBrand] = useState<BrandFile | null>(null);
   const [kit, setKit] = useState<KitInfo | null>(null);
@@ -148,7 +150,7 @@ export function BrandPanel({ brandId }: { brandId: string }) {
         </section>
         {kit && kit.extras.length > 0 && (
           <section className="space-y-2">
-            <SectionTitle action={<span className="text-[11px] text-ink-4">{texts.extrasHint}</span>}>
+            <SectionTitle action={<span className="text-[11px] text-ink-4">{texts.extrasHint(agent)}</span>}>
               {texts.extras}
             </SectionTitle>
             <ul className="space-y-2">

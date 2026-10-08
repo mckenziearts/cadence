@@ -31,7 +31,8 @@ export default {
   },
   newBrand: {
     title: 'New brand',
-    subtitle: 'Claude picks up the colors, fonts, logo and components of the product from its code.',
+    subtitle: (agent: string | null) =>
+      `${agent ?? 'Our AI'} picks up the colors, fonts, logo and components of the product from its code.`,
     needRepo: 'Pick a repository.',
     needName: 'Name the brand.',
     duration: 'It takes a few minutes.',
@@ -62,7 +63,7 @@ export default {
     unreadable: (host: string, detail?: string) => `Could not read your ${host} repositories${detail ? `: ${detail}` : '.'}`,
     pasteInstead: 'You can also paste the repository address below: Cadence copies it with the Git access of this computer.',
     progress: {
-      steps: { copy: 'Copying the repository', build: 'Claude builds the kit', check: 'Checking', ready: 'Ready' },
+      steps: { copy: 'Copying the repository', build: 'Building the kit', check: 'Checking', ready: 'Ready' },
       stepsLabel: 'Steps',
       ready: (name: string) => `Brand "${name}" is ready`,
       failed: 'The brand could not be built',
@@ -111,7 +112,8 @@ export default {
   },
   artDirection: {
     title: 'Art direction',
-    subtitle: 'Claude rereads this document before each change: palette, typography, motion, layout, cuts.',
+    subtitle: (agent: string | null) =>
+      `${agent ?? 'Our AI'} rereads this document before each change: palette, typography, motion, layout, cuts.`,
     label: 'Project art direction',
     unsaved: 'Unsaved changes: they stay here if you close.',
     hint: (keys: ReactNode) => <>Markdown. {keys} to save</>,
@@ -133,7 +135,7 @@ export default {
     earlier: 'Already sent',
   },
   lightbox: {
-    label: 'Image rendered by Claude',
+    label: (agent: string | null) => `Image rendered by ${agent ?? 'our AI'}`,
     previous: 'Previous image',
     next: 'Next image',
   },

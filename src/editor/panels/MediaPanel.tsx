@@ -10,6 +10,7 @@ import { bytes } from '../lib/format';
 import { useStore } from '../store';
 import { isAudioFile, uploadMusic } from '../store/music';
 import { copyText, toast } from '../store/ui';
+import { useAgentName } from '../components/agents';
 
 const ASSET_ACCEPT = 'image/*,.svg,.woff,.woff2,.ttf,.otf';
 
@@ -217,6 +218,7 @@ function Preview({ asset }: { asset: AssetInfo }) {
 
 function References({ refs, onChange }: { refs: AssetInfo[]; onChange: () => void }) {
   const texts = useT().conversation.media;
+  const agent = useAgentName();
   const project = useStore((s) => s.project)!;
   const [url, setUrl] = useState('');
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
@@ -243,7 +245,7 @@ function References({ refs, onChange }: { refs: AssetInfo[]; onChange: () => voi
   return (
     <section className="space-y-2.5">
       <SectionTitle>{texts.references}</SectionTitle>
-      <p className="text-xs leading-relaxed text-ink-3">{texts.referencesHint}</p>
+      <p className="text-xs leading-relaxed text-ink-3">{texts.referencesHint(agent)}</p>
       <form
         className="space-y-2.5 rounded-xl bg-wash/80 p-3 ring-1 ring-rule/80"
         onSubmit={(e) => {
@@ -286,7 +288,7 @@ function References({ refs, onChange }: { refs: AssetInfo[]; onChange: () => voi
       </form>
       {refs.length === 0 ? (
         <EmptyState icon={<Camera className="size-5" />} title={texts.noCaptures} className="py-6">
-          {texts.noCapturesHint}
+          {texts.noCapturesHint(agent)}
         </EmptyState>
       ) : (
         <ul className="space-y-2">

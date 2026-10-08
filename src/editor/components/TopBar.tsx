@@ -21,6 +21,7 @@ import { set, useStore, NONE } from '../store';
 import { openProject, PROFILE_PAGE } from '../store/project';
 import { copyText, openModal } from '../store/ui';
 import { ignore } from '../api';
+import { useClaudeCodeHints } from './agents';
 import { BrandPanel } from './BrandPanel';
 import { BeatPills, Button, IconButton, Popover, Segmented, Tooltip } from './ui';
 
@@ -145,18 +146,19 @@ function CostPill() {
   const t = useT();
   const cost = useStore((s) => s.cost);
   const amount = cost === null ? null : usd(cost);
-  return (
-    <Tooltip label={t.shell.topBar.cost.hint}>
-      <span
-        tabIndex={0}
-        className="focus-ring inline-flex h-8 items-center gap-2 border-2 border-ink bg-white px-2"
-        aria-label={t.shell.topBar.cost.label(amount)}
-      >
-        <span className="label-caps text-[10px] text-ink-3">{t.shell.topBar.cost.title}</span>
-        <span className="text-[13px] font-semibold text-ink">{amount ?? t.shell.topBar.cost.unknown}</span>
-      </span>
-    </Tooltip>
+  const claudeCodeHints = useClaudeCodeHints();
+  const pill = (
+    <span
+      tabIndex={0}
+      className="focus-ring inline-flex h-8 items-center gap-2 border-2 border-ink bg-white px-2"
+      aria-label={t.shell.topBar.cost.label(amount, claudeCodeHints)}
+    >
+      <span className="label-caps text-[10px] text-ink-3">{t.shell.topBar.cost.title}</span>
+      <span className="text-[13px] font-semibold text-ink">{amount ?? t.shell.topBar.cost.unknown}</span>
+    </span>
   );
+  // Only Claude Code's cost is counted on a Claude subscription.
+  return claudeCodeHints ? <Tooltip label={t.shell.topBar.cost.hint}>{pill}</Tooltip> : pill;
 }
 
 /** Brand builds stay in sight on every screen: running ones, then finished ones until their window has shown them. */

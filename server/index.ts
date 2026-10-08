@@ -19,6 +19,7 @@ import { PixelSeamService } from './capture/seams';
 import { loadConfig } from './config';
 import {
   DEFAULT_FEATURES,
+  agentName,
   MODELS,
   type AgentId,
   type Effort,
@@ -174,8 +175,12 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const versions = new FileVersionStore(store);
     const assets = new FileAssetStore(store, capture);
     const tokens = new McpTokens(config);
-    const claudeCode = new ClaudeCodeProvider(config);
-    const codex = new CodexProvider(config);
+    // Key by key rather than a spread: an undefined flag stays on, and a key the editor does not know is not served.
+    const activeFeatures = Object.fromEntries(
+      Object.entries(DEFAULT_FEATURES).map(([key, on]) => [key, features?.[key as keyof Features] ?? on]),
+    ) as Features;
+    const claudeCode = new ClaudeCodeProvider(config, agentName('claude-code', activeFeatures));
+    const codex = new CodexProvider(config, agentName('codex', activeFeatures));
     // One agent at a time: the Profile picks it, the router sends each turn to it (Claude Code when nothing is selected).
     const provider = customProvider ?? new RoutingProvider({ 'claude-code': claudeCode, codex }, settings, 'claude-code');
     const claudeEfforts: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -201,6 +206,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       tokens,
       settings,
       usage,
+      features: activeFeatures,
     });
 
     const viteServer = vite;
@@ -216,6 +222,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       capture,
       hub,
       usage,
+      features: activeFeatures,
       diagnose,
     });
     await brandBuilds.sweep();
@@ -266,10 +273,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       models,
       diagnose,
       hostApi,
-      // Key by key rather than a spread: an undefined flag stays on, and a key the editor does not know is not served.
-      features: Object.fromEntries(
-        Object.entries(DEFAULT_FEATURES).map(([key, on]) => [key, features?.[key as keyof Features] ?? on]),
-      ) as Features,
+      features: activeFeatures,
     });
     const mcp = createMcpHandler({
       config,

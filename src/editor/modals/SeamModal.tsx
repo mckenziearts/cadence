@@ -10,11 +10,13 @@ import { useStore } from '../store';
 import { prefill } from '../store/chat';
 import { checkSeams } from '../store/project';
 import { closeModal } from '../store/ui';
+import { useAgentName } from '../components/agents';
 
 type Detail = { result: SeamResult; fromUrl: string; toUrl: string; diffUrl: string };
 
 export function SeamModal({ from, to, format }: { from: string; to: string; format: FormatId }) {
   const t = useT();
+  const agent = useAgentName();
   const project = useStore((s) => s.project)!;
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +73,7 @@ export function SeamModal({ from, to, format }: { from: string; to: string; form
           </Button>
           {(tone === 'jump' || tone === 'cut') && (
             <Button variant="primary" icon={<Sparkles className="size-3.5" />} onClick={ask}>
-              {t.timeline.seamModal.askClaude}
+              {t.timeline.seamModal.askAgent(agent)}
             </Button>
           )}
         </>

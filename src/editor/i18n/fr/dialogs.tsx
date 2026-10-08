@@ -30,7 +30,8 @@ export default {
   },
   newBrand: {
     title: 'Nouvelle marque',
-    subtitle: 'Claude reprend les couleurs, les polices, le logo et les composants du produit depuis son code.',
+    subtitle: (agent: string | null) =>
+      `${agent ?? 'Notre IA'} reprend les couleurs, les polices, le logo et les composants du produit depuis son code.`,
     needRepo: 'Choisissez un dépôt.',
     needName: 'Donnez un nom à la marque.',
     duration: 'Compter quelques minutes.',
@@ -61,7 +62,7 @@ export default {
     unreadable: (host: string, detail?: string) => `Impossible de lire vos dépôts ${host}${detail ? ` : ${detail}` : '.'}`,
     pasteInstead: 'Vous pouvez aussi coller l’adresse du dépôt ci-dessous : Cadence le copie avec l’accès Git de cet ordinateur.',
     progress: {
-      steps: { copy: 'Copie du dépôt', build: 'Claude construit le kit', check: 'Vérification', ready: 'Prête' },
+      steps: { copy: 'Copie du dépôt', build: 'Construction du kit', check: 'Vérification', ready: 'Prête' },
       stepsLabel: 'Étapes',
       ready: (name: string) => `Marque « ${name} » prête`,
       failed: 'La marque n’a pas pu être construite',
@@ -110,7 +111,8 @@ export default {
   },
   artDirection: {
     title: 'Direction artistique',
-    subtitle: 'Claude relit ce document avant chaque modification : palette, typographie, mouvement, mise en page, coupes.',
+    subtitle: (agent: string | null) =>
+      `${agent ?? 'Notre IA'} relit ce document avant chaque modification : palette, typographie, mouvement, mise en page, coupes.`,
     label: 'Direction artistique du projet',
     unsaved: 'Modifications non enregistrées : elles restent ici si vous fermez.',
     hint: (keys: ReactNode) => <>Markdown. {keys} pour enregistrer</>,
@@ -132,7 +134,7 @@ export default {
     earlier: 'Déjà envoyée',
   },
   lightbox: {
-    label: 'Image rendue par Claude',
+    label: (agent: string | null) => `Image rendue par ${agent ?? 'notre IA'}`,
     previous: 'Image précédente',
     next: 'Image suivante',
   },

@@ -453,8 +453,8 @@ describe('editor', () => {
     });
     await open(`${A}/titre`, page);
     const region = (target: Locator) => target.evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region'));
-    await page.getByRole('button', { name: 'Agrandir l’image rendue par Claude' }).click({ timeout: 30_000 });
-    const lightbox = page.getByRole('dialog', { name: 'Image rendue par Claude' });
+    await page.getByRole('button', { name: 'Agrandir l’image rendue par Claude Code' }).click({ timeout: 30_000 });
+    const lightbox = page.getByRole('dialog', { name: 'Image rendue par Claude Code' });
     assert.equal(await region(lightbox), 'no-drag');
     await page.keyboard.press('Escape');
     await lightbox.waitFor({ state: 'detached' });
@@ -1484,9 +1484,13 @@ describe('preview', () => {
 
 describe('features', () => {
   const COST = `0,42${NBSP}$`;
-  /** Each turn costs 0,42 $ and changes a versioned file, so the cost reaches the chat, the versions and the totals. */
+  /**
+   * Each turn costs 0,42 $ and changes a versioned file, so the cost reaches the chat, the versions and the totals. Its
+   * status is down, so the chat and the settings name it.
+   */
   const costly: AgentProvider = {
     ...provider,
+    status: async () => ({ ok: false, label: 'Agent factice', version: '1.2.3' }),
     async *run(turn) {
       await writeFile(path.join(turn.cwd, 'art-direction.md'), '# Direction plus chaude\n');
       yield { type: 'init', sessionId: turn.sessionId };
@@ -1510,7 +1514,13 @@ describe('features', () => {
 
   // The same lookups with every feature on, then off: a lookup that finds nothing when its section is on would make the
   // second run prove nothing.
-  async function sectionCounts(features: Features): Promise<{ counts: Record<string, number>; codexPitch: number }> {
+  async function sectionCounts(features: Features): Promise<{
+    counts: Record<string, number>;
+    author: string | null;
+    ourAiPitch: number;
+    rotating: number;
+    ourAiDown: number;
+  }> {
     const t = await makeRoot();
     let hosted: RunningServer | undefined;
     try {
@@ -1565,9 +1575,13 @@ describe('features', () => {
       });
       await costs.goto(`${hosted.config.editorOrigin}/#/couts/titre`);
       await costs.getByText('Réponse factice.').waitFor({ timeout: 60_000 });
+      const author = await costs.locator('article').filter({ hasText: 'Réponse factice.' }).locator('p').first().textContent();
       counts['cost top bar'] = await costs.locator('[aria-label^="Coût estimé des chats de ce projet"]').count();
       counts['cost chat'] = await costs.locator('footer').getByText(COST, { exact: true }).count();
       counts['model composer'] = await costs.getByRole('combobox', { name: /^(Modèle|Effort)$/ }).count();
+      const down = costs.getByRole('alert').getByText(/est indisponible$/);
+      counts['agent chat banner'] = await down.getByText('Agent factice est indisponible', { exact: true }).count();
+      let ourAiDown = await down.getByText('Notre IA est indisponible', { exact: true }).count();
       await panel(costs, 'Versions');
       // The turn changed the art direction, not the scene.
       await costs.getByRole('button', { name: 'Tout le projet' }).click();
@@ -1580,6 +1594,8 @@ describe('features', () => {
       counts['model settings'] = await settings.getByRole('combobox', { name: /^(Modèle|Effort) \(/ }).count();
       counts['model settings subtitle'] = await settings.getByText(/le modèle et l’effort/).count();
       counts['cost settings hint'] = await settings.getByText(/le coût affiché/).count();
+      counts['agent settings'] = await settings.getByText('Agent factice 1.2.3 est indisponible', { exact: true }).count();
+      ourAiDown += await settings.getByText('Notre IA est indisponible', { exact: true }).count();
       await costs.keyboard.press('Escape');
       await costs.getByRole('button', { name: 'Marque « Orbit » : Prête' }).click();
       const built = costs.getByRole('dialog', { name: 'Marque « Orbit » prête' });
@@ -1620,9 +1636,13 @@ describe('features', () => {
       counts['pitch agents'] = await page
         .getByRole('heading', { name: 'Décrivez une vidéo, Claude Code ou Codex l’écrit scène par scène.' })
         .count();
-      // Without the choice, the pitch names the one agent the host runs: Codex, not the first of the list.
-      const codexPitch = await page
-        .getByRole('heading', { name: 'Décrivez une vidéo, Codex l’écrit scène par scène.', exact: true })
+      // Without the choice, the pitch names no agent, even with Codex picked, and does not turn.
+      const ourAiPitch = await page
+        .getByRole('heading', { name: 'Décrivez une vidéo, notre IA l’écrit scène par scène.', exact: true })
+        .count();
+      const rotating = await page
+        .getByRole('heading', { name: /^Décrivez une vidéo/ })
+        .locator('[aria-hidden]')
         .count();
       await page.getByRole('button', { name: 'Créer un projet' }).click();
       const project = page.getByRole('dialog', { name: 'Nouveau projet' });
@@ -1633,7 +1653,7 @@ describe('features', () => {
       await brand.getByText('acme/e2e-site').waitFor();
       counts['new brand agent'] = await brand.getByRole('heading', { name: 'Assistant IA', exact: true }).count();
       await page.context().close();
-      return { counts, codexPitch };
+      return { counts, author, ourAiPitch, rotating, ourAiDown };
     } finally {
       await hosted?.close();
       await t.cleanup();
@@ -1641,13 +1661,14 @@ describe('features', () => {
   }
 
   it('shows every section by default', { timeout: 180_000 }, async () => {
-    const { counts, codexPitch } = await sectionCounts(DEFAULT_FEATURES);
+    const { counts, author, ourAiPitch, ourAiDown } = await sectionCounts(DEFAULT_FEATURES);
     for (const [lookup, count] of Object.entries(counts)) assert.ok(count > 0, lookup);
-    assert.equal(codexPitch, 0);
+    assert.equal(author, 'Claude Code');
+    assert.deepEqual([ourAiPitch, ourAiDown], [0, 0]);
   });
 
   it('hides every section a host turns off', { timeout: 180_000 }, async () => {
-    const { counts, codexPitch } = await sectionCounts({
+    const { counts, author, ourAiPitch, rotating, ourAiDown } = await sectionCounts({
       agentPicker: false,
       gitSources: false,
       networkApps: false,
@@ -1655,7 +1676,9 @@ describe('features', () => {
       costs: false,
     });
     for (const [lookup, count] of Object.entries(counts)) assert.equal(count, 0, lookup);
-    assert.equal(codexPitch, 1);
+    assert.equal(author, 'Notre IA');
+    // The banner and the settings name no agent and give no version.
+    assert.deepEqual([ourAiPitch, rotating, ourAiDown], [1, 0, 2]);
   });
 
   for (const [flag, prefix] of [
@@ -1722,6 +1745,148 @@ describe('features', () => {
         await hosted?.close();
         await t.cleanup();
       }
+    },
+  );
+});
+
+describe('agent names', () => {
+  let t: Awaited<ReturnType<typeof makeRoot>>;
+  let hosted: RunningServer;
+  const ID = 'noms';
+
+  before(async () => {
+    t = await makeRoot();
+    const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
+    hosted = await startServer({
+      root: ROOT,
+      projectsDir,
+      brandsDir,
+      templatesDir,
+      stateDir,
+      editorPort: 0,
+      framePort: 0,
+      quiet: true,
+      provider,
+      // No Codex CLI behind the agent picked below: its model list stays empty.
+      codexPath: path.join(stateDir, 'no-codex'),
+    });
+    const send = async (method: string, pathname: string, body?: unknown) => {
+      const res = await fetch(`${hosted.config.editorOrigin}${pathname}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': hosted.editorToken },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      assert.ok(res.ok, `${method} ${pathname}: ${res.status}`);
+      return res.json();
+    };
+    await send('POST', '/api/projects', { name: 'Noms', id: ID, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    await send('POST', `/api/projects/${ID}/scenes`, { name: 'Deuxième', duration: 3 });
+    await send('POST', `/api/projects/${ID}/chats/scene:titre/messages`, { text: 'Bonjour' });
+    for (let i = 0; i < 300; i++) {
+      const chat = (await send('GET', `/api/projects/${ID}/chats/scene:titre`)) as ChatState;
+      if (!chat.running && !chat.queued) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  });
+
+  after(async () => {
+    await hosted?.close();
+    await t?.cleanup();
+  });
+
+  /** The texts that name the agent on the project, and Claude Code's own hints (its subscription, its costs). */
+  async function agentTexts(page: Page) {
+    const reply = page.locator('article').filter({ hasText: 'Réponse factice.' });
+    await reply.waitFor({ timeout: 60_000 });
+    const author = await reply.locator('p').first().textContent();
+
+    const pill = page.locator('[aria-label^="Coût estimé des chats de ce projet"]');
+    await pill.hover();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const costLabel = await pill.getAttribute('aria-label');
+    const costTip = (await page.getByRole('tooltip').allTextContents()).join(' ');
+    await page.mouse.move(0, 0);
+
+    await page
+      .getByRole('button', { name: /Titre \u2192 Deuxième/ })
+      .first()
+      .click();
+    const seam = page.getByRole('dialog', { name: 'Raccord Titre \u2192 Deuxième' });
+    const ask = seam.getByRole('button', { name: /^Demander à/ });
+    await ask.waitFor({ timeout: 10_000 });
+    const seamText = (await seam.textContent()) ?? '';
+    const askLabel = await ask.textContent();
+    await page.keyboard.press('Escape');
+
+    await page.getByRole('button', { name: 'Réglages', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Réglages' });
+    await settings.getByRole('button', { name: 'Français' }).waitFor();
+    const settingsHint = await settings.getByText(/le coût affiché/).count();
+    await page.keyboard.press('Escape');
+
+    await panel(page, 'Médias');
+    const references = page.locator('section', { has: page.getByRole('heading', { name: 'Références', exact: true }) });
+    const referencesText = (await references.textContent()) ?? '';
+    await panel(page, 'Scène');
+    return { author, costLabel, costTip, seamText, askLabel, settingsHint, referencesText };
+  }
+
+  it(
+    "names the active agent, follows a switch in the Profile without a reload, and keeps Claude Code's hints to it",
+    {
+      timeout: 180_000,
+    },
+    async () => {
+      const page = await newPage();
+      await page.route('**/api/agent-accounts', (route) =>
+        route.fulfill({
+          json: Object.fromEntries(['claude-code', 'codex', 'grok', 'gemini'].map((id) => [id, { ok: true, label: id }])),
+        }),
+      );
+      await page.route('**/seams/detail?**', (route) =>
+        route.fulfill({
+          json: {
+            result: { from: 'titre', to: 'deuxieme', format: '16:9', diffPercent: 1, checkedAt: new Date().toISOString() },
+            fromUrl: '',
+            toUrl: '',
+            diffUrl: '',
+          },
+        }),
+      );
+      await page.goto(`${hosted.config.editorOrigin}/#/${ID}/titre`);
+
+      const claude = await agentTexts(page);
+      assert.equal(claude.author, 'Claude Code');
+      assert.equal(claude.askLabel, 'Demander à Claude Code de corriger');
+      assert.match(claude.referencesText, /Claude Code lit ces captures/);
+      assert.match(claude.costLabel ?? '', /abonnement Claude/);
+      assert.match(claude.costTip, /abonnement Claude/);
+      assert.equal(claude.settingsHint, 1);
+
+      await page.evaluate(() => {
+        (window as unknown as { sameDocument: boolean }).sameDocument = true;
+        location.hash = '#/@profil';
+      });
+      const codexCard = page.getByRole('listitem', { name: 'Codex' });
+      await codexCard.getByRole('button', { name: 'Utiliser' }).click({ timeout: 60_000 });
+      await codexCard.getByRole('button', { name: 'Utilisé' }).waitFor();
+      await page.evaluate((hash) => (location.hash = hash), `#/${ID}/titre`);
+
+      const codex = await agentTexts(page);
+      assert.equal(codex.author, 'Codex');
+      assert.equal(codex.askLabel, 'Demander à Codex de corriger');
+      assert.match(codex.referencesText, /Codex lit ces captures/);
+      for (const [where, text] of Object.entries({
+        author: codex.author,
+        seam: codex.seamText,
+        references: codex.referencesText,
+        cost: codex.costLabel,
+      })) {
+        assert.doesNotMatch(text ?? '', /Claude/, where);
+      }
+      assert.deepEqual([codex.costTip, codex.settingsHint], ['', 0]);
+      assert.equal(await page.evaluate(() => (window as unknown as { sameDocument?: boolean }).sameDocument), true, 'no reload');
+      await page.context().close();
     },
   );
 });

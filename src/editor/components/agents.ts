@@ -1,4 +1,5 @@
-import type { AgentId } from '../../shared/types';
+import { AGENT_NAMES, DEFAULT_FEATURES, agentName, type AgentId } from '../../shared/types';
+import { useStore } from '../store';
 
 export type AgentSpec = {
   id: AgentId;
@@ -14,7 +15,7 @@ export type AgentSpec = {
 export const AGENTS: AgentSpec[] = [
   {
     id: 'claude-code',
-    name: 'Claude Code',
+    name: AGENT_NAMES['claude-code'],
     cli: 'claude',
     installCmd: 'npm install -g @anthropic-ai/claude-code',
     loginCmd: 'claude',
@@ -22,7 +23,7 @@ export const AGENTS: AgentSpec[] = [
   },
   {
     id: 'codex',
-    name: 'Codex',
+    name: AGENT_NAMES.codex,
     cli: 'codex',
     installCmd: 'npm install -g @openai/codex',
     loginCmd: 'codex login',
@@ -30,7 +31,7 @@ export const AGENTS: AgentSpec[] = [
   },
   {
     id: 'grok',
-    name: 'Grok',
+    name: AGENT_NAMES.grok,
     cli: 'grok',
     installCmd: 'curl -fsSL https://x.ai/cli/install.sh | bash',
     loginCmd: 'grok',
@@ -39,7 +40,7 @@ export const AGENTS: AgentSpec[] = [
   },
   {
     id: 'gemini',
-    name: 'Gemini',
+    name: AGENT_NAMES.gemini,
     cli: 'gemini',
     installCmd: 'npm install -g @google/gemini-cli',
     loginCmd: 'gemini',
@@ -47,3 +48,11 @@ export const AGENTS: AgentSpec[] = [
     soon: true,
   },
 ];
+
+/** The active agent's name for the texts, or null when the host hides the agent choice (the texts then say "our AI"). */
+export function useAgentName(): string | null {
+  return useStore((s) => agentName(s.app?.settings.agent ?? 'claude-code', s.app?.features ?? DEFAULT_FEATURES));
+}
+
+/** Claude Code's own hints (its subscription, its dollar costs) show only while it runs and the texts may name it. */
+export const useClaudeCodeHints = () => useAgentName() === AGENT_NAMES['claude-code'];

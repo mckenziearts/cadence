@@ -26,12 +26,14 @@ import { HttpError } from '../../server/util';
 import type {
   ChatKey,
   ChatState,
+  Features,
   ProjectState,
   ServerEvent,
   Settings,
   VersionEntry,
   VersionSource,
 } from '../../src/shared/types';
+import { DEFAULT_FEATURES } from '../../src/shared/types';
 
 type Script = (turn: AgentTurn, index: number) => AsyncIterable<AgentEvent>;
 
@@ -87,7 +89,7 @@ function makeProject(dir: string, ids: string[]): ProjectState {
   };
 }
 
-async function setup(script: Script) {
+async function setup(script: Script, opts: { settings?: Settings; features?: Features } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-chat-'));
   const projectDir = path.join(root, 'projects', 'demo');
   await fs.mkdir(path.join(projectDir, 'scenes'), { recursive: true });
@@ -169,7 +171,7 @@ async function setup(script: Script) {
     resolve: (_id: string, rel: string) => path.join(projectDir, 'assets', rel),
   } as unknown as AssetStore;
   const music = { context: async () => 'No track: steady grid at 120 BPM.' } as unknown as MusicService;
-  const settings = { get: async () => SETTINGS } as unknown as SettingsStore;
+  const settings = { get: async () => opts.settings ?? SETTINGS } as unknown as SettingsStore;
   const tokens = new McpTokens(config, path.join(root, 'mcp-token'));
   const usage = new FileUsageLog({ ...config, stateDir: path.join(root, '.cadence') });
 
@@ -199,6 +201,7 @@ async function setup(script: Script) {
     tokens,
     settings,
     usage,
+    features: opts.features ?? DEFAULT_FEATURES,
   });
   const idle = (key: ChatKey) => waitFor(async () => !isBusy(await manager.get('demo', key)));
   return {
@@ -417,6 +420,36 @@ test('a turn stopped before reaching Claude leaves the new art direction to be s
   await env.idle('scene:intro');
   assert.equal(env.turns[1].resume, true);
   assert.match(env.turns[1].prompt, /<art_direction>\nNOUVELLE DIRECTION/);
+});
+
+test('the busy and failed messages name the active agent, or "our AI" when the host hides the agent choice', async (t) => {
+  const cases = [
+    { opts: { settings: { ...SETTINGS, agent: 'codex' as const } }, busy: 'Codex', failed: 'Codex s’est arrêté sur une erreur.' },
+    { opts: {}, busy: 'Claude Code', failed: 'Claude Code s’est arrêté sur une erreur.' },
+    {
+      opts: { features: { ...DEFAULT_FEATURES, agentPicker: false } },
+      busy: 'Notre IA',
+      failed: 'Notre IA s’est arrêtée sur une erreur.',
+    },
+  ];
+  for (const { opts, busy, failed } of cases) {
+    const release = gate();
+    const env = await setup(async function* (turn) {
+      await release.opened;
+      yield { type: 'done', text: '', isError: true, durationMs: 1, sessionId: turn.sessionId };
+    }, opts);
+    t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+
+    await env.manager.send('demo', 'scene:intro', { text: 'Un' });
+    await assert.rejects(env.manager.send('demo', 'scene:intro', { text: 'Deux' }), {
+      status: 409,
+      message: `${busy} travaille encore sur le message précédent de ce chat.`,
+    });
+    release.open();
+    await env.idle('scene:intro');
+    const reply = (await env.manager.get('demo', 'scene:intro')).messages.at(-1);
+    assert.deepEqual([reply?.status, reply?.error], ['error', failed]);
+  }
 });
 
 test('one turn per project: the others queue; a busy chat refuses a second message', async (t) => {

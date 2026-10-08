@@ -11,6 +11,7 @@ import { SeamModal } from './SeamModal';
 import { SettingsModal } from './SettingsModal';
 import { TemplateGallery } from './TemplateGallery';
 import { createPortal } from 'react-dom';
+import { useAgentName } from '../components/agents';
 
 export function Modals() {
   const modal = useStore((s) => s.modal);
@@ -39,6 +40,7 @@ export function Modals() {
 /** Frames the agent rendered, full size. */
 function Lightbox({ images, index }: { images: string[]; index: number }) {
   const t = useT();
+  const agent = useAgentName();
   const go = (i: number) => openModal({ kind: 'lightbox', images, index: (i + images.length) % images.length });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -57,7 +59,7 @@ function Lightbox({ images, index }: { images: string[]; index: number }) {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={t.dialogs.lightbox.label}
+      aria-label={t.dialogs.lightbox.label(agent)}
       className="no-drag fixed inset-0 z-50 flex animate-fade-in flex-col bg-ink/90 backdrop-blur-sm"
       onPointerDown={(e) => e.target === e.currentTarget && closeModal()}
     >

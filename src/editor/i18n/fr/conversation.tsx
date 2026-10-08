@@ -5,13 +5,14 @@ const SEAM = 'Fais correspondre la première image à la dernière de la scène 
 
 export default {
   chat: {
-    agentDown: (agent: string) => `${agent} est indisponible`,
+    agentDown: (agent: string | null) => `${agent ?? 'Notre IA'} est indisponible`,
+    author: (agent: string | null) => agent ?? 'Notre IA',
     loading: 'Chargement de la conversation',
     newChat: 'Nouvelle conversation',
     clearConfirm: 'Effacer la conversation ?',
     intro: {
-      scene:
-        'Décrivez un changement pour cette scène. Claude modifie le code, rend des images pour vérifier son travail, et l’aperçu se met à jour.',
+      scene: (agent: string | null) =>
+        `Décrivez un changement pour cette scène. ${agent ?? 'Notre IA'} modifie le code, rend des images pour vérifier son travail, et l’aperçu se met à jour.`,
       project: 'Parlez de la vidéo dans son ensemble : structure, rythme, nouvelles scènes, cohérence entre les scènes.',
     },
     suggestionsTitle: 'Suggestions',
@@ -43,7 +44,7 @@ export default {
       running: 'En cours',
       error: 'En échec',
       ok: 'Terminé',
-      enlarge: 'Agrandir l’image rendue par Claude',
+      enlarge: (agent: string | null) => `Agrandir l’image rendue par ${agent ?? 'notre IA'}`,
     },
     reasoning: 'Raisonnement',
     composer: {
@@ -56,7 +57,7 @@ export default {
       model: 'Modèle',
       effort: 'Effort',
       noEffort: (model: string) => `${model} ne règle pas l’effort`,
-      effortHint: 'Temps de réflexion de Claude',
+      effortHint: (agent: string | null) => `Temps de réflexion de ${agent ?? 'notre IA'}`,
       effortNone: 'Effort : \u2014',
       stop: 'Arrêter',
       send: 'Envoyer',
@@ -64,7 +65,6 @@ export default {
   },
   versions: {
     sources: {
-      agent: 'Claude',
       manual: 'Enregistrée à la main',
       restore: 'Restauration',
       external: 'Modifié hors chat',
@@ -81,7 +81,8 @@ export default {
     name: 'Nom de la version',
     namePlaceholder: 'Nom de la version, ex. « Avant la refonte du titre »',
     emptyTitle: 'Aucune version pour l’instant',
-    empty: 'Chaque réponse de Claude qui modifie le projet crée une version. Vous pouvez aussi en enregistrer une à la main.',
+    empty: (agent: string | null) =>
+      `Chaque réponse de ${agent ?? 'notre IA'} qui modifie le projet crée une version. Vous pouvez aussi en enregistrer une à la main.`,
     sceneRestored: (scene: string, id: string) => `Scène « ${scene} » restaurée depuis ${id}`,
     projectRestored: (id: string) => `Projet restauré depuis ${id}`,
     current: 'actuelle',
@@ -102,7 +103,8 @@ export default {
     brand: 'Marque',
     brandHint: 'Changer de marque recharge le kit dans toutes les scènes.',
     textLanguage: 'Langue des textes',
-    textLanguageHint: 'Les modèles changent de langue aussitôt ; demandez à Claude de traduire les textes qu’il a écrits.',
+    textLanguageHint: (agent: string | null) =>
+      `Les modèles changent de langue aussitôt ; demandez à ${agent ?? 'notre IA'} de traduire les textes déjà écrits.`,
     brandLanguage: 'Langue de la marque',
     languages: { fr: 'Français', en: 'Anglais' },
     formats: 'Formats',
@@ -125,7 +127,8 @@ export default {
     copy: (code: string) => `Copier ${code}`,
     copied: (code: string) => `${code} copié`,
     references: 'Références',
-    referencesHint: 'Claude lit ces captures pour reconstruire l’interface en code, élément par élément.',
+    referencesHint: (agent: string | null) =>
+      `${agent ?? 'Notre IA'} lit ces captures pour reconstruire l’interface en code, élément par élément.`,
     url: 'Adresse de la page à capturer',
     urlPlaceholder: 'https://exemple.fr/tableau-de-bord',
     device: 'Appareil',
@@ -135,6 +138,7 @@ export default {
     capture: 'Capturer',
     captured: (path: string) => `Capture enregistrée : ${path}`,
     noCaptures: 'Aucune capture',
-    noCapturesHint: 'Capturez une page de votre produit : Claude s’en sert comme modèle.',
+    noCapturesHint: (agent: string | null) =>
+      `Capturez une page de votre produit : ${agent ?? 'notre IA'} s’en sert comme modèle.`,
   },
 };

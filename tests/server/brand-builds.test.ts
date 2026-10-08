@@ -12,7 +12,7 @@ import { McpTokens } from '../../server/mcp/tokens';
 import { FileSettingsStore } from '../../server/settings';
 import { BUILDING_MARKER, FileBrandStore } from '../../server/store/brands';
 import { FileUsageLog } from '../../server/usage';
-import type { BrandBuild, GitHost, ServerEvent } from '../../src/shared/types';
+import { DEFAULT_FEATURES, type BrandBuild, type Features, type GitHost, type ServerEvent } from '../../src/shared/types';
 import { makeRoot, rejectsWithStatus, type TestRoot } from './helpers';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -250,6 +250,7 @@ interface Fixture {
 async function builder(
   agent: (turn: AgentTurn, index: number) => AsyncIterable<AgentEvent>,
   copies: (RepoRef & { via: GitHost })[] = [],
+  features: Features = DEFAULT_FEATURES,
 ): Promise<Fixture> {
   await fs.rm(path.join(t.config.brandsDir, 'cadence'), { recursive: true });
   await fs.cp(path.join(ROOT, 'brands', 'cadence'), path.join(t.config.brandsDir, 'cadence'), { recursive: true });
@@ -294,6 +295,7 @@ async function builder(
     capture,
     hub,
     usage,
+    features,
     diagnose: async () => null,
   });
   return { builder: instance, brands, tokens, usage, turns, scopes, events };
@@ -347,6 +349,23 @@ test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, 
   assert.equal(fx.tokens.resolve(/Bearer (\S+)/.exec(JSON.stringify(turn.mcpServers))![1]), null, 'the token is revoked');
   const statuses = fx.events.map((e) => (e as { build: BrandBuild }).build.status);
   assert.deepEqual([...new Set(statuses)], ['queued', 'cloning', 'building', 'checking', 'done']);
+  const activities = fx.events.map((e) => (e as { build: BrandBuild }).build.activity);
+  assert.ok(activities.includes('Claude Code lit le dépôt'), JSON.stringify([...new Set(activities)]));
+});
+
+test('with the agent choice hidden, the build steps and errors say "our AI"', async () => {
+  const fx = await builder(
+    async function* () {
+      yield done('', { isError: true });
+    },
+    [],
+    { ...DEFAULT_FEATURES, agentPicker: false },
+  );
+  const started = await fx.builder.start({ repo: 'acme/site', name: 'Acme' });
+  const build = await fx.builder.wait(started.id);
+  assert.deepEqual([build.status, build.error], ['error', 'Notre IA n’a pas pu terminer la marque.']);
+  const activities = fx.events.map((e) => (e as { build: BrandBuild }).build.activity);
+  assert.ok(activities.includes('Notre IA lit le dépôt'), JSON.stringify([...new Set(activities)]));
 });
 
 test('a brand still incomplete after the fix turn ends in error, and its folder goes', async () => {

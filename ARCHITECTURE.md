@@ -749,7 +749,9 @@ contract: removing or reshaping one is a major version.
 - `features`: `startServer({ features: { gitSources: false } })` hides editor sections. `Features` and
   `DEFAULT_FEATURES` (every flag `true`) live in `src/shared/types.ts`; a missing key stays on, and the merged object
   reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the
-  Profile and the agent choice of the new project and new brand dialogs, `gitSources` the Profile's Git accounts,
+  Profile and the agent choice of the new project and new brand dialogs, and turns the agent's name into "our AI" in
+  the editor's and the server's texts (`agentName()` in `src/shared/types.ts`; the providers get it at construction for
+  their turn errors, and a refused login then names no CLI command to run), `gitSources` the Profile's Git accounts,
   `networkApps` the buttons that edit a network app's keys (connect and disconnect stay), `modelPicker` the model and
   effort choice of the settings (both chat scopes) and of the chat composers (a message then carries no model, so the
   turn runs on the settings' models, which the host may set outside the editor's catalog), `costs` every dollar amount

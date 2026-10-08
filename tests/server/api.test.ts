@@ -993,11 +993,11 @@ test('GET /api/events streams hub events when served by Node', async () => {
   }
 });
 
-test('while Claude works on the project: no restore or deletion, no template-insert version; no deletion mid-render', async () => {
+test('while the agent works on the project: no restore or deletion, no template-insert version; no deletion mid-render', async () => {
   await json('POST', '/api/projects/demo/scenes', { name: 'Fin' });
   await json('POST', '/api/projects/demo/versions', { label: 'Départ' });
   busy = true;
-  const refused = { status: 409, body: { error: "Claude travaille sur ce projet : arrêtez d'abord la réponse en cours." } };
+  const refused = { status: 409, body: { error: "Claude Code travaille sur ce projet : arrêtez d'abord la réponse en cours." } };
   assert.deepEqual(await json('POST', '/api/projects/demo/versions/v0001/restore'), refused);
   assert.deepEqual(await json('DELETE', '/api/projects/demo/scenes/fin'), refused);
   assert.deepEqual(await json('DELETE', '/api/projects/demo'), refused);

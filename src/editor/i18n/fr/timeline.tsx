@@ -42,7 +42,7 @@ export default {
       `Dernière image de « ${from} » comparée à la première de « ${to} », en ${format}.`,
     checked: (when: string) => `Vérifié ${when}`,
     recheck: 'Revérifier',
-    askClaude: 'Demander à Claude de corriger',
+    askAgent: (agent: string | null) => `Demander à ${agent ?? 'notre IA'} de corriger`,
     capturing: 'Capture des deux images\u2026',
     invisible: 'des pixels changent : la coupe est invisible.',
     visible: 'des pixels changent : la coupe se voit. La zone rouge montre ce qui saute.',

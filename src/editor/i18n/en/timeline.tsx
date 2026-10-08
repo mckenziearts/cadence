@@ -44,7 +44,7 @@ export default {
       `Last frame of "${from}" compared with the first frame of "${to}", in ${format}.`,
     checked: (when: string) => `Checked ${when}`,
     recheck: 'Check again',
-    askClaude: 'Ask Claude to fix it',
+    askAgent: (agent: string | null) => `Ask ${agent ?? 'our AI'} to fix it`,
     capturing: 'Capturing both frames...',
     invisible: 'of pixels change: the cut is invisible.',
     visible: 'of pixels change: the cut shows. The red area shows what jumps.',
