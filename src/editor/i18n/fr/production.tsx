@@ -188,7 +188,7 @@ export default {
     kitHint:
       'Card, Button, Input, Badge, Avatar, Stat, Toggle, Tabs, ListItem, Logo : la même API pour toutes les marques, chaque état est une propriété animable.',
     extras: 'Extras de la marque',
-    extrasHint: 'décrits pour Claude',
+    extrasHint: (agent: string | null) => `décrits pour ${agent ?? 'notre IA'}`,
     copy: 'Textes de la marque',
     tagline: (line: string) => `« ${line} »`,
     voice: 'Voix',

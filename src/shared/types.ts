@@ -840,7 +840,10 @@ export interface AgentStatus {
  * still answer.
  */
 export interface Features {
-  /** The agent cards and usage on the Profile, and the agent choice of the new project and new brand dialogs. */
+  /**
+   * The agent cards and usage on the Profile, and the agent choice of the new project and new brand dialogs. Without it,
+   * the texts name no agent and say "our AI".
+   */
   agentPicker: boolean;
   /** The Git accounts (gh, glab) on the Profile. */
   gitSources: boolean;
@@ -859,6 +862,19 @@ export const DEFAULT_FEATURES: Features = {
   modelPicker: true,
   costs: true,
 };
+
+/** Each agent's product name, the same in every language. */
+export const AGENT_NAMES: Record<AgentId, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  grok: 'Grok',
+  gemini: 'Gemini',
+};
+
+/** The agent the texts name: null when the host hides the agent choice, and the texts then say "our AI". */
+export function agentName(agent: AgentId, features: Features): string | null {
+  return features.agentPicker ? AGENT_NAMES[agent] : null;
+}
 
 /** GET /api/state */
 export interface AppState {

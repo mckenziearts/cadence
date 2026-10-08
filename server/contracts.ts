@@ -501,7 +501,7 @@ export interface VoiceOverTrack {
 }
 
 // server/agent/chat.ts: export class ChatManager implements ChatService
-//   constructor(deps: { config; store; brands; templates; versions; capture; seams; music; assets; hub; provider: AgentProvider; tokens: McpTokenIssuer; settings: SettingsStore; usage: UsageLog })
+//   constructor(deps: { config; store; brands; templates; versions; capture; seams; music; assets; hub; provider: AgentProvider; tokens: McpTokenIssuer; settings: SettingsStore; usage: UsageLog; features: Features })
 
 export interface ChatService {
   get(projectId: string, key: ChatKey): Promise<ChatState>;
@@ -549,7 +549,7 @@ export interface McpTokenIssuer {
   reportActivity(token: string, activity: McpActivity): void;
 }
 
-// Agent provider, server/agent/claudeCode.ts: export class ClaudeCodeProvider implements AgentProvider (constructor(config))
+// Agent provider, server/agent/claudeCode.ts: export class ClaudeCodeProvider implements AgentProvider (constructor(config, agent name))
 // Tests inject fake providers through startServer({ provider }).
 
 export interface AgentTurn {

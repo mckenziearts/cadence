@@ -19,11 +19,13 @@ import { elapsed, secsLabel, usd } from '../lib/format';
 import { set, useStore, type ChatKind, NONE } from '../store';
 import { clearChat, draftKey, kindOf, loadChat, modelChoice, sendMessage, setDraft, stopChat } from '../store/chat';
 import { openModal } from '../store/ui';
+import { useAgentName } from '../components/agents';
 
 export function Chat({ chatKey, header }: { chatKey: ChatKey; header?: ReactNode }) {
   const t = useT();
   const chat = useStore((s) => s.chats[chatKey]);
   const agent = useStore((s) => s.app?.agent);
+  const named = useAgentName() !== null;
   // Opening another project empties the chats: the same key (every blank project starts on « titre ») must reload.
   const projectId = useStore((s) => s.project?.id);
   const firstScene = useStore((s) => s.project?.scenes[0]?.id === sceneIdFromChatKey(chatKey));
@@ -59,7 +61,7 @@ export function Chat({ chatKey, header }: { chatKey: ChatKey; header?: ReactNode
         <div role="alert" className="flex shrink-0 gap-2.5 border-b border-warn/30 bg-warn/8 px-4 py-3 text-[13px] text-warn-ink">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden />
           <div className="min-w-0">
-            <p className="font-medium">{t.conversation.chat.agentDown(agent.label)}</p>
+            <p className="font-medium">{t.conversation.chat.agentDown(named ? agent.label : null)}</p>
             {agent.detail && <p className="mt-0.5 text-warn-ink/90">{agent.detail}</p>}
           </div>
         </div>
@@ -113,10 +115,11 @@ export function ChatHeaderActions({ chatKey }: { chatKey: ChatKey }) {
 
 function EmptyChat({ chatKey, kind, firstScene }: { chatKey: ChatKey; kind: ChatKind; firstScene: boolean }) {
   const texts = useT().conversation.chat;
+  const agent = useAgentName();
   return (
     <div className="pt-4">
       <div className="mb-5">
-        <p className="text-[13px] text-ink-2">{texts.intro[kind]}</p>
+        <p className="text-[13px] text-ink-2">{kind === 'scene' ? texts.intro.scene(agent) : texts.intro.project}</p>
       </div>
       <p className="display-caps mb-2 text-[17px] text-ink">{texts.suggestionsTitle}</p>
       <div className="flex flex-col gap-2.5">
@@ -175,7 +178,7 @@ function useElapsedSince(iso: string | null): number {
 const AssistantMessage = memo(function AssistantMessage({ message, queued }: { message: ChatMessage; queued: boolean }) {
   const t = useT();
   const models = useStore((s) => s.app?.models);
-  const agentName = useStore((s) => s.app?.agent.label);
+  const agent = useAgentName();
   const tempo = useStore((s) => s.project?.tempo);
   const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const streaming = message.status === 'streaming';
@@ -187,7 +190,7 @@ const AssistantMessage = memo(function AssistantMessage({ message, queued }: { m
 
   return (
     <article className="text-ink-2">
-      <p className="label-caps mb-1.5 text-[10px] text-ink-3">{agentName ?? 'Claude'}</p>
+      <p className="label-caps mb-1.5 text-[10px] text-ink-3">{t.conversation.chat.author(agent)}</p>
       {activity.length > 0 && <Activity items={activity} streaming={streaming} />}
       {notes.length > 0 && <Reasoning notes={notes} />}
       {message.text ? (
@@ -319,6 +322,7 @@ function Activity({ items, streaming }: { items: ChatActivity[]; streaming: bool
 
 function Frames({ images, all, className }: { images: string[]; all: string[]; className?: string }) {
   const t = useT();
+  const agent = useAgentName();
   return (
     <div className={clsx('flex flex-wrap gap-1.5', className)}>
       {images.map((src) => (
@@ -327,7 +331,7 @@ function Frames({ images, all, className }: { images: string[]; all: string[]; c
           type="button"
           onClick={() => openModal({ kind: 'lightbox', images: all, index: all.indexOf(src) })}
           className="focus-ring overflow-hidden border-2 border-ink bg-wash transition-transform hover:-translate-y-0.5"
-          aria-label={t.conversation.chat.activity.enlarge}
+          aria-label={t.conversation.chat.activity.enlarge(agent)}
         >
           <img src={src} alt="" loading="lazy" className="h-10 w-auto max-w-24 object-cover" />
         </button>
@@ -358,6 +362,7 @@ function Reasoning({ notes }: { notes: string[] }) {
 
 function Composer({ chatKey, kind, busy, queued }: { chatKey: ChatKey; kind: ChatKind; busy: boolean; queued: boolean }) {
   const t = useT();
+  const agent = useAgentName();
   const texts = t.conversation.chat.composer;
   const draft = useStore((s) => (s.project ? (s.drafts[draftKey(s.project.id, chatKey)] ?? '') : ''));
   const tempo = useStore((s) => s.project?.tempo);
@@ -457,7 +462,7 @@ function Composer({ chatKey, kind, busy, queued }: { chatKey: ChatKey; kind: Cha
                 disabled={spec?.supportsEffort === false}
                 onChange={(e) => pick({ effort: e.target.value as Effort })}
                 className="w-[132px]"
-                title={spec?.supportsEffort === false ? texts.noEffort(spec.label) : texts.effortHint}
+                title={spec?.supportsEffort === false ? texts.noEffort(spec.label) : texts.effortHint(agent)}
               >
                 {spec?.supportsEffort === false && <option value="">{texts.effortNone}</option>}
                 {(spec?.efforts ?? EFFORTS).map((effort) => (

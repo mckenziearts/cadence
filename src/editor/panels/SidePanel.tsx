@@ -15,6 +15,7 @@ import { MediaPanel } from './MediaPanel';
 import { MusicPanel } from './MusicPanel';
 import { VersionsPanel } from './VersionsPanel';
 import { VoicePanel } from './VoicePanel';
+import { useAgentName } from '../components/agents';
 
 const TABS: Panel[] = ['scene', 'project', 'versions', 'music', 'voice', 'media'];
 
@@ -123,6 +124,7 @@ function ProjectSummary() {
 
 function ProjectSettings() {
   const t = useT();
+  const agent = useAgentName();
   const texts = t.conversation.sidePanel;
   const project = useStore((s) => s.project)!;
   const brands = useStore((s) => s.app?.brands ?? NONE);
@@ -166,7 +168,7 @@ function ProjectSettings() {
           ))}
         </select>
       </Field>
-      <Field label={texts.textLanguage} htmlFor="project-language" hint={texts.textLanguageHint}>
+      <Field label={texts.textLanguage} htmlFor="project-language" hint={texts.textLanguageHint(agent)}>
         <select
           id="project-language"
           value={project.language ?? ''}

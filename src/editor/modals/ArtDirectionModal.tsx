@@ -4,9 +4,11 @@ import { Button, Kbd, Modal, Spinner } from '../components/ui';
 import { useT } from '../i18n';
 import { set, useStore } from '../store';
 import { closeModal, toast } from '../store/ui';
+import { useAgentName } from '../components/agents';
 
 export function ArtDirectionModal() {
   const t = useT();
+  const agent = useAgentName();
   const language = useStore((s) => s.language);
   const project = useStore((s) => s.project)!;
   const draft = useStore((s) => s.artDrafts[project.id]);
@@ -51,7 +53,7 @@ export function ArtDirectionModal() {
   return (
     <Modal
       title={t.dialogs.artDirection.title}
-      subtitle={t.dialogs.artDirection.subtitle}
+      subtitle={t.dialogs.artDirection.subtitle(agent)}
       onClose={closeModal}
       width="max-w-3xl"
       bodyClassName="p-0"

@@ -39,7 +39,7 @@ export default {
         ? `The project ${names[0]} uses this brand: delete it or change its brand first.`
         : `The projects ${names.join(', ')} use this brand: delete them or change their brand first.`;
     },
-    agentBusy: 'Claude is working on this project: stop the current answer first.',
+    agentBusy: (agent: string | null) => `${agent ?? 'Our AI'} is working on this project: stop the current answer first.`,
     invalidJson: 'Invalid JSON request body',
     issue: (path: string, message: string) => `${path}: ${message}`,
     invalidBody: (issues: string[]) => `Invalid request: ${issues.join('; ')}`,
@@ -100,7 +100,7 @@ export default {
     root: 'root',
     artDirection: `# Art direction
 
-Claude rereads this document before every change. Describe here the style all scenes share.
+This document is reread before every change. Describe here the style all scenes share.
 
 ## Palette
 - Background: the brand's \`background\` color; cards and panels in \`surface\`.

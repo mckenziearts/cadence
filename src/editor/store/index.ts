@@ -86,7 +86,7 @@ export interface EditorState {
   chats: Partial<Record<ChatKey, ChatState>>;
   /** Unsent composer text by `<projectId>/<chatKey>` (kept in sessionStorage across reloads). */
   drafts: Record<string, string>;
-  /** Text to put in a composer (suggestions, "ask Claude to fix"). */
+  /** Text to put in a composer (suggestions, "ask the agent to fix"). */
   fill: { key: ChatKey; text: string; nonce: number } | null;
   /** Model/effort picked in the composers this session; the settings are the defaults. */
   picks: Partial<Record<ChatKind, { model: string; effort: Effort }>>;

@@ -6,9 +6,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   MODELS,
+  agentName,
   agentPicks,
   type AgentId,
   type BrandBuild,
+  type Features,
   type GitHost,
   type StartBrandBuildInput,
   type UsageCount,
@@ -74,6 +76,8 @@ export interface BrandBuilderDeps {
   capture: Pick<CaptureService, 'kitSheet'>;
   hub: Hub;
   usage: UsageLog;
+  /** The host's editor features: without the agent choice, the build steps name no agent. */
+  features: Features;
   diagnose: (file: string) => Promise<string | null>;
 }
 
@@ -206,7 +210,7 @@ export class BrandBuilder implements BrandBuildService {
 
       token = tokens.issue({ kind: 'brand', brandId: build.brandId, repoDir }, { ttlMs: TOKEN_TTL_MS });
       const turn = await this.turn(state, brandDir, repoDir, token);
-      this.patch(state, { status: 'building', activity: m().media.brands.build.reading });
+      this.patch(state, { status: 'building', activity: m().media.brands.build.reading(this.agentName(state)) });
       await this.stream(state, brandDir, repoDir, {
         ...turn,
         prompt:
@@ -220,7 +224,7 @@ export class BrandBuilder implements BrandBuildService {
       let problems = await this.check(brandDir);
       this.stopIfCancelled(state);
       if (problems.length) {
-        this.patch(state, { status: 'building', activity: m().media.brands.build.fixing });
+        this.patch(state, { status: 'building', activity: m().media.brands.build.fixing(this.agentName(state)) });
         await this.stream(state, brandDir, repoDir, {
           ...turn,
           prompt:
@@ -245,6 +249,10 @@ export class BrandBuilder implements BrandBuildService {
     }
     // Only once everything is cleaned up: whoever waits for the build may look at the folders.
     this.end(state, outcome);
+  }
+
+  private agentName(state: State): string | null {
+    return agentName(state.agent, this.deps.features);
   }
 
   /** Reads the clone, the brands (examples) and the kit contract; writes the brand folder only. */
@@ -336,7 +344,7 @@ export class BrandBuilder implements BrandBuildService {
           });
         }
         if (event.subtype === 'aborted' || state.abort.signal.aborted) throw new BuildCancelled();
-        if (event.isError) throw new Error(event.text || m().media.brands.build.unfinished);
+        if (event.isError) throw new Error(event.text || m().media.brands.build.unfinished(this.agentName(state)));
         if (event.text.trim()) state.build.summary = event.text.trim();
       }
     }

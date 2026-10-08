@@ -2,20 +2,23 @@ import type { SeamResult } from '../../../src/shared/types';
 
 export default {
   internalError: (error: string) => `Erreur interne : ${error}`,
+  /** A turn's login error when the host hides the agent: the host owns the sign-in, so no CLI command to run. */
+  refused: 'Notre IA a refusé la connexion : réessayez.',
   chat: {
     invalidKey: (key: string) => `Chat invalide : ${key}`,
     empty: 'Le message est vide.',
     invalidModel: (model: string) => `Modèle invalide : ${model}`,
     invalidEffort: (effort: string) => `Niveau d’effort invalide : ${effort}`,
     stopping: 'Cadence est en train de s’arrêter.',
-    busy: 'Claude travaille encore sur le message précédent de ce chat.',
+    busy: (agent: string | null) => `${agent ?? 'Notre IA'} travaille encore sur le message précédent de ce chat.`,
     sceneNotFound: (sceneId: string) => `Scène introuvable : ${sceneId}`,
     stopFirst: 'Arrêtez d’abord la réponse en cours.',
     projectNotFound: (projectId: string) => `Projet introuvable : ${projectId}`,
     interrupted: 'Réponse interrompue : Cadence a été arrêté pendant qu’elle s’écrivait.',
     sceneGone: (sceneId: string) => `La scène « ${sceneId} » n’existe plus.`,
     outsideChanges: 'Modifications hors chat',
-    failed: 'Claude Code s’est arrêté sur une erreur.',
+    failed: (agent: string | null) =>
+      agent ? `${agent} s’est arrêté sur une erreur.` : 'Notre IA s’est arrêtée sur une erreur.',
     seam: (r: SeamResult) =>
       `${r.from} \u2192 ${r.to} (${r.format}) : ${r.diffPercent.toFixed(2).replace('.', ',')} %${r.error ? ` (erreur : ${r.error})` : ''}`,
     notSaved: '[cadence] Chat non enregistré :',
@@ -62,10 +65,10 @@ export default {
     spawnFailed: (bin: string, error: string) =>
       `Impossible de lancer Claude Code (« ${bin} ») : ${error}. Installez Claude Code ou réglez CLAUDE_PATH.`,
     stopped: 'Arrêté.',
-    crashed: (code: number | null, tail: string) =>
-      `Claude Code s’est arrêté de façon inattendue${code === null ? '' : ` (code ${code})`}${tail ? ` :\n${tail}` : '.'}`,
-    returnedError: (kind: string, text: string) =>
-      text ? `Claude Code a renvoyé une erreur${kind} : ${text}` : `Claude Code a renvoyé une erreur${kind}.`,
+    crashed: (agent: string | null, code: number | null, tail: string) =>
+      `${agent ? `${agent} s’est arrêté` : 'Notre IA s’est arrêtée'} de façon inattendue${code === null ? '' : ` (code ${code})`}${tail ? ` :\n${tail}` : '.'}`,
+    returnedError: (agent: string | null, kind: string, text: string) =>
+      `${agent ?? 'Notre IA'} a renvoyé une erreur${kind}${text ? ` : ${text}` : '.'}`,
   },
   codex: {
     notLoggedIn: 'Codex n’est pas connecté : ouvrez un terminal, lancez « codex login », puis réessayez.',
@@ -76,8 +79,8 @@ export default {
     spawnFailed: (bin: string, error: string) =>
       `Impossible de lancer Codex (« ${bin} ») : ${error}. Installez Codex ou réglez CODEX_PATH.`,
     stopped: 'Arrêté.',
-    crashed: (code: number | null, tail: string) =>
-      `Codex s’est arrêté de façon inattendue${code === null ? '' : ` (code ${code})`}${tail ? ` :\n${tail}` : '.'}`,
+    crashed: (agent: string | null, code: number | null, tail: string) =>
+      `${agent ? `${agent} s’est arrêté` : 'Notre IA s’est arrêtée'} de façon inattendue${code === null ? '' : ` (code ${code})`}${tail ? ` :\n${tail}` : '.'}`,
   },
   grok: {
     notFound: (bin: string, error: string) => `Grok est introuvable (« ${bin} ») : installez-le, ou réglez GROK_PATH. (${error})`,

@@ -195,7 +195,7 @@ export default {
     kitHint:
       'Card, Button, Input, Badge, Avatar, Stat, Toggle, Tabs, ListItem, Logo: the same API for every brand, and every state is a prop you can animate.',
     extras: 'Brand extras',
-    extrasHint: 'described for Claude',
+    extrasHint: (agent: string | null) => `described for ${agent ?? 'our AI'}`,
     copy: 'Brand copy',
     tagline: (line: string) => `"${line}"`,
     voice: 'Voice',

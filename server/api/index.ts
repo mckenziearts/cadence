@@ -17,6 +17,7 @@ import {
   MODEL_ID_PATTERN,
   NETWORK_IDS,
   VISIBILITIES,
+  agentName,
   chatKeyForScene,
   isFormatId,
   type AgentId,
@@ -238,7 +239,7 @@ export function createApi(deps: ApiDeps) {
     return c.json(project);
   });
   app.delete('/projects/:id', async (c) => {
-    const id = idle(c.req.param('id'));
+    const id = await idle(c.req.param('id'));
     const rendering = renders.jobs(id).some((j) => j.status === 'queued' || j.status === 'rendering' || j.status === 'encoding');
     if (rendering) throw new HttpError(409, m().api.routes.rendering);
     if (deps.publisher.busy(id)) throw new HttpError(409, m().api.routes.publishing);
@@ -276,7 +277,7 @@ export function createApi(deps: ApiDeps) {
     c.json(await store.duplicateScene(c.req.param('id'), c.req.param('sid'))),
   );
   app.delete('/projects/:id/scenes/:sid', async (c) => {
-    const id = idle(c.req.param('id'));
+    const id = await idle(c.req.param('id'));
     const project = await store.deleteScene(id, c.req.param('sid'));
     seams.recheck(id);
     return c.json(project);
@@ -397,7 +398,7 @@ export function createApi(deps: ApiDeps) {
     );
   });
   app.post('/projects/:id/versions/:vid/restore', async (c) => {
-    const id = idle(c.req.param('id'));
+    const id = await idle(c.req.param('id'));
     const { sceneId } = await body(c, schemas.restore);
     return c.json(await versions.restore(id, c.req.param('vid'), sceneId ? { sceneId } : {}));
   });
@@ -547,11 +548,13 @@ export function createApi(deps: ApiDeps) {
   return app;
 
   /**
-   * Restores and deletions wait for Claude: its Edit and Write land in the files without the project lock, so they
+   * Restores and deletions wait for the agent: its Edit and Write land in the files without the project lock, so they
    * would be overwritten, or recreate a moved folder.
    */
-  function idle(id: string): string {
-    if (chats.busy(id)) throw new HttpError(409, m().api.routes.agentBusy);
+  async function idle(id: string): Promise<string> {
+    if (chats.busy(id)) {
+      throw new HttpError(409, m().api.routes.agentBusy(agentName((await settings.get()).agent, deps.features)));
+    }
     return id;
   }
 

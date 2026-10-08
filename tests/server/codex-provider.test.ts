@@ -190,6 +190,7 @@ process.stdin.on('end', () => {
   fs.writeFileSync(path.join(__dirname, 'call.json'), JSON.stringify({ args, stdin, cwd: process.cwd(), token: process.env.CADENCE_MCP_TOKEN }));
   if (stdin.includes('HANG')) return setInterval(() => {}, 1000);
   if (stdin.includes('CRASH')) { process.stderr.write('boom: something broke\\n'); process.exit(3); }
+  if (stdin.includes('LOGGED_OUT')) { process.stderr.write('401 Unauthorized\\n'); process.exit(1); }
   process.stdout.write(fs.readFileSync(path.join(__dirname, 'stream.jsonl'), 'utf8'));
 });
 `;
@@ -202,7 +203,8 @@ process.stdin.on('end', () => {
   });
   after(() => fs.rm(dir, { recursive: true, force: true }));
 
-  const provider = (overrides: Partial<CadenceConfig> = {}) => new CodexProvider(config({ codexPath: bin, ...overrides }));
+  const provider = (overrides: Partial<CadenceConfig> = {}, agent?: string | null) =>
+    new CodexProvider(config({ codexPath: bin, ...overrides }), agent);
 
   async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
     const out: AgentEvent[] = [];
@@ -259,7 +261,17 @@ process.stdin.on('end', () => {
   test('a crash without a turn result reports the end of stderr in French', async () => {
     const [done] = await collect(provider().run(turn({ cwd: dir, prompt: 'CRASH' })));
     assert.ok(done.type === 'done' && done.isError && done.subtype === 'crashed');
-    assert.match((done as { text: string }).text, /s’est arrêté de façon inattendue \(code 3\) :\nboom: something broke/);
+    assert.match((done as { text: string }).text, /^Codex s’est arrêté de façon inattendue \(code 3\) :\nboom: something broke/);
+  });
+
+  test('a crash says "Notre IA" when the host hides the agent, and never sends the person to a CLI login', async () => {
+    const [crashed] = await collect(provider({}, null).run(turn({ cwd: dir, prompt: 'CRASH' })));
+    assert.equal(
+      (crashed as { text: string }).text,
+      'Notre IA s’est arrêtée de façon inattendue (code 3) :\nboom: something broke',
+    );
+    const [refused] = await collect(provider({}, null).run(turn({ cwd: dir, prompt: 'LOGGED_OUT' })));
+    assert.equal((refused as { text: string }).text, 'Notre IA a refusé la connexion : réessayez.\n\n401 Unauthorized');
   });
 
   test('a missing binary ends the turn with a French error', async () => {

@@ -178,15 +178,14 @@ function Cover({ project }: { project: ProjectSummary }) {
 function Pitch({ brands }: { brands: BrandSummary[] }) {
   const t = useT();
   const picker = useStore((s) => s.app?.features.agentPicker ?? true);
-  const agent = useStore((s) => s.app?.settings.agent ?? 'claude-code');
-  // A host that hides the agent choice runs one agent: the pitch names that one.
-  const names = AGENTS.filter((a) => (picker ? !a.soon : a.id === agent)).map((a) => a.name);
+  const names = AGENTS.filter((a) => !a.soon).map((a) => a.name);
+  // A host that hides the agent choice names no agent: the pitch says "our AI", still.
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-grid-fade">
       <div className="mx-auto max-w-3xl px-8 py-16">
         <Logo className="size-11" />
         <h1 className="display-caps mt-8 text-5xl/[1.05] text-balance text-ink">
-          {t.shell.home.pitch.title(<AgentNames names={names} />)}
+          {t.shell.home.pitch.title(picker ? <AgentNames names={names} /> : t.shell.home.pitch.ourAi)}
         </h1>
         <p className="mt-5 max-w-xl text-[15px]/6 text-pretty text-ink-2">{t.shell.home.pitch.body}</p>
         <Button

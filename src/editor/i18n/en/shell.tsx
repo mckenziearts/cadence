@@ -42,8 +42,8 @@ export default {
     cost: {
       title: 'Cost',
       hint: "This project's chats, in API-equivalent cost counted on your Claude subscription. Brand builds included, the total is in Profile.",
-      label: (amount: string | null) =>
-        `Estimated cost of this project's chats: ${amount ?? 'unknown'}, API equivalent counted on your Claude subscription`,
+      label: (amount: string | null, claudeSubscription: boolean) =>
+        `Estimated cost of this project's chats: ${amount ?? 'unknown'}${claudeSubscription ? ', API equivalent counted on your Claude subscription' : ''}`,
       unknown: '$-.--',
     },
     build: {
@@ -88,6 +88,7 @@ export default {
           Describe a video, <span className="text-now">{agents} writes it scene by scene.</span>
         </>
       ),
+      ourAi: 'our AI',
       body: 'Each scene is a component that draws a picture for a given instant, to the millisecond. Animations lock onto the music, cuts become invisible, and each brand comes in every format.',
       create: 'Create a project',
       brands: 'Start with a brand',
@@ -107,7 +108,7 @@ export default {
     caption: 'Caption and buttons',
     collapse: 'Collapse',
     details: 'Details',
-    askFix: 'Ask Claude to fix it',
+    askFix: (agent: string | null) => `Ask ${agent ?? 'our AI'} to fix it`,
     fixPrompt: (errors: string) =>
       `The preview shows an error. Fix it without changing the animation:\n\n\`\`\`\n${errors}\n\`\`\``,
   },

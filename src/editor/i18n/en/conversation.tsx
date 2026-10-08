@@ -5,13 +5,14 @@ const SEAM = 'Match the first frame to the last frame of the previous scene for 
 
 export default {
   chat: {
-    agentDown: (agent: string) => `${agent} is unavailable`,
+    agentDown: (agent: string | null) => `${agent ?? 'Our AI'} is unavailable`,
+    author: (agent: string | null) => agent ?? 'Our AI',
     loading: 'Loading the chat',
     newChat: 'New chat',
     clearConfirm: 'Clear the chat?',
     intro: {
-      scene:
-        'Describe a change for this scene. Claude edits the code, renders frames to check its work, and the preview updates.',
+      scene: (agent: string | null) =>
+        `Describe a change for this scene. ${agent ?? 'Our AI'} edits the code, renders frames to check its work, and the preview updates.`,
       project: 'Talk about the video as a whole: structure, pacing, new scenes, consistency between scenes.',
     },
     suggestionsTitle: 'Suggestions',
@@ -39,7 +40,7 @@ export default {
       running: 'Running',
       error: 'Failed',
       ok: 'Done',
-      enlarge: 'Enlarge the frame Claude rendered',
+      enlarge: (agent: string | null) => `Enlarge the frame ${agent ?? 'our AI'} rendered`,
     },
     reasoning: 'Reasoning',
     composer: {
@@ -52,7 +53,7 @@ export default {
       model: 'Model',
       effort: 'Effort',
       noEffort: (model: string) => `${model} has no effort setting`,
-      effortHint: "Claude's thinking time",
+      effortHint: (agent: string | null) => `${agent ?? 'Our AI'}'s thinking time`,
       effortNone: 'Effort: n/a',
       stop: 'Stop',
       send: 'Send',
@@ -60,7 +61,6 @@ export default {
   },
   versions: {
     sources: {
-      agent: 'Claude',
       manual: 'Saved by hand',
       restore: 'Restored',
       external: 'Edited outside the chat',
@@ -77,7 +77,8 @@ export default {
     name: 'Version name',
     namePlaceholder: 'Version name, e.g. "Before the title redesign"',
     emptyTitle: 'No versions yet',
-    empty: 'Every Claude answer that changes the project creates a version. You can also save one by hand.',
+    empty: (agent: string | null) =>
+      `Every answer from ${agent ?? 'our AI'} that changes the project creates a version. You can also save one by hand.`,
     sceneRestored: (scene: string, id: string) => `Scene "${scene}" restored from ${id}`,
     projectRestored: (id: string) => `Project restored from ${id}`,
     current: 'current',
@@ -98,7 +99,8 @@ export default {
     brand: 'Brand',
     brandHint: 'Changing the brand reloads the kit in every scene.',
     textLanguage: 'Text language',
-    textLanguageHint: 'Templates switch language right away; ask Claude to translate the texts it wrote.',
+    textLanguageHint: (agent: string | null) =>
+      `Templates switch language right away; ask ${agent ?? 'our AI'} to translate the texts already written.`,
     brandLanguage: 'Brand language',
     languages: { fr: 'French', en: 'English' },
     formats: 'Formats',
@@ -121,7 +123,8 @@ export default {
     copy: (code: string) => `Copy ${code}`,
     copied: (code: string) => `${code} copied`,
     references: 'References',
-    referencesHint: 'Claude reads these captures to rebuild the interface in code, element by element.',
+    referencesHint: (agent: string | null) =>
+      `${agent ?? 'Our AI'} reads these captures to rebuild the interface in code, element by element.`,
     url: 'URL of the page to capture',
     urlPlaceholder: 'https://example.com/dashboard',
     device: 'Device',
@@ -131,6 +134,6 @@ export default {
     capture: 'Capture',
     captured: (path: string) => `Capture saved: ${path}`,
     noCaptures: 'No captures',
-    noCapturesHint: 'Capture a page of your product: Claude uses it as a reference.',
+    noCapturesHint: (agent: string | null) => `Capture a page of your product: ${agent ?? 'our AI'} uses it as a reference.`,
   },
 } satisfies typeof fr;

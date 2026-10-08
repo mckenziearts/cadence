@@ -13,6 +13,7 @@ import { setFormat, setPlaying } from '../store/project';
 import { FrameView, type FrameHandle } from './FrameView';
 import { PlaybackEngine, Transport } from './Transport';
 import { Button, FormatGlyph, IconButton, Segmented, Spinner } from './ui';
+import { useAgentName } from './agents';
 
 /** Room around the picture for its frame and printed shadow. */
 const PAD = 32;
@@ -221,6 +222,7 @@ function SafeAreaOverlay({ format, scale }: { format: FormatId; scale: number })
 
 function FrameErrorBanner() {
   const t = useT();
+  const agent = useAgentName();
   const errors = useStore((s) => s.frameErrors);
   const scene = useStore((s) => currentScene(s));
   const [open, setOpen] = useState(false);
@@ -253,7 +255,7 @@ function FrameErrorBanner() {
         )}
         {target && (
           <Button size="sm" variant="primary" icon={<Sparkles className="size-3.5" />} onClick={ask}>
-            {t.shell.stage.askFix}
+            {t.shell.stage.askFix(agent)}
           </Button>
         )}
       </div>

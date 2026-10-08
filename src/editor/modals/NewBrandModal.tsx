@@ -1,5 +1,5 @@
 // New brand: pick one of your GitHub or GitLab repositories (listed through the gh or glab CLI of this Mac) or paste its
-// address, name the brand, then follow Claude while it builds the kit (server/brands/build.ts). Closing the window does
+// address, name the brand, then follow the agent while it builds the kit (server/brands/build.ts). Closing the window does
 // not stop it.
 import clsx from 'clsx';
 import { Check, Lock, Search, Trash2 } from 'lucide-react';
@@ -13,6 +13,7 @@ import { useT } from '../i18n';
 import { relative, usd } from '../lib/format';
 import { useStore } from '../store';
 import { closeModal, markBuildSeen, openModal, toast } from '../store/ui';
+import { useAgentName } from '../components/agents';
 
 export function NewBrandModal({ buildId }: { buildId?: string }) {
   const [current, setCurrent] = useState(buildId ?? null);
@@ -39,6 +40,7 @@ const HOSTS: Record<GitHost, { label: string; cli: string; install: string }> = 
 
 function PickRepo({ onStarted }: { onStarted: (build: BrandBuild) => void }) {
   const t = useT();
+  const agent = useAgentName();
   const { agentPicker } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const [host, setHost] = useState<GitHost>('github');
   const [listings, setListings] = useState<Partial<Record<GitHost, RepoListing>>>({});
@@ -79,7 +81,7 @@ function PickRepo({ onStarted }: { onStarted: (build: BrandBuild) => void }) {
   return (
     <Modal
       title={t.dialogs.newBrand.title}
-      subtitle={t.dialogs.newBrand.subtitle}
+      subtitle={t.dialogs.newBrand.subtitle(agent)}
       onClose={closeModal}
       width="max-w-[760px]"
       initialFocus={search}

@@ -1,4 +1,4 @@
-// The Profile page (#/@profil): the accounts Cadence uses on this computer. What Cadence asked Claude (the usage log),
+// The Profile page (#/@profil): the accounts Cadence uses on this computer. What Cadence asked the agent (the usage log),
 // Git hosts through their CLI, the voice-over engines (Piper's voices, the ElevenLabs key and the voice new projects
 // start with), networks through the developer app the team created on each one (keys in a dialog), connected in a new
 // tab, refreshed on `accounts-changed`.

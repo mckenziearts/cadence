@@ -153,7 +153,7 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
   );
 }
 
-/** Claude at work: the logo's three clips light up one per beat, at the project tempo (held to 90-140 BPM). */
+/** The agent at work: the logo's three clips light up one per beat, at the project tempo (held to 90-140 BPM). */
 export function BeatPills({ tempo, className }: { tempo?: number; className?: string }) {
   const bpm = Math.min(140, Math.max(90, tempo ?? 120));
   return (

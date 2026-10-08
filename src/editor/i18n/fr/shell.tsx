@@ -44,8 +44,8 @@ export default {
     cost: {
       title: 'Coût',
       hint: 'Chats de ce projet, en coût équivalent API compté sur votre abonnement Claude. Créations de marque comprises, le total est dans Profil.',
-      label: (amount: string | null) =>
-        `Coût estimé des chats de ce projet : ${amount ?? 'inconnu'}, équivalent API compté sur votre abonnement Claude`,
+      label: (amount: string | null, claudeSubscription: boolean) =>
+        `Coût estimé des chats de ce projet : ${amount ?? 'inconnu'}${claudeSubscription ? ', équivalent API compté sur votre abonnement Claude' : ''}`,
       unknown: '\u2013\u00a0$',
     },
     build: {
@@ -92,6 +92,7 @@ export default {
           Décrivez une vidéo, <span className="text-now">{agents} l’écrit scène par scène.</span>
         </>
       ),
+      ourAi: 'notre IA',
       body: 'Chaque scène est un composant qui dessine une image pour un instant donné, à la milliseconde. Les animations se calent sur la musique, les coupes deviennent invisibles, et chaque marque se décline dans tous les formats.',
       create: 'Créer un projet',
       brands: 'Commencer avec une marque',
@@ -111,8 +112,8 @@ export default {
     caption: 'Légende et boutons',
     collapse: 'Réduire',
     details: 'Détails',
-    askFix: 'Demander à Claude de corriger',
-    /** Put in the scene's composer: Claude reads it. */
+    askFix: (agent: string | null) => `Demander à ${agent ?? 'notre IA'} de corriger`,
+    /** Put in the scene's composer: the agent reads it. */
     fixPrompt: (errors: string) =>
       `L’aperçu affiche une erreur. Corrige-la sans changer l’animation :\n\n\`\`\`\n${errors}\n\`\`\``,
   },

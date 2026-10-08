@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import type { AgentStatus, UsageTokens } from '../../src/shared/types';
+import { AGENT_NAMES, type AgentStatus, type UsageTokens } from '../../src/shared/types';
 import type { CadenceConfig } from '../contracts';
 import { m } from '../i18n';
 import { NO_TOKENS } from '../usage';
@@ -97,7 +97,11 @@ export class ClaudeCodeProvider implements AgentProvider {
   readonly label = 'Claude Code';
   private statusCache: { at: number; value: Promise<AgentStatus> } | null = null;
 
-  constructor(private config: CadenceConfig) {}
+  /** `agent` is the name the turn errors give it: null when the host hides the agent choice (`agentName()`). */
+  constructor(
+    private config: CadenceConfig,
+    private agent: string | null = AGENT_NAMES['claude-code'],
+  ) {}
 
   /** Cached for 30 s: the editor asks on every load and each check spawns two processes. */
   status(): Promise<AgentStatus> {
@@ -163,7 +167,7 @@ export class ClaudeCodeProvider implements AgentProvider {
     const parser = new StreamJsonParser((event) => {
       if (event.type === 'done') finish(event);
       else if (!finished) queue.push(event);
-    });
+    }, this.agent);
     readline.createInterface({ input: child.stdout }).on('line', (line) => {
       log?.write(`${line}\n`);
       parser.line(line);
@@ -199,7 +203,7 @@ export class ClaudeCodeProvider implements AgentProvider {
       const aborted = turn.signal.aborted;
       finish({
         type: 'done',
-        text: aborted ? m().agent.claudeCode.stopped : crashText(code, stderr),
+        text: aborted ? m().agent.claudeCode.stopped : crashText(this.agent, code, stderr),
         isError: !aborted,
         durationMs: Date.now() - started,
         subtype: aborted ? 'aborted' : 'crashed',
@@ -220,17 +224,21 @@ function exec(file: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ s
   });
 }
 
-function crashText(code: number | null, stderr: string): string {
+function crashText(agent: string | null, code: number | null, stderr: string): string {
   const tail = stderr.trim().split('\n').slice(-6).join('\n');
-  if (AUTH_ERROR.test(tail)) return `${m().agent.claudeCode.notLoggedIn}\n\n${tail}`;
-  return m().agent.claudeCode.crashed(code, tail);
+  if (AUTH_ERROR.test(tail)) return `${notLoggedIn(agent)}\n\n${tail}`;
+  return m().agent.claudeCode.crashed(agent, code, tail);
 }
 
 /** User-facing text for an error result; keeps Claude Code's own message for context. */
-function explainError(text: string, subtype: string | undefined): string {
-  if (AUTH_ERROR.test(text)) return `${m().agent.claudeCode.notLoggedIn}\n\n${text}`.trim();
+function explainError(agent: string | null, text: string, subtype: string | undefined): string {
+  if (AUTH_ERROR.test(text)) return `${notLoggedIn(agent)}\n\n${text}`.trim();
   const kind = subtype && subtype !== 'success' ? ` (${subtype})` : '';
-  return m().agent.claudeCode.returnedError(kind, text);
+  return m().agent.claudeCode.returnedError(agent, kind, text);
+}
+
+function notLoggedIn(agent: string | null): string {
+  return agent ? m().agent.claudeCode.notLoggedIn : m().agent.refused;
 }
 
 function toolResultText(content: unknown): string {
@@ -251,7 +259,10 @@ export class StreamJsonParser {
   /** Assistant messages whose text already went out as deltas. */
   private streamed = new Set<string>();
 
-  constructor(private emit: (event: AgentEvent) => void) {}
+  constructor(
+    private emit: (event: AgentEvent) => void,
+    private agent: string | null = AGENT_NAMES['claude-code'],
+  ) {}
 
   line(raw: string): void {
     let msg: Json;
@@ -321,7 +332,7 @@ export class StreamJsonParser {
     const text = typeof msg.result === 'string' ? msg.result : Array.isArray(msg.errors) ? msg.errors.map(String).join('\n') : '';
     this.emit({
       type: 'done',
-      text: isError ? explainError(text, subtype) : text,
+      text: isError ? explainError(this.agent, text, subtype) : text,
       isError,
       durationMs: Number(msg.duration_ms) || 0,
       costUsd: typeof msg.total_cost_usd === 'number' ? msg.total_cost_usd : undefined,
