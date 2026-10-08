@@ -419,6 +419,13 @@ describe('editor', () => {
     const [bar, title] = await Promise.all([box(header), box(page.getByRole('heading', { name: 'Projets' }))]);
     assert.deepEqual([bar.left, bar.top], [title.left, 16]);
     assert.equal(await region(header.locator('xpath=../..')), 'drag');
+    // Past 92rem the box centres with the page, unless the host lifts its max width.
+    await page.setViewportSize({ width: 1700, height: 900 });
+    assert.equal((await box(header)).left, (1700 - 1472) / 2 + 24);
+    await page.evaluate(() => document.documentElement.style.setProperty('--titlebar-max-width', 'none'));
+    const wide = await box(header);
+    assert.deepEqual([wide.left, wide.right], [24, 1700 - 24]);
+    await page.setViewportSize({ width: 1440, height: 900 });
     await open(A, page);
     const editorBar = await box(header);
     assert.deepEqual([editorBar.left, editorBar.top, editorBar.width], [0, 0, 1440]);
