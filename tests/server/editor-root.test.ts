@@ -32,7 +32,7 @@ async function writeHost(dir: string): Promise<void> {
   );
   await fs.writeFile(
     path.join(src, 'main.tsx'),
-    `import { createRoot } from 'react-dom/client';\nimport { App, Profile } from '${core}/index';\nimport './styles.css';\n\nfunction X() {\n  return <p>${HOST_PAGE}</p>;\n}\n\ncreateRoot(document.getElementById('root')!).render(\n  <div className="bg-[#c0ffee]">\n    <App pages={{ '@x': X, '@moi': () => <Profile /> }} />\n  </div>,\n);\n`,
+    `import { createRoot } from 'react-dom/client';\nimport { App, Profile } from '${core}/index';\nimport './styles.css';\n\nfunction X() {\n  return <p>${HOST_PAGE}</p>;\n}\n\ncreateRoot(document.getElementById('root')!).render(\n  <div className="bg-[#c0ffee]">\n    <App pages={{ '@x': X, '@moi': () => <Profile /> }} profile={false} />\n  </div>,\n);\n`,
   );
   await fs.writeFile(path.join(src, 'styles.css'), `@import '${core}/styles.css';\n@source './';\n`);
   for (const name of ['react', 'react-dom', 'scheduler'])
@@ -122,6 +122,10 @@ test('a host page opens from the hash, the core Profile too, an unknown page goe
     const page = await browser.newPage();
     await page.goto(`${server.config.editorOrigin}/#/@x`);
     await page.getByText(HOST_PAGE, { exact: true }).waitFor({ timeout: 30_000 });
+    // The host took the Profile entry off the top bar (profile={false}); the rest of the bar stays.
+    const bar = page.getByRole('banner');
+    await bar.getByRole('button', { name: /^(Réglages|Settings)$/ }).waitFor();
+    assert.equal(await bar.getByRole('button', { name: /^Profile?$/ }).count(), 0);
     await page.goto(`${server.config.editorOrigin}/#/@moi`);
     await page.getByRole('listitem', { name: 'YouTube' }).waitFor({ timeout: 30_000 });
     await page.goto(`${server.config.editorOrigin}/#/@nope`);

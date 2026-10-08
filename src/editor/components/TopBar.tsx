@@ -39,8 +39,11 @@ export function Logo({ className }: { className?: string }) {
   );
 }
 
-/** `framed`: off the editor (home, pages), a box as wide as the page's content, under a strip of the page's paper. */
-export function TopBar({ framed = false }: { framed?: boolean }) {
+/**
+ * `framed`: off the editor (home, pages), a box as wide as the page's content, under a strip of the page's paper.
+ * `profile`: the Profile entry, which a host may take off (App's `profile`).
+ */
+export function TopBar({ framed = false, profile = true }: { framed?: boolean; profile?: boolean }) {
   const t = useT();
   const project = useStore((s) => s.project);
   const loading = useStore((s) => s.projectLoading);
@@ -127,12 +130,14 @@ export function TopBar({ framed = false }: { framed?: boolean }) {
           </Button>
         </div>
       )}
-      <IconButton
-        label={t.shell.topBar.profile}
-        icon={<CircleUserRound className="size-4" />}
-        active={page === PROFILE_PAGE}
-        onClick={() => (location.hash = `#/${PROFILE_PAGE}`)}
-      />
+      {profile && (
+        <IconButton
+          label={t.shell.topBar.profile}
+          icon={<CircleUserRound className="size-4" />}
+          active={page === PROFILE_PAGE}
+          onClick={() => (location.hash = `#/${PROFILE_PAGE}`)}
+        />
+      )}
       <IconButton
         label={t.shell.topBar.settings}
         icon={<Settings className="size-4" />}

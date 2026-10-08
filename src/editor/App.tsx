@@ -33,8 +33,11 @@ import { dismissToast, toast } from './store/ui';
 
 const CORE_PAGES: Pages = { [PROFILE_PAGE]: Profile };
 
-/** The editor. `pages` adds a host app's screens, opened by `#/@<id>`; a host page replaces a core one of the same id. */
-export function App({ pages }: { pages?: Pages }) {
+/**
+ * The editor. `pages` adds a host app's screens, opened by `#/@<id>`; a host page replaces a core one of the same id.
+ * `profile={false}` takes the Profile entry off the top bar, for a host that keeps the person on one of its pages.
+ */
+export function App({ pages, profile = true }: { pages?: Pages; profile?: boolean }) {
   const t = useT();
   const app = useStore((s) => s.app);
   const appError = useStore((s) => s.appError);
@@ -97,11 +100,11 @@ export function App({ pages }: { pages?: Pages }) {
         // so its lines run on into the page's. A host's window may keep the box its full width (--titlebar-max-width).
         <div className="shrink-0 bg-grid bg-stage [-webkit-app-region:drag] [app-region:drag]">
           <div className="mx-auto max-w-[var(--titlebar-max-width,92rem)] px-6 pt-4">
-            <TopBar framed />
+            <TopBar framed profile={profile} />
           </div>
         </div>
       ) : (
-        <TopBar />
+        <TopBar profile={profile} />
       )}
       <StaleBanner />
       {project ? (
