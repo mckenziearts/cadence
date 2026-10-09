@@ -327,7 +327,12 @@ function VoiceSection() {
       <p className="mt-1 text-[13px] text-ink-3">{t.profile.voice.hint}</p>
       <ul className={GRID}>
         <PiperCard voices={voices} />
-        <ElevenLabsCard configured={voices?.elevenLabs.configured} onChange={load} />
+        <ElevenLabsCard
+          configured={voices?.elevenLabs.configured}
+          hosted={voices?.elevenLabs.hosted}
+          error={voices?.elevenLabs.error}
+          onChange={load}
+        />
       </ul>
     </section>
   );
@@ -378,7 +383,18 @@ function PiperCard({ voices }: { voices: VoicesState | null }) {
   );
 }
 
-function ElevenLabsCard({ configured, onChange }: { configured: boolean | undefined; onChange: () => void }) {
+function ElevenLabsCard({
+  configured,
+  hosted,
+  error,
+  onChange,
+}: {
+  configured: boolean | undefined;
+  hosted: boolean | undefined;
+  /** Why the saved key could not be read. */
+  error: string | undefined;
+  onChange: () => void;
+}) {
   const e = useT().profile.voice.elevenLabs;
   const defaultVoice = useStore((s) => s.app?.settings.defaultVoice ?? null);
   const status = configured === undefined ? <Checking /> : <Status ok={configured}>{configured ? e.configured : e.noKey}</Status>;
@@ -394,13 +410,21 @@ function ElevenLabsCard({ configured, onChange }: { configured: boolean | undefi
   };
   return (
     <Card logo={<ElevenLabsLogo className="size-7" />} title="ElevenLabs" status={status}>
+      {error && (
+        <p className="flex items-start gap-1.5 text-xs text-alert">
+          <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
+        </p>
+      )}
       {configured === false && <ElevenLabsKeyForm onSaved={onChange} />}
       {configured && (
         <>
           <p className="label-caps text-[10px] text-ink-3">{e.newProjects}</p>
           <ElevenLabsVoiceSelect value={defaultVoice} onChange={pick} label={e.defaultLabel} none={e.piper} noneSelectable />
           <p className="text-xs text-ink-3">{e.defaultHint}</p>
-          <ConfirmButton variant="secondary" label={e.removeKey} confirmLabel={e.removeKeyConfirm} onConfirm={remove} />
+          {/* The host app owns the key: the server refuses to remove it. */}
+          {!hosted && (
+            <ConfirmButton variant="secondary" label={e.removeKey} confirmLabel={e.removeKeyConfirm} onConfirm={remove} />
+          )}
         </>
       )}
     </Card>

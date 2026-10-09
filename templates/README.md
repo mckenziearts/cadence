@@ -28,7 +28,8 @@ personnalise la copie, jamais le modèle, sauf pour améliorer la bibliothèque.
 
 - un `export default function`, pure fonction de ses props : pas d'état, d'effet, de minuterie, de
   `Math.random()`, de `Date.now()`, de transition ou d'animation CSS, de réseau ;
-- n'importe que `react` et `cadence` (un modèle doit fonctionner sans le dossier `components/` d'un projet) ;
+- n'importe que `react` et `cadence` (un modèle doit fonctionner sans le dossier `components/` d'un projet), et
+  ses propres composants s'il en apporte (voir « Composants d'un modèle de scène ») ;
 - ne s'habille qu'avec la marque : `props.brand` / `useBrand()` (couleurs, polices, rayons, `Logo`, composants
   `ui`, textes `copy`) ; les composants vitrine (`brand.extras`) sont optionnels, toujours avec un repli
   (`EXTRA` dans `phone-showcase` et `browser-showcase`) ;
@@ -52,6 +53,22 @@ L'agent de l'éditeur personnalise un modèle en changeant ses constantes, comme
 
 Typographie française dans les textes : « guillemets », espace avant `:` `;` `!` `?`, `12,5 %`. Dans le code,
 jamais d'espace insécable invisible : écrire `'\u00a0'` ou `'\u202f'`.
+
+### Composants d'un modèle de scène
+
+Un modèle peut apporter ses composants dans un dossier `components/` optionnel, à côté de `scene.tsx` : un
+personnage, une bouche, une mise en page partagée par plusieurs scènes. Seuls comptent les fichiers `*.ts` et
+`*.tsx` placés directement dans ce dossier, dont le nom commence par une lettre et ne contient que des lettres,
+chiffres, `-` ou `_` (`Mouth.tsx`, `layout.ts`) ; les liens symboliques, les sous-dossiers et les autres fichiers
+sont ignorés.
+
+À l'insertion de la scène (ou à la création d'un projet depuis une campagne), chaque composant est copié dans le
+`components/` du projet **s'il n'y est pas encore** : un fichier déjà présent, peut-être modifié, est conservé tel
+quel, et une deuxième scène du même modèle s'insère sans erreur. La scène l'importe avec
+`import { Mouth } from '../components/Mouth';`. `list_templates` nomme les composants de chaque modèle.
+
+Les modèles livrés avec Cadence n'en ont pas : ils n'importent que `react` et `cadence` (règle vérifiée par les
+tests). Les composants servent aux modèles qu'une application hôte ajoute.
 
 ## Raccords invisibles
 
@@ -91,8 +108,24 @@ fois. Dans un projet, mieux vaut déplacer ces blocs dans `components/` et les i
 
 `template.json` (type `ProjectTemplateMeta`) : `name`, `description`, `fps` (24, 30 ou 60), `formats`, `bpm` (le
 tempo qui convertit les mesures en secondes tant qu'il n'y a pas de musique) et `scenes` (`template`, `name`,
-`bars`). `art-direction.md` est ajouté sous la direction artistique de la marque : il commence par un titre `##`,
+`bars`), et optionnellement `voiceOver`. `art-direction.md` est ajouté sous la direction artistique de la marque : il commence par un titre `##`,
 décrit la structure, ce qu'il faut adapter dès la création, le rythme et les raccords.
+
+`voiceOver` reprend les réglages de voix d'un projet (`VoiceOverSettings`, lus avec le même schéma que
+`project.json`) : moteur, voix, vitesse, niveau de la musique et, surtout, les `speakers` d'un dialogue (au plus
+dix, chacun avec son `id`, son `name`, sa `voice` et en option sa `color`). Un projet créé depuis la campagne
+démarre avec ces réglages, à la place de la voix par défaut ; `list_templates` nomme ses interlocuteurs. Un
+`voiceOver` invalide écarte la campagne, avec le même avertissement qu'un autre champ invalide.
+
+```json
+"voiceOver": {
+  "voice": "fr_FR-siwis-medium",
+  "speakers": [
+    { "id": "camille", "name": "Camille", "voice": "fr_FR-siwis-medium", "color": "#e8590c" },
+    { "id": "sami", "name": "Sami", "voice": "fr_FR-upmc-medium" }
+  ]
+}
+```
 
 | Campagne | Durée | Formats | Scènes |
 | --- | --- | --- | --- |

@@ -1,0 +1,17 @@
+{
+  "name": "Dialogue",
+  "description": "Une conversation entre Camille et Sami.",
+  "fps": 30,
+  "formats": ["16:9"],
+  "bpm": 120,
+  "scenes": [{ "template": "dialogue", "name": "Conversation", "bars": 2 }],
+  "voiceOver": {
+    "engine": "elevenlabs",
+    "voice": "voiceCamille",
+    "model": "eleven_multilingual_v2",
+    "speakers": [
+      { "id": "camille", "name": "Camille", "voice": "voiceCamille", "color": "#e8590c" },
+      { "id": "sami", "name": "Sami", "voice": "voiceSami" }
+    ]
+  }
+}

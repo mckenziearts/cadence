@@ -24,6 +24,7 @@ import type {
   VoiceOverService,
 } from '../../server/contracts';
 import { SseHub } from '../../server/hub';
+import { setLanguage } from '../../server/i18n';
 import { FileSettingsStore } from '../../server/settings';
 import { FileAssetStore } from '../../server/store/assets';
 import { FileBrandStore } from '../../server/store/brands';
@@ -32,7 +33,9 @@ import { FileTemplateStore } from '../../server/store/templates';
 import { FileVersionStore } from '../../server/store/versions';
 import { FileUsageLog } from '../../server/usage';
 import { HttpError, pathExists, resolveInside } from '../../server/util';
+import { sidecarFile } from '../../server/voiceover/elevenlabs';
 import { LocalVoiceOverService } from '../../server/voiceover/service';
+import { writeWav } from '../../server/voiceover/wav';
 import {
   DEFAULT_FEATURES,
   MODELS,
@@ -47,6 +50,7 @@ import {
   type SeamResult,
   type ServerEvent,
   type VoiceInfo,
+  type VoiceOverSettings,
 } from '../../src/shared/types';
 import { fakeNetwork, makeRoot, type TestRoot } from './helpers';
 
@@ -527,15 +531,102 @@ test('voice-overs: ElevenLabs settings are checked against its own ranges; Piper
   assert.deepEqual((await patch({ ...piper, engine: 'piper' })).body.voiceOver, piper);
 });
 
+test('voice-overs: the API and the store take and refuse the same speakers', async () => {
+  const piper = { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 };
+  const eleven = {
+    engine: 'elevenlabs',
+    voice: 'JBFqnCBsd6RMkjVDRZzb',
+    model: 'eleven_multilingual_v2',
+    speed: 1,
+    musicLevel: 0.3,
+  };
+  const camille = { id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium', color: '#ff2e88' };
+  const nina = { id: 'nina', name: 'Nina', voice: 'cgSgspJ2msm6clMCkdW9', model: 'eleven_v3', color: '#00BC7D' };
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...camille, id: `voix-${i}` }));
+  const withCamille = (patch: object) => ({ ...piper, speakers: [{ ...camille, ...patch }] });
+  const cases: [string, unknown, boolean][] = [
+    ['no speakers', piper, true],
+    ['Piper speakers', { ...piper, speakers: [camille, { id: 'leo', name: 'Léo', voice: 'xx_XX-nobody-low' }] }, true],
+    [
+      'an ElevenLabs speaker with its model',
+      { ...eleven, speakers: [nina, { ...nina, id: 'sans-modele', model: undefined }] },
+      true,
+    ],
+    ['ten speakers', { ...piper, speakers: many(10) }, true],
+    ['an id of 32 characters', withCamille({ id: 'a'.repeat(32) }), true],
+    ['a name of 40 characters', withCamille({ name: 'é'.repeat(40) }), true],
+    ['eleven speakers', { ...piper, speakers: many(11) }, false],
+    ['the same id twice', { ...piper, speakers: [camille, { ...camille, name: 'Autre' }] }, false],
+    ['an id with capitals', withCamille({ id: 'Camille' }), false],
+    ['an id of 33 characters', withCamille({ id: 'a'.repeat(33) }), false],
+    ['a blank name', withCamille({ name: '  ' }), false],
+    ['a name of 41 characters', withCamille({ name: 'a'.repeat(41) }), false],
+    ['a control character in the name', withCamille({ name: 'Ca\u0007mille' }), false],
+    ['a right-to-left override in the name', withCamille({ name: 'Ca\u202emille' }), false],
+    ['a zero-width space in the name', withCamille({ name: 'Ca\u200bmille' }), false],
+    ['a named color', withCamille({ color: 'red' }), false],
+    ['a short color', withCamille({ color: '#fff' }), false],
+    ['an ElevenLabs voice under Piper', withCamille({ voice: 'cgSgspJ2msm6clMCkdW9' }), false],
+    ['a model under Piper', withCamille({ model: 'eleven_v3' }), false],
+    ['a Piper voice under ElevenLabs', { ...eleven, speakers: [camille] }, false],
+    ['a wrong model', { ...eleven, speakers: [{ ...nina, model: 'Eleven v3' }] }, false],
+  ];
+  for (const [label, voiceOver, ok] of cases) {
+    const res = await json('PATCH', '/api/projects/demo', { voiceOver });
+    assert.equal(res.status, ok ? 200 : 400, `API: ${label}`);
+    const stored = await store.update('demo', { voiceOver: voiceOver as VoiceOverSettings }).then(
+      () => true,
+      (e: HttpError) => (e.status === 400 ? false : Promise.reject(e)),
+    );
+    assert.equal(stored, ok, `store: ${label}`);
+  }
+});
+
+test('voice-overs: a scene takes script lines or a text, and a speaker its lines use stays', async () => {
+  const camille = { id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium' };
+  const settings = { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3, speakers: [camille] };
+  assert.equal((await json('PATCH', '/api/projects/demo', { voiceOver: settings })).status, 200);
+  const scene = (await store.get('demo')).scenes[0];
+  const patch = (voiceOver: unknown) => json('PATCH', `/api/projects/demo/scenes/${scene.id}`, { voiceOver });
+  const lines = [
+    { id: 'bonjour', speaker: 'camille', text: 'Bonjour.', gesture: 'wave' },
+    { id: 'ca-va', speaker: 'camille', text: 'Ça va ?' },
+  ];
+  const said = await patch({ lines, at: 0.5 });
+  assert.equal(said.status, 200);
+  assert.deepEqual(said.body.scenes[0].voiceOver, { text: 'Bonjour.\nÇa va ?', at: 0.5, lines });
+
+  const both = await patch({ text: 'Bonjour.', lines, at: 0 });
+  assert.equal(both.status, 400);
+  assert.match(both.body.error, /^Requête invalide/);
+  assert.equal((await patch({ at: 0 })).status, 400, 'neither');
+  const unknown = await patch({ lines: [{ speaker: 'nina', text: 'Salut.' }], at: 0 });
+  assert.equal(unknown.status, 400);
+  assert.match(unknown.body.error, /nina/);
+  const later = await patch({ lines: [lines[0], { speaker: 'nina', text: 'Salut.' }], at: 0 });
+  assert.equal(later.status, 400, 'an unknown speaker on a later line');
+  assert.match(later.body.error, /nina/);
+  assert.equal((await patch({ lines: [{ speaker: 'camille', text: 'x'.repeat(2001) }], at: 0 })).status, 400);
+
+  const removal = await json('PATCH', '/api/projects/demo', { voiceOver: { ...settings, speakers: [] } });
+  assert.equal(removal.status, 400);
+  assert.ok(removal.body.error.includes(scene.name), removal.body.error);
+  assert.deepEqual((await store.get('demo')).voiceOver.speakers, [camille]);
+});
+
 test('voice-overs: the ElevenLabs key is checked, kept in a file only this machine reads, never sent back', async () => {
-  const asked: [string, string][] = [];
+  const asked: [string, string | null][] = [];
   const elevenLabs: ElevenLabsApi = {
     voices: async (key) => {
+      if (key === null) throw new HttpError(409, 'Aucune clé API ElevenLabs enregistrée');
       asked.push(['voices', key]);
       if (key === 'sk_refused') throw new HttpError(400, 'ElevenLabs refuse la clé API');
       return [{ id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', category: 'premade', previewUrl: null, languages: ['en'] }];
     },
-    models: async (key) => (asked.push(['models', key]), [{ id: 'eleven_multilingual_v2', name: 'Multilingual v2' }]),
+    models: async (key) => {
+      if (key === null) throw new HttpError(409, 'Aucune clé API ElevenLabs enregistrée');
+      return (asked.push(['models', key]), [{ id: 'eleven_multilingual_v2', name: 'Multilingual v2' }]);
+    },
     speak: async () => undefined,
   };
   const voiceOver = new LocalVoiceOverService({
@@ -592,10 +683,15 @@ test('voice-overs: the ElevenLabs key is checked, kept in a file only this machi
 
   // A file edited by hand that no longer parses: JSON.parse would quote the key, the error does not.
   await fs.writeFile(file, 'sk_hand_edited\n');
-  const unreadable = await json('GET', '/api/voices');
+  const unreadable = await json('GET', '/api/voices/elevenlabs');
   assert.equal(unreadable.status, 500);
   assert.match(unreadable.body.error, /elevenlabs\.json/);
   assert.ok(!unreadable.body.error.includes('sk_hand'), unreadable.body.error);
+  // The voices state still answers, Piper voices included: only its ElevenLabs part carries the same error.
+  const state = await json('GET', '/api/voices');
+  assert.equal(state.status, 200);
+  assert.ok(state.body.voices.length > 0);
+  assert.deepEqual(state.body.elevenLabs, { configured: false, error: unreadable.body.error });
   assert.equal((await json('PUT', '/api/voices/elevenlabs/key', { key: 'sk_good' })).status, 200);
   assert.deepEqual(await configured(), { configured: true });
 
@@ -632,6 +728,106 @@ test('voice-overs: a removal sent during a slow ElevenLabs check is not undone b
   answer();
   assert.equal((await saving).status, 200);
   assert.deepEqual(await removing, { status: 200, body: { configured: false } });
+  assert.equal(await pathExists(path.join(t.config.stateDir, 'elevenlabs.json')), false);
+});
+
+test("voice-overs: with a host app's secret store, the key is checked before it is saved, a failed save changes nothing, and the key is never shown", async () => {
+  const KEY = 'sk_through_the_hook';
+  const steps: string[] = [];
+  const saved = new Map<string, string>();
+  let failing = false;
+  const voiceOver = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: {
+      voices: async (key) => (steps.push(`check ${key}`), []),
+      models: async () => [],
+      speak: async ({ sentences, files }) => {
+        for (const i of sentences.keys()) {
+          await fs.writeFile(sidecarFile(files[i]), JSON.stringify({ words: [], level: [] }));
+          await fs.writeFile(files[i], writeWav({ sampleRate: 24000, samples: new Int16Array(24000) }));
+        }
+      },
+    },
+    secrets: {
+      get: async (name) => saved.get(name) ?? null,
+      set: async (name, value) => {
+        steps.push(`set ${name}`);
+        if (failing) throw new Error(`vault refused ${value}`);
+        if (value === null) saved.delete(name);
+        else saved.set(name, value);
+      },
+    },
+  });
+  store.setVoiceOverProvider(voiceOver.provider);
+  app = createApi({ ...deps, voiceOver });
+
+  assert.deepEqual(await json('PUT', '/api/voices/elevenlabs/key', { key: KEY }), { status: 200, body: { configured: true } });
+  assert.deepEqual(steps, [`check ${KEY}`, 'set elevenlabs']);
+  assert.equal(await pathExists(path.join(t.config.stateDir, 'elevenlabs.json')), false);
+
+  failing = true;
+  const notSaved = await json('PUT', '/api/voices/elevenlabs/key', { key: 'sk_other' });
+  assert.deepEqual(notSaved, { status: 500, body: { error: 'Clé ElevenLabs non enregistrée : réessayez' } });
+  setLanguage('en');
+  try {
+    assert.deepEqual((await json('DELETE', '/api/voices/elevenlabs/key')).body, { error: 'ElevenLabs key not saved: try again' });
+  } finally {
+    setLanguage('fr');
+  }
+  assert.equal(saved.get('elevenlabs'), KEY, 'nothing changed');
+  assert.equal(await pathExists(path.join(t.config.stateDir, 'elevenlabs.json')), false, 'no fallback to a file');
+  failing = false;
+
+  const settings = {
+    engine: 'elevenlabs',
+    voice: 'JBFqnCBsd6RMkjVDRZzb',
+    model: 'eleven_multilingual_v2',
+    speed: 1,
+    musicLevel: 0.3,
+  };
+  assert.equal((await json('PATCH', '/api/projects/demo', { voiceOver: settings })).status, 200);
+  const scene = (await store.get('demo')).scenes[0];
+  const said = await json('PATCH', `/api/projects/demo/scenes/${scene.id}`, { voiceOver: { text: 'Bonjour.', at: 0 } });
+  assert.equal(said.status, 200);
+  assert.equal((await json('POST', '/api/projects/demo/voice-over/sync')).status, 200);
+  for (const route of ['/api/state', '/api/voices', '/api/projects/demo']) {
+    const text = await call('GET', route).then((res) => res.text());
+    assert.ok(!text.includes(KEY), route);
+  }
+  const files = (await fs.readdir(store.dir('demo'), { recursive: true, withFileTypes: true })).filter((f) => f.isFile());
+  assert.ok(
+    files.some((f) => f.name.endsWith('.wav') && f.parentPath.endsWith(path.join('.cadence', 'voice-over'))),
+    'the sync wrote its takes',
+  );
+  for (const entry of files) {
+    const content = await fs.readFile(path.join(entry.parentPath, entry.name), 'utf8');
+    assert.ok(!content.includes(KEY), entry.name);
+  }
+});
+
+test("voice-overs: with a host app's ElevenLabs client, the key routes answer 409 and leave the settings alone", async () => {
+  const voiceOver = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: { hosted: true, voices: async () => [], models: async () => [], speak: async () => undefined },
+  });
+  app = createApi({ ...deps, voiceOver });
+  const voice = { engine: 'elevenlabs', voice: 'JBFqnCBsd6RMkjVDRZzb', model: 'eleven_multilingual_v2' };
+  await json('PUT', '/api/settings', { defaultVoice: voice });
+
+  assert.deepEqual((await json('GET', '/api/voices')).body.elevenLabs, { configured: true, hosted: true });
+  const put = await json('PUT', '/api/voices/elevenlabs/key', { key: 'sk_mine' });
+  assert.equal(put.status, 409);
+  assert.match(put.body.error, /application/);
+  assert.equal((await json('DELETE', '/api/voices/elevenlabs/key')).status, 409);
+  assert.deepEqual((await json('GET', '/api/settings')).body.defaultVoice, voice);
   assert.equal(await pathExists(path.join(t.config.stateDir, 'elevenlabs.json')), false);
 });
 
@@ -699,7 +895,7 @@ test('captions: off by default and for older project.json files, saved through P
 });
 
 test('subtitles: SRT and VTT of the voice-over sentences as downloads, without ever speaking', async () => {
-  let lines = [{ sceneId: 'titre', text: 'Bonjour.', start: 1.25, end: 3 }];
+  let lines = [{ sceneId: 'titre', text: 'Bonjour.', start: 1.25, end: 3, speaker: null, words: [], level: [] }];
   let pending: string[] = [];
   store.setVoiceOverProvider(async () => ({
     voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
@@ -725,6 +921,9 @@ test('subtitles: SRT and VTT of the voice-over sentences as downloads, without e
       text: 'Cadence anime chaque phrase de la voix off et la place exactement sous la scène qui la porte, sans effort.',
       start: 0,
       end: 6,
+      speaker: null,
+      words: [],
+      level: [],
     },
   ];
   assert.equal(
@@ -749,6 +948,53 @@ test('subtitles: SRT and VTT of the voice-over sentences as downloads, without e
   pending = [];
   assert.equal((await json('GET', '/api/projects/demo/subtitles?format=vtt')).status, 404);
   assert.equal(calls.syncVoiceOver, undefined);
+});
+
+test('subtitles: from two speakers on, each cue names its speaker in the on-screen language', async () => {
+  const sentence = (speaker: string, text: string, start: number, end: number) => ({
+    sceneId: 'titre',
+    text,
+    start,
+    end,
+    speaker,
+    words: [],
+    level: [],
+  });
+  store.setVoiceOverProvider(async () => ({
+    voiceOver: {
+      voice: 'fr_FR-siwis-medium',
+      speed: 1,
+      musicLevel: 0.3,
+      speakers: [
+        { id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium' },
+        { id: 'leo', name: 'Léo & <co>', voice: 'fr_FR-tom-medium' },
+      ],
+    },
+    voiceOverUrl: null,
+    voiceOverLines: [sentence('camille', 'Bonjour.', 0, 1), sentence('leo', 'Salut !', 1, 2)],
+    voiceOverPending: [],
+    voiceOverError: null,
+  }));
+  const srt = async () => (await call('GET', '/api/projects/demo/subtitles?format=srt')).text();
+
+  // No language of its own: the brand's (French in the test brand).
+  assert.equal(
+    await srt(),
+    '1\n00:00:00,000 --> 00:00:01,000\nCamille : Bonjour.\n\n2\n00:00:01,000 --> 00:00:02,000\nLéo & <co> : Salut !\n',
+  );
+  assert.equal(
+    await (await call('GET', '/api/projects/demo/subtitles?format=vtt')).text(),
+    'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n<v Camille>Bonjour.</v>\n\n' +
+      '00:00:01.000 --> 00:00:02.000\n<v Léo &amp; &lt;co&gt;>Salut !</v>\n',
+  );
+  const brandFile = path.join(t.config.brandsDir, 'cadence', 'brand.json');
+  await fs.writeFile(brandFile, JSON.stringify({ ...JSON.parse(await fs.readFile(brandFile, 'utf8')), language: 'en' }));
+  assert.match(await srt(), /\nCamille: Bonjour\.\n/);
+  await json('PATCH', '/api/projects/demo', { language: 'fr' });
+  assert.match(await srt(), /\nCamille : Bonjour\.\n/);
+  // The project's own brand, not the default one (now English).
+  await json('PATCH', '/api/projects/demo', { language: null, brand: 'orbit' });
+  assert.match(await srt(), /\nCamille : Bonjour\.\n/);
 });
 
 test('versions: manual save, list, restore', async () => {

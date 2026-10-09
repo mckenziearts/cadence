@@ -581,8 +581,8 @@ describe('check_motion', () => {
 
 describe('burned-in captions', () => {
   const lines = [
-    { sceneId: 'a', text: 'Un.', start: 0.2, end: 0.6 },
-    { sceneId: 'b', text: 'Deux.', start: 1.2, end: 1.6 },
+    { sceneId: 'a', text: 'Un.', start: 0.2, end: 0.6, speaker: null, words: [], level: [] },
+    { sceneId: 'b', text: 'Deux.', start: 1.2, end: 1.6, speaker: null, words: [], level: [] },
   ];
 
   /** Two white scenes of 1 s, in 16:9 and 9:16, with the two sentences above spoken. */
@@ -626,6 +626,46 @@ describe('burned-in captions', () => {
     assert.equal(ink(off.image, 0.5), null, 'nothing when captions are off');
   });
 
+  it("color the word said in its speaker's color", async () => {
+    const projectId = await projectWith({ a: fill("background: '#ffffff'"), b: fill("background: '#ffffff'") });
+    await updateProject((p) => {
+      p.captions = true;
+      p.voiceOver = {
+        voice: 'fr_FR-siwis-medium',
+        speed: 1,
+        musicLevel: 0.3,
+        speakers: [{ id: 'ana', name: 'Ana', voice: 'fr_FR-siwis-medium', color: '#ff8800' }],
+      };
+    }, projectId);
+    h.store.voiceOverLines.set(projectId, [
+      {
+        sceneId: 'a',
+        text: 'Oui, bien.',
+        start: 0.1,
+        end: 0.6,
+        speaker: 'ana',
+        words: [
+          { text: 'Oui,', start: 0.1, end: 0.3 },
+          { text: 'bien.', start: 0.35, end: 0.6 },
+        ],
+        level: [],
+      },
+    ]);
+    const browser = await launchChromium();
+    try {
+      const { page } = await openFramePage(browser, h.config.frameOrigin, {
+        projectId,
+        sceneId: null,
+        format: '16:9',
+        scale: 0.25,
+      });
+      await seekFrame(page, 0.4);
+      assert.equal(await page.textContent('[data-cadence-captions] span[style*="color"]'), 'bien.');
+    } finally {
+      await browser.close();
+    }
+  });
+
   it('fit a long sentence on two lines at most, in the brand body font, in every format', async () => {
     // Cut into cues of nearly maxChars in every format (81 and 77 characters at 84): the widest a cue gets.
     const text =
@@ -635,7 +675,7 @@ describe('burned-in captions', () => {
     await updateProject((p) => {
       p.captions = true;
     }, projectId);
-    h.store.voiceOverLines.set(projectId, [{ sceneId: 'a', text, start: 0, end: 2 }]);
+    h.store.voiceOverLines.set(projectId, [{ sceneId: 'a', text, start: 0, end: 2, speaker: null, words: [], level: [] }]);
     const browser = await launchChromium();
     try {
       for (const format of ['16:9', '9:16', '1:1', '4:5'] as const) {
@@ -671,7 +711,9 @@ describe('burned-in captions', () => {
       const { width, orientation } = FORMATS[format];
       const safe = SAFE_AREAS[format];
       const word = 'anticonstitutionnellement'.repeat(4).slice(0, longest[orientation]);
-      h.store.voiceOverLines.set(projectId, [{ sceneId: 'a', text: word, start: 0, end: 1 }]);
+      h.store.voiceOverLines.set(projectId, [
+        { sceneId: 'a', text: word, start: 0, end: 1, speaker: null, words: [], level: [] },
+      ]);
       const [frame] = await capture.frames(projectId, { sceneId: null, times: [0.5], format, scale: 0.5, imageFormat: 'png' });
       const box = ink(frame.image, 0.5);
       assert.ok(box && box.left >= safe.left && box.right <= width - safe.right, `${format}: ${JSON.stringify(box)}`);
@@ -718,7 +760,7 @@ describe('burned-in captions', () => {
     // A hard cut with a sentence on screen across it: drawn on both sides, the caption would hide part of the jump.
     const projectId = await projectWith({ a: fill("background: '#ffffff'"), b: fill("background: '#f5f5f5'") });
     const plain = await projectWith({ a: fill("background: '#ffffff'"), b: fill("background: '#f5f5f5'") });
-    const across = [{ sceneId: 'a', text: 'Bonjour tout le monde.', start: 0.5, end: 1.5 }];
+    const across = [{ sceneId: 'a', text: 'Bonjour tout le monde.', start: 0.5, end: 1.5, speaker: null, words: [], level: [] }];
     h.store.voiceOverLines.set(projectId, across);
     h.store.voiceOverLines.set(plain, across);
     const [without] = await new PixelSeamService({ store: h.store, capture, hub: new RecordingHub() }).check(projectId);

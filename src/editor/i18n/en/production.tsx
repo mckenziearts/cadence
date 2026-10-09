@@ -105,6 +105,7 @@ export default {
     engine: {
       label: 'Voice engine',
       hints: { piper: 'On this machine, free.', elevenlabs: 'With your ElevenLabs account.' },
+      hosted: "The app's voices.",
     },
     elevenLabs: {
       noKey: 'No ElevenLabs key on this computer: add yours in the Profile.',
@@ -134,6 +135,16 @@ export default {
       musicLevel: 'Music under',
       musicLevelLabel: 'Music level while the voice speaks',
     },
+    speakers: {
+      title: 'Speakers',
+      hint: 'One voice per person who speaks, to write a dialogue line by line.',
+      add: 'Add a speaker',
+      defaultName: (n: number) => `Speaker ${n}`,
+      nameLabel: (name: string) => `Name of "${name}"`,
+      voiceLabel: (name: string) => `Voice of "${name}"`,
+      colorLabel: (name: string) => `Color of "${name}"`,
+      remove: (name: string) => `Remove "${name}"`,
+    },
     script: {
       title: 'Text',
       hint: {
@@ -151,6 +162,16 @@ export default {
       sentences: (n: number) => plural(n, 'sentence', 'sentences'),
       timing: (count: string, from: string, to: string) => `${count}, from ${from} to ${to}`,
       overflow: (by: string) => `The voice runs ${by} past the scene: lengthen the scene or shorten the text.`,
+      lineLabel: (scene: string, n: number) => `Line ${n} of "${scene}"`,
+      linePlaceholder: 'What this speaker says',
+      speakerLabel: (scene: string, n: number) => `Speaker of line ${n} of "${scene}"`,
+      gesture: (gesture: string) => `Gesture: ${gesture}`,
+      lineTiming: (from: string, to: string) => `from ${from} to ${to}`,
+      addLine: 'Add a line',
+      addLineLabel: (scene: string) => `Add a line to "${scene}"`,
+      removeLine: (scene: string, n: number) => `Remove line ${n} of "${scene}"`,
+      moveUp: (scene: string, n: number) => `Move line ${n} of "${scene}" up`,
+      moveDown: (scene: string, n: number) => `Move line ${n} of "${scene}" down`,
     },
     status: {
       speaking: 'Generating the voice...',

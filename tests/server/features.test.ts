@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { startServer, type StartOptions } from '../../server/index';
-import type { AppState, ChatState } from '../../src/shared/types';
+import { pathExists } from '../../server/util';
+import type { AppState, ChatState, VoicesState } from '../../src/shared/types';
 import { makeRoot, type TestRoot } from './helpers';
 
 let t: TestRoot;
@@ -165,5 +166,24 @@ test('without agentPicker, the built-in agents refused by their CLI say "Notre I
   } finally {
     await server.close();
     await rm(bin, { recursive: true, force: true });
+  }
+});
+
+test("a host app's secret store passed to startServer is where the ElevenLabs key is read", async () => {
+  const asked: string[] = [];
+  const server = await startServer({
+    ...options,
+    speech: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: { voices: async () => [], models: async () => [], speak: async () => undefined },
+    secrets: { get: async (name) => (asked.push(name), 'sk_from_store'), set: async () => undefined },
+  });
+  try {
+    const res = await fetch(`${server.config.editorOrigin}/api/voices`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(((await res.json()) as VoicesState).elevenLabs, { configured: true });
+    assert.deepEqual(asked, ['elevenlabs']);
+    assert.equal(await pathExists(path.join(server.config.stateDir, 'elevenlabs.json')), false);
+  } finally {
+    await server.close();
   }
 });

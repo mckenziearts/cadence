@@ -1,11 +1,13 @@
 // Subtitles from the voice-over sentences: the cues of the SRT and WebVTT downloads.
-import type { VoiceOverLine } from './types';
+import type { Speaker, VoiceOverLine, VoiceOverWord } from './types';
 
 /** One subtitle shown from `start` to `end`, in video seconds. */
 export interface SubtitleCue {
   start: number;
   end: number;
   text: string;
+  /** Who says it; absent for the project's voice, or when the speakers were not given. */
+  speaker?: Speaker;
 }
 
 const ENDS_CLAUSE = /[,;:.!?\u2026]$/;
@@ -13,22 +15,24 @@ const PUNCTUATION_ONLY = /^\p{P}+$/u;
 const OPENING_ONLY = /^[\p{Ps}\p{Pi}\u00bf\u00a1]+$/u;
 
 /**
- * Cues of at most `maxChars` characters: a longer sentence splits at word boundaries into balanced chunks timed in
- * proportion to their characters, and sentences that overlap show one at a time, the latest started on screen.
+ * Cues of at most `maxChars` characters, the speaker's name included when they name it: a longer sentence splits at
+ * word boundaries into balanced chunks, each shown from when its first word is said (in proportion to their characters
+ * without the words), and sentences that overlap show one at a time, the latest started on screen.
  */
 export function subtitleCues(
-  lines: Pick<VoiceOverLine, 'text' | 'start' | 'end'>[],
-  { maxChars }: { maxChars: number },
+  lines: (Pick<VoiceOverLine, 'text' | 'start' | 'end'> & { speaker?: string | null; words?: VoiceOverWord[] })[],
+  { maxChars, speakers = [] }: { maxChars: number; speakers?: Speaker[] },
 ): SubtitleCue[] {
-  const cues = lines
-    .flatMap(({ text, start, end }) => {
-      const chunks = splitText(text, maxChars);
-      const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-      let done = 0;
-      return chunks.map((chunk) => {
-        const from = start + ((end - start) * done) / total;
-        done += chunk.length;
-        return { start: roundMs(from), end: roundMs(start + ((end - start) * done) / total), text: chunk };
+  const known = new Set(lines.flatMap(({ speaker: id }) => (speakers.some((s) => s.id === id) ? [id] : [])));
+  const cues: SubtitleCue[] = lines
+    .flatMap((line) => {
+      const speaker = speakers.find((s) => s.id === line.speaker);
+      // The files name the speaker from two on: the name and its ` : ` take room in the cue.
+      const chunks = splitText(line.text, speaker && known.size >= 2 ? maxChars - speaker.name.length - 3 : maxChars);
+      const starts = startsFromWords(line, chunks) ?? startsByProrata(line, chunks);
+      return chunks.map((text, i) => {
+        const cue = { start: roundMs(starts[i]), end: roundMs(starts[i + 1] ?? line.end), text };
+        return speaker ? { ...cue, speaker } : cue;
       });
     })
     // On a shared start the shorter cue sorts last, so it shows first and the longer one follows.
@@ -44,18 +48,66 @@ export function subtitleCues(
     if (last?.source === source && last.end === start) last.end = end;
     else shown.push({ start, end, text: source.text, source });
   }
-  return shown.map(({ start, end, text }) => ({ start, end, text }));
+  return shown.map(({ start, end, text, source }) =>
+    source.speaker ? { start, end, text, speaker: source.speaker } : { start, end, text },
+  );
 }
 
-export function toSrt(cues: SubtitleCue[]): string {
-  return cues.map((c, i) => `${i + 1}\n${timestamp(c.start, ',')} --> ${timestamp(c.end, ',')}\n${c.text}\n`).join('\n');
+function startsByProrata({ start, end }: { start: number; end: number }, chunks: string[]): number[] {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  let done = 0;
+  return chunks.map((chunk) => {
+    const from = start + ((end - start) * done) / total;
+    done += chunk.length;
+    return from;
+  });
+}
+
+/** When each chunk's first letter is said, from the sentence's words; null when they do not spell its text. */
+function startsFromWords(
+  { text, start, end, words = [] }: { text: string; start: number; end: number; words?: VoiceOverWord[] },
+  chunks: string[],
+): number[] | null {
+  if (words.map((w) => w.text).join('') !== text.replace(/\s+/g, '')) return null;
+  // A word cut across two chunks gives its letters an equal share of its time.
+  const letters = words.flatMap((w) =>
+    Array.from({ length: w.text.length }, (_, i) => w.start + ((w.end - w.start) * i) / w.text.length),
+  );
+  let done = 0;
+  return chunks.map((chunk, i) => {
+    const from = i === 0 ? start : Math.min(Math.max(letters[done], start), end);
+    done += chunk.replace(/\s+/g, '').length;
+    return from;
+  });
+}
+
+/** `language` is the video's on-screen one: French spaces off the colon after a speaker's name. */
+export function toSrt(cues: SubtitleCue[], language?: 'fr' | 'en'): string {
+  const named = namesSpeakers(cues);
+  const colon = language === 'fr' ? ' : ' : ': ';
+  return cues
+    .map((c, i) => {
+      const text = named && c.speaker ? `${c.speaker.name}${colon}${c.text}` : c.text;
+      return `${i + 1}\n${timestamp(c.start, ',')} --> ${timestamp(c.end, ',')}\n${text}\n`;
+    })
+    .join('\n');
 }
 
 export function toVtt(cues: SubtitleCue[]): string {
   const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return ['WEBVTT\n', ...cues.map((c) => `${timestamp(c.start, '.')} --> ${timestamp(c.end, '.')}\n${escape(c.text)}\n`)].join(
-    '\n',
-  );
+  const named = namesSpeakers(cues);
+  return [
+    'WEBVTT\n',
+    ...cues.map((c) => {
+      const text = named && c.speaker ? `<v ${escape(c.speaker.name)}>${escape(c.text)}</v>` : escape(c.text);
+      return `${timestamp(c.start, '.')} --> ${timestamp(c.end, '.')}\n${text}\n`;
+    }),
+  ].join('\n');
+}
+
+/** A single voice needs no name: the files then read as they did before speakers. */
+function namesSpeakers(cues: SubtitleCue[]): boolean {
+  return new Set(cues.flatMap((c) => (c.speaker ? [c.speaker.id] : []))).size >= 2;
 }
 
 /** The fewest chunks that fit, as even as possible, preferring to end a chunk after punctuation. */

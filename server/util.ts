@@ -5,9 +5,17 @@ import path from 'node:path';
 import { ID_PATTERN } from '../src/shared/types';
 import { language, m } from './i18n';
 
-/** Write through a temp file + rename so readers never see a half-written file. */
-export async function writeFileAtomic(file: string, data: string | Buffer, mode?: number): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true });
+/**
+ * Write through a temp file + rename so readers never see a half-written file. `mkdir: false` writes only into a folder
+ * that is still there (ENOENT otherwise): a cache never brings a deleted project back.
+ */
+export async function writeFileAtomic(
+  file: string,
+  data: string | Buffer,
+  mode?: number,
+  { mkdir = true }: { mkdir?: boolean } = {},
+): Promise<void> {
+  if (mkdir) await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   await fs.writeFile(tmp, data, { mode });
   await fs.rename(tmp, file);

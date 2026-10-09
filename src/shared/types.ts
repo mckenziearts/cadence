@@ -101,9 +101,44 @@ export interface SceneFile {
 
 /** A scene's voice-over: spoken sentence by sentence by the project's voice, from `at`. */
 export interface SceneVoiceOver {
+  /** With `lines`, always their texts joined by `\n` (at most 2000 characters). */
   text: string;
   /** Seconds into the scene where the first sentence starts (>= 0). */
   at: number;
+  /** The script, line by line, each said by a speaker of the project; absent = the project's voice says `text`. */
+  lines?: ScriptLine[];
+}
+
+/** What a client sends for a scene's voice-over: the text or the lines, not both (the API refuses both). */
+export type SceneVoiceOverInput = { at: number } & ({ text: string; lines?: never } | { lines: ScriptLineInput[]; text?: never });
+
+/** One line of a scene's script. */
+export interface ScriptLine {
+  /** Unique in the scene, kept through the line's edits and moves. The server gives one to a line sent without it. */
+  id: string;
+  /** A `Speaker.id` of the project. */
+  speaker: string;
+  /** Not blank. */
+  text: string;
+  /** Free text for the scene's code (at most 64 characters); Cadence itself never reads it. */
+  gesture?: string;
+}
+
+/** A line as a client sends it: without an id when it is new. */
+export type ScriptLineInput = Omit<ScriptLine, 'id'> & { id?: string };
+
+/** A voice of the project's engine with a name, for scripts written line by line. */
+export interface Speaker {
+  /** Unique in the project, lowercase kebab-case, 1-32 chars. */
+  id: string;
+  /** 1-40 characters, no control characters. */
+  name: string;
+  /** Checked like `VoiceOverSettings.voice`, for the project's engine. */
+  voice: string;
+  /** ElevenLabs only; absent = the project's model. */
+  model?: string;
+  /** `#rrggbb`. */
+  color?: string;
 }
 
 /** The project's voice-over voice, the same for every scene. */
@@ -118,11 +153,34 @@ export interface VoiceOverSettings {
   speed: number;
   /** Music volume while the voice speaks, as a share of its usual volume (0 to 1). */
   musicLevel: number;
+  /** At most 10; absent when there are none. A speaker a scene's lines still use cannot be removed. */
+  speakers?: Speaker[];
 }
 
 /** One generated sentence of a voice-over, in video seconds. */
 export interface VoiceOverLine {
   sceneId: string;
+  /** The sentence as heard: audio tags (`[surprised]`) removed. */
+  text: string;
+  start: number;
+  end: number;
+  /** The `Speaker.id` of its script line; null when the scene has no lines (the project's voice). */
+  speaker: string | null;
+  /** Each word heard, in video seconds. */
+  words: VoiceOverWord[];
+  /**
+   * How loud the voice is, 0-255, 25 values per second from `start`. Ceiling: about 60 KB of JSON for 10 minutes of
+   * voice; past that, serve it from a content-addressed URL like `voiceOverUrl`.
+   */
+  level: number[];
+  /** The `gesture` of its script line. */
+  gesture?: string;
+  /** Index of its script line in the scene's `lines`; absent when the scene has no lines. */
+  line?: number;
+}
+
+/** A word of a voice-over sentence, in video seconds. */
+export interface VoiceOverWord {
   text: string;
   start: number;
   end: number;
@@ -150,8 +208,11 @@ export interface VoicesState {
   /** Piper answers on this machine; `error` says why not. */
   piper: { ok: boolean; error?: string };
   voices: VoiceInfo[];
-  /** An ElevenLabs key is saved on this machine (the key itself never leaves the server). */
-  elevenLabs: { configured: boolean };
+  /**
+   * An ElevenLabs key is saved on this machine (the key itself never leaves the server), or `hosted`: a host app brings
+   * its own and the person has none to give. `hosted` is absent otherwise. `error`: the saved key could not be read.
+   */
+  elevenLabs: { configured: boolean; hosted?: boolean; error?: string };
 }
 
 /** A voice of the person's ElevenLabs account. */
@@ -568,6 +629,8 @@ export interface SceneTemplateMeta {
   tags: string[];
   /** Short list of what to change after inserting it (copy, which UI, colors...). */
   customize: string[];
+  /** Files of its components/ folder, copied into the project's components/ when missing; absent when there are none. */
+  components?: string[];
 }
 
 export interface ProjectTemplateMeta {
@@ -579,6 +642,8 @@ export interface ProjectTemplateMeta {
   /** Tempo the bar lengths assume until a track is added. */
   bpm: number;
   scenes: { template: string; name: string; bars: number }[];
+  /** The voice-over settings (speakers included) a project created from it starts with; absent = the default voice. */
+  voiceOver?: VoiceOverSettings;
 }
 
 // Versions (projects/<id>/.cadence/versions)

@@ -16,9 +16,33 @@ export interface ElevenLabsChoice {
   model: string;
 }
 
+/** The ElevenLabs voices and models of the person's account or of the host app, loaded once mounted and `load` set. */
+export function useElevenLabsCatalog(load = true) {
+  const [catalog, setCatalog] = useState<{ voices: Voice[]; models: ElevenLabsModel[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!load) return;
+    let live = true;
+    api.elevenLabs().then(
+      (next) => {
+        if (!live) return;
+        setCatalog(next);
+        setError(null);
+      },
+      (failure: ApiError) => live && setError(failure.message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [load]);
+  return { catalog, error };
+}
+
+export type ElevenLabsCatalog = ReturnType<typeof useElevenLabsCatalog>;
+
 /**
- * The person's ElevenLabs voices and models (loaded once mounted). `none` is the option shown while no voice is set: a
- * prompt, or with `noneSelectable` a choice of its own that sets null.
+ * The person's ElevenLabs voices and models (`catalog`, else loaded once mounted). `none` is the option shown while no
+ * voice is set: a prompt, or with `noneSelectable` a choice of its own that sets null.
  */
 export function ElevenLabsVoiceSelect(props: {
   value: ElevenLabsChoice | null;
@@ -26,25 +50,16 @@ export function ElevenLabsVoiceSelect(props: {
   label: string;
   none: string;
   noneSelectable?: boolean;
+  catalog?: ElevenLabsCatalog;
 }) {
   const { value, onChange, label, none, noneSelectable = false } = props;
   const texts = useT().production.voiceOver.elevenLabs;
-  const [catalog, setCatalog] = useState<{ voices: Voice[]; models: ElevenLabsModel[] } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const own = useElevenLabsCatalog(!props.catalog);
+  const { catalog, error } = props.catalog ?? own;
   // The model picked before a voice is set; once set, the value's.
   const [pickedModel, setPickedModel] = useState<string | null>(null);
   const preview = useRef<HTMLAudioElement | null>(null);
-  useEffect(() => {
-    let live = true;
-    api.elevenLabs().then(
-      (next) => live && setCatalog(next),
-      (failure: ApiError) => live && setError(failure.message),
-    );
-    return () => {
-      live = false;
-      preview.current?.pause();
-    };
-  }, []);
+  useEffect(() => () => preview.current?.pause(), []);
 
   if (error) {
     return (

@@ -432,7 +432,9 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 % |
 | `check_motion` | own scene | any (every scene by default) | half-size PNG samples every 0.25 s (≤ 120 per scene, ≤ 600 per call, the step widens beyond), captured 12 at a time and diffed as they arrive (memory holds one batch, and `render_frames` can take the capture slot in between), odd samples one video frame late so a beat pulse is not sampled on its hits, consecutive samples diffed like `check_seams`; lists still stretches of about 2 s or more, measured between samples (under 0.01 % of pixels changing), an error when a scene of ≥ 2 s never moves; a render error stops that scene; a 240 s budget (`deadline` on `CaptureService.frames`) stops the scene in progress ("out of time") and the next ones ("not checked"); also an error when no scene could be checked |
 | `set_scene_duration` | own scene | any | ms precision |
-| `set_voice_over` | own scene | any | text + `at` (kept when left out); speaks it, answers each sentence's start and end in scene seconds |
+| `set_voice_over` | own scene | any | `text` or `lines` (`{ speaker, text, gesture? }`, exclusive) + `at` (kept when left out); speaks it, answers each line's start and end in scene seconds with its speaker; refuses a text over a scene written in lines |
+| `list_voices` | no | yes | the voices of the project's engine (installed Piper voices, or the ElevenLabs catalogue of the account or the host app) with id, name, language; without an ElevenLabs key, the message saying where to add one |
+| `set_speakers` | no | yes | replaces the project speakers through `ProjectStore.update` (its checks: voice per engine, at most 10, no removing a speaker a line uses) |
 | `create_scene`, `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene` | no | yes | `create_scene` takes a template id or TSX code |
 | `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns |
 | `capture_reference` | no | yes | screenshot an http(s) URL into assets/refs/ |
@@ -649,11 +651,21 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   after a `GET /v2/voices` that proves ElevenLabs accepts it. Like `accounts.json`, it never reaches the browser or a
   project (projects are versioned), and Claude Code turns are denied both files (`--disallowedTools`); Codex's
   `workspace-write` sandbox limits writes, not reads, so a Codex turn can read them. One that no longer parses is a
-  500 that names the file without quoting it (`JSON.parse` would). One `POST /v1/text-to-speech/<voice>?output_format=pcm_24000`
-  per sentence, in order (16-bit mono PCM at 24 kHz on every plan), wrapped by `writeWav`: the cache, the track, the
-  ducking and the render do not know which engine spoke. A refused key is a 400 (401 stays for Cadence's own tokens),
-  a spent quota or a rate limit a 429, anything else a 502 carrying ElevenLabs' message, the key masked out of it.
-  Every request bills the person's account, so ElevenLabs never speaks on the automatic try below: only a sync does.
+  500 that names the file without quoting it (`JSON.parse` would). With `startServer({ secrets })` the key goes through
+  the host app's `SecretStore` under the name `elevenlabs` instead, and no file is written; a store that fails is a 500
+  ("key not saved", or not read) that never quotes the store's error, and a failed save changes nothing. With a host
+  app's client (`ElevenLabsApi.hosted`), the host brings the key: `GET /api/voices` answers
+  `elevenLabs: { configured: true, hosted: true }` (`hosted` is absent otherwise, so the key form stays), both key
+  routes answer 409, and the service reads neither the store nor the file. One
+  `POST /v1/text-to-speech/<voice>/with-timestamps?output_format=pcm_24000` per sentence, in order (16-bit mono PCM at
+  24 kHz on every plan, base64 in the JSON answer), wrapped by `writeWav`: the cache, the track, the ducking and the
+  render do not know which engine spoke. The sentence's words (from the answer's character alignment, else shared out by character
+  over its duration) and its mouth levels are written first, into `<hash>.json` beside the WAV (`sidecarFile`), so a WAV
+  never stands without them; an answer with no readable sound is a 502. A refused key is a 400 (401 stays for Cadence's
+  own tokens), a spent quota or a rate limit a 429 (a rate limit whose `retry-after` is 30 s or less is asked again
+  once, after that wait), a 402 a 402, anything else a 502 carrying ElevenLabs' message, the key masked out of it and
+  the message cut to 300 characters. Every request bills the person's account, so ElevenLabs never speaks on the
+  automatic try below: only a sync does.
 - Piper voices: `server/voiceover/voices.ts` lists the single-speaker French and English voices offered, with the license
   of their dataset (`commercial`, `credit` for CC-BY). Downloads come from the commit of the v1.0.0 tag of
   `rhasspy/piper-voices`, md5 checked before the file is renamed in, into `<root>/.cadence/voices/`.
@@ -661,8 +673,18 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   `projects/<id>/.cadence/voice-over/<hash>.wav`, the hash covering voice, speed and text (and, for ElevenLabs, the
   engine and the model; Piper's hash is the one it always was): a retouch speaks only the changed sentence, and
   restoring a version finds its sentences again. Piper splits in its voice's language, ElevenLabs in the video's.
+  A scene with script `lines` speaks each line with its speaker's voice (and ElevenLabs model, else the project's),
+  one engine call per voice and model; a scene without lines speaks its `text` with the project's voice. Each line has
+  an `id`, unique in its scene and kept through its edits and moves, so the Voice tab acts on the line a click named
+  even when an earlier change is not saved yet; the store keeps an id sent with a line when no other line of the scene
+  has it, else gives one from the line's speaker and text (`set_voice_over` sends none). The sentence hash does not cover it. Piper gets the sentences
+  without their audio tags, ElevenLabs as written. A WAV is what marks a sentence spoken: one without a valid
+  `<hash>.json` (Piper's, or a cache from before word timings) gets one computed from its samples, words shared out by
+  character, with no engine call. A sync never brings a deleted project back: the cache folder is made only under a
+  project folder that still exists, the engines write only into it, and a project deleted mid-sync is a 404.
 - `ProjectState` (`setVoiceOverProvider`): `voiceOver` (settings in use), `voiceOverLines` (generated sentences laid
-  one after the other from `scene.start + at`, in video seconds), `voiceOverPending` (scenes with a sentence not
+  one after the other from `scene.start + at`, 0.2 s apart where the speaker changes, in video seconds, each with its
+  `speaker`, its `words`, its mouth `level` at 25 Hz, the index of its script `line` and that line's `gesture`), `voiceOverPending` (scenes with a sentence not
   generated; they have no line at all), `voiceOverError` (why the engine last failed on the sentences still missing;
   null while a sync tries them again, once they change, or once spoken) and `voiceOverUrl` (the track, `?v=` changes
   with the lines). With Piper, computing it schedules one try of the missing sentences, 400 ms after the first read
@@ -674,7 +696,9 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
 - Track: `track.wav`, the sentences laid at their times over silence, one per project, rebuilt when its lines change.
   Sentences that overlap (one running into the next scene's voice-over) are summed; where the sum would pass full
   scale, the shared stretch is lowered just enough (one gain for the stretch, 20 ms linear ramps on each side) instead
-  of being clipped. Without overlap, the samples are the sentences' own.
+  of being clipped. The track takes the highest sample rate of its sentences (ElevenLabs speaks at 24 kHz, Piper at
+  its voice's rate) and resamples the others linearly; without overlap, the samples are otherwise the sentences'
+  own.
   The preview plays it in a second `<audio>` that follows the video clock (`src/editor/lib/voiceOver.ts`).
 - Music under the voice: `voiceSpans` merges back-to-back sentences, `duckGain` gives the music `musicLevel` inside a
   span with 0.25 s linear ramps (`src/shared/voiceOver.ts`), in the preview and in the MP4 (`duckExpression`, a
@@ -750,6 +774,18 @@ contract: removing or reshaping one is a major version.
   `{ error }`; request bodies keep the core's 2 MB limit. A GET only gets the Host and `sec-fetch-site` checks, so a
   host route never changes anything on GET. `tests/server/host-api.test.ts` checks the guards, the errors and both
   refusals.
+- `secrets`: `startServer({ secrets: { get(name), set(name, value) } })` (`SecretStore` in `server/contracts.ts`) keeps
+  the person's keys in a store of the host app's choosing (its OS keychain, say) instead of files under
+  `<root>/.cadence/`. `get` resolves to the secret or `null`, `set(name, null)` removes it. The only name in use is
+  `elevenlabs`: `PUT /api/voices/elevenlabs/key` still checks the key with ElevenLabs before `set`. Without the option,
+  nothing changes. `tests/server/voice-over.test.ts` and `tests/server/api.test.ts` check both, and that the key never
+  shows in `GET /api/state`, `GET /api/voices` or a project folder.
+- `elevenLabs`: `startServer({ elevenLabs: new ElevenLabsClient({ baseUrl, key }) })` speaks through a host app's
+  gateway with the host's own key (a string, or a function read at each request). The client is then `hosted`:
+  `GET /api/voices` says so, the key routes answer 409, and the person's key, if any, is neither read nor sent. `baseUrl`
+  must be `https:` (plain `http:` only on `localhost` or `127.0.0.1`), else the client refuses to be built. A key
+  function that throws or rejects is a 502 whose message never carries what it threw; the gateway's 401, 402 and 403
+  reach the person with its own message, the key masked. `tests/server/elevenlabs.test.ts` checks it.
 - `features`: `startServer({ features: { gitSources: false } })` hides editor sections. `Features` and
   `DEFAULT_FEATURES` (every flag `true`) live in `src/shared/types.ts`; a missing key stays on, and the merged object
   reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the

@@ -1,0 +1,7 @@
+{
+  "name": "Dialogue",
+  "description": "Deux bouches sur fond blanc, celle de Camille à gauche et celle de Sami à droite, qui s'ouvrent avec la voix de chacun. Commence et finit bouches fermées.",
+  "category": "feature",
+  "bars": 2,
+  "formats": ["16:9"]
+}

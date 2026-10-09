@@ -25,10 +25,14 @@ import type {
 import { BRAND_TOOLS } from '../../server/mcp/brandTools';
 import { createMcpHandler } from '../../server/mcp/server';
 import { McpTokens } from '../../server/mcp/tokens';
-import { PROJECT_TOOLS, SCENE_TOOLS } from '../../server/mcp/tools';
+import { type McpDeps, PROJECT_TOOLS, SCENE_TOOLS } from '../../server/mcp/tools';
+import { FileBrandStore } from '../../server/store/brands';
+import { FileProjectStore } from '../../server/store/projects';
+import { FileTemplateStore } from '../../server/store/templates';
 import { HttpError } from '../../server/util';
 import type { AuditFinding } from '../../src/shared/frameProtocol';
-import type { CreateSceneInput, ProjectState, SceneState } from '../../src/shared/types';
+import type { CreateSceneInput, ProjectState, SceneState, ScriptLine, Speaker, VoiceOverSettings } from '../../src/shared/types';
+import { makeRoot, type TestRoot } from './helpers';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -114,6 +118,8 @@ describe('MCP endpoint', () => {
   const activity: McpActivity[] = [];
   const record = (name: string, value: unknown) => (calls[name] ??= []).push(value);
   let piperFails = false;
+  let elevenLabsKey = true;
+  let elevenLabsError: HttpError | null = null;
 
   before(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-mcp-'));
@@ -137,6 +143,14 @@ describe('MCP endpoint', () => {
       createScene: async (id: string, input: CreateSceneInput) => {
         record('createScene', [id, input]);
         return { ...project.scenes[0], id: 'stats', name: input.name, index: 3, duration: 4, file: '/x/scenes/stats.tsx' };
+      },
+      update: async (id: string, patch: Partial<ProjectState>) => {
+        record('update', [id, patch]);
+        return { ...project, ...patch };
+      },
+      setSpeakers: async (id: string, speakers: Speaker[], settings: VoiceOverSettings) => {
+        record('setSpeakers', [id, speakers, settings]);
+        return { ...project, voiceOver: { ...settings, speakers } };
       },
       reorderScenes: async (id: string, ids: string[]) => {
         record('reorderScenes', [id, ids]);
@@ -202,7 +216,9 @@ describe('MCP endpoint', () => {
         describe: async () => 'Notes de marque',
         dir: (id: string) => path.join(root, 'brands', id),
       } as unknown as BrandStore,
-      templates: { describe: async () => 'Catalogue des modèles' } as unknown as TemplateStore,
+      templates: {
+        describe: async () => 'Modèle dialogue : composants Mouth ; locuteurs camille, sami',
+      } as unknown as TemplateStore,
       versions: {
         snapshot: async (_id: string, meta: { label: string }) => ({
           id: 'v0003',
@@ -220,14 +236,47 @@ describe('MCP endpoint', () => {
         sync: async (id: string) => {
           record('syncVoiceOver', id);
           if (piperFails) throw new HttpError(500, 'Piper introuvable');
-          // What Piper gives for "Un. Deux." from 0.5 s into outro (2 s to 4 s of the video).
+          // What the engine gives for "Un. Deux." (or two lines saying them) from 0.5 s into outro (2 s to 4 s of the video).
+          const [, , patch] = calls.updateScene.at(-1) as [string, string, { voiceOver: { lines?: ScriptLine[] } }];
+          const lines = patch.voiceOver.lines;
           project = {
             ...project,
-            scenes: project.scenes.map((s) => (s.id === 'outro' ? { ...s, voiceOver: { text: 'Un. Deux.', at: 0.5 } } : s)),
+            scenes: project.scenes.map((s) =>
+              s.id === 'outro'
+                ? { ...s, voiceOver: lines ? { text: 'Un.\nDeux.', at: 0.5, lines } : { text: 'Un. Deux.', at: 0.5 } }
+                : s,
+            ),
             voiceOverLines: [
-              { sceneId: 'outro', text: 'Un.', start: 2.5, end: 3.4 },
-              { sceneId: 'outro', text: 'Deux.', start: 3.4, end: 4.3 },
+              { sceneId: 'outro', text: 'Un.', start: 2.5, end: 3.4, speaker: lines?.[0].speaker ?? null, words: [], level: [] },
+              {
+                sceneId: 'outro',
+                text: 'Deux.',
+                start: 3.4,
+                end: 4.3,
+                speaker: lines?.[1].speaker ?? null,
+                words: [],
+                level: [],
+              },
             ],
+          };
+        },
+        voices: async () => ({
+          piper: { ok: true },
+          voices: [
+            { id: 'fr_FR-siwis-medium', language: 'fr', locale: 'fr_FR', name: 'Siwis', installed: true },
+            { id: 'en_GB-alba-medium', language: 'en', locale: 'en_GB', name: 'Alba', installed: false },
+          ],
+          elevenLabs: { configured: elevenLabsKey },
+        }),
+        elevenLabs: async () => {
+          if (!elevenLabsKey) throw new HttpError(409, 'Ajoute une clé ElevenLabs dans l’onglet Voix.');
+          if (elevenLabsError) throw elevenLabsError;
+          return {
+            voices: [
+              { id: 'voice-camille', name: 'Camille', category: 'premade', previewUrl: null, languages: ['fr', 'en'] },
+              { id: 'voice-sami', name: 'Sami', category: 'cloned', previewUrl: null, languages: [] },
+            ],
+            models: [],
           };
         },
       } as unknown as VoiceOverService,
@@ -286,6 +335,106 @@ describe('MCP endpoint', () => {
 
       const removed = await call(client, 'set_voice_over', { text: '' });
       assert.equal(texts(removed)[0], 'outro has no voice-over any more.');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('set_voice_over with lines: text or lines, never both; each spoken sentence answered with its speaker; text refused over lines', async () => {
+    const before = project;
+    project = {
+      ...project,
+      voiceOver: {
+        ...project.voiceOver,
+        speakers: [
+          { id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium', color: '#ff2e88' },
+          { id: 'sami', name: 'Sami', voice: 'fr_FR-tom-medium' },
+        ],
+      },
+    };
+    const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
+    try {
+      const lines = [
+        { speaker: 'camille', text: 'Un.', gesture: 'wave' },
+        { speaker: 'sami', text: 'Deux.' },
+      ];
+      const set = await call(client, 'set_voice_over', { sceneId: 'outro', lines, at: 0.5 });
+      assert.ok(!set.isError, texts(set)[0]);
+      assert.deepEqual(calls.updateScene.at(-1), ['demo', 'outro', { voiceOver: { lines, at: 0.5 } }]);
+      assert.match(
+        texts(set)[0],
+        /\nSpeakers: camille "Camille" \(voice fr_FR-siwis-medium\), sami "Sami" \(voice fr_FR-tom-medium\)\n/,
+      );
+      assert.match(texts(set)[0], /\n- outro: 0\.500-1\.400 camille: "Un\." \/ 1\.400-2\.300 sami: "Deux\."/);
+      assert.match(texts(await call(client, 'get_project'))[0], /\n- outro: 0\.500-1\.400 camille: "Un\."/);
+
+      const updates = calls.updateScene.length;
+      const both = await call(client, 'set_voice_over', { sceneId: 'outro', text: 'Trois.', lines });
+      assert.equal(both.isError, true);
+      assert.match(texts(both)[0], /un texte ou des répliques, pas les deux/);
+      const neither = await call(client, 'set_voice_over', { sceneId: 'outro', at: 1 });
+      assert.equal(neither.isError, true);
+
+      const overLines = await call(client, 'set_voice_over', { sceneId: 'outro', text: 'Trois.' });
+      assert.equal(overLines.isError, true);
+      assert.match(texts(overLines)[0], /« outro » .*lines/);
+      assert.equal(calls.updateScene.length, updates, 'nothing written');
+
+      piperFails = true;
+      const failed = await call(client, 'set_voice_over', { sceneId: 'outro', lines });
+      assert.equal(failed.isError, true);
+      assert.match(texts(failed)[0], /could not be generated: Piper introuvable\./);
+    } finally {
+      piperFails = false;
+      project = before;
+      await client.close();
+    }
+  });
+
+  test('list_voices: the installed Piper voices, the ElevenLabs voices, or why there are none', async () => {
+    const before = project;
+    const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
+    try {
+      const piper = await call(client, 'list_voices');
+      assert.ok(!piper.isError);
+      assert.match(texts(piper)[0], /\n- fr_FR-siwis-medium: Siwis \(fr, fr_FR\)/);
+      assert.doesNotMatch(texts(piper)[0], /alba/, 'a voice not downloaded is not offered');
+
+      project = {
+        ...project,
+        voiceOver: { engine: 'elevenlabs', voice: 'voice-camille', model: 'eleven_v3', speed: 1, musicLevel: 0.3 },
+      };
+      const eleven = texts(await call(client, 'list_voices'))[0];
+      assert.match(eleven, /\n- voice-camille: Camille \(fr, en\)\n- voice-sami: Sami \(language not given\)$/);
+
+      elevenLabsKey = false;
+      const noKey = await call(client, 'list_voices');
+      assert.ok(!noKey.isError);
+      assert.equal(texts(noKey)[0], 'Ajoute une clé ElevenLabs dans l’onglet Voix.');
+
+      elevenLabsKey = true;
+      elevenLabsError = new HttpError(402, 'Crédits épuisés');
+      const noCredits = await call(client, 'list_voices');
+      assert.equal(noCredits.isError, true, 'only a missing key is an answer, any other failure stays an error');
+      assert.match(texts(noCredits)[0], /Crédits épuisés/);
+    } finally {
+      elevenLabsKey = true;
+      elevenLabsError = null;
+      project = before;
+      await client.close();
+    }
+  });
+
+  test('set_speakers: replaces the speakers in the project settings and lists them', async () => {
+    const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
+    try {
+      const speakers = [{ id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium', color: '#ff2e88' }];
+      const set = await call(client, 'set_speakers', { speakers });
+      assert.ok(!set.isError, texts(set)[0]);
+      assert.deepEqual(calls.setSpeakers.at(-1), ['demo', speakers, { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 }]);
+      assert.match(texts(set)[0], /^Speakers: camille "Camille" \(voice fr_FR-siwis-medium\)$/);
+      const none = await call(client, 'set_speakers', { speakers: [] });
+      assert.match(texts(none)[0], /no speakers/);
     } finally {
       await client.close();
     }
@@ -384,6 +533,12 @@ describe('MCP endpoint', () => {
       const structural = await call(client, 'create_scene', { name: 'Stats' });
       assert.equal(structural.isError, true);
       assert.equal(calls.createScene, undefined);
+      const updates = calls.setSpeakers?.length;
+      for (const name of ['list_voices', 'set_speakers']) {
+        assert.ok(PROJECT_TOOLS.includes(name) && !SCENE_TOOLS.includes(name), name);
+        assert.equal((await call(client, name, { speakers: [] })).isError, true, name);
+      }
+      assert.equal(calls.setSpeakers?.length, updates);
     } finally {
       off();
       await client.close();
@@ -818,9 +973,163 @@ describe('MCP endpoint', () => {
       assert.match(overview, /\| 3 \| logo \| logo \| 4\.000 \| 2\.000 \| 1 \|/);
       const traversal = await call(client, 'get_project', { projectId: '../secret' });
       assert.equal(traversal.isError, true);
-      assert.equal(texts(await call(client, 'list_templates'))[0], 'Catalogue des modèles');
+      assert.equal(
+        texts(await call(client, 'list_templates'))[0],
+        'Modèle dialogue : composants Mouth ; locuteurs camille, sami',
+      );
     } finally {
       await client.close();
     }
+  });
+});
+
+describe('MCP voice tools on the real project store', () => {
+  let t: TestRoot;
+  let store: FileProjectStore;
+  let server: http.Server;
+  let tokens: McpTokens;
+  let url: string;
+  let projectId: string;
+  // A write that lands once between a tool's read of the project and its own write.
+  let meanwhile: (() => Promise<unknown>) | null = null;
+
+  before(async () => {
+    t = await makeRoot();
+    store = new FileProjectStore(t.config, { templates: new FileTemplateStore(t.config), brands: new FileBrandStore(t.config) });
+    projectId = (await store.create({ name: 'Dialogue', brand: null, formats: ['16:9'], fps: 30 })).id;
+    tokens = new McpTokens(t.config, path.join(t.root, 'mcp-token'));
+    const voiceOver = { sync: async () => {} } as unknown as VoiceOverService;
+    const racing = new Proxy(store, {
+      get: (target, key) => {
+        if (key === 'get') {
+          return async (id: string) => {
+            const state = await target.get(id);
+            const write = meanwhile;
+            meanwhile = null;
+            await write?.();
+            return state;
+          };
+        }
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const handler = createMcpHandler({ config: t.config, store: racing, tokens, voiceOver } as unknown as McpDeps);
+    server = http.createServer((req, res) => void handler(req, res));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  });
+
+  after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    store.close();
+    await t.cleanup();
+  });
+
+  async function call(name: string, args: Record<string, unknown>): Promise<Result> {
+    const client = new Client({ name: 'test', version: '1.0.0' });
+    const token = tokens.issue({ kind: 'project', projectId });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }),
+    );
+    try {
+      return (await client.callTool({ name, arguments: args })) as Result;
+    } finally {
+      await client.close();
+    }
+  }
+  const message = (result: Result) => result.content.map((c) => c.text ?? '').join('\n');
+  const speaker = (id: string, voice = 'fr_FR-siwis-medium') => ({ id, name: id, voice });
+
+  test('set_speakers: the store refuses a bad voice, 11 speakers and removing a speaker a line uses', async () => {
+    const set = await call('set_speakers', { speakers: [speaker('camille'), speaker('sami', 'fr_FR-tom-medium')] });
+    assert.ok(!set.isError, message(set));
+    assert.deepEqual(
+      (await store.get(projectId)).voiceOver.speakers?.map((s) => s.id),
+      ['camille', 'sami'],
+    );
+
+    const badVoice = await call('set_speakers', { speakers: [speaker('camille', 'nope')] });
+    assert.equal(badVoice.isError, true);
+    assert.match(message(badVoice), /^Réglages de voix off invalides/);
+    const eleven = await call('set_speakers', { speakers: Array.from({ length: 11 }, (_, i) => speaker(`s${i}`)) });
+    assert.equal(eleven.isError, true);
+    assert.match(message(eleven), /^Réglages de voix off invalides/);
+
+    const [scene] = (await store.get(projectId)).scenes;
+    await store.updateScene(projectId, scene.id, { voiceOver: { lines: [{ speaker: 'sami', text: 'Salut.' }], at: 0 } });
+    const removed = await call('set_speakers', { speakers: [speaker('camille')] });
+    assert.equal(removed.isError, true);
+    assert.equal(message(removed), `Le locuteur "sami" dit encore des répliques dans la scène "${scene.name}"`);
+    assert.equal((await store.get(projectId)).voiceOver.speakers?.length, 2, 'nothing changed');
+  });
+
+  test('set_voice_over with text over a scene said in lines is refused and the lines stay', async () => {
+    await store.update(projectId, {
+      voiceOver: {
+        voice: 'fr_FR-siwis-medium',
+        speed: 1,
+        musicLevel: 0.3,
+        speakers: [speaker('camille'), speaker('sami', 'fr_FR-tom-medium')],
+      },
+    });
+    const [scene] = (await store.get(projectId)).scenes;
+    const lines = [{ id: 'bonjour', speaker: 'camille', text: 'Bonjour.' }];
+    await store.updateScene(projectId, scene.id, { voiceOver: { lines, at: 0.5 } });
+
+    const result = await call('set_voice_over', { sceneId: scene.id, text: 'Autre chose.' });
+    assert.equal(result.isError, true);
+    assert.match(message(result), /lines/);
+    assert.deepEqual((await store.get(projectId)).scenes[0].voiceOver, { text: 'Bonjour.', at: 0.5, lines });
+  });
+
+  test('set_voice_over with a speaker the project lacks points to set_speakers and writes nothing', async () => {
+    const [scene] = (await store.get(projectId)).scenes;
+    const before = scene.voiceOver;
+
+    const result = await call('set_voice_over', { sceneId: scene.id, lines: [{ speaker: 'zoe', text: 'Salut.' }] });
+    assert.equal(result.isError, true);
+    assert.equal(
+      message(result),
+      "« zoe » n'est pas un locuteur du projet : une réplique nomme l'id d'un locuteur réglé avec set_speakers (dans le chat du projet).",
+    );
+    assert.deepEqual((await store.get(projectId)).scenes[0].voiceOver, before);
+  });
+
+  test('set_voice_over with an empty text removes the voice-over of a scene said in lines', async () => {
+    const [scene] = (await store.get(projectId)).scenes;
+    await store.updateScene(projectId, scene.id, { voiceOver: { lines: [{ speaker: 'camille', text: 'Bonjour.' }], at: 0 } });
+
+    const result = await call('set_voice_over', { sceneId: scene.id, text: '' });
+    assert.ok(!result.isError, message(result));
+    assert.equal(message(result), `${scene.id} has no voice-over any more.`);
+    assert.equal((await store.get(projectId)).scenes[0].voiceOver, undefined);
+  });
+
+  test('set_speakers on an ElevenLabs project keeps the engine, the project model and each speaker model', async () => {
+    const settings = {
+      engine: 'elevenlabs' as const,
+      voice: 'JBFqnCBsd6RMkjVDRZzb',
+      model: 'eleven_multilingual_v2',
+      speed: 1,
+      musicLevel: 0.3,
+    };
+    await store.update(projectId, { voiceOver: settings });
+    const camille = { id: 'camille', name: 'Camille', voice: 'EXAVITQu4vr4xnSDxMaL', model: 'eleven_v3' };
+
+    const result = await call('set_speakers', { speakers: [camille] });
+    assert.ok(!result.isError, message(result));
+    assert.deepEqual((await store.get(projectId)).voiceOver, { ...settings, speakers: [camille] });
+  });
+
+  test('set_speakers keeps a voice-over change saved after it read the project', async () => {
+    await store.update(projectId, { voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 } });
+    const changed = { voice: 'fr_FR-tom-medium', speed: 1.2, musicLevel: 0.5 };
+    meanwhile = () => store.update(projectId, { voiceOver: changed });
+
+    const result = await call('set_speakers', { speakers: [speaker('camille')] });
+    assert.ok(!result.isError, message(result));
+    assert.equal(meanwhile, null, 'the change landed');
+    assert.deepEqual((await store.get(projectId)).voiceOver, { ...changed, speakers: [speaker('camille')] });
   });
 });

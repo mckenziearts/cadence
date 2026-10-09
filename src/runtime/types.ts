@@ -19,7 +19,19 @@ export interface VoiceOverInfo {
   /** '' when the scene has no voice-over. */
   text: string;
   /** Each sentence in scene seconds; empty until Cadence has generated the voice. */
-  lines: { text: string; start: number; end: number }[];
+  lines: {
+    text: string;
+    start: number;
+    end: number;
+    /** The project speaker who says it; null when the scene's voice-over is plain text (the project's voice). */
+    speaker: string | null;
+    /** Each word heard, in scene seconds. */
+    words: { text: string; start: number; end: number }[];
+    /** How loud the voice is, 0-255, 25 values per second from `start`: read it with `voiceLevel`. */
+    level: number[];
+    /** The `gesture` of its script line, free text for the scene's code. */
+    gesture?: string;
+  }[];
 }
 
 /** Props every scene component receives. Render purely from these: no state, effects or timers. */

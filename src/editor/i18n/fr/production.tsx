@@ -98,6 +98,7 @@ export default {
     engine: {
       label: 'Moteur de la voix',
       hints: { piper: 'Sur cette machine, gratuit.', elevenlabs: 'Avec votre compte ElevenLabs.' },
+      hosted: 'Les voix de l’application.',
     },
     elevenLabs: {
       noKey: 'Aucune clé ElevenLabs sur cet ordinateur : ajoutez la vôtre dans le Profil.',
@@ -127,6 +128,16 @@ export default {
       musicLevel: 'Musique dessous',
       musicLevelLabel: 'Niveau de la musique pendant que la voix parle',
     },
+    speakers: {
+      title: 'Locuteurs',
+      hint: 'Une voix par personne qui parle, pour écrire un dialogue réplique par réplique.',
+      add: 'Ajouter un locuteur',
+      defaultName: (n: number) => `Locuteur ${n}`,
+      nameLabel: (name: string) => `Nom de « ${name} »`,
+      voiceLabel: (name: string) => `Voix de « ${name} »`,
+      colorLabel: (name: string) => `Couleur de « ${name} »`,
+      remove: (name: string) => `Retirer « ${name} »`,
+    },
     script: {
       title: 'Texte',
       hint: {
@@ -144,6 +155,16 @@ export default {
       sentences: (n: number) => plural(n, 'phrase', 'phrases'),
       timing: (count: string, from: string, to: string) => `${count}, de ${from} à ${to}`,
       overflow: (by: string) => `La voix dépasse la scène de ${by} : allongez la scène ou raccourcissez le texte.`,
+      lineLabel: (scene: string, n: number) => `Réplique ${n} de « ${scene} »`,
+      linePlaceholder: 'Ce que dit ce locuteur',
+      speakerLabel: (scene: string, n: number) => `Locuteur de la réplique ${n} de « ${scene} »`,
+      gesture: (gesture: string) => `Geste : ${gesture}`,
+      lineTiming: (from: string, to: string) => `de ${from} à ${to}`,
+      addLine: 'Ajouter une réplique',
+      addLineLabel: (scene: string) => `Ajouter une réplique à « ${scene} »`,
+      removeLine: (scene: string, n: number) => `Retirer la réplique ${n} de « ${scene} »`,
+      moveUp: (scene: string, n: number) => `Monter la réplique ${n} de « ${scene} »`,
+      moveDown: (scene: string, n: number) => `Descendre la réplique ${n} de « ${scene} »`,
     },
     status: {
       speaking: 'Génération de la voix...',

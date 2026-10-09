@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "name": "Voix 0.8",
+  "brand": null,
+  "fps": 30,
+  "formats": ["16:9", "9:16"],
+  "tempo": 120,
+  "language": "en",
+  "scenes": [
+    {
+      "id": "titre",
+      "name": "Titre",
+      "duration": 4
+    },
+    {
+      "id": "deux",
+      "name": "Deux",
+      "duration": 3,
+      "voiceOver": {
+        "text": "Hello there. How are you?",
+        "at": 0.5
+      }
+    }
+  ],
+  "music": {
+    "file": "music/a.mp3",
+    "start": 1.5,
+    "volume": 0.8
+  },
+  "voiceOver": {
+    "voice": "en_GB-cori-medium",
+    "speed": 1.1,
+    "musicLevel": 0.4
+  },
+  "captions": true,
+  "createdAt": "2026-09-30T00:00:00.000Z",
+  "updatedAt": "2026-09-30T00:00:00.000Z"
+}

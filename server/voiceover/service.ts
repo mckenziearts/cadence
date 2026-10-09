@@ -1,7 +1,8 @@
 // Voice-overs: the voices Cadence offers and their download, each scene's sentences spoken by Piper or ElevenLabs and
 // cached by content in projects/<id>/.cadence/voice-over/, and the track that lays them over the video for the preview
-// and the render. The ElevenLabs key lives in .cadence/elevenlabs.json (mode 600): never sent to the browser, never in a
-// project (projects are versioned), and denied to Claude Code's tools. Codex's sandbox limits writes only: it can read it.
+// and the render. The ElevenLabs key lives in .cadence/elevenlabs.json (mode 600), or in a host app's secret store: never
+// sent to the browser, never in a project (projects are versioned), and denied to Claude Code's tools. Codex's sandbox
+// limits writes only: it can read the file.
 import { createHash } from 'node:crypto';
 import { createWriteStream, type Stats } from 'node:fs';
 import fs from 'node:fs/promises';
@@ -9,6 +10,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
+import { z } from 'zod';
 import type {
   ElevenLabsModel,
   ElevenLabsVoice,
@@ -25,6 +27,7 @@ import type {
   ElevenLabsApi,
   Hub,
   ProjectStore,
+  SecretStore,
   SpeechEngine,
   VoiceOverProvider,
   VoiceOverService,
@@ -32,20 +35,54 @@ import type {
 } from '../contracts';
 import { m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
-import { HttpError, KeyedMutex, pathExists, randomToken, readJsonOr, roundMs, shortHash, writeFileAtomic } from '../util';
+import {
+  HttpError,
+  KeyedMutex,
+  pathExists,
+  randomToken,
+  readJson,
+  readJsonOr,
+  roundMs,
+  shortHash,
+  writeFileAtomic,
+} from '../util';
+import { sidecarFile } from './elevenlabs';
+import { levels } from './levels';
 import { VOICES, defaultVoiceOver, voiceParts, voiceSpec, voiceUrl, type VoiceSpec } from './voices';
-import { readWav, wavSeconds, writeWav } from './wav';
+import { readWav, wavSeconds, writeWav, type Pcm } from './wav';
+import { stripAudioTags, wordsByProrata } from './words';
 
 /** Typing in the editor saves often: speak once the text rests. */
 const SYNC_DELAY_MS = 400;
 /** How long the gain of an overlap that would clip takes to come back to 1 on each side. */
 const OVERLAP_RAMP_S = 0.02;
+/** The pause before a line when another speaker takes the turn. */
+const TURN_GAP_S = 0.2;
+
+/** What `<hash>.json` keeps beside a spoken sentence's WAV, in sentence seconds. */
+const sidecarSchema = z.object({
+  words: z.array(z.object({ text: z.string(), start: z.number(), end: z.number() })),
+  level: z.array(z.number().int().min(0).max(255)),
+});
+
+/** A spoken sentence: its WAV's length, and the words and mouth levels kept beside it. */
+interface Spoken extends z.infer<typeof sidecarSchema> {
+  seconds: number;
+}
 
 interface Sentence {
+  /** As written: ElevenLabs reads its audio tags, Piper gets it without them. */
   text: string;
   file: string;
+  speaker: string | null;
+  gesture?: string;
+  /** Index of its script line in the scene's `lines`; absent when the scene has none. */
+  line?: number;
+  /** The engine's voice, and with ElevenLabs its model. */
+  voice: string;
+  model?: string;
   /** null until it is spoken. */
-  seconds: number | null;
+  spoken: Spoken | null;
 }
 
 interface PlacedLine extends VoiceOverLine {
@@ -62,7 +99,7 @@ export function splitSentences(text: string, language: 'fr' | 'en'): string[] {
 }
 
 export class LocalVoiceOverService implements VoiceOverService {
-  private seconds = new Map<string, { size: number; seconds: number }>();
+  private spokenFiles = new Map<string, { size: number; mtimeMs: number; spoken: Spoken }>();
   private mutex = new KeyedMutex();
   /** Per project, the pending automatic sync and the missing sentences it was set for. */
   private timers = new Map<string, { timer: NodeJS.Timeout; key: string }>();
@@ -82,32 +119,47 @@ export class LocalVoiceOverService implements VoiceOverService {
       hub: Hub;
       engine: SpeechEngine;
       elevenLabs: ElevenLabsApi;
+      /** A host app's secret store; without it the key lives in `<stateDir>/elevenlabs.json`. */
+      secrets?: SecretStore;
       fetch?: typeof fetch;
     },
   ) {}
 
   async voices(): Promise<VoicesState> {
-    const [piper, voices, key] = await Promise.all([
+    // A key that cannot be read leaves the Piper voices listed: only ElevenLabs says what went wrong.
+    const [piper, voices, elevenLabs] = await Promise.all([
       this.deps.engine.check(),
       Promise.all(VOICES.map((spec) => this.info(spec))),
-      this.elevenLabsKey(),
+      this.elevenLabsKey().then(
+        (key) => (this.deps.elevenLabs.hosted ? { configured: true, hosted: true } : { configured: key !== null }),
+        (e: unknown) => ({ configured: false, error: e instanceof Error ? e.message : String(e) }),
+      ),
     ]);
-    return { piper, voices, elevenLabs: { configured: key !== null } };
+    return { piper, voices, elevenLabs };
   }
 
   async elevenLabs(): Promise<{ voices: ElevenLabsVoice[]; models: ElevenLabsModel[] }> {
+    // No key saved: the client says where to add one.
     const key = await this.elevenLabsKey();
-    if (!key) throw new HttpError(409, m().media.voiceOver.elevenLabsNoKey);
     const [voices, models] = await Promise.all([this.deps.elevenLabs.voices(key), this.deps.elevenLabs.models(key)]);
     return { voices, models };
   }
 
   async setElevenLabsKey(key: string | null): Promise<void> {
     // The check runs in turn too: a removal sent during a slow check is not undone by the key it was checking.
+    if (this.deps.elevenLabs.hosted) throw new HttpError(409, m().media.voiceOver.elevenLabsKeyHosted);
     await this.mutex.run('elevenlabs:key', async () => {
-      if (key === null) return fs.rm(this.elevenLabsFile(), { force: true });
-      await this.deps.elevenLabs.voices(key);
-      await writeFileAtomic(this.elevenLabsFile(), `${JSON.stringify({ key }, null, 2)}\n`, 0o600);
+      if (key !== null) await this.deps.elevenLabs.voices(key);
+      const { secrets } = this.deps;
+      if (secrets) {
+        // The store's own error may quote the key it was given.
+        try {
+          await secrets.set('elevenlabs', key);
+        } catch {
+          throw new HttpError(500, m().media.voiceOver.elevenLabsKeyNotSaved);
+        }
+      } else if (key === null) await fs.rm(this.elevenLabsFile(), { force: true });
+      else await writeFileAtomic(this.elevenLabsFile(), `${JSON.stringify({ key }, null, 2)}\n`, 0o600);
     });
   }
 
@@ -140,7 +192,7 @@ export class LocalVoiceOverService implements VoiceOverService {
       voiceOver,
       voiceOverUrl: lines.length ? `/api/projects/${id}/voice-over/audio?v=${trackKey(lines)}` : null,
       voiceOverLines: lines.map(({ file: _file, ...line }) => line),
-      voiceOverPending: planned.filter((p) => p.sentences.some((s) => s.seconds === null)).map((p) => p.scene.id),
+      voiceOverPending: planned.filter((p) => p.sentences.some((s) => !s.spoken)).map((p) => p.scene.id),
       voiceOverError: missing && !syncing && failure?.key === missing ? failure.error : null,
     };
   };
@@ -160,35 +212,48 @@ export class LocalVoiceOverService implements VoiceOverService {
   private async speakMissing(projectId: string): Promise<void> {
     const project = await this.deps.store.get(projectId);
     const planned = await this.plan(projectId, project, project.voiceOver, project.scenes);
-    const missing = [
-      ...new Map(planned.flatMap((p) => p.sentences.filter((s) => s.seconds === null)).map((s) => [s.file, s])).values(),
-    ];
+    const missing = [...new Map(planned.flatMap((p) => p.sentences.filter((s) => !s.spoken)).map((s) => [s.file, s])).values()];
     if (!missing.length) return;
+    // One call per voice (and model), each with its sentences in the order of the video.
+    const voices = new Map<string, Sentence[]>();
+    for (const sentence of missing) {
+      const group = `${sentence.voice}\n${sentence.model}`;
+      voices.set(group, [...(voices.get(group) ?? []), sentence]);
+    }
     const { hub, engine, elevenLabs } = this.deps;
     hub.send({ type: 'voice-over', projectId, status: 'speaking' });
     try {
-      const { engine: engineId, voice, model, speed } = project.voiceOver;
-      const sentences = missing.map((s) => s.text);
-      const files = missing.map((s) => s.file);
-      if (engineId === 'elevenlabs') {
-        const key = await this.elevenLabsKey();
-        if (!key) throw new HttpError(409, m().media.voiceOver.elevenLabsNoKey);
-        await fs.mkdir(this.cacheDir(projectId), { recursive: true });
-        // The store never keeps ElevenLabs settings without their model.
-        await elevenLabs.speak({ key, voice, model: model!, speed, sentences, files });
-      } else {
-        const spec = voiceSpec(voice);
-        if (!spec) throw new HttpError(400, m().media.voiceOver.unknownVoice(voice));
-        if (!(await this.installed(spec))) throw new HttpError(409, m().media.voiceOver.notDownloaded(spec.name));
-        await fs.mkdir(this.cacheDir(projectId), { recursive: true });
-        await engine.speak({ model: this.modelFile(spec), sentences, lengthScale: 1 / speed, files });
+      const { engine: engineId, speed } = project.voiceOver;
+      // No key saved: the client says where to add one (a host app's client brings its own).
+      const key = engineId === 'elevenlabs' ? await this.elevenLabsKey() : null;
+      for (const sentences of voices.values()) {
+        const { voice, model } = sentences[0];
+        const files = sentences.map((s) => s.file);
+        // Before each voice: a project deleted while an earlier one spoke is not brought back by the next.
+        await this.makeCacheDir(projectId);
+        if (engineId === 'elevenlabs') {
+          // The store never keeps ElevenLabs settings without their model.
+          await elevenLabs.speak({ key, voice, model: model!, speed, sentences: sentences.map((s) => s.text), files });
+        } else {
+          const spec = voiceSpec(voice);
+          if (!spec) throw new HttpError(400, m().media.voiceOver.unknownVoice(voice));
+          if (!(await this.installed(spec))) throw new HttpError(409, m().media.voiceOver.notDownloaded(spec.name));
+          const said = sentences.map((s) => stripAudioTags(s.text));
+          await engine.speak({ model: this.modelFile(spec), sentences: said, lengthScale: 1 / speed, files });
+        }
+        // Piper's words and levels, computed from its WAVs while the sync still holds the project.
+        for (const sentence of sentences) await this.spoken(sentence.file, sentence.text);
       }
       this.failed.delete(projectId);
     } catch (e) {
-      const error = (e as Error).message;
-      this.failed.set(projectId, { key: missingKey(planned), error });
-      hub.send({ type: 'voice-over', projectId, status: 'error', error });
-      throw e;
+      // A write into the cache finds no folder once the project is deleted: it is gone, not broken.
+      const gone = (e as NodeJS.ErrnoException).code === 'ENOENT' && !(await pathExists(this.cacheDir(projectId)));
+      const failure = gone ? new HttpError(404, m().api.projectNotFound(projectId)) : (e as Error);
+      // Keyed on what is still missing, as the provider reads it: the voices spoken before the failure are not.
+      const still = await this.plan(projectId, project, project.voiceOver, project.scenes);
+      this.failed.set(projectId, { key: missingKey(still), error: failure.message });
+      hub.send({ type: 'voice-over', projectId, status: 'error', error: failure.message });
+      throw failure;
     }
     hub.send({ type: 'voice-over', projectId, status: 'ready' });
     // The editor and its frames re-fetch the project: new lines, new track.
@@ -204,12 +269,13 @@ export class LocalVoiceOverService implements VoiceOverService {
     await this.mutex.run(`track:${projectId}`, async () => {
       if (this.built.get(projectId) === key && (await pathExists(file))) return;
       const sentences = await Promise.all(lines.map((line) => fs.readFile(line.file).then(readWav)));
-      const rate = sentences[0].sampleRate;
+      // Voices of different qualities speak at different rates (Piper: 16 kHz low, 22.05 kHz medium).
+      const rate = Math.max(...sentences.map((sentence) => sentence.sampleRate));
       const mix = new Int32Array(Math.ceil(Math.max(...lines.map((l) => l.end)) * rate));
       const spans: [number, number][] = [];
       for (const [i, line] of lines.entries()) {
         const at = Math.round(line.start * rate);
-        const source = sentences[i].samples;
+        const source = resample(sentences[i], rate);
         for (let j = 0; j < source.length && at + j < mix.length; j++) mix[at + j] += source[j];
         spans.push([at, Math.min(mix.length, at + source.length)]);
       }
@@ -244,34 +310,75 @@ export class LocalVoiceOverService implements VoiceOverService {
     this.timers.set(projectId, { timer, key });
   }
 
+  /** Each scene's sentences, line by line: a line speaks with its speaker's voice, a scene without lines with the project's. */
   private async plan(projectId: string, project: Video, settings: VoiceOverSettings, scenes: SceneState[]) {
     const elevenLabs = settings.engine === 'elevenlabs';
     // An ElevenLabs voice speaks any language: the sentences follow the video's.
-    const language = elevenLabs ? await this.language(project) : voiceParts(settings.voice).language;
-    // Piper's names stay what they always were, so existing caches and restored versions find their sentences.
-    const voice = elevenLabs ? `elevenlabs\n${settings.model}\n${settings.voice}` : settings.voice;
+    const videoLanguage = elevenLabs ? await this.language(project) : null;
+    const speakers = new Map((settings.speakers ?? []).map((speaker) => [speaker.id, speaker]));
     const dir = this.cacheDir(projectId);
     const planned: { scene: SceneState; sentences: Sentence[] }[] = [];
     for (const scene of scenes) {
       if (!scene.voiceOver) continue;
+      const script = scene.voiceOver.lines;
+      const lines: { speaker: string | null; text: string; gesture?: string }[] = script ?? [
+        { speaker: null, text: scene.voiceOver.text },
+      ];
       const sentences: Sentence[] = [];
-      for (const text of splitSentences(scene.voiceOver.text, language)) {
-        const file = path.join(dir, `${shortHash(`${voice}\n${settings.speed}\n${text}`)}.wav`);
-        sentences.push({ text, file, seconds: await this.secondsOf(file) });
+      for (const [i, { speaker, text: written, gesture }] of lines.entries()) {
+        const line = script ? i : undefined;
+        const who = speaker === null ? undefined : speakers.get(speaker);
+        const voice = who?.voice ?? settings.voice;
+        const model = elevenLabs ? (who?.model ?? settings.model) : undefined;
+        // Piper's names stay what they always were, so existing caches and restored versions find their sentences.
+        const name = elevenLabs ? `elevenlabs\n${model}\n${voice}` : voice;
+        for (const text of splitSentences(written, videoLanguage ?? voiceParts(voice).language)) {
+          // Piper would get nothing to say from a sentence made of audio tags alone.
+          if (!elevenLabs && !/[\p{L}\p{N}]/u.test(stripAudioTags(text))) continue;
+          const file = path.join(dir, `${shortHash(`${name}\n${settings.speed}\n${text}`)}.wav`);
+          sentences.push({ text, file, speaker, gesture, line, voice, model, spoken: await this.spoken(file, text) });
+        }
       }
       if (sentences.length) planned.push({ scene, sentences });
     }
     return planned;
   }
 
-  private async secondsOf(file: string): Promise<number | null> {
+  /**
+   * A sentence is spoken once its WAV is there. Its words and levels come from `<hash>.json`; a WAV without a valid one
+   * (Piper's, or a cache from before word timings) gets one computed from its samples, without asking any engine.
+   */
+  private async spoken(file: string, text: string): Promise<Spoken | null> {
     const stat: Stats | null = await fs.stat(file).catch(() => null);
     if (!stat) return null;
-    const known = this.seconds.get(file);
-    if (known?.size === stat.size) return known.seconds;
+    const known = this.spokenFiles.get(file);
+    if (known?.size === stat.size && known.mtimeMs === stat.mtimeMs) return known.spoken;
     const seconds = await wavSeconds(file).catch(() => null);
-    if (seconds !== null) this.seconds.set(file, { size: stat.size, seconds });
-    return seconds;
+    if (seconds === null) return null;
+    const sidecar = sidecarFile(file);
+    let saved = sidecarSchema.safeParse(await readJson(sidecar).catch(() => null)).data;
+    if (!saved) {
+      const pcm = await fs
+        .readFile(file)
+        .then(readWav)
+        .catch(() => null);
+      if (!pcm) return null;
+      saved = { words: wordsByProrata(text, seconds), level: levels(pcm.samples, pcm.sampleRate) };
+      await writeFileAtomic(sidecar, JSON.stringify(saved), undefined, { mkdir: false });
+    }
+    const spoken = { seconds, ...saved };
+    this.spokenFiles.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, spoken });
+    return spoken;
+  }
+
+  /** `.cadence/voice-over`, only under a project folder that still exists: a sync never brings a deleted project back. */
+  private async makeCacheDir(projectId: string): Promise<void> {
+    for (const dir of [path.join(this.deps.store.dir(projectId), '.cadence'), this.cacheDir(projectId)]) {
+      await fs.mkdir(dir).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === 'ENOENT') throw new HttpError(404, m().api.projectNotFound(projectId));
+        if (e.code !== 'EEXIST') throw e;
+      });
+    }
   }
 
   /** The video's on-screen language, which picks the default voice. */
@@ -326,7 +433,17 @@ export class LocalVoiceOverService implements VoiceOverService {
     }
   }
 
+  /** The person's key; null when none is saved, and always with a host app's client, which brings its own. */
   private async elevenLabsKey(): Promise<string | null> {
+    const { elevenLabs, secrets } = this.deps;
+    if (elevenLabs.hosted) return null;
+    if (secrets) {
+      try {
+        return await secrets.get('elevenlabs');
+      } catch {
+        throw new HttpError(500, m().media.voiceOver.elevenLabsKeyNotRead);
+      }
+    }
     const file = this.elevenLabsFile();
     // JSON.parse quotes the text it chokes on: a hand-edited file must not put the key in an error the agent reads.
     const saved = await readJsonOr<{ key?: string }>(file, {}).catch(() => {
@@ -353,20 +470,47 @@ export class LocalVoiceOverService implements VoiceOverService {
 }
 
 /**
- * Each scene's sentences one after the other from `scene.start + at`, in video seconds. A scene with a sentence not
- * spoken yet has no line at all: where its later sentences fall is not known.
+ * Each scene's sentences one after the other from `scene.start + at`, in video seconds, with a short pause where another
+ * speaker takes the turn. A scene with a sentence not spoken yet has no line at all: where its later sentences fall is
+ * not known.
  */
 function place(planned: { scene: SceneState; sentences: Sentence[] }[]): PlacedLine[] {
   const lines: PlacedLine[] = [];
   for (const { scene, sentences } of planned) {
-    if (sentences.some((s) => s.seconds === null)) continue;
+    if (sentences.some((s) => !s.spoken)) continue;
     let t = scene.start + (scene.voiceOver?.at ?? 0);
-    for (const { text, file, seconds } of sentences) {
-      lines.push({ sceneId: scene.id, text, start: roundMs(t), end: roundMs(t + seconds!), file });
-      t += seconds!;
+    for (const [i, { text, file, speaker, gesture, line, spoken }] of sentences.entries()) {
+      if (i > 0 && speaker !== sentences[i - 1].speaker) t += TURN_GAP_S;
+      const { seconds, words, level } = spoken!;
+      lines.push({
+        sceneId: scene.id,
+        text: stripAudioTags(text),
+        start: roundMs(t),
+        end: roundMs(t + seconds),
+        speaker,
+        words: words.map((word) => ({ text: word.text, start: roundMs(t + word.start), end: roundMs(t + word.end) })),
+        level,
+        ...(gesture !== undefined && { gesture }),
+        ...(line !== undefined && { line }),
+        file,
+      });
+      t += seconds;
     }
   }
   return lines;
+}
+
+/** `pcm`'s samples at `rate`, linearly interpolated. */
+function resample({ sampleRate, samples }: Pcm, rate: number): Int16Array {
+  if (sampleRate === rate) return samples;
+  const resampled = new Int16Array(Math.round((samples.length * rate) / sampleRate));
+  for (let i = 0; i < resampled.length; i++) {
+    const at = (i * sampleRate) / rate;
+    const j = Math.floor(at);
+    const next = samples[Math.min(j + 1, samples.length - 1)];
+    resampled[i] = Math.round(samples[j] + (next - samples[j]) * (at - j));
+  }
+  return resampled;
 }
 
 /**
@@ -398,7 +542,7 @@ function lowerOverlaps(mix: Int32Array, spans: [number, number][], ramp: number)
 }
 
 function missingKey(planned: { sentences: Sentence[] }[]): string {
-  const files = planned.flatMap((p) => p.sentences.filter((s) => s.seconds === null).map((s) => path.basename(s.file)));
+  const files = planned.flatMap((p) => p.sentences.filter((s) => !s.spoken).map((s) => path.basename(s.file)));
   return [...new Set(files)].sort().join(',');
 }
 

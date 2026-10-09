@@ -30,6 +30,24 @@ test('a Piper that dies before reading its text fails the voice-over, not the se
   }
 });
 
+test('Piper never makes the folder of its targets: a deleted project stays deleted', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-piper-'));
+  try {
+    const bin = path.join(dir, 'piper');
+    await fs.writeFile(bin, '#!/bin/sh\nwhile [ "$1" != -d ]; do shift; done\ncat > /dev/null\n: > "$2/1.wav"\n', {
+      mode: 0o755,
+    });
+    const target = path.join(dir, 'project', '.cadence', 'voice-over');
+    const files = [path.join(target, 'a.wav')];
+    await assert.rejects(new PiperEngine(bin).speak({ model: 'x.onnx', sentences: ['Oui.'], lengthScale: 1, files }), {
+      code: 'ENOENT',
+    });
+    assert.equal(await fs.stat(path.join(dir, 'project')).catch(() => null), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test(
   'Piper speaks one WAV per sentence, in the order of the sentences',
   { skip: !model && 'set CADENCE_TEST_PIPER_VOICE to a voice .onnx to run it' },

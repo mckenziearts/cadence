@@ -42,11 +42,13 @@ import type {
   SceneState,
   SceneTemplateMeta,
   SceneVoiceOver,
+  SceneVoiceOverInput,
   SeamResult,
   SendMessageInput,
   ServerEvent,
   Settings,
   SnapGrid,
+  Speaker,
   StartBrandBuildInput,
   UpdateProjectInput,
   UsageEntry,
@@ -57,6 +59,7 @@ import type {
   Visibility,
   VoiceInfo,
   VoiceOverLine,
+  VoiceOverSettings,
   VoicesState,
 } from '../src/shared/types';
 
@@ -129,6 +132,8 @@ export interface ProjectStore {
   sceneFile(id: string, sceneId: string): string;
   create(input: CreateProjectInput): Promise<ProjectState>;
   update(id: string, patch: UpdateProjectInput): Promise<ProjectState>;
+  /** Replace the speakers under the project lock, keeping the voice-over settings saved then (`settings` when none are). */
+  setSpeakers(id: string, speakers: Speaker[], settings: VoiceOverSettings): Promise<ProjectState>;
   /** Moves the folder to projects/.trash/<id>-<timestamp>. */
   remove(id: string): Promise<void>;
   createScene(id: string, input: CreateSceneInput): Promise<SceneState>;
@@ -136,7 +141,7 @@ export interface ProjectStore {
   updateScene(
     id: string,
     sceneId: string,
-    patch: { name?: string; duration?: number; voiceOver?: SceneVoiceOver | null },
+    patch: { name?: string; duration?: number; voiceOver?: SceneVoiceOver | SceneVoiceOverInput | null },
   ): Promise<ProjectState>;
   duplicateScene(id: string, sceneId: string): Promise<SceneState>;
   /** Moves the scene file to projects/<id>/.cadence/trash/. */
@@ -295,10 +300,16 @@ export interface BrandBuildService {
 
 // server/store/templates.ts: export class FileTemplateStore implements TemplateStore  (constructor(config: CadenceConfig))
 
+export interface TemplateComponent {
+  name: string;
+  code: string;
+}
+
 export interface TemplateStore {
   scenes(): Promise<SceneTemplateMeta[]>;
   projects(): Promise<ProjectTemplateMeta[]>;
-  sceneTemplate(id: string): Promise<{ meta: SceneTemplateMeta; code: string }>;
+  /** `components`: the files a project needs in its components/ for this scene, `name` being the file name. */
+  sceneTemplate(id: string): Promise<{ meta: SceneTemplateMeta; code: string; components: TemplateComponent[] }>;
   projectTemplate(id: string): Promise<ProjectTemplateMeta & { artDirection: string | null }>;
   /** Markdown catalogue for the agent. */
   describe(): Promise<string>;
@@ -463,20 +474,46 @@ export interface SpeechEngine {
   speak(input: { model: string; sentences: string[]; lengthScale: number; files: string[] }): Promise<void>;
 }
 
-// server/voiceover/elevenlabs.ts: export class ElevenLabsClient implements ElevenLabsApi  (constructor(http?: Fetch))
+// server/voiceover/elevenlabs.ts: export class ElevenLabsClient implements ElevenLabsApi
+//   constructor(options?: { http?: Fetch; baseUrl?: string; key?: string | (() => string | null | undefined | Promise<...>) })
+//   (baseUrl: https, or http on localhost or 127.0.0.1 only; a key function that fails is a 502 that never quotes it)
 
-/** ElevenLabs with the person's own API key (tests: a fake Fetch, never the network). */
+/**
+ * ElevenLabs with the person's own API key, or a host app's (tests: a fake Fetch, never the network). Every method takes
+ * the person's key, null when none is saved: a 409 then, before any request. A hosted client ignores it and sends its own.
+ */
 export interface ElevenLabsApi {
+  /** True when the client brings its own key: the person has none to give. */
+  readonly hosted?: boolean;
   /** The account's voices (one page of 100); a refused key is a 400. */
-  voices(key: string): Promise<ElevenLabsVoice[]>;
+  voices(key: string | null): Promise<ElevenLabsVoice[]>;
   /** The models that speak text. */
-  models(key: string): Promise<ElevenLabsModel[]>;
-  /** Speaks each sentence, one request at a time, into the 24 kHz WAV file at the same index of `files`. */
-  speak(input: { key: string; voice: string; model: string; speed: number; sentences: string[]; files: string[] }): Promise<void>;
+  models(key: string | null): Promise<ElevenLabsModel[]>;
+  /**
+   * Speaks each sentence (audio tags kept), one request at a time, into the 24 kHz WAV file at the same index of `files`,
+   * its words and mouth levels written first beside it (`sidecarFile`).
+   */
+  speak(input: {
+    key: string | null;
+    voice: string;
+    model: string;
+    speed: number;
+    sentences: string[];
+    files: string[];
+  }): Promise<void>;
+}
+
+/**
+ * Where a host app keeps the person's secrets (its OS keychain, say) instead of a file under `<root>/.cadence/`. Names
+ * in use: `elevenlabs`. `set(name, null)` removes the secret.
+ */
+export interface SecretStore {
+  get(name: string): Promise<string | null>;
+  set(name: string, value: string | null): Promise<void>;
 }
 
 // server/voiceover/service.ts: export class LocalVoiceOverService implements VoiceOverService
-//   constructor(deps: { config: CadenceConfig; store: ProjectStore; brands: BrandStore; hub: Hub; engine: SpeechEngine; elevenLabs: ElevenLabsApi })
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore; brands: BrandStore; hub: Hub; engine: SpeechEngine; elevenLabs: ElevenLabsApi; secrets?: SecretStore })
 
 export interface VoiceOverService {
   /** Piper's state and the voices Cadence offers, with which ones are downloaded, and whether an ElevenLabs key is saved. */
@@ -485,7 +522,10 @@ export interface VoiceOverService {
   download(id: string): Promise<VoiceInfo>;
   /** The voices and models of the saved ElevenLabs key's account; 409 when no key is saved. */
   elevenLabs(): Promise<{ voices: ElevenLabsVoice[]; models: ElevenLabsModel[] }>;
-  /** Save the ElevenLabs key once ElevenLabs accepts it (its refusal passes through), or remove it with null. */
+  /**
+   * Save the ElevenLabs key once ElevenLabs accepts it (its refusal passes through), or remove it with null; a 500 when
+   * the secret store fails, a 409 when a host app's client brings its own key.
+   */
   setElevenLabsKey(key: string | null): Promise<void>;
   /** Speak the sentences of the project not generated yet. Rejects with the engine's error (also sent to the editor). */
   sync(projectId: string): Promise<void>;
