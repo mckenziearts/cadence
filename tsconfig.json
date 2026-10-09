@@ -17,5 +17,6 @@
       "@brands/*": ["./brands/*"]
     }
   },
-  "include": ["src", "server", "bin", "tests", "brands", "templates"]
+  "include": ["src", "server", "bin", "tests", "brands", "templates"],
+  "exclude": ["tests/fixtures/templates"]
 }

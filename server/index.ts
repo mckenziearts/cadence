@@ -28,7 +28,16 @@ import {
   type ModelSpec,
   type NetworkId,
 } from '../src/shared/types';
-import type { AgentProvider, BrandSource, CadenceConfig, ElevenLabsApi, HostApi, Network, SpeechEngine } from './contracts';
+import type {
+  AgentProvider,
+  BrandSource,
+  CadenceConfig,
+  ElevenLabsApi,
+  HostApi,
+  Network,
+  SecretStore,
+  SpeechEngine,
+} from './contracts';
 import { builtEditor, devEditor } from './editor';
 import { createFrameHandler } from './frames/frameServer';
 import { createVite, diagnoseFile, invalidateDirs } from './frames/vite';
@@ -69,6 +78,8 @@ export type StartOptions = Partial<CadenceConfig> & {
   speech?: SpeechEngine;
   /** Where ElevenLabs voice-overs go (tests: a fake that never reaches the network). */
   elevenLabs?: ElevenLabsApi;
+  /** A host app's secret store for the person's keys (`elevenlabs`); without it they stay in files under `<root>/.cadence/`. */
+  secrets?: SecretStore;
   /** A host app's routes: each entry is served under /api/<name>; a name must be a lowercase slug free in /api. */
   api?: HostApi;
   /** Editor sections a host app hides; a missing key stays on. UI only, see ARCHITECTURE.md "Embedding Cadence". */
@@ -120,6 +131,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     networks: customNetworks,
     speech,
     elevenLabs,
+    secrets,
     api: hostApi,
     features,
     ...overrides
@@ -170,6 +182,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       hub,
       engine,
       elevenLabs: elevenLabs ?? new ElevenLabsClient(),
+      secrets,
     });
     const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub });
     const versions = new FileVersionStore(store);

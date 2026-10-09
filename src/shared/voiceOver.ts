@@ -1,5 +1,8 @@
-// When the music steps down under a voice-over: the same spans and ramps in the editor's preview and in the MP4.
+// When the music steps down under a voice-over: the same spans and ramps in the editor's preview and in the MP4. And the
+// Piper voice of each language, for the server's defaults and the editor's switch back to Piper.
 import type { VoiceOverLine } from './types';
+
+export const PIPER_DEFAULT_VOICE = { fr: 'fr_FR-siwis-medium', en: 'en_US-joe-medium' } as const;
 
 /** The music slides down this long before a sentence, and back up as long after it. */
 export const DUCK_RAMP_S = 0.25;

@@ -221,7 +221,7 @@ describe('FfmpegRenderService', () => {
     await writeFile(voice, writeWav({ sampleRate: 22050, samples: speech }));
     const silent = path.join(dir, 'silent.wav');
     await writeFile(silent, writeWav({ sampleRate: 22050, samples: new Int16Array(22050 * 2) }));
-    const lines = [{ sceneId: 'b', text: 'Bonjour.', start: 1, end: 1.5 }];
+    const lines = [{ sceneId: 'b', text: 'Bonjour.', start: 1, end: 1.5, speaker: null, words: [], level: [] }];
     const projectFile = path.join(h.store.dir(id), 'project.json');
     const before = await readFile(projectFile, 'utf8');
     await setDuration('b', 2.5);
@@ -268,7 +268,9 @@ export default function A({ voiceOver }: SceneProps) {
     );
     const speaking = Object.assign(new FixtureVoiceOverService(), {
       sync: async (projectId: string) => {
-        h.store.voiceOverLines.set(projectId, [{ sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4 }]);
+        h.store.voiceOverLines.set(projectId, [
+          { sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4, speaker: null, words: [], level: [] },
+        ]);
       },
     });
     try {
@@ -285,7 +287,9 @@ export default function A({ voiceOver }: SceneProps) {
     const projectFile = path.join(h.store.dir(id), 'project.json');
     const saved = await readFile(projectFile, 'utf8');
     await writeFile(projectFile, JSON.stringify({ ...(JSON.parse(saved) as ProjectFile), captions: true }, null, 2));
-    h.store.voiceOverLines.set(id, [{ sceneId: 'a', text: 'Bonjour tout le monde.', start: 0.1, end: 0.4 }]);
+    h.store.voiceOverLines.set(id, [
+      { sceneId: 'a', text: 'Bonjour tout le monde.', start: 0.1, end: 0.4, speaker: null, words: [], level: [] },
+    ]);
     try {
       const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' });
       // Across the middle of the caption box, which ends at the bottom of the safe area (1008 px): its dark background
@@ -317,7 +321,7 @@ export default function A({ voiceOver }: SceneProps) {
     try {
       voiceOver.tracks.set(id, {
         file: voice,
-        lines: [{ sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4 }],
+        lines: [{ sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4, speaker: null, words: [], level: [] }],
         musicLevel: 0.3,
       });
       const alone = (await renderOne({ formats: ['16:9'], quality: 'draft' })).file;
@@ -398,7 +402,7 @@ export default function A({ voiceOver }: SceneProps) {
         if (mix.includes('voice')) {
           voiceOver.tracks.set(id, {
             file: voice,
-            lines: [{ sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4 }],
+            lines: [{ sceneId: 'a', text: 'Bonjour.', start: 0.1, end: 0.4, speaker: null, words: [], level: [] }],
             musicLevel: 0.3,
           });
         } else voiceOver.tracks.delete(id);

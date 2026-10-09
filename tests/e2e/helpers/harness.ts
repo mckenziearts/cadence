@@ -96,7 +96,7 @@ export class FixtureProjectStore implements ProjectStore {
       music: file.music,
       musicUrl: null,
       musicGrid: null,
-      voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
+      voiceOver: file.voiceOver ?? { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
       voiceOverUrl: null,
       voiceOverLines: this.voiceOverLines.get(id) ?? [],
       voiceOverPending: [],
@@ -139,6 +139,7 @@ export class FixtureProjectStore implements ProjectStore {
   list = unused;
   create = unused;
   update = unused;
+  setSpeakers = unused;
   remove = unused;
   createScene = unused;
   updateScene = unused;

@@ -1,11 +1,12 @@
-// Projects home: one card per project (a frame of its first scene), search and brand filter; the pitch before the first.
+// Projects home: one card per project (a frame of its first scene), search, brand filter and pages; the pitch before the first.
 import clsx from 'clsx';
 import { Plus, Search, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BrandSummary, ProjectSummary } from '../../shared/types';
 import { api } from '../api';
 import { useT } from '../i18n';
 import { relative, secsLabel } from '../lib/format';
+import { projectsPage } from '../lib/pages';
 import { NONE, useStore } from '../store';
 import { openModal, toast } from '../store/ui';
 import { AGENTS } from './agents';
@@ -23,6 +24,8 @@ export function Home() {
   const brands = useStore((s) => s.app?.brands ?? NONE);
   const [query, setQuery] = useState('');
   const [brand, setBrand] = useState(ALL);
+  const [page, setPage] = useState(1);
+  const scroller = useRef<HTMLDivElement>(null);
 
   const counts = useMemo(() => {
     const byBrand = new Map<string, number>();
@@ -37,9 +40,16 @@ export function Home() {
   const shown = projects.filter(
     (p) => (brand === ALL || brandOf(p) === brand) && (!q || p.name.toLowerCase().includes(q) || p.id.includes(q)),
   );
+  const paged = projectsPage(shown, page);
+  // Deleting the last projects of a page moves to the page before for good: projects that come back do not jump to it again.
+  if (paged.page !== page) setPage(paged.page);
+  const go = (n: number) => {
+    setPage(n);
+    scroller.current?.scrollTo({ top: 0 });
+  };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-grid-fade">
+    <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto bg-grid-fade">
       <div className="mx-auto max-w-[92rem] px-6 py-10">
         <div className="flex flex-wrap items-end gap-x-6 gap-y-4">
           <div className="mr-auto">
@@ -53,7 +63,10 @@ export function Home() {
             <input
               type="search"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
               placeholder={t.shell.projects.searchPlaceholder}
               aria-label={t.shell.projects.search}
               className="h-full min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-ink-4"
@@ -65,7 +78,10 @@ export function Home() {
             label={t.shell.home.brandFilter}
             size="sm"
             value={brand}
-            onChange={setBrand}
+            onChange={(id) => {
+              setBrand(id);
+              setPage(1);
+            }}
             className="mt-5 flex-wrap"
             options={[
               { value: ALL, label: <Count label={t.shell.home.all} n={projects.length} /> },
@@ -76,26 +92,43 @@ export function Home() {
           />
         )}
         <ul className="mt-6 grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6">
-          <li>
-            <button
-              type="button"
-              onClick={() => openModal({ kind: 'new-project' })}
-              className="focus-ring flex size-full min-h-64 flex-col items-center justify-center gap-2 border-2 border-dashed border-ink bg-paper/70 p-6 text-ink hover:bg-white"
-            >
-              <span className="mb-1 grid size-11 place-items-center border-2 border-ink bg-now shadow-hard-sm">
-                <Plus className="size-5" />
-              </span>
-              <span className="display-caps text-[22px]/7">{t.shell.projects.new}</span>
-              <span className="text-xs text-ink-3">{t.shell.home.newHint}</span>
-            </button>
-          </li>
-          {shown.map((p) => (
+          {paged.page === 1 && (
+            <li>
+              <button
+                type="button"
+                onClick={() => openModal({ kind: 'new-project' })}
+                className="focus-ring flex size-full min-h-64 flex-col items-center justify-center gap-2 border-2 border-dashed border-ink bg-paper/70 p-6 text-ink hover:bg-white"
+              >
+                <span className="mb-1 grid size-11 place-items-center border-2 border-ink bg-now shadow-hard-sm">
+                  <Plus className="size-5" />
+                </span>
+                <span className="display-caps text-[22px]/7">{t.shell.projects.new}</span>
+                <span className="text-xs text-ink-3">{t.shell.home.newHint}</span>
+              </button>
+            </li>
+          )}
+          {paged.projects.map((p) => (
             <li key={p.id} className="group relative">
               <ProjectCard project={p} brand={brands.find((b) => b.id === brandOf(p))} />
               <DeleteProject project={p} />
             </li>
           ))}
         </ul>
+        {paged.pages > 1 && (
+          <nav aria-label={t.shell.home.pages} className="mt-8 flex flex-wrap justify-center gap-2">
+            {Array.from({ length: paged.pages }, (_, i) => i + 1).map((n) => (
+              <Button
+                key={n}
+                variant={n === paged.page ? 'subtle' : 'secondary'}
+                aria-label={t.shell.home.page(n)}
+                aria-current={n === paged.page ? 'page' : undefined}
+                onClick={() => go(n)}
+              >
+                {n}
+              </Button>
+            ))}
+          </nav>
+        )}
         {shown.length === 0 && <p className="mt-6 text-[13px] text-ink-3">{t.shell.home.noMatch(query.trim())}</p>}
       </div>
     </div>

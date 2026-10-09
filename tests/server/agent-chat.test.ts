@@ -767,4 +767,11 @@ test('rules and labels', () => {
   assert.equal(label('mcp__cadence__snap_cuts_to_music', { grid: 'phrase' }), 'Coupes calées sur les phrases');
   assert.equal(label('mcp__cadence__set_voice_over', { text: 'Bonjour.' }), 'Voix off écrite et générée');
   assert.equal(label('mcp__cadence__set_voice_over', { text: '' }), 'Voix off retirée');
+  assert.equal(
+    label('mcp__cadence__set_voice_over', { lines: [{ speaker: 'camille', text: 'Bonjour.' }] }),
+    'Voix off écrite et générée',
+  );
+  assert.equal(label('mcp__cadence__list_voices', {}), 'Liste des voix');
+  assert.equal(label('mcp__cadence__set_speakers', { speakers: [] }), 'Locuteurs du projet réglés');
+  for (const rule of ['mcp__cadence__list_voices', 'mcp__cadence__set_speakers']) assert.ok(project.includes(rule), rule);
 });

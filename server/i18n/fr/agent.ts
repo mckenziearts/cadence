@@ -41,6 +41,8 @@ export default {
       brand: 'Lecture de la marque',
       music: 'Lecture de la grille musicale',
       templates: 'Liste des modèles',
+      voices: 'Liste des voix',
+      speakers: 'Locuteurs du projet réglés',
       duration: (duration: string) => `Durée réglée à ${duration}`,
       voiceOver: (cleared: boolean): string => (cleared ? 'Voix off retirée' : 'Voix off écrite et générée'),
       version: (label: string) => `Version « ${label} »`,
@@ -114,6 +116,10 @@ export default {
     checkOwnMotion: 'vérifie le mouvement de ta scène.',
     setOwnDuration: 'change la durée de ta scène ; le chat du projet règle les autres.',
     setOwnVoiceOver: 'écris la voix off de ta scène ; le chat du projet règle les autres.',
+    linesNeeded: (sceneId: string) =>
+      `La scène « ${sceneId} » est écrite en répliques : passe lines (une réplique par locuteur), pas text. Un text vide retire la voix off.`,
+    unknownSpeaker: (id: string) =>
+      `« ${id} » n'est pas un locuteur du projet : une réplique nomme l'id d'un locuteur réglé avec set_speakers (dans le chat du projet).`,
     badUrl: (url: string) => `Adresse invalide : ${url} (seules les adresses http(s) peuvent être capturées).`,
   },
   mcpTokens: {

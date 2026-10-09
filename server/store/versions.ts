@@ -1,9 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { ID_PATTERN, type ChatKey, type SceneVoiceOver, type VersionEntry, type VersionSource } from '../../src/shared/types';
+import {
+  ID_PATTERN,
+  type ChatKey,
+  type SceneVoiceOver,
+  type VersionEntry,
+  type VersionSource,
+  type VoiceOverSettings,
+} from '../../src/shared/types';
 import type { ProjectStore, VersionStore } from '../contracts';
 import { m } from '../i18n';
-import { parseSceneVoiceOver } from './projects';
+import { parseSceneVoiceOver, unknownSpeaker } from './projects';
 import {
   HttpError,
   KeyedMutex,
@@ -68,7 +75,7 @@ export class FileVersionStore implements VersionStore {
           const patch: { duration?: number; voiceOver?: SceneVoiceOver | null } = {};
           if (typeof old?.duration === 'number' && old.duration > 0 && old.duration !== scene.duration)
             patch.duration = old.duration;
-          const voiceOver = old ? snapshotVoiceOver(old.voiceOver) : undefined;
+          const voiceOver = old ? snapshotVoiceOver(old.voiceOver, current.voiceOver) : undefined;
           if (voiceOver !== undefined && JSON.stringify(voiceOver) !== JSON.stringify(scene.voiceOver ?? null)) {
             patch.voiceOver = voiceOver;
           }
@@ -250,11 +257,15 @@ function sceneFields(data: Buffer | null): Map<string, SceneFields> {
   }
 }
 
-/** A snapshot's voice-over as the store reads it today: null for none, undefined when it is no longer valid. */
-function snapshotVoiceOver(value: unknown): SceneVoiceOver | null | undefined {
+/**
+ * A snapshot's voice-over as the store reads it today: null for none, undefined when it is no longer valid, lines
+ * naming a speaker the project has since removed included.
+ */
+function snapshotVoiceOver(value: unknown, settings: VoiceOverSettings): SceneVoiceOver | null | undefined {
   if (value === undefined || value === null) return null;
   try {
-    return parseSceneVoiceOver(value);
+    const voiceOver = parseSceneVoiceOver(value);
+    return voiceOver?.lines && unknownSpeaker(settings, voiceOver.lines) ? undefined : voiceOver;
   } catch {
     return undefined;
   }

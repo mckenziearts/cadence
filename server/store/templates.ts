@@ -2,11 +2,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { FORMAT_IDS, ID_PATTERN, type ProjectTemplateMeta, type SceneTemplateMeta } from '../../src/shared/types';
-import type { CadenceConfig, TemplateStore } from '../contracts';
+import type { CadenceConfig, TemplateComponent, TemplateStore } from '../contracts';
 import { language, m } from '../i18n';
 import { HttpError, assertId } from '../util';
+import { voiceOverSchema } from './projects';
 
 const CATEGORIES = ['intro', 'title', 'ui', 'feature', 'data', 'transition', 'outro'] as const;
+/** A file a scene imports as `../components/<name>`: no dot file, no space, no subfolder. */
+const COMPONENT_FILE = /^[A-Za-z][\w-]{0,63}\.tsx?$/;
 
 const sceneTemplateSchema = z.object({
   name: z.string().min(1),
@@ -32,6 +35,8 @@ const projectTemplateSchema = z
     scenes: z
       .array(z.object({ template: z.string().regex(ID_PATTERN), name: z.string().min(1), bars: z.number().positive() }))
       .min(1),
+    // Lazy: projects.ts imports this module, so its schema is only read once both are loaded.
+    voiceOver: z.lazy(() => voiceOverSchema).optional(),
     /** The same texts in English, for an English interface; `scenes` names the scenes in order. */
     en: z.object({ name: z.string().min(1), description: z.string(), scenes: z.array(z.string().min(1)) }).optional(),
   })
@@ -71,14 +76,24 @@ export class FileTemplateStore implements TemplateStore {
     return out.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
   }
 
-  async sceneTemplate(id: string): Promise<{ meta: SceneTemplateMeta; code: string }> {
+  async sceneTemplate(id: string): Promise<{ meta: SceneTemplateMeta; code: string; components: TemplateComponent[] }> {
     const dir = this.dir('scenes', id);
     const raw = await readTemplateJson(dir, m().api.templates.sceneNotFound(id));
     const { en, ...meta } = validate(sceneTemplateSchema, raw, `templates/scenes/${id}/template.json`);
     const code = await fs.readFile(path.join(dir, 'scene.tsx'), 'utf8').catch(() => {
       throw new HttpError(500, m().api.templates.missingCode(`templates/scenes/${id}/scene.tsx`));
     });
-    return { meta: { id, ...meta, ...(language() === 'en' ? en : {}) }, code };
+    const components = await readComponents(path.join(dir, 'components'));
+    return {
+      meta: {
+        id,
+        ...meta,
+        ...(language() === 'en' ? en : {}),
+        ...(components.length ? { components: components.map((c) => c.name) } : {}),
+      },
+      code,
+      components,
+    };
   }
 
   async projectTemplate(id: string): Promise<ProjectTemplateMeta & { artDirection: string | null }> {
@@ -115,8 +130,9 @@ export class FileTemplateStore implements TemplateStore {
         ]
           .filter(Boolean)
           .join(' ');
+        const components = s.components ? ` Components (copied into components/): ${s.components.join(', ')}.` : '';
         lines.push(
-          `- \`${s.id}\`: **${s.name}** · ${s.bars} bars · ${s.formats.join(', ')}. ${s.description}${extra ? ` ${extra}` : ''}`,
+          `- \`${s.id}\`: **${s.name}** · ${s.bars} bars · ${s.formats.join(', ')}. ${s.description}${extra ? ` ${extra}` : ''}${components}`,
         );
       }
     }
@@ -124,8 +140,9 @@ export class FileTemplateStore implements TemplateStore {
     if (!projects.length) lines.push('No campaign templates installed yet.');
     for (const p of projects) {
       const flow = p.scenes.map((s) => `${s.template} "${s.name}" (${s.bars} bars)`).join(' → ');
+      const speakers = p.voiceOver?.speakers?.map((s) => `${s.id} (${s.name})`).join(', ');
       lines.push(
-        `- \`${p.id}\`: **${p.name}** · ${p.fps} fps · ${p.formats.join(', ')} · ${p.bpm} BPM. ${p.description} Scenes: ${flow}.`,
+        `- \`${p.id}\`: **${p.name}** · ${p.fps} fps · ${p.formats.join(', ')} · ${p.bpm} BPM. ${p.description} Scenes: ${flow}.${speakers ? ` Speakers: ${speakers}.` : ''}`,
       );
     }
     return `${lines.join('\n')}\n`;
@@ -139,6 +156,18 @@ export class FileTemplateStore implements TemplateStore {
     const entries = await fs.readdir(path.join(this.config.templatesDir, kind), { withFileTypes: true }).catch(() => []);
     return entries.filter((e) => e.isDirectory() && ID_PATTERN.test(e.name)).map((e) => e.name);
   }
+}
+
+/** Regular files only (lstat): a symlink could point anywhere on the disk, and a project's components/ stays flat. */
+async function readComponents(dir: string): Promise<TemplateComponent[]> {
+  const out: TemplateComponent[] = [];
+  if (!(await fs.lstat(dir).catch(() => null))?.isDirectory()) return out;
+  const names = await fs.readdir(dir).catch(() => [] as string[]);
+  for (const name of names.filter((n) => COMPONENT_FILE.test(n)).sort()) {
+    const file = path.join(dir, name);
+    if ((await fs.lstat(file)).isFile()) out.push({ name, code: await fs.readFile(file, 'utf8') });
+  }
+  return out;
 }
 
 async function readTemplateJson(dir: string, notFound: string): Promise<unknown> {

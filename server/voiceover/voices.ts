@@ -2,6 +2,7 @@
 // each voice's MODEL_CARD). Files come from the commit of the v1.0.0 tag of rhasspy/piper-voices, so their md5 never
 // changes: pinned by commit rather than by tag name, since a tag can be moved and a commit cannot.
 import type { VoiceOverSettings } from '../../src/shared/types';
+import { PIPER_DEFAULT_VOICE } from '../../src/shared/voiceOver';
 
 export const VOICES_REVISION = '375a0fe641dea077c2a47b4e9a056d6da521eed3';
 
@@ -133,7 +134,7 @@ export const VOICES: VoiceSpec[] = [
 
 /** The voice-over settings of a project until someone picks a voice, by on-screen language. */
 export function defaultVoiceOver(language: 'fr' | 'en'): VoiceOverSettings {
-  return { voice: language === 'fr' ? 'fr_FR-siwis-medium' : 'en_US-joe-medium', speed: 1, musicLevel: 0.3 };
+  return { voice: PIPER_DEFAULT_VOICE[language], speed: 1, musicLevel: 0.3 };
 }
 
 export function voiceSpec(id: string): VoiceSpec | undefined {

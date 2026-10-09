@@ -30,6 +30,7 @@ import {
 import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
+import { elevenLabsSpeakersSchema, piperSpeakersSchema, sceneVoiceOverInputSchema } from '../store/projects';
 import { HttpError, pathExists, resolveInside } from '../util';
 import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
 import { VOICES } from '../voiceover/voices';
@@ -57,6 +58,7 @@ const voiceOverSchema = z.discriminatedUnion('engine', [
     voice: z.enum(VOICES.map((v) => v.id) as [string, ...string[]]),
     speed: z.number().min(0.5).max(2),
     musicLevel: z.number().min(0).max(1),
+    speakers: piperSpeakersSchema.optional(),
   }),
   // ElevenLabs' own speed range.
   z.object({
@@ -65,6 +67,7 @@ const voiceOverSchema = z.discriminatedUnion('engine', [
     model: z.string().regex(ELEVENLABS_MODEL_PATTERN),
     speed: z.number().min(0.7).max(1.2),
     musicLevel: z.number().min(0).max(1),
+    speakers: elevenLabsSpeakersSchema.optional(),
   }),
 ]);
 
@@ -99,10 +102,7 @@ const schemas = {
   updateScene: z.object({
     name: z.string().min(1).max(120).optional(),
     duration: z.number().positive().max(600).optional(),
-    voiceOver: z
-      .object({ text: z.string().max(2000), at: z.number().min(0).max(600) })
-      .nullable()
-      .optional(),
+    voiceOver: sceneVoiceOverInputSchema.nullable().optional(),
   }),
   order: z.object({ ids: z.array(idSchema) }),
   checkSeams: z.object({ sceneId: idSchema.optional(), format: formatSchema.optional() }),
@@ -379,8 +379,10 @@ export function createApi(deps: ApiDeps) {
     const project = await store.get(await existingProject(c));
     if (project.voiceOverPending.length) throw new HttpError(409, m().media.voiceOver.notSpoken);
     if (!project.voiceOverLines.length) throw new HttpError(404, m().media.voiceOver.noTrack);
-    const cues = subtitleCues(project.voiceOverLines, { maxChars: SUBTITLE_MAX_CHARS });
-    return c.body(format === 'srt' ? toSrt(cues) : toVtt(cues), 200, {
+    const cues = subtitleCues(project.voiceOverLines, { maxChars: SUBTITLE_MAX_CHARS, speakers: project.voiceOver.speakers });
+    // As scenes read it: the project's on-screen language, else its brand's.
+    const language = project.language ?? (await brands.get(project.brand ?? DEFAULT_BRAND).catch(() => null))?.language ?? 'fr';
+    return c.body(format === 'srt' ? toSrt(cues, language) : toVtt(cues), 200, {
       'Content-Type': format === 'srt' ? 'application/x-subrip; charset=utf-8' : 'text/vtt; charset=utf-8',
       'Content-Disposition': `attachment; filename="${project.id}.${format}"`,
       'X-Content-Type-Options': 'nosniff',

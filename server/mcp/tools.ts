@@ -23,9 +23,10 @@ import type {
   VersionStore,
   VoiceOverService,
 } from '../contracts';
-import { barSeconds, projectOverview, sceneTable, voiceOverSummary } from '../agent/prompts';
+import { barSeconds, projectOverview, sceneTable, speakerLine, voiceOverSummary } from '../agent/prompts';
 import { diffPercent } from '../capture/seams';
 import { m } from '../i18n';
+import { unknownSpeaker } from '../store/projects';
 import { HttpError, assertId, roundMs } from '../util';
 import { BRAND_TOOLS, registerBrandTools } from './brandTools';
 
@@ -49,7 +50,7 @@ export interface McpDeps {
 export type ToolRegistrar = <Shape extends z.ZodRawShape>(
   name: string,
   description: string,
-  shape: Shape,
+  shape: Shape | z.ZodObject<Shape>,
   run: (args: z.infer<z.ZodObject<Shape>>) => Promise<CallToolResult>,
   readOnly?: boolean,
 ) => void;
@@ -76,6 +77,8 @@ export const PROJECT_TOOLS = [
   'rename_scene',
   'snap_cuts_to_music',
   'capture_reference',
+  'list_voices',
+  'set_speakers',
 ];
 
 const MAX_FRAMES = 8;
@@ -213,7 +216,7 @@ export function createToolServer(ctx: ToolContext): McpServer {
   function tool<Shape extends z.ZodRawShape>(
     name: string,
     description: string,
-    shape: Shape,
+    shape: Shape | z.ZodObject<Shape>,
     run: (args: z.infer<z.ZodObject<Shape>>) => Promise<CallToolResult>,
     readOnly = false,
   ) {
@@ -562,24 +565,56 @@ export function createToolServer(ctx: ToolContext): McpServer {
 
   tool(
     'set_voice_over',
-    'Set what the voice-over says over a scene, from `at` seconds into it; an empty text removes it. Cadence speaks it with the project voice and answers when each sentence starts and ends, in scene seconds: key the animations to them (props.voiceOver.lines) and keep the scene at least as long as the voice. A scene chat can only change its own scene.',
-    {
-      projectId,
-      sceneId,
-      text: z.string().max(2000).describe('What the voice says: one or more sentences, in the video language. Empty removes it.'),
-      at: z
-        .number()
-        .min(0)
-        .max(600)
-        .optional()
-        .describe('Seconds into the scene where the voice starts, e.g. 0.5. Left out, the start stays (0 for a new voice-over).'),
-    },
+    'Set what the voice-over says over a scene, from `at` seconds into it: `text` for one narrator (the project voice), or `lines` for a dialogue, each line said by one of the project speakers (set_speakers). An empty text removes it. Cadence speaks it and answers when each line starts and ends, in scene seconds, with its speaker: key the animations to them (props.voiceOver.lines) and keep the scene at least as long as the voice. A scene written in lines takes lines, not text. A scene chat can only change its own scene.',
+    z
+      .object({
+        projectId,
+        sceneId,
+        text: z
+          .string()
+          .max(2000)
+          .optional()
+          .describe('What the narrator says: one or more sentences, in the video language. Empty removes the voice-over.'),
+        lines: z
+          .array(
+            z.object({
+              speaker: z.string().describe('The id of a project speaker.'),
+              text: z.string().min(1).describe('What that speaker says, in the video language.'),
+              gesture: z
+                .string()
+                .max(64)
+                .optional()
+                .describe('A free hint for the scene code (e.g. "wave"); only when the scene template reads it.'),
+            }),
+          )
+          .min(1)
+          .optional()
+          .describe('A dialogue, in order: one entry per speaker turn.'),
+        at: z
+          .number()
+          .min(0)
+          .max(600)
+          .optional()
+          .describe(
+            'Seconds into the scene where the voice starts, e.g. 0.5. Left out, the start stays (0 for a new voice-over).',
+          ),
+      })
+      .refine((v) => (v.text === undefined) !== (v.lines === undefined), { error: () => m().api.projects.textOrLines }),
     async (args) => {
       const p = await project(args.projectId);
       const scene = targetScene(p, args.sceneId, m().agent.mcpTools.setOwnVoiceOver);
       const at = roundMs(args.at ?? scene.voiceOver?.at ?? 0);
-      await deps.store.updateScene(p.id, scene.id, { voiceOver: { text: args.text, at } });
-      if (!args.text.trim()) return text(`${scene.id} has no voice-over any more.`);
+      const removed = !args.lines && !args.text?.trim();
+      // The store takes a text over lines (a restored version can hold one); here it would drop the speakers silently.
+      if (!args.lines && !removed && scene.voiceOver?.lines) {
+        throw new HttpError(400, m().agent.mcpTools.linesNeeded(scene.id));
+      }
+      const unknown = args.lines && unknownSpeaker(p.voiceOver, args.lines);
+      if (unknown) throw new HttpError(400, m().agent.mcpTools.unknownSpeaker(unknown));
+      await deps.store.updateScene(p.id, scene.id, {
+        voiceOver: args.lines ? { lines: args.lines, at } : { text: args.text ?? '', at },
+      });
+      if (removed) return text(`${scene.id} has no voice-over any more.`);
       try {
         await deps.voiceOver.sync(p.id);
       } catch (e) {
@@ -594,6 +629,57 @@ export function createToolServer(ctx: ToolContext): McpServer {
         };
       }
       return text(voiceOverSummary(await deps.store.get(p.id), scene.id));
+    },
+  );
+
+  tool(
+    'list_voices',
+    "The voices of the project's engine (Piper: the ones installed on this machine; ElevenLabs: the account's voices), with their id, name and language. A speaker's voice is one of these ids.",
+    { projectId },
+    async (args) => {
+      const p = await project(args.projectId);
+      if (p.voiceOver.engine === 'elevenlabs') {
+        let voices;
+        try {
+          ({ voices } = await deps.voiceOver.elevenLabs());
+        } catch (e) {
+          // No ElevenLabs key: the user adds one in the Voice tab, which the message says.
+          if (e instanceof HttpError && e.status === 409) return text(e.message);
+          throw e;
+        }
+        const rows = voices.map((v) => `- ${v.id}: ${v.name} (${v.languages.join(', ') || 'language not given'})`);
+        return text(['ElevenLabs voices (id: name (languages)):', ...rows].join('\n'));
+      }
+      const installed = (await deps.voiceOver.voices()).voices.filter((v) => v.installed);
+      if (!installed.length) return text('No Piper voice is installed yet: the user installs one in the Voice tab.');
+      const rows = installed.map((v) => `- ${v.id}: ${v.name} (${v.language}, ${v.locale})`);
+      return text(['Piper voices installed (id: name (language, accent)):', ...rows].join('\n'));
+    },
+    true,
+  );
+
+  tool(
+    'set_speakers',
+    'Replace the speakers of the project: who can say the lines of a dialogue (set_voice_over with lines). Each speaker has an id that lines name, a display name and a voice from list_voices; at most 10. A speaker that still says lines in a scene cannot be removed. Pass the full list, the ones kept included.',
+    {
+      projectId,
+      speakers: z
+        .array(
+          z.object({
+            id: z.string().describe('Lowercase letters, digits and hyphens, e.g. "camille". Lines name it.'),
+            name: z.string().describe('The name shown to the user, e.g. "Camille".'),
+            voice: z.string().describe('A voice id from list_voices.'),
+            model: z.string().optional().describe('ElevenLabs only: a model for this speaker, else the project model.'),
+            color: z.string().optional().describe('A #rrggbb color for the captions of this speaker.'),
+          }),
+        )
+        .describe('Every speaker of the project; an empty list removes them all.'),
+    },
+    async (args) => {
+      const p = await project(args.projectId);
+      const next = await deps.store.setSpeakers(p.id, args.speakers, p.voiceOver);
+      const speakers = next.voiceOver.speakers ?? [];
+      return text(speakers.length ? speakerLine(speakers) : 'The project has no speakers now: set_voice_over takes text only.');
     },
   );
 

@@ -2,8 +2,9 @@
 // for every brand × declared format × several times, the way the frame renders it (contexts + createMusic).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, test } from 'node:test';
 import type { ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { BrandContext, SceneContext, createMusic, type SceneProps } from 'cadence';
@@ -279,4 +280,99 @@ test('logo-build thumps on the bars of a track, never in a silent video', async 
   // On a downbeat after the lockup has landed: bar 3 of the steady 120 BPM grid, bar 3 of the track.
   assert.doesNotMatch(render(Scene, brand, '16:9', 6, 8, null), thump);
   assert.match(render(Scene, brand, '16:9', 0.1 + (12 * 60) / 128, 8, trackGrid()), thump);
+});
+
+describe('templates that bring components and voices (temp templatesDir)', () => {
+  const VOICE_OVER = {
+    voice: 'fr_FR-siwis-medium',
+    speakers: [
+      { id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium', color: '#ff8800' },
+      { id: 'sami', name: 'Sami', voice: 'fr_FR-upmc-medium' },
+    ],
+  };
+  const SCENE = { name: 'Dialogue', category: 'feature', bars: 4, formats: ['16:9'] };
+  const CAMPAIGN = { name: 'Duo', fps: 30, formats: ['16:9'], bpm: 120, scenes: [{ template: 'duo', name: 'Duo', bars: 4 }] };
+  let dir = '';
+  let temp: FileTemplateStore;
+  const write = (rel: string, content: string | object) => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), typeof content === 'string' ? content : JSON.stringify(content));
+  };
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-templates-'));
+    temp = new FileTemplateStore({ templatesDir: dir } as CadenceConfig);
+    write('scenes/duo/template.json', SCENE);
+    write('scenes/duo/scene.tsx', 'export default function Duo() {}\n');
+    write('scenes/plain/template.json', { ...SCENE, name: 'Plain' });
+    write('scenes/plain/scene.tsx', 'export default function Plain() {}\n');
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('sceneTemplate() returns the regular .ts/.tsx files of components/ with valid names, nothing else', async () => {
+    write('scenes/duo/components/Mouth.tsx', 'export const Mouth = 1;\n');
+    write('scenes/duo/components/layout.ts', 'export const LAYOUT = 2;\n');
+    write('scenes/duo/components/notes.md', '# notes\n');
+    write('scenes/duo/components/.hidden.tsx', 'x\n');
+    write('scenes/duo/components/bad name.tsx', 'x\n');
+    write('scenes/duo/components/nested/Inner.tsx', 'x\n');
+    write('outside.tsx', 'secret\n');
+    fs.symlinkSync(path.join(dir, 'outside.tsx'), path.join(dir, 'scenes/duo/components/Link.tsx'));
+    fs.mkdirSync(path.join(dir, 'scenes/duo/components/Folder.tsx'));
+
+    const { meta, components } = await temp.sceneTemplate('duo');
+    assert.deepEqual(components, [
+      { name: 'Mouth.tsx', code: 'export const Mouth = 1;\n' },
+      { name: 'layout.ts', code: 'export const LAYOUT = 2;\n' },
+    ]);
+    assert.deepEqual(meta.components, ['Mouth.tsx', 'layout.ts']);
+  });
+
+  test('a components/ folder that is a symlink is not followed', async () => {
+    write('elsewhere/Secret.tsx', 'secret\n');
+    fs.symlinkSync(path.join(dir, 'elsewhere'), path.join(dir, 'scenes/duo/components'));
+
+    const { meta, components } = await temp.sceneTemplate('duo');
+    assert.deepEqual(components, []);
+    assert.equal('components' in meta, false);
+  });
+
+  test('a scene template without components/ has none, and its meta is unchanged', async () => {
+    const { meta, components } = await temp.sceneTemplate('plain');
+    assert.deepEqual(components, []);
+    assert.equal('components' in meta, false);
+  });
+
+  test('a project template carries voiceOver, parsed by the store schema with its speakers', async () => {
+    write('projects/duo/template.json', { ...CAMPAIGN, voiceOver: VOICE_OVER });
+    write('projects/plain/template.json', { ...CAMPAIGN, name: 'Plain' });
+    const duo = await temp.projectTemplate('duo');
+    assert.deepEqual(duo.voiceOver, { ...VOICE_OVER, speed: 1, musicLevel: 0.3 });
+    assert.equal('voiceOver' in (await temp.projectTemplate('plain')), false);
+  });
+
+  test('an invalid voiceOver skips the project template with the usual warning', async (t) => {
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    write('projects/duo/template.json', {
+      ...CAMPAIGN,
+      voiceOver: { ...VOICE_OVER, speakers: [{ id: 'camille', name: 'Camille', voice: 'not a voice' }] },
+    });
+    write('projects/plain/template.json', { ...CAMPAIGN, name: 'Plain' });
+    assert.deepEqual(
+      (await temp.projects()).map((p) => p.id),
+      ['plain'],
+    );
+    assert.equal(warn.mock.callCount(), 1);
+    assert.match(String(warn.mock.calls[0].arguments[0]), /templates\/projects\/duo\/template\.json.*voiceOver/);
+    await assert.rejects(temp.projectTemplate('duo'), (e: Error & { status?: number }) => e.status === 500);
+  });
+
+  test("describe() (list_templates) names each scene template's components and each campaign's speakers", async () => {
+    write('scenes/duo/components/Mouth.tsx', 'export const Mouth = 1;\n');
+    write('projects/duo/template.json', { ...CAMPAIGN, voiceOver: VOICE_OVER });
+    const text = await temp.describe();
+    assert.match(text, /`duo`: .*Components \(copied into components\/\): Mouth\.tsx\./);
+    assert.match(text, /`duo`: \*\*Duo\*\* .*Speakers: camille \(Camille\), sami \(Sami\)\./);
+    assert.doesNotMatch(text.split('\n').find((l) => l.startsWith('- `plain`')) ?? '', /Components/);
+  });
 });

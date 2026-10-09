@@ -1,23 +1,44 @@
-// Voice-over: the engine (Piper on this machine or ElevenLabs with the person's key), the voice, speed and music level,
-// then each scene's text and timing.
+// Voice-over: the engine (Piper on this machine, or ElevenLabs with the person's key or a host app's), the voice, speed
+// and music level, the speakers of a dialogue, then each scene's text and timing.
 import clsx from 'clsx';
-import { AlertTriangle, AudioLines, Copy, Download, Play } from 'lucide-react';
-import { useEffect, useId, useState, type ReactNode } from 'react';
-import type { SceneState, SceneVoiceOver, VoiceOverSettings, VoicesState } from '../../shared/types';
-import { api, ignore } from '../api';
-import { ElevenLabsVoiceSelect, PIPER_INSTALL, Row } from '../components/voiceOver';
-import { Button, Checkbox, IconButton, SectionTitle, Segmented, Slider, Spinner, fieldBase, inputClass } from '../components/ui';
+import { AlertTriangle, AudioLines, Copy, Download, Play, Plus, Trash2 } from 'lucide-react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import type { SceneState, ScriptLine, ScriptLineInput, Speaker, VoiceOverSettings, VoicesState } from '../../shared/types';
+import { PIPER_DEFAULT_VOICE } from '../../shared/voiceOver';
+import { ApiError, api, ignore } from '../api';
+import { ScriptLines } from '../components/voiceLines';
+import { ElevenLabsVoiceSelect, PIPER_INSTALL, Row, useElevenLabsCatalog, type ElevenLabsCatalog } from '../components/voiceOver';
+import {
+  Button,
+  Checkbox,
+  IconButton,
+  SectionTitle,
+  Segmented,
+  Slider,
+  Spinner,
+  fieldBase,
+  inputClass,
+  useFocusAfter,
+} from '../components/ui';
 import { useT } from '../i18n';
 import { bytes, parseDecimal, percentShort, secs, secsLabel } from '../lib/format';
+import { lineTimes, nextSpeaker, onVoice, voiceOverUpdate } from '../lib/voiceOver';
 import { useStore } from '../store';
 import { applyProject, playVoiceOver, PROFILE_PAGE } from '../store/project';
 import { copyText } from '../store/ui';
 
 /** Each engine's speed range (the server checks the same ones). */
 const SPEEDS = { piper: [0.5, 2], elevenlabs: [0.7, 1.2] } as const;
+const MAX_SPEAKERS = 10;
 
 type Engine = 'piper' | 'elevenlabs';
 type Save = (patch: Partial<VoiceOverSettings>) => Promise<void>;
+/** Runs `send` once the voice-over PATCHes before it answered, with the settings as last saved. */
+type Queue = (send: (settings: VoiceOverSettings) => Promise<unknown>) => Promise<unknown>;
+/** `change` gets the speakers and settings as last saved, not as this render saw them; false when the server refused it. */
+type SaveSpeakers = (change: (speakers: Speaker[], settings: VoiceOverSettings) => Speaker[]) => Promise<boolean>;
+/** A scene's voice-over edit; a lines edit gets the lines as last saved. */
+type SceneEdit = { text: string } | { at: number } | { lines: (lines: ScriptLine[]) => ScriptLineInput[] };
 
 const clampSpeed = (speed: number, engine: Engine) => Math.min(Math.max(speed, SPEEDS[engine][0]), SPEEDS[engine][1]);
 
@@ -128,22 +149,48 @@ function Voice(props: {
   const saved = settings.engine ?? 'piper';
   // A sync speaks with the settings it started with: a change during it would bill ElevenLabs for a voice nobody hears.
   const locked = useStore((s) => s.voiceOver.status === 'speaking') && saved === 'elevenlabs';
+  // Once for the video's voice and the speakers': each load asks ElevenLabs for its voices and models.
+  const catalog = useElevenLabsCatalog(engine === 'elevenlabs' && !!voices?.elevenLabs.configured);
+  // One voice-over PATCH at a time, each from the settings the one before saved: a voice picked while a speaker is
+  // added does not put back the speakers as they were, nor the other way round.
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const queued: Queue = (send) => {
+    const { id } = project;
+    const run = queue.current.then(() => {
+      const latest = useStore.getState().project;
+      return latest?.id === id ? send(latest.voiceOver) : undefined;
+    });
+    queue.current = run.catch(ignore);
+    return run;
+  };
   const save: Save = async (patch) => {
-    applyProject(await api.updateProject(project.id, { voiceOver: { ...settings, ...patch } }));
+    await queued(async (latest) => applyProject(await api.updateProject(project.id, { voiceOver: { ...latest, ...patch } })));
     onEngine(null);
   };
   const choose = async (next: Engine) => {
     onEngine(next === saved ? null : next);
     if (next !== 'piper' || saved !== 'elevenlabs') return;
-    // The default voice of the video's language (the server knows the brand's), then this project's speed and level.
-    const reset = await api.updateProject(project.id, { voiceOver: null });
-    applyProject(reset);
+    await queued(async (latest) => {
+      const { musicLevel, speakers } = latest;
+      const speed = clampSpeed(latest.speed, 'piper');
+      if (speakers) {
+        // `voiceOver: null` would drop the speakers the lines name: the default voice and the speakers on it, at once.
+        // The service's language: the video's, else its brand's ('cadence' is DEFAULT_BRAND in server/store/brands.ts).
+        const language = project.language ?? (await api.brand(project.brand ?? 'cadence')).language;
+        // The server's default voice too (`defaultVoiceOver`): the switch that `voiceOver: null` cannot make.
+        const voice = PIPER_DEFAULT_VOICE[language];
+        const voiceOver = { voice, speed, musicLevel, speakers: onVoice(speakers, voice) };
+        applyProject(await api.updateProject(project.id, { voiceOver }));
+        return;
+      }
+      // The default voice of the video's language, then this project's speed and level.
+      const reset = await api.updateProject(project.id, { voiceOver: null });
+      applyProject(reset);
+      if (speed !== reset.voiceOver.speed || musicLevel !== reset.voiceOver.musicLevel) {
+        applyProject(await api.updateProject(project.id, { voiceOver: { ...reset.voiceOver, speed, musicLevel } }));
+      }
+    });
     onEngine(null);
-    const { musicLevel } = settings;
-    const speed = clampSpeed(settings.speed, 'piper');
-    if (speed !== reset.voiceOver.speed || musicLevel !== reset.voiceOver.musicLevel) {
-      applyProject(await api.updateProject(project.id, { voiceOver: { ...reset.voiceOver, speed, musicLevel } }));
-    }
   };
 
   return (
@@ -162,17 +209,21 @@ function Voice(props: {
             { value: 'elevenlabs', label: 'ElevenLabs' },
           ]}
         />
-        <p className="text-xs text-ink-3">{t.engine.hints[engine]}</p>
+        <p className="text-xs text-ink-3">
+          {engine === 'elevenlabs' && voices?.elevenLabs.hosted ? t.engine.hosted : t.engine.hints[engine]}
+        </p>
       </div>
       {engine === 'piper' ? (
         <PiperVoice voices={voices} save={save} onDownloaded={onVoices} />
       ) : voices?.elevenLabs.configured ? (
-        <ElevenLabsVoices save={save} />
+        <ElevenLabsVoices catalog={catalog} save={save} />
       ) : (
         voices && <ElevenLabsNoKey />
       )}
       {/* Sliders for the saved engine only: ElevenLabs without a voice yet has nothing to save. */}
       {engine === saved && <Levels engine={engine} save={save} />}
+      {/* Inside the voice's fieldset: the same lock while ElevenLabs speaks. */}
+      {engine === saved && <Speakers voices={voices} catalog={catalog} queued={queued} />}
     </fieldset>
   );
 }
@@ -259,7 +310,7 @@ function ElevenLabsNoKey() {
   );
 }
 
-function ElevenLabsVoices({ save }: { save: Save }) {
+function ElevenLabsVoices({ catalog, save }: { catalog: ElevenLabsCatalog; save: Save }) {
   const texts = useT().production.voiceOver.elevenLabs;
   const settings = useStore((s) => s.project!.voiceOver);
   const ready = settings.engine === 'elevenlabs';
@@ -267,9 +318,17 @@ function ElevenLabsVoices({ save }: { save: Save }) {
     <ElevenLabsVoiceSelect
       label={texts.voiceLabel}
       none={texts.pick}
+      catalog={catalog}
       value={ready ? { voice: settings.voice, model: settings.model! } : null}
       onChange={(next) =>
-        next && void save({ engine: 'elevenlabs', ...next, speed: clampSpeed(settings.speed, 'elevenlabs') }).catch(ignore)
+        next &&
+        void save({
+          engine: 'elevenlabs',
+          ...next,
+          speed: clampSpeed(settings.speed, 'elevenlabs'),
+          // From Piper, the speakers take the voice just picked in the same PATCH: their Piper voices would be refused.
+          ...(!ready && settings.speakers ? { speakers: onVoice(settings.speakers, next.voice) } : {}),
+        }).catch(ignore)
       }
     />
   );
@@ -320,6 +379,157 @@ function Levels({ engine, save }: { engine: Engine; save: Save }) {
   );
 }
 
+function Speakers(props: { voices: VoicesState | null; catalog: ElevenLabsCatalog; queued: Queue }) {
+  const { voices, catalog, queued } = props;
+  const texts = useT().production.voiceOver;
+  const project = useStore((s) => s.project)!;
+  const speakers = project.voiceOver.speakers ?? [];
+  const elevenLabs = project.voiceOver.engine === 'elevenlabs';
+  // The server's refusal (a speaker a line still names), until the next change.
+  const [error, setError] = useState<string | null>(null);
+  const save: SaveSpeakers = (change) => {
+    setError(null);
+    return queued((latest) =>
+      api
+        .updateProject(project.id, { voiceOver: { ...latest, speakers: change(latest.speakers ?? [], latest) } }, { quiet: true })
+        .then(
+          (state) => {
+            applyProject(state);
+            return true;
+          },
+          (failure: ApiError) => {
+            setError(failure.message);
+            return false;
+          },
+        ),
+    ).then((ok) => ok === true);
+  };
+  const add = () => void save((list, settings) => [...list, nextSpeaker(list, settings.voice, texts.speakers.defaultName)]);
+  const { list: rows, focusAfter } = useFocusAfter<HTMLDivElement>();
+  // The next speaker's button takes the focus, or the add button after the last one.
+  const remove = (id: string, next: string | undefined) =>
+    focusAfter(
+      save((list) => list.filter((s) => s.id !== id)),
+      [...(next ? [`[data-speaker="${next}"] [data-control="remove"]`] : []), '[data-control="add"]'],
+    );
+  const options = elevenLabs
+    ? (catalog.catalog?.voices.map((v) => ({ id: v.id, label: v.name })) ?? [])
+    : (voices?.voices ?? [])
+        .filter((v) => v.installed)
+        .map((v) => ({ id: v.id, label: texts.voice.option(v.name, v.locale, texts.voice.qualities[v.quality]) }));
+
+  return (
+    <div ref={rows} className="space-y-3.5 pt-2.5">
+      <SectionTitle>{texts.speakers.title}</SectionTitle>
+      <p className="text-xs text-ink-3">{texts.speakers.hint}</p>
+      <SpeakerList speakers={speakers} options={options} save={save} onRemove={remove} />
+      {error && (
+        <p role="alert" className="flex items-start gap-1.5 text-xs text-alert">
+          <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
+        </p>
+      )}
+      <Button
+        size="sm"
+        variant="secondary"
+        icon={<Plus className="size-3.5" />}
+        disabled={speakers.length >= MAX_SPEAKERS}
+        data-control="add"
+        onClick={add}
+      >
+        {texts.speakers.add}
+      </Button>
+    </div>
+  );
+}
+
+function SpeakerList(props: {
+  speakers: Speaker[];
+  options: { id: string; label: string }[];
+  save: SaveSpeakers;
+  onRemove: (id: string, next: string | undefined) => void;
+}) {
+  const { speakers, options, save, onRemove } = props;
+  const update = (id: string, patch: Partial<Speaker>) => save((list) => list.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  return (
+    <ul className="space-y-3">
+      {speakers.map((speaker, i) => (
+        <SpeakerRow
+          key={speaker.id}
+          speaker={speaker}
+          options={options}
+          onChange={(patch) => void update(speaker.id, patch)}
+          onRemove={() => onRemove(speaker.id, speakers[i + 1]?.id)}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function SpeakerRow(props: {
+  speaker: Speaker;
+  options: { id: string; label: string }[];
+  onChange: (patch: Partial<Speaker>) => void;
+  onRemove: () => void;
+}) {
+  const { speaker, options, onChange, onRemove } = props;
+  const texts = useT().production.voiceOver.speakers;
+  const [name, setName] = useState<string | null>(null);
+  // Saved once the picker lets go of the field: dragging in it would send a PATCH per step.
+  const [color, setColor] = useState<string | null>(null);
+  return (
+    <li data-speaker={speaker.id} className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          aria-label={texts.colorLabel(speaker.name)}
+          value={color ?? speaker.color ?? '#000000'}
+          onChange={(e) => setColor(e.target.value)}
+          onBlur={() => {
+            if (color === null) return;
+            setColor(null);
+            if (color !== speaker.color) onChange({ color });
+          }}
+          className="size-8 shrink-0 cursor-pointer border border-ink bg-white p-0.5"
+        />
+        <input
+          aria-label={texts.nameLabel(speaker.name)}
+          maxLength={40}
+          value={name ?? speaker.name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          onBlur={() => {
+            if (name === null) return;
+            setName(null);
+            const next = name.trim();
+            if (next && next !== speaker.name) onChange({ name: next });
+          }}
+          className={clsx(inputClass, 'min-w-0 flex-1')}
+        />
+        <IconButton
+          size="sm"
+          label={texts.remove(speaker.name)}
+          icon={<Trash2 className="size-3.5" />}
+          data-control="remove"
+          onClick={onRemove}
+        />
+      </div>
+      <select
+        aria-label={texts.voiceLabel(speaker.name)}
+        value={speaker.voice}
+        onChange={(e) => onChange({ voice: e.target.value })}
+        className={clsx(inputClass, 'appearance-none')}
+      >
+        {!options.some((o) => o.id === speaker.voice) && <option value={speaker.voice}>{speaker.voice}</option>}
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </li>
+  );
+}
+
 function Status() {
   const texts = useT().production.voiceOver.status;
   const project = useStore((s) => s.project)!;
@@ -361,17 +571,42 @@ function SceneVoice({ scene }: { scene: SceneState }) {
   const project = useStore((s) => s.project)!;
   const speaking = useStore((s) => s.voiceOver.status === 'speaking');
   const saved = scene.voiceOver;
+  const speakers = project.voiceOver.speakers ?? [];
+  // Lines once the project has speakers, unless the scene is a text its voice says: lines a hand-edited project kept
+  // without speakers show too, rather than a text that would replace them.
+  const dialogue = !!saved?.lines || (speakers.length > 0 && !saved);
   const [text, setText] = useState<string | null>(null);
   const [at, setAt] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  // The server's refusal, beside the fields, until the next change.
+  const [error, setError] = useState<string | null>(null);
   const lines = project.voiceOverLines.filter((l) => l.sceneId === scene.id);
   const pending = project.voiceOverPending.includes(scene.id);
   const overflow = (lines.at(-1)?.end ?? 0) - (scene.start + scene.duration);
 
-  const save = (next: SceneVoiceOver) => {
-    if (next.text.trim() === (saved?.text ?? '') && next.at === (saved?.at ?? 0)) return;
-    const voiceOver = next.text.trim() ? next : null;
-    void api.updateScene(project.id, scene.id, { voiceOver }).then(applyProject).catch(ignore);
+  // One PATCH at a time, each from the voice-over the one before saved: a line typed then another removed keeps both.
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const save = (edit: SceneEdit): Promise<boolean> => {
+    setError(null);
+    const run = queue.current.then(async () => {
+      const latest = useStore.getState().project;
+      if (latest?.id !== project.id) return true;
+      const current = latest.scenes.find((s) => s.id === scene.id)?.voiceOver;
+      const voiceOver = voiceOverUpdate(current, 'lines' in edit ? { lines: edit.lines(current?.lines ?? []) } : edit);
+      if (voiceOver === undefined) return true;
+      return api.updateScene(project.id, scene.id, { voiceOver }, { quiet: true }).then(
+        (state) => {
+          applyProject(state);
+          return true;
+        },
+        (failure: ApiError) => {
+          setError(failure.message);
+          return false;
+        },
+      );
+    });
+    queue.current = run.catch(ignore);
+    return run;
   };
 
   const generate = () => {
@@ -423,20 +658,41 @@ function SceneVoice({ scene }: { scene: SceneState }) {
           />
         )}
       </div>
-      <textarea
-        aria-label={texts.textLabel(scene.name)}
-        placeholder={texts.placeholder}
-        rows={2}
-        maxLength={2000}
-        value={text ?? saved?.text ?? ''}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => {
-          if (text === null) return;
-          setText(null);
-          save({ text, at: saved?.at ?? 0 });
-        }}
-        className={clsx(fieldBase, 'block w-full resize-y px-2 py-1.5 text-[13px]')}
-      />
+      {dialogue ? (
+        <ScriptLines
+          scene={scene.name}
+          speakers={speakers}
+          lines={saved?.lines ?? []}
+          times={
+            pending
+              ? null
+              : lineTimes(lines, saved?.lines?.length ?? 0).map(
+                  (t) => t && { start: t.start - scene.start, end: t.end - scene.start },
+                )
+          }
+          onChange={(change) => save({ lines: change })}
+        />
+      ) : (
+        <textarea
+          aria-label={texts.textLabel(scene.name)}
+          placeholder={texts.placeholder}
+          rows={2}
+          maxLength={2000}
+          value={text ?? saved?.text ?? ''}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={() => {
+            if (text === null) return;
+            setText(null);
+            void save({ text });
+          }}
+          className={clsx(fieldBase, 'block w-full resize-y px-2 py-1.5 text-[13px]')}
+        />
+      )}
+      {error && (
+        <p role="alert" className="flex items-start gap-1.5 text-xs text-alert">
+          <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
+        </p>
+      )}
       <div className="flex items-center gap-2 text-xs text-ink-3">
         <span className="label-caps text-[11px] text-ink-2">{texts.at}</span>
         <input
@@ -450,7 +706,7 @@ function SceneVoice({ scene }: { scene: SceneState }) {
             if (at === null) return;
             const value = parseDecimal(at);
             setAt(null);
-            if (saved && Number.isFinite(value) && value >= 0) save({ text: saved.text, at: Math.round(value * 1000) / 1000 });
+            if (Number.isFinite(value) && value >= 0) void save({ at: Math.round(value * 1000) / 1000 });
           }}
           className={clsx(fieldBase, 'h-7 w-16 text-right text-[13px]')}
         />

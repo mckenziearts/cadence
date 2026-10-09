@@ -19,6 +19,7 @@ import { auditStage } from './audit';
 import { Captions } from './captions';
 import { editorOrigins, postToEditor } from './editor';
 import { texts } from './texts';
+import { sceneVoiceOver, tidy } from './voiceOver';
 
 const BASE_FACES = [
   "400 32px 'Inter Variable'",
@@ -295,9 +296,6 @@ function formatOf(project: ProjectState | undefined): FormatId {
   return requestedFormat ?? project?.formats[0] ?? '16:9';
 }
 
-/** Float noise (video time 2.3 − scene start 2 = 0.2999...) must not flip a `t >= 0.3` against the scene-mode preview. */
-const tidy = (t: number) => Math.round(t * 1e9) / 1e9;
-
 function pickScene(project: ProjectState, t: number): Picked | null {
   if (sceneId) {
     const scene = project.scenes.find((s) => s.id === sceneId);
@@ -331,10 +329,7 @@ function musicFor(project: ProjectState, scene: SceneState): Music {
 function voiceOverFor(project: ProjectState, scene: SceneState): VoiceOverInfo {
   let voiceOver = voiceOverCache.get(scene.id);
   if (!voiceOver) {
-    const lines = project.voiceOverLines
-      .filter((l) => l.sceneId === scene.id)
-      .map((l) => ({ text: l.text, start: tidy(l.start - scene.start), end: tidy(l.end - scene.start) }));
-    voiceOver = { text: scene.voiceOver?.text ?? '', lines };
+    voiceOver = sceneVoiceOver(project.voiceOverLines, scene);
     voiceOverCache.set(scene.id, voiceOver);
   }
   return voiceOver;
@@ -460,7 +455,12 @@ function Stage(props: { spec: FormatSpec; view: View }) {
       {content}
       {/* Outside the scene's error boundary: a scene that throws keeps its captions. */}
       {view.kind === 'scene' && captionsShown && data?.project.captions && (
-        <Captions lines={data.project.voiceOverLines} spec={spec} t={tidy(view.props.scene.start + view.props.t)} />
+        <Captions
+          lines={data.project.voiceOverLines}
+          speakers={data.project.voiceOver.speakers}
+          spec={spec}
+          t={tidy(view.props.scene.start + view.props.t)}
+        />
       )}
     </div>
   );

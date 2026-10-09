@@ -612,7 +612,9 @@ export default function Audit({ t }) {
     );
     await h.store.syncCode(id);
     const start = (await h.store.get(id)).scenes.find((s) => s.id === 'audit-safe')!.start;
-    h.store.voiceOverLines.set(id, [{ sceneId: 'audit-safe', text: 'Bonjour tout le monde.', start, end: start + 0.5 }]);
+    h.store.voiceOverLines.set(id, [
+      { sceneId: 'audit-safe', text: 'Bonjour tout le monde.', start, end: start + 0.5, speaker: null, words: [], level: [] },
+    ]);
     try {
       const page = await open({ scene: 'audit-safe' });
       await seek(page, 0.25);
@@ -1310,5 +1312,55 @@ describe('postMessage bridge', () => {
     assert.equal(started ?? false, false);
     await context.close();
     other.close();
+  });
+});
+
+describe('scene voice-over', () => {
+  it('gives the scene its sentences with their words in scene seconds, speaker, level and gesture', async () => {
+    await addScene(
+      'voice-props',
+      `export default function Voice({ voiceOver }) {
+  return <div id="voice" data-voice={JSON.stringify(voiceOver)} />;
+}
+`,
+    );
+    await h.store.syncCode(id);
+    const start = (await h.store.get(id)).scenes.find((s) => s.id === 'voice-props')!.start;
+    h.store.voiceOverLines.set(id, [
+      {
+        sceneId: 'voice-props',
+        text: 'Oui, bien.',
+        start: start + 0.1,
+        end: start + 0.6,
+        speaker: 'ana',
+        words: [
+          { text: 'Oui,', start: start + 0.1, end: start + 0.3 },
+          { text: 'bien.', start: start + 0.35, end: start + 0.6 },
+        ],
+        level: [0, 128, 255],
+        gesture: 'wave',
+      },
+    ]);
+    try {
+      const page = await open({ scene: 'voice-props' });
+      await seek(page, 0.25);
+      assert.deepEqual(JSON.parse((await page.getAttribute('#voice', 'data-voice'))!).lines, [
+        {
+          text: 'Oui, bien.',
+          start: 0.1,
+          end: 0.6,
+          speaker: 'ana',
+          words: [
+            { text: 'Oui,', start: 0.1, end: 0.3 },
+            { text: 'bien.', start: 0.35, end: 0.6 },
+          ],
+          level: [0, 128, 255],
+          gesture: 'wave',
+        },
+      ]);
+      await page.context().close();
+    } finally {
+      h.store.voiceOverLines.delete(id);
+    }
   });
 });

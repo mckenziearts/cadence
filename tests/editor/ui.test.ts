@@ -17,6 +17,7 @@ import type { AgentProvider, BrandSource, ElevenLabsApi, SpeechEngine } from '..
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
 import { HttpError } from '../../server/util';
+import { defaultVoiceOver } from '../../server/voiceover/voices';
 import { writeWav } from '../../server/voiceover/wav';
 import {
   DEFAULT_FEATURES,
@@ -27,6 +28,8 @@ import {
   type MusicAnalysis,
   type MusicGridData,
   type ProjectState,
+  type ProjectSummary,
+  type ScriptLine,
 } from '../../src/shared/types';
 import { fakeNetwork, makeRoot } from '../server/helpers';
 
@@ -399,6 +402,80 @@ describe('editor', () => {
     await page.context().close();
   });
 
+  it('pages the projects home: 11 projects next to the new-project card, then 12 a page', { timeout: 90_000 }, async () => {
+    const page = await newPage();
+    // 30 projects in the state the page reads, whatever the other tests leave in projects/: 24 Cadence ones, then 6 Moniwa.
+    const projects: ProjectSummary[] = Array.from({ length: 30 }, (_, i) => ({
+      id: `page-${i + 1}`,
+      name: `Projet ${String(i + 1).padStart(2, '0')}`,
+      brand: i < 24 ? null : 'moniwa',
+      formats: ['16:9'],
+      sceneCount: 1,
+      duration: 5,
+      updatedAt: new Date(Date.UTC(2026, 0, 31 - i)).toISOString(),
+      cover: null,
+    }));
+    let listed = projects;
+    await page.route('**/api/state', async (route) => {
+      const response = await route.fetch();
+      return route.fulfill({ response, json: { ...((await response.json()) as AppState), projects: listed } });
+    });
+    // The page reads the state again when the server says the list of projects changed.
+    const relist = async (next: ProjectSummary[], third: 'attached' | 'detached') => {
+      listed = next;
+      server.services.store.events.emit('list-changed');
+      await pages.getByRole('button', { name: 'Page 3' }).waitFor({ state: third });
+    };
+    await page.goto(`${server.config.editorOrigin}/`);
+    const heading = page.getByRole('heading', { name: 'Projets' });
+    await heading.waitFor({ timeout: 60_000 });
+    const cards = () => page.locator('a[href^="#/page-"]').evaluateAll((links) => links.map((a) => a.getAttribute('href')));
+    const ids = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => `#/page-${from + i}`);
+    const newCard = page.getByRole('button', { name: /Modèle, marque et formats/ });
+    const pages = page.getByRole('navigation', { name: 'Pages des projets' });
+    const current = () => pages.locator('[aria-current="page"]').getAttribute('aria-label');
+    const scrolled = () => heading.evaluate((h) => h.closest('.overflow-y-auto')!.scrollTop);
+
+    assert.deepEqual(await cards(), ids(1, 11));
+    assert.equal(await newCard.count(), 1);
+    assert.deepEqual(await pages.getByRole('button').evaluateAll((b) => b.map((el) => el.getAttribute('aria-label'))), [
+      'Page 1',
+      'Page 2',
+      'Page 3',
+    ]);
+    assert.equal(await current(), 'Page 1');
+    await pages.getByRole('button', { name: 'Page 2' }).click();
+    assert.deepEqual(await cards(), ids(12, 23));
+    assert.equal(await newCard.count(), 0, 'the new-project card stays on the first page');
+    assert.equal(await current(), 'Page 2');
+    assert.equal(await scrolled(), 0, 'a new page shows from its top');
+    await pages.getByRole('button', { name: 'Page 3' }).click();
+    assert.deepEqual(await cards(), ids(24, 30));
+    // Projects deleted from the page shown: the one before shows, and stays when projects come back.
+    await relist(projects.slice(0, 23), 'detached');
+    assert.deepEqual(await cards(), ids(12, 23));
+    assert.equal(await current(), 'Page 2');
+    await relist(projects, 'attached');
+    assert.deepEqual(await cards(), ids(12, 23));
+    assert.equal(await current(), 'Page 2', 'a project that comes back does not move the page');
+    // A search or a brand starts over from the first page, and one page of results has no page buttons.
+    const search = page.getByRole('searchbox', { name: 'Rechercher un projet' });
+    await search.fill('Projet');
+    assert.deepEqual(await cards(), ids(1, 11));
+    assert.equal(await current(), 'Page 1');
+    await pages.getByRole('button', { name: 'Page 3' }).click();
+    await page
+      .getByRole('group', { name: 'Marque' })
+      .getByRole('button', { name: /^Cadence/ })
+      .click();
+    assert.deepEqual(await cards(), ids(1, 11));
+    assert.equal(await current(), 'Page 1');
+    await search.fill('Projet 2');
+    assert.deepEqual(await cards(), ids(20, 24));
+    assert.equal(await pages.count(), 0);
+    await page.context().close();
+  });
+
   it('lets a host app drag its window by the top bar, padded for its window buttons', { timeout: 90_000 }, async () => {
     const page = await newPage();
     await page.goto(`${server.config.editorOrigin}/`);
@@ -648,6 +725,486 @@ describe('editor', () => {
     },
   );
 
+  it('keeps the lines of a scene in Voix when its voice start moves', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-r`;
+    await api('POST', '/api/projects', { name: 'Répliques', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    const piper = (await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver;
+    await api('PATCH', `/api/projects/${id}`, {
+      voiceOver: { ...piper, speakers: [{ id: 'leo', name: 'Léo', voice: 'fr_FR-siwis-medium' }] },
+    });
+    const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Dialogue', duration: 3 });
+    const lines = [{ id: 'salut', speaker: 'leo', text: 'Salut !', gesture: 'wave' }];
+    await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines, at: 0 } });
+    const page = await open(id);
+    await panel(page, 'Voix');
+    assert.equal(await page.getByRole('textbox', { name: 'Réplique 1 de « Dialogue »' }).inputValue(), 'Salut !');
+    const start = page.getByRole('textbox', { name: 'Départ de la voix dans « Dialogue », en secondes' });
+    await start.fill('0,5');
+    await start.press('Enter');
+    const said = async () =>
+      (await api<ProjectState>('GET', `/api/projects/${id}`)).scenes.find((s) => s.id === scene.id)!.voiceOver;
+    for (let i = 0; i < 50 && (await said())?.at !== 0.5; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(await said(), { text: 'Salut !', at: 0.5, lines });
+    await page.context().close();
+  });
+
+  it('drops a text draft in Voix when lines replace the text while it is typed', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-d`;
+    await api('POST', '/api/projects', { name: 'Brouillon', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    const piper = (await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver;
+    await api('PATCH', `/api/projects/${id}`, {
+      voiceOver: { ...piper, speakers: [{ id: 'leo', name: 'Léo', voice: 'fr_FR-siwis-medium' }] },
+    });
+    const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Dialogue', duration: 3 });
+    await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { text: 'Bonjour.', at: 0 } });
+    const page = await open(id);
+    const sent: unknown[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'PATCH' && request.url().includes(`/scenes/${scene.id}`)) sent.push(request.postDataJSON());
+    });
+    await panel(page, 'Voix');
+    const script = page.getByRole('textbox', { name: 'Voix off de « Dialogue »' });
+    await script.click();
+    await page.keyboard.type(' Encore.');
+    const lines = [{ id: 'salut', speaker: 'leo', text: 'Salut !' }];
+    await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines, at: 0 } });
+    await page.getByRole('textbox', { name: 'Réplique 1 de « Dialogue »' }).waitFor();
+    await script.waitFor({ state: 'detached' });
+    const start = page.getByRole('textbox', { name: 'Départ de la voix dans « Dialogue », en secondes' });
+    await start.fill('0,5');
+    await start.press('Enter');
+    const said = async () =>
+      (await api<ProjectState>('GET', `/api/projects/${id}`)).scenes.find((s) => s.id === scene.id)!.voiceOver;
+    for (let i = 0; i < 50 && (await said())?.at !== 0.5; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(sent, [{ voiceOver: { lines, at: 0.5 } }], 'the draft is never sent');
+    assert.deepEqual(await said(), { text: 'Salut !', at: 0.5, lines });
+    await page.context().close();
+  });
+
+  /** A project with Léo and Ana and a « Dialogue » scene of 4 s; `lines` once the scene's lines match `done`. */
+  async function dialogue(name: string) {
+    const id = `${PREFIX}-${name}`;
+    await api('POST', '/api/projects', { name: 'Dialogue', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    const piper = (await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver;
+    const speakers = [
+      { id: 'leo', name: 'Léo', voice: 'fr_FR-siwis-medium' },
+      { id: 'ana', name: 'Ana', voice: 'fr_FR-siwis-medium' },
+    ];
+    await api('PATCH', `/api/projects/${id}`, { voiceOver: { ...piper, speakers } });
+    const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Dialogue', duration: 4 });
+    const said = async () =>
+      (await api<ProjectState>('GET', `/api/projects/${id}`)).scenes.find((s) => s.id === scene.id)!.voiceOver;
+    const lines = async (done: (lines: ScriptLine[]) => boolean) => {
+      for (let i = 0; i < 50 && !done((await said())?.lines ?? []); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+      return (await said())?.lines ?? [];
+    };
+    return { id, scene, lines };
+  }
+
+  /** Lines without their ids, which the server derives from their speakers and texts when they are sent without. */
+  const bare = (lines: ScriptLine[]) => lines.map(({ id: _, ...line }) => line);
+
+  /** Whether `control` holds the focus, once the change before it is saved (5 s at most). */
+  async function focused(control: Locator) {
+    const has = () => control.evaluate((el) => el === document.activeElement);
+    for (let i = 0; i < 50 && !(await has()); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    return has();
+  }
+
+  it(
+    'writes a dialogue in Voix line by line: two speakers, timed, kept after a reload, reordered, its gesture kept',
+    { timeout: 90_000 },
+    async () => {
+      const { id, scene, lines } = await dialogue('dl');
+      const page = await open(id);
+      try {
+        await panel(page, 'Voix');
+        assert.equal(await page.getByRole('textbox', { name: 'Voix off de « Dialogue »' }).count(), 0);
+        const add = page.getByRole('button', { name: 'Ajouter une réplique à « Dialogue »' });
+        const line = (n: number) => page.getByRole('textbox', { name: `Réplique ${n} de « Dialogue »` });
+        const speaker = (n: number) => page.getByRole('combobox', { name: `Locuteur de la réplique ${n} de « Dialogue »` });
+        await add.click();
+        assert.equal(await speaker(1).inputValue(), 'leo', 'the first line goes to the first speaker');
+        await line(1).fill('Bonjour.');
+        await line(1).blur();
+        await lines((l) => l.length === 1);
+        await add.click();
+        assert.equal(await speaker(2).inputValue(), 'ana', 'a new line goes to the speaker after the last one');
+        await line(2).fill('Salut.');
+        await line(2).blur();
+        assert.deepEqual(bare(await lines((l) => l.length === 2)), [
+          { speaker: 'leo', text: 'Bonjour.' },
+          { speaker: 'ana', text: 'Salut.' },
+        ]);
+        // One second per sentence (the fake Piper), 0,2 s between two speakers.
+        await page.getByText(`de 0,00${NBSP}s à 1,00${NBSP}s`).waitFor({ timeout: 30_000 });
+        await page.getByText(`de 1,20${NBSP}s à 2,20${NBSP}s`).waitFor();
+
+        await page.reload();
+        await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
+        await panel(page, 'Voix');
+        assert.deepEqual(
+          [await line(1).inputValue(), await speaker(1).inputValue(), await line(2).inputValue(), await speaker(2).inputValue()],
+          ['Bonjour.', 'leo', 'Salut.', 'ana'],
+        );
+
+        // A gesture set through the API is shown, and kept when its line's text changes.
+        await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, {
+          voiceOver: {
+            lines: [
+              { speaker: 'leo', text: 'Bonjour.', gesture: 'wave' },
+              { speaker: 'ana', text: 'Salut.' },
+            ],
+            at: 0,
+          },
+        });
+        await page.getByText('Geste : wave').waitFor({ timeout: 10_000 });
+        await line(1).fill('Bonjour à tous.');
+        await line(1).blur();
+        assert.deepEqual(bare(await lines((l) => l[0].text !== 'Bonjour.'))[0], {
+          speaker: 'leo',
+          text: 'Bonjour à tous.',
+          gesture: 'wave',
+        });
+
+        assert.ok(await page.getByRole('button', { name: 'Monter la réplique 1 de « Dialogue »' }).isDisabled());
+        assert.ok(await page.getByRole('button', { name: 'Descendre la réplique 2 de « Dialogue »' }).isDisabled());
+        await page.getByRole('button', { name: 'Descendre la réplique 1 de « Dialogue »' }).click();
+        assert.deepEqual(bare(await lines((l) => l[0].speaker === 'ana')), [
+          { speaker: 'ana', text: 'Salut.' },
+          { speaker: 'leo', text: 'Bonjour à tous.', gesture: 'wave' },
+        ]);
+        await page.getByRole('button', { name: 'Monter la réplique 2 de « Dialogue »' }).click();
+        await lines((l) => l[0].speaker === 'leo');
+        await speaker(2).selectOption('leo');
+        assert.deepEqual(bare(await lines((l) => l[1].speaker === 'leo')), [
+          { speaker: 'leo', text: 'Bonjour à tous.', gesture: 'wave' },
+          { speaker: 'leo', text: 'Salut.' },
+        ]);
+
+        // The last line removed, the scene has no voice-over left.
+        await page.getByRole('button', { name: 'Retirer la réplique 2 de « Dialogue »' }).click();
+        await lines((l) => l.length === 1);
+        await page.getByRole('button', { name: 'Retirer la réplique 1 de « Dialogue »' }).click();
+        await lines((l) => l.length === 0);
+        await line(1).waitFor({ state: 'detached' });
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
+
+  it("shows the server's refusal of a line beside the lines in Voix, once", { timeout: 90_000 }, async () => {
+    const { id, scene, lines } = await dialogue('dr');
+    await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, {
+      voiceOver: { lines: [{ speaker: 'leo', text: 'Un.' }], at: 0 },
+    });
+    const page = await open(id);
+    try {
+      await panel(page, 'Voix');
+      await page.route(`**/api/projects/${id}/scenes/${scene.id}`, (route) =>
+        route.request().method() === 'PATCH'
+          ? route.fulfill({ status: 400, json: { error: 'Réplique refusée par le serveur' } })
+          : route.fallback(),
+      );
+      const line = page.getByRole('textbox', { name: 'Réplique 1 de « Dialogue »' });
+      await line.fill('Deux.');
+      await line.blur();
+      const refused = page.getByRole('alert').filter({ hasText: 'Réplique refusée par le serveur' });
+      await refused.waitFor({ timeout: 10_000 });
+      assert.equal(await page.getByText('Réplique refusée par le serveur').count(), 1, 'beside the lines, not again in a toast');
+      assert.equal(await line.inputValue(), 'Deux.', 'the refused text stays in its field');
+      await page.unroute(`**/api/projects/${id}/scenes/${scene.id}`);
+      await line.fill('Trois.');
+      await line.blur();
+      assert.deepEqual(bare(await lines((l) => l[0]?.text === 'Trois.')), [{ speaker: 'leo', text: 'Trois.' }]);
+      assert.equal(await refused.count(), 0, 'the next change clears the refusal');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  it('keeps the draft of a line in Voix in its own row when a line above it is removed', { timeout: 90_000 }, async () => {
+    const { id, scene, lines } = await dialogue('dk');
+    const two = [
+      { speaker: 'leo', text: 'Un.' },
+      { speaker: 'ana', text: 'Deux.' },
+    ];
+    await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines: two, at: 0 } });
+    const page = await open(id);
+    try {
+      await panel(page, 'Voix');
+      const line = (n: number) => page.getByRole('textbox', { name: `Réplique ${n} de « Dialogue »` });
+      // The agent removes line 1 while line 2 is typed: the draft moves up with its line.
+      await line(2).click();
+      await page.keyboard.press('End');
+      await page.keyboard.type(' Encore.');
+      await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines: [two[1]], at: 0 } });
+      await line(2).waitFor({ state: 'detached', timeout: 10_000 });
+      assert.equal(await line(1).inputValue(), 'Deux. Encore.');
+      await line(1).blur();
+      assert.deepEqual(bare(await lines((l) => l[0]?.text !== 'Deux.')), [{ speaker: 'ana', text: 'Deux. Encore.' }]);
+
+      // Removed from Voix while line 2 is typed: the draft is saved into line 2, then line 1 goes.
+      await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines: two, at: 0 } });
+      await line(2).waitFor({ timeout: 10_000 });
+      await line(2).click();
+      await page.keyboard.press('End');
+      await page.keyboard.type(' Fin.');
+      await page.getByRole('button', { name: 'Retirer la réplique 1 de « Dialogue »' }).click();
+      assert.deepEqual(bare(await lines((l) => l.length === 1)), [{ speaker: 'ana', text: 'Deux. Fin.' }]);
+      assert.equal(await line(1).inputValue(), 'Deux. Fin.');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  it('removes one line in Voix on a double click on its remove button', { timeout: 90_000 }, async () => {
+    const { id, scene, lines } = await dialogue('dd');
+    const three = [
+      { speaker: 'leo', text: 'Un.' },
+      { speaker: 'ana', text: 'Deux.' },
+      { speaker: 'leo', text: 'Trois.' },
+    ];
+    await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines: three, at: 0 } });
+    const page = await open(id);
+    try {
+      await panel(page, 'Voix');
+      // The second click lands before the first removal is saved: it must not take the line that moved up.
+      await page.getByRole('button', { name: 'Retirer la réplique 1 de « Dialogue »' }).dblclick();
+      await page.getByRole('textbox', { name: 'Réplique 3 de « Dialogue »' }).waitFor({ state: 'detached', timeout: 10_000 });
+      // Saved after both clicks: the lines it finds are the ones they left.
+      await page.getByRole('combobox', { name: 'Locuteur de la réplique 1 de « Dialogue »' }).selectOption('leo');
+      assert.deepEqual(bare(await lines((l) => l[0]?.speaker === 'leo')), [
+        { speaker: 'leo', text: 'Deux.' },
+        { speaker: 'leo', text: 'Trois.' },
+      ]);
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  it('removes a line in Voix whose text was changed just before, in the same click', { timeout: 90_000 }, async () => {
+    const { id, scene, lines } = await dialogue('de');
+    const two = [
+      { speaker: 'leo', text: 'Un.' },
+      { speaker: 'ana', text: 'Deux.' },
+    ];
+    await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines: two, at: 0 } });
+    const page = await open(id);
+    try {
+      await panel(page, 'Voix');
+      await page.getByRole('textbox', { name: 'Réplique 1 de « Dialogue »' }).fill('Un, plutôt.');
+      // The click leaves the field: its text is saved first, then the removal finds the line it changed.
+      await page.getByRole('button', { name: 'Retirer la réplique 1 de « Dialogue »' }).click();
+      assert.deepEqual(bare(await lines((l) => l.length === 1)), [two[1]]);
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  it(
+    'keeps the keyboard focus in Voix on a moved line, then on the next line once one is removed',
+    { timeout: 90_000 },
+    async () => {
+      const { id, scene, lines } = await dialogue('df');
+      const three = [
+        { speaker: 'leo', text: 'Un.' },
+        { speaker: 'ana', text: 'Deux.' },
+        { speaker: 'leo', text: 'Trois.' },
+      ];
+      await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines: three, at: 0 } });
+      const page = await open(id);
+      const button = (action: string, n: number) =>
+        page.getByRole('button', { name: `${action} la réplique ${n} de « Dialogue »` });
+      const press = async (control: Locator) => {
+        await control.focus();
+        await page.keyboard.press('Enter');
+      };
+      try {
+        await panel(page, 'Voix');
+        await press(button('Descendre', 1));
+        assert.ok(await focused(button('Descendre', 2)), 'the button moves with its line');
+        await press(button('Descendre', 2));
+        assert.ok(await focused(button('Monter', 3)), 'the last line cannot go lower: the other button takes the focus');
+        assert.deepEqual(
+          bare(await lines(() => true)).map((l) => l.text),
+          ['Deux.', 'Trois.', 'Un.'],
+        );
+        await press(button('Monter', 3));
+        assert.ok(await focused(button('Monter', 2)), 'the button moves up with its line');
+        await press(button('Monter', 2));
+        assert.ok(await focused(button('Descendre', 1)), 'the first line cannot go higher: the other button takes the focus');
+        assert.deepEqual(
+          bare(await lines(() => true)).map((l) => l.text),
+          ['Un.', 'Deux.', 'Trois.'],
+        );
+
+        await press(button('Retirer', 2));
+        // Until the row is gone, the focused « Retirer 2 » is still the removed line's own button.
+        await page.getByRole('textbox', { name: 'Réplique 3 de « Dialogue »' }).waitFor({ state: 'detached', timeout: 10_000 });
+        assert.ok(await focused(button('Retirer', 2)), 'the next line, now second');
+        await press(button('Retirer', 2));
+        assert.ok(
+          await focused(page.getByRole('button', { name: 'Ajouter une réplique à « Dialogue »' })),
+          'after the last line',
+        );
+        assert.deepEqual(bare(await lines((l) => l.length === 1)), [three[0]]);
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
+
+  it('leaves the keyboard focus in a line clicked in Voix while a removal is being saved', { timeout: 90_000 }, async () => {
+    const { id, scene, lines } = await dialogue('dt');
+    const three = [
+      { speaker: 'leo', text: 'Un.' },
+      { speaker: 'ana', text: 'Deux.' },
+      { speaker: 'leo', text: 'Trois.' },
+    ];
+    await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { lines: three, at: 0 } });
+    const page = await open(id);
+    try {
+      await panel(page, 'Voix');
+      let answer = () => {};
+      const held = new Promise<void>((resolve) => (answer = resolve));
+      await page.route(`**/api/projects/${id}/scenes/${scene.id}`, async (route) => {
+        if (route.request().method() === 'PATCH') await held;
+        return route.fallback();
+      });
+      await page.getByRole('button', { name: 'Retirer la réplique 1 de « Dialogue »' }).focus();
+      await page.keyboard.press('Enter');
+      await page.getByRole('textbox', { name: 'Réplique 3 de « Dialogue »' }).click();
+      answer();
+      await page.getByRole('textbox', { name: 'Réplique 3 de « Dialogue »' }).waitFor({ state: 'detached', timeout: 10_000 });
+      assert.deepEqual(bare(await lines((l) => l.length === 2)), three.slice(1));
+      const clicked = page.getByRole('textbox', { name: 'Réplique 2 de « Dialogue »' });
+      assert.ok(await clicked.evaluate((el) => el === document.activeElement), 'the removal does not take it back');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  it(
+    'moves the keyboard focus in Voix to the next speaker once one is removed, then to the add button',
+    { timeout: 90_000 },
+    async () => {
+      const { id } = await dialogue('ds');
+      const page = await open(id);
+      try {
+        await panel(page, 'Voix');
+        await page.getByRole('button', { name: 'Retirer « Léo »' }).focus();
+        await page.keyboard.press('Enter');
+        const ana = page.getByRole('button', { name: 'Retirer « Ana »' });
+        assert.ok(await focused(ana));
+        await page.keyboard.press('Enter');
+        assert.ok(await focused(page.getByRole('button', { name: 'Ajouter un locuteur' })));
+        assert.deepEqual((await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver.speakers ?? [], []);
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
+
+  it(
+    'adds a line in Voix once its text is saved: speaker chosen first, nothing sent blank, kept open when refused, cancelled',
+    { timeout: 90_000 },
+    async () => {
+      const { id, scene, lines } = await dialogue('dn');
+      const page = await open(id);
+      const sent: unknown[] = [];
+      page.on('request', (request) => {
+        if (request.method() === 'PATCH' && request.url().includes(`/scenes/${scene.id}`)) sent.push(request.postDataJSON());
+      });
+      try {
+        await panel(page, 'Voix');
+        const add = page.getByRole('button', { name: 'Ajouter une réplique à « Dialogue »' });
+        const line = (n: number) => page.getByRole('textbox', { name: `Réplique ${n} de « Dialogue »` });
+        const speaker = (n: number) => page.getByRole('combobox', { name: `Locuteur de la réplique ${n} de « Dialogue »` });
+        await add.click();
+        await speaker(1).selectOption('ana');
+        await line(1).fill('   ');
+        await line(1).blur();
+        await line(1).fill('Bonjour.');
+        await line(1).blur();
+        const [bonjour] = await lines((l) => l.length === 1);
+        assert.deepEqual(bare([bonjour]), [{ speaker: 'ana', text: 'Bonjour.' }]);
+        // Back once the new row closed, so line 1 below is the saved line. Emptied, it gets its text back.
+        await add.waitFor();
+        await line(1).fill('');
+        await line(1).blur();
+        assert.equal(await line(1).inputValue(), 'Bonjour.');
+
+        await page.route(`**/api/projects/${id}/scenes/${scene.id}`, (route) =>
+          route.request().method() === 'PATCH'
+            ? route.fulfill({ status: 400, json: { error: 'Réplique refusée par le serveur' } })
+            : route.fallback(),
+        );
+        await add.click();
+        await line(2).fill('Refusée.');
+        await line(2).blur();
+        await page.getByRole('alert').filter({ hasText: 'Réplique refusée par le serveur' }).waitFor({ timeout: 10_000 });
+        assert.equal(await line(2).inputValue(), 'Refusée.', 'the refused line stays open with its text');
+        assert.equal(await add.count(), 0);
+        await page.getByRole('button', { name: 'Retirer la réplique 2 de « Dialogue »' }).click();
+        await line(2).waitFor({ state: 'detached' });
+        await add.waitFor();
+        await page.unroute(`**/api/projects/${id}/scenes/${scene.id}`);
+        assert.deepEqual(sent, [
+          { voiceOver: { lines: [{ speaker: 'ana', text: 'Bonjour.' }], at: 0 } },
+          {
+            voiceOver: {
+              lines: [bonjour, { speaker: 'leo', text: 'Refusée.' }],
+              at: 0,
+            },
+          },
+        ]);
+        assert.deepEqual(await lines(() => true), [bonjour]);
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
+
+  it(
+    "shows the server's refusal of a scene's text and of its voice start in Voix beside its fields, once",
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-tr`;
+      await api('POST', '/api/projects', { name: 'Texte', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Parole', duration: 3 });
+      await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, { voiceOver: { text: 'Bonjour.', at: 0 } });
+      const page = await open(id);
+      const refuse = (error: string) =>
+        page.route(`**/api/projects/${id}/scenes/${scene.id}`, (route) =>
+          route.request().method() === 'PATCH' ? route.fulfill({ status: 400, json: { error } }) : route.fallback(),
+        );
+      try {
+        await panel(page, 'Voix');
+        // Spoken before the refusals: nothing is still being written when the project is removed.
+        await page.getByText(`1${NBSP}phrase, de 0,00${NBSP}s à 1,00${NBSP}s`).waitFor({ timeout: 30_000 });
+        await refuse('Texte refusé par le serveur');
+        const text = page.getByRole('textbox', { name: 'Voix off de « Parole »' });
+        await text.fill('Bonsoir.');
+        await text.blur();
+        await page.getByRole('alert').filter({ hasText: 'Texte refusé par le serveur' }).waitFor({ timeout: 10_000 });
+        assert.equal(await page.getByText('Texte refusé par le serveur').count(), 1, 'beside the text, not again in a toast');
+
+        await page.unroute(`**/api/projects/${id}/scenes/${scene.id}`);
+        await refuse('Départ refusé par le serveur');
+        const start = page.getByRole('textbox', { name: 'Départ de la voix dans « Parole », en secondes' });
+        await start.fill('1');
+        await start.press('Enter');
+        await page.getByRole('alert').filter({ hasText: 'Départ refusé par le serveur' }).waitFor({ timeout: 10_000 });
+        assert.equal(await page.getByText('Départ refusé par le serveur').count(), 1, 'beside the start, not again in a toast');
+        assert.equal(await page.getByText('Texte refusé par le serveur').count(), 0, 'the next change clears the refusal');
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
+
   it(
     'keeps a voice-over failure in Voix after a reload, generates the scene again, and listens from its voice start',
     { timeout: 90_000 },
@@ -787,9 +1344,22 @@ describe('editor', () => {
         await api('PUT', '/api/voices/elevenlabs/key', { key: ELEVENLABS_KEY });
         page = await open(id);
         await panel(page, 'Voix');
-        await page.getByRole('group', { name: 'Moteur de la voix' }).getByRole('button', { name: 'ElevenLabs' }).click();
+        const engines = page.getByRole('group', { name: 'Moteur de la voix' });
+        // A failed catalog shows its message until the next load, once back on ElevenLabs, brings the voices.
+        await page.route(
+          '**/api/voices/elevenlabs',
+          (route) => route.fulfill({ status: 502, json: { error: 'ElevenLabs ne répond pas' } }),
+          { times: 1 },
+        );
+        await engines.getByRole('button', { name: 'ElevenLabs' }).click();
+        const failed = page.getByText('ElevenLabs ne répond pas');
+        await failed.waitFor({ timeout: 10_000 });
+        await engines.getByRole('button', { name: 'Piper' }).click();
+        await page.getByText('Cadence la génère dès que vous quittez le champ.').waitFor();
+        await engines.getByRole('button', { name: 'ElevenLabs' }).click();
         const voice = page.getByRole('combobox', { name: 'Voix ElevenLabs de la vidéo' });
         await voice.waitFor({ timeout: 10_000 });
+        assert.equal(await failed.count(), 0);
         // Nothing saved until a voice is set: the project still speaks with Piper.
         assert.equal((await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver.engine, undefined);
         assert.equal(await page.getByRole('combobox', { name: 'Modèle ElevenLabs' }).inputValue(), 'eleven_multilingual_v2');
@@ -801,6 +1371,9 @@ describe('editor', () => {
         });
         await page.getByRole('button', { name: 'Écouter un extrait de la voix Alice' }).waitFor();
         await page.getByText('ElevenLabs la génère quand vous cliquez sur Générer.').waitFor();
+        // A key of its own: the voices come from the user's ElevenLabs account, not from a host app.
+        await page.getByText('Avec votre compte ElevenLabs.').waitFor();
+        assert.equal(await page.getByText('Les voix de l’application.').count(), 0);
         assert.equal(await page.getByRole('slider', { name: 'Vitesse de la voix' }).getAttribute('max'), '1.2');
         const project = await api<ProjectState>('GET', `/api/projects/${id}`);
         assert.equal(project.voiceOver.engine, 'elevenlabs');
@@ -902,9 +1475,305 @@ describe('editor', () => {
         await card.getByText('Pas de clé').waitFor({ timeout: 10_000 });
         await card.getByLabel('Clé API ElevenLabs').waitFor();
         assert.equal((await api<AppState>('GET', '/api/state')).settings.defaultVoice, undefined);
+
+        // A key file that no longer parses: the card says so, and the form saves a new key over it.
+        await writeFile(path.join(stateDir, 'elevenlabs.json'), '{ not json');
+        await page.reload();
+        await card.getByText('elevenlabs.json illisible').waitFor({ timeout: 10_000 });
+        await card.getByLabel('Clé API ElevenLabs').waitFor();
+        await page.getByRole('listitem', { name: 'Piper' }).getByText('Installé, gratuit').waitFor();
       } finally {
         await api('DELETE', '/api/voices/elevenlabs/key');
         await page.context().close();
+      }
+    },
+  );
+
+  it(
+    'sets the speakers in Voix: up to ten, renamed, voiced, colored, and keeps one a line still uses',
+    { timeout: 120_000 },
+    async () => {
+      const id = `${PREFIX}-sp`;
+      await api('POST', '/api/projects', { name: 'Locuteurs', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Dialogue', duration: 3 });
+      const speakers = async () => (await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver.speakers ?? [];
+      const until = async (done: (list: Awaited<ReturnType<typeof speakers>>) => boolean) => {
+        for (let i = 0; i < 50 && !done(await speakers()); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+        return speakers();
+      };
+      // New speakers take the project's voice (the brand's language default); Camille then takes the other one.
+      const voice = (await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver.voice;
+      const other = voice === 'en_US-joe-medium' ? 'fr_FR-siwis-medium' : 'en_US-joe-medium';
+      const page = await open(id);
+      try {
+        await panel(page, 'Voix');
+        const add = page.getByRole('button', { name: 'Ajouter un locuteur' });
+        // Two clicks before the first PATCH answers: the second speaker comes on top of the first, not in its place.
+        let answer = () => {};
+        const held = new Promise<void>((resolve) => (answer = resolve));
+        await page.route(`**/api/projects/${id}`, async (route) => {
+          if (route.request().method() === 'PATCH') await held;
+          return route.fallback();
+        });
+        await add.click();
+        await add.click();
+        answer();
+        const second = page.getByRole('textbox', { name: 'Nom de « Locuteur 2 »' });
+        await second.waitFor({ timeout: 10_000 });
+        await page.unroute(`**/api/projects/${id}`);
+        const added = await speakers();
+        assert.deepEqual(
+          added.map(({ id, name, voice }) => ({ id, name, voice })),
+          [
+            { id: 'speaker-1', name: 'Locuteur 1', voice },
+            { id: 'speaker-2', name: 'Locuteur 2', voice },
+          ],
+        );
+        assert.match(added[0].color!, /^#[0-9a-f]{6}$/);
+        assert.notEqual(added[0].color, added[1].color, 'each new speaker gets its own color');
+
+        await second.fill('Camille');
+        await second.blur();
+        await page.getByRole('combobox', { name: 'Voix de « Camille »' }).selectOption(other);
+        await until((list) => list[1]?.voice === other);
+        const color = page.getByLabel('Couleur de « Camille »');
+        await color.fill('#ff0000');
+        await color.blur();
+        assert.deepEqual((await until((list) => list[1]?.color === '#ff0000'))[1], {
+          id: 'speaker-2',
+          name: 'Camille',
+          voice: other,
+          color: '#ff0000',
+        });
+
+        // A line of « Dialogue » says Camille's text: the server refuses her removal, the panel says why beside the list.
+        await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, {
+          voiceOver: { lines: [{ speaker: 'speaker-2', text: 'Salut !' }], at: 0 },
+        });
+        const removeCamille = page.getByRole('button', { name: 'Retirer « Camille »' });
+        await removeCamille.focus();
+        await page.keyboard.press('Enter');
+        const refused = page.getByText('Le locuteur "speaker-2" dit encore des répliques dans la scène "Dialogue"');
+        await refused.waitFor({ timeout: 10_000 });
+        assert.equal(await refused.count(), 1, 'shown once, beside the list, not again in a toast');
+        assert.equal((await speakers()).length, 2);
+        assert.ok(await removeCamille.evaluate((el) => el === document.activeElement), 'a refused removal leaves the focus');
+        await page.getByRole('button', { name: 'Retirer « Locuteur 1 »' }).click();
+        await page.getByRole('textbox', { name: 'Nom de « Locuteur 1 »' }).waitFor({ state: 'detached', timeout: 10_000 });
+        assert.equal(await refused.count(), 0, 'the next change clears the refusal');
+        assert.deepEqual(
+          (await speakers()).map((s) => s.id),
+          ['speaker-2'],
+        );
+
+        const names = page.getByRole('textbox', { name: /^Nom de « / });
+        for (let n = 2; n <= 10; n++) {
+          await add.click();
+          await names.nth(n - 1).waitFor({ timeout: 10_000 });
+        }
+        assert.equal((await speakers()).length, 10);
+        assert.ok(await add.isDisabled(), 'ten speakers at most');
+
+        // The video's voice and a removal before the first PATCH answers: the second keeps what the first saved.
+        let release = () => {};
+        const holding = new Promise<void>((resolve) => (release = resolve));
+        await page.route(`**/api/projects/${id}`, async (route) => {
+          if (route.request().method() === 'PATCH') await holding;
+          return route.fallback();
+        });
+        await page.getByRole('combobox', { name: 'Voix de la vidéo', exact: true }).selectOption(other);
+        const removeLast = page.getByRole('button', { name: /^Retirer « / }).last();
+        await removeLast.click();
+        release();
+        const settled = async () => (await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver;
+        for (let i = 0; i < 50; i++) {
+          const { voice, speakers = [] } = await settled();
+          if (voice === other && speakers.length === 9) break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        await page.unroute(`**/api/projects/${id}`);
+        const both = await settled();
+        assert.deepEqual({ voice: both.voice, speakers: both.speakers?.length }, { voice: other, speakers: 9 });
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
+
+  // Back on Piper, the speakers take the default voice of the video's language, else of its brand's (cadence: en, moniwa: fr).
+  for (const { brand, language, spoken } of [
+    { brand: 'cadence', language: undefined, spoken: 'en' },
+    { brand: 'cadence', language: 'fr', spoken: 'fr' },
+    { brand: 'moniwa', language: undefined, spoken: 'fr' },
+  ] as const) {
+    it(
+      `puts every speaker on the new engine's voice in the PATCH that switches the engine (${brand}, ${language ?? 'no language'})`,
+      { timeout: 90_000 },
+      async () => {
+        const id = `${PREFIX}-se-${brand}-${language ?? 'none'}`;
+        await api('POST', '/api/projects', { name: 'Moteur', id, brand, language, formats: ['16:9'], fps: 30 });
+        const piper = (await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver;
+        const fallback = defaultVoiceOver(spoken).voice;
+        const leo = { id: 'leo', name: 'Léo', color: '#123456' };
+        const mia = { id: 'mia', name: 'Mia', color: '#654321' };
+        await api('PATCH', `/api/projects/${id}`, {
+          voiceOver: {
+            ...piper,
+            speed: 1.2,
+            musicLevel: 0.5,
+            speakers: [leo, mia].map((s) => ({ ...s, voice: 'en_US-joe-medium' })),
+          },
+        });
+        const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Dialogue', duration: 3 });
+        await api('PATCH', `/api/projects/${id}/scenes/${scene.id}`, {
+          voiceOver: { lines: [{ id: 'salut', speaker: 'leo', text: 'Salut !' }], at: 0 },
+        });
+        await api('PUT', '/api/voices/elevenlabs/key', { key: ELEVENLABS_KEY });
+        const page = await open(id);
+        const sent: unknown[] = [];
+        page.on('request', (request) => {
+          if (request.method() === 'PATCH' && request.url().endsWith(`/api/projects/${id}`)) sent.push(request.postDataJSON());
+        });
+        const patched = () =>
+          page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith(`/api/projects/${id}`));
+        const catalogs: string[] = [];
+        page.on('request', (request) => request.url().endsWith('/api/voices/elevenlabs') && catalogs.push(request.method()));
+        try {
+          await panel(page, 'Voix');
+          const leoVoice = page.getByRole('combobox', { name: 'Voix de « Léo »' });
+          const miaVoice = page.getByRole('combobox', { name: 'Voix de « Mia »' });
+          await leoVoice.waitFor();
+          await page.getByRole('group', { name: 'Moteur de la voix' }).getByRole('button', { name: 'ElevenLabs' }).click();
+          const video = page.getByRole('combobox', { name: 'Voix ElevenLabs de la vidéo' });
+          let saved = patched();
+          await video.selectOption('voiceAlice1');
+          assert.ok((await saved).ok());
+          await leoVoice.waitFor();
+          assert.equal(await leoVoice.inputValue(), 'voiceAlice1');
+          await leoVoice.locator('option', { hasText: 'Bob' }).waitFor({ state: 'attached' });
+          assert.deepEqual(catalogs, ['GET'], 'one catalog for the video and the speakers');
+
+          // On ElevenLabs, the video's voice is its own: each speaker keeps theirs.
+          saved = patched();
+          await miaVoice.selectOption('voiceBob2');
+          assert.ok((await saved).ok());
+          saved = patched();
+          await video.selectOption('voiceBob2');
+          assert.ok((await saved).ok());
+          const both = [
+            { ...leo, voice: 'voiceAlice1' },
+            { ...mia, voice: 'voiceBob2' },
+          ];
+          assert.deepEqual((await api<ProjectState>('GET', `/api/projects/${id}`)).voiceOver.speakers, both);
+
+          // While ElevenLabs speaks the dialogue, the speakers are locked like the video's voice.
+          const speakerFields = [
+            leoVoice,
+            page.getByRole('textbox', { name: 'Nom de « Léo »' }),
+            page.getByRole('button', { name: 'Retirer « Léo »' }),
+            page.getByRole('button', { name: 'Ajouter un locuteur' }),
+          ];
+          let release = () => {};
+          elevenLabsHold = new Promise((resolve) => (release = resolve));
+          try {
+            await page.getByRole('button', { name: 'Générer la voix off de « Dialogue »' }).click({ timeout: 10_000 });
+            await page.locator('fieldset[disabled]').waitFor({ timeout: 10_000 });
+            for (const field of speakerFields) assert.ok(await field.isDisabled());
+          } finally {
+            release();
+            elevenLabsHold = null;
+          }
+          await page.locator('fieldset[disabled]').waitFor({ state: 'detached', timeout: 10_000 });
+          for (const field of speakerFields) assert.ok(await field.isEnabled());
+
+          await page.getByRole('group', { name: 'Moteur de la voix' }).getByRole('button', { name: 'Piper' }).click();
+          await page.getByText('Cadence la génère dès que vous quittez le champ.').waitFor({ timeout: 10_000 });
+          assert.equal(await leoVoice.inputValue(), fallback);
+          // A speed and level off the defaults, so each switch shows it carries the project's own.
+          const elevenLabsVoice = { engine: 'elevenlabs', model: 'eleven_multilingual_v2', speed: 1.2, musicLevel: 0.5 };
+          const onFallback = [leo, mia].map((s) => ({ ...s, voice: fallback }));
+          assert.deepEqual(sent, [
+            {
+              voiceOver: {
+                ...elevenLabsVoice,
+                voice: 'voiceAlice1',
+                speakers: [leo, mia].map((s) => ({ ...s, voice: 'voiceAlice1' })),
+              },
+            },
+            { voiceOver: { ...elevenLabsVoice, voice: 'voiceAlice1', speakers: both } },
+            { voiceOver: { ...elevenLabsVoice, voice: 'voiceBob2', speakers: both } },
+            { voiceOver: { voice: fallback, speed: 1.2, musicLevel: 0.5, speakers: onFallback } },
+          ]);
+          const project = await api<ProjectState>('GET', `/api/projects/${id}`);
+          assert.deepEqual(project.voiceOver, { ...defaultVoiceOver(spoken), speed: 1.2, musicLevel: 0.5, speakers: onFallback });
+          assert.deepEqual(project.scenes.find((s) => s.id === scene.id)!.voiceOver?.lines, [
+            { id: 'salut', speaker: 'leo', text: 'Salut !' },
+          ]);
+        } finally {
+          await api('DELETE', '/api/voices/elevenlabs/key');
+          await page.context().close();
+        }
+      },
+    );
+  }
+
+  it(
+    'takes the ElevenLabs voices from a host app that holds the key: no key to give in Voix or the Profile',
+    {
+      timeout: 120_000,
+    },
+    async () => {
+      const t = await makeRoot();
+      let hosted: RunningServer | undefined;
+      try {
+        const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
+        const keys: (string | null)[] = [];
+        hosted = await startServer({
+          root: ROOT,
+          projectsDir,
+          brandsDir,
+          templatesDir,
+          stateDir,
+          editorPort: 0,
+          framePort: 0,
+          quiet: true,
+          provider,
+          speech,
+          elevenLabs: {
+            ...elevenLabs,
+            hosted: true,
+            voices: async (key) => {
+              keys.push(key);
+              return [{ id: 'voiceHost3', name: 'Hôte', category: 'premade', previewUrl: null, languages: ['fr'] }];
+            },
+          },
+        });
+        const created = await fetch(`${hosted.config.editorOrigin}/api/projects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': hosted.editorToken },
+          body: JSON.stringify({ name: 'Hébergé', id: 'heberge', brand: 'cadence', formats: ['16:9'], fps: 30 }),
+        });
+        assert.ok(created.ok, `POST /api/projects: ${created.status}`);
+        const page = await newPage();
+        await page.goto(`${hosted.config.editorOrigin}/#/heberge`);
+        await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
+        await panel(page, 'Voix');
+        await page.getByRole('group', { name: 'Moteur de la voix' }).getByRole('button', { name: 'ElevenLabs' }).click();
+        await page.getByText('Les voix de l’application.').waitFor({ timeout: 10_000 });
+        const voice = page.getByRole('combobox', { name: 'Voix ElevenLabs de la vidéo' });
+        await voice.locator('option', { hasText: 'Hôte' }).waitFor({ state: 'attached', timeout: 10_000 });
+        assert.equal(await page.getByText(/Aucune clé ElevenLabs/).count(), 0);
+        assert.deepEqual(keys, [null], 'the host client brings its own key');
+
+        await page.goto(`${hosted.config.editorOrigin}/#/@profil`);
+        const card = page.getByRole('listitem', { name: 'ElevenLabs' });
+        await card.getByRole('combobox', { name: 'Voix des nouveaux projets' }).waitFor({ timeout: 60_000 });
+        assert.equal(await card.getByLabel('Clé API ElevenLabs').count(), 0);
+        assert.equal(await card.getByRole('button', { name: 'Retirer la clé' }).count(), 0);
+        await page.context().close();
+      } finally {
+        await hosted?.close();
+        await t.cleanup();
       }
     },
   );

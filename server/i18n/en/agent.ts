@@ -40,6 +40,8 @@ export default {
       brand: 'Reading the brand',
       music: 'Reading the music grid',
       templates: 'Listing templates',
+      voices: 'Listing voices',
+      speakers: 'Project speakers set',
       duration: (duration: string) => `Duration set to ${duration}`,
       voiceOver: (cleared: boolean) => (cleared ? 'Voice-over removed' : 'Voice-over written and generated'),
       version: (label: string) => `Version "${label}"`,
@@ -109,6 +111,10 @@ export default {
     checkOwnMotion: 'check the motion of your scene.',
     setOwnDuration: 'change the duration of your scene; the project chat sets the others.',
     setOwnVoiceOver: 'set the voice-over of your scene; the project chat sets the others.',
+    linesNeeded: (sceneId: string) =>
+      `Scene "${sceneId}" is written in lines: pass lines (one per speaker turn), not text. An empty text removes the voice-over.`,
+    unknownSpeaker: (id: string) =>
+      `"${id}" is not a speaker of the project: lines name the id of a speaker set with set_speakers (in the project chat).`,
     badUrl: (url: string) => `Invalid URL: ${url} (only http(s) URLs can be captured).`,
   },
   mcpTokens: {

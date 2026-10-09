@@ -176,10 +176,14 @@ export function activityLabel(name: string, input: Record<string, unknown>, proj
       return words.music;
     case 'list_templates':
       return words.templates;
+    case 'list_voices':
+      return words.voices;
+    case 'set_speakers':
+      return words.speakers;
     case 'set_scene_duration':
       return words.duration(formatSeconds(Number(input.seconds) || 0));
     case 'set_voice_over':
-      return words.voiceOver(!str(input.text).trim());
+      return words.voiceOver(!input.lines && !str(input.text).trim());
     case 'save_version':
       return words.version(str(input.label));
     case 'create_scene':

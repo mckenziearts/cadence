@@ -22,7 +22,7 @@ import { useT } from '../i18n';
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'subtle';
 type Size = 'xs' | 'sm' | 'md' | 'lg';
 
-/** Framed buttons are keys (ink frame, printed shadow, Anton capitals); ghost and subtle ones are quiet labels. */
+/** Framed buttons are keys (ink frame, printed shadow, Anton capitals); ghost ones are quiet labels. */
 const VARIANTS: Record<Variant, string> = {
   primary: 'press border-2 border-ink bg-now text-ink hover:bg-now/85 disabled:border-track disabled:bg-wash disabled:text-ink-4',
   secondary: 'press border-2 border-ink bg-white text-ink hover:bg-wash disabled:border-track disabled:text-ink-4',
@@ -32,7 +32,7 @@ const VARIANTS: Record<Variant, string> = {
   danger: 'press border-2 border-ink bg-alert text-white hover:bg-alert/90 disabled:opacity-50',
 };
 
-const KEYS = new Set<Variant>(['primary', 'secondary', 'danger']);
+const KEYS = new Set<Variant>(['primary', 'secondary', 'subtle', 'danger']);
 
 const SIZES: Record<Size, string> = {
   xs: 'h-6 px-1.5 gap-1',
@@ -167,6 +167,29 @@ export function BeatPills({ tempo, className }: { tempo?: number; className?: st
       <span className="ml-0.5 h-[3px] w-[7px] rounded-full bg-current" />
     </span>
   );
+}
+
+/**
+ * For a list whose rows move or go once a change is saved: `focusAfter(saved, selectors)` then puts the focus on the
+ * first enabled control the selectors find in `list`, so a keyboard user keeps their place. Left alone when the change
+ * was refused, or when the focus went elsewhere meanwhile.
+ */
+export function useFocusAfter<T extends HTMLElement>() {
+  const list = useRef<T>(null);
+  const [target, setTarget] = useState<{ selectors: string[]; from: Element | null } | null>(null);
+  useEffect(() => {
+    const active = document.activeElement;
+    if (!target || (active && active !== document.body && active !== target.from)) return;
+    for (const selector of target.selectors) {
+      const control = list.current?.querySelector<HTMLButtonElement>(selector);
+      if (control && !control.disabled) return control.focus();
+    }
+  }, [target]);
+  const focusAfter = (saved: Promise<boolean>, selectors: string[]) => {
+    const from = document.activeElement;
+    void saved.then((ok) => ok && setTarget({ selectors, from }));
+  };
+  return { list, focusAfter };
 }
 
 // Segmented control

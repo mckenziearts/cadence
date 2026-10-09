@@ -195,7 +195,7 @@ test('a scene restore keeps the current voice-over when the version cannot say w
     data.scenes.find((s: { id: string }) => s.id === 'deux').voiceOver = voiceOver;
     await write('project.json', JSON.stringify(data));
   };
-  // Versions of project.json as an agent may leave it: unreadable, a voice-over the store refuses today, no `at`.
+  // Versions of project.json as an agent may leave it: unreadable, a voice-over the store refuses today, no `at`, no text.
   await write('scenes/deux.tsx', 'export default () => null; // v1\n');
   await write('project.json', '{ broken');
   await versions.snapshot(id, { label: 'Illisible', source: 'manual' });
@@ -203,6 +203,8 @@ test('a scene restore keeps the current voice-over when the version cannot say w
   await versions.snapshot(id, { label: 'Trop long', source: 'manual' });
   await withVoiceOver({ text: 'Sans départ.' });
   await versions.snapshot(id, { label: 'Sans départ', source: 'manual' });
+  await withVoiceOver({ at: 1 });
+  await versions.snapshot(id, { label: 'Sans texte', source: 'manual' });
   await write('project.json', valid);
   await write('scenes/deux.tsx', 'export default () => null; // v2\n');
 
@@ -213,6 +215,40 @@ test('a scene restore keeps the current voice-over when the version cannot say w
   assert.deepEqual((await store.get(id)).scenes.find((s) => s.id === 'deux')!.voiceOver, { text: 'Bonjour.', at: 0.5 });
   await versions.restore(id, 'v0003', { sceneId: 'deux' });
   assert.deepEqual((await store.get(id)).scenes.find((s) => s.id === 'deux')!.voiceOver, { text: 'Sans départ.', at: 0 });
+  await versions.restore(id, 'v0004', { sceneId: 'deux' });
+  assert.deepEqual((await store.get(id)).scenes.find((s) => s.id === 'deux')!.voiceOver, { text: 'Sans départ.', at: 0 });
+});
+
+test("a scene restore keeps the current voice-over when the version's lines name a speaker the project no longer has", async () => {
+  const piper = { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 };
+  const leo = { id: 'leo', name: 'Léo', voice: 'fr_FR-tom-medium' };
+  await store.update(id, { voiceOver: { ...piper, speakers: [leo] } });
+  await store.updateScene(id, 'deux', { voiceOver: { at: 0, lines: [{ speaker: 'leo', text: 'Salut !' }] } });
+  await baseline();
+  await write('scenes/deux.tsx', 'export default () => "deux v2";\n');
+  await store.updateScene(id, 'deux', { duration: 5, voiceOver: { text: 'Texte.', at: 0 } });
+  await store.update(id, { voiceOver: piper });
+
+  const restored = await versions.restore(id, 'v0001', { sceneId: 'deux' });
+  assert.equal(restored.source, 'restore');
+  assert.equal(await read('scenes/deux.tsx'), 'export default () => "deux v1";\n');
+  const scene = (await store.get(id)).scenes.find((s) => s.id === 'deux')!;
+  assert.equal(scene.duration, 2);
+  assert.deepEqual(scene.voiceOver, { text: 'Texte.', at: 0 });
+});
+
+test("a scene restore brings back the version's lines when their speakers are still in the project", async () => {
+  const leo = { id: 'leo', name: 'Léo', voice: 'fr_FR-tom-medium' };
+  await store.update(id, { voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3, speakers: [leo] } });
+  const lines = [{ id: 'salut', speaker: 'leo', text: 'Salut !', gesture: 'wave' }];
+  await store.updateScene(id, 'deux', { voiceOver: { lines, at: 0 } });
+  await baseline();
+  await store.updateScene(id, 'deux', { voiceOver: { text: 'Texte.', at: 0 } });
+
+  const restored = await versions.restore(id, 'v0001', { sceneId: 'deux' });
+  assert.ok(restored.scenes.includes('deux'));
+  const scene = (await store.get(id)).scenes.find((s) => s.id === 'deux')!;
+  assert.deepEqual(scene.voiceOver, { text: 'Salut !', at: 0, lines });
 });
 
 test("a voice-over-only edit lists the scene in the version and in that scene's history", async () => {

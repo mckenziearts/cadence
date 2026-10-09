@@ -6,6 +6,7 @@ import {
   type ProjectState,
   type SceneState,
   type SeamResult,
+  type Speaker,
 } from '../../src/shared/types';
 import { language } from '../i18n';
 
@@ -80,24 +81,43 @@ export function projectOverview(p: ProjectState): string {
   return `${projectHeader(p)}\n\n${sceneTable(p)}${voiceOver ? `\n\n${voiceOver}` : ''}`;
 }
 
-/** The voice-over of each scene (or of `only`) and when its sentences are spoken, in scene seconds; '' when none. */
+/**
+ * The project's speakers, then the voice-over of each scene (or of `only`) and when its sentences are spoken, in scene
+ * seconds; '' when there is neither.
+ */
 export function voiceOverSummary(p: ProjectState, only?: string | null): string {
   const scenes = p.scenes.filter((s) => s.voiceOver && (!only || s.id === only));
-  if (!scenes.length) return '';
-  const { voice, speed, musicLevel } = p.voiceOver;
+  const speakers = p.voiceOver.speakers?.length ? [speakerLine(p.voiceOver.speakers)] : [];
+  if (!scenes.length) return speakers.join('\n');
+  const { engine, voice, model, speed, musicLevel } = p.voiceOver;
+  const said = (speaker: string | null | undefined, text: string) => `${speaker ? `${speaker}: ` : ''}"${text}"`;
   const rows = scenes.map((s) => {
     if (p.voiceOverPending.includes(s.id)) {
-      return `- ${s.id}: from ${sec(s.voiceOver!.at)} s, "${s.voiceOver!.text}" (not generated yet, so no timing)`;
+      const script = s.voiceOver!.lines?.map((l) => said(l.speaker, l.text)).join(' / ') ?? said(null, s.voiceOver!.text);
+      return `- ${s.id}: from ${sec(s.voiceOver!.at)} s, ${script} (not generated yet, so no timing)`;
     }
     const lines = p.voiceOverLines.filter((l) => l.sceneId === s.id);
-    const spoken = lines.map((l) => `${sec(l.start - s.start)}-${sec(l.end - s.start)} "${l.text}"`).join(' / ');
+    const spoken = lines.map((l) => `${sec(l.start - s.start)}-${sec(l.end - s.start)} ${said(l.speaker, l.text)}`).join(' / ');
     const over = (lines.at(-1)?.end ?? 0) - (s.start + s.duration);
     return `- ${s.id}: ${spoken}${over > 0.05 ? `; it runs ${sec(over)} s past the end of the scene` : ''}`;
   });
+  const settings = [
+    `${engine === 'elevenlabs' ? 'ElevenLabs ' : ''}voice ${voice}`,
+    ...(model ? [`model ${model}`] : []),
+    `speed ${speed}`,
+    `music at ${Math.round(musicLevel * 100)} % while it speaks`,
+  ];
   return [
-    `Voice-over (voice ${voice}, speed ${speed}, music at ${Math.round(musicLevel * 100)} % while it speaks), sentence times in scene seconds (props.voiceOver.lines):`,
+    `Voice-over (${settings.join(', ')}), sentence times in scene seconds (props.voiceOver.lines):`,
+    ...speakers,
     ...rows,
   ].join('\n');
+}
+
+/** Each speaker's id (what script lines name), display name and voice. */
+export function speakerLine(speakers: Speaker[]): string {
+  const described = speakers.map((s) => `${s.id} "${s.name}" (voice ${s.voice}${s.model ? `, model ${s.model}` : ''})`);
+  return `Speakers: ${described.join(', ')}`;
 }
 
 function neighbour(s: SceneState | undefined, none: string): string {

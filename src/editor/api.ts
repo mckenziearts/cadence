@@ -29,7 +29,7 @@ import type {
   RenderRequest,
   RepoListing,
   SceneState,
-  SceneVoiceOver,
+  SceneVoiceOverInput,
   SeamResult,
   SendMessageInput,
   Settings,
@@ -102,7 +102,7 @@ async function request<T>(method: string, url: string, body?: unknown, options: 
 const get = <T>(url: string, options?: Options) => request<T>('GET', url, undefined, options);
 const post = <T>(url: string, body?: unknown, options?: Options) => request<T>('POST', url, body ?? {}, options);
 const put = <T>(url: string, body: unknown, options?: Options) => request<T>('PUT', url, body, options);
-const patch = <T>(url: string, body: unknown) => request<T>('PATCH', url, body);
+const patch = <T>(url: string, body: unknown, options?: Options) => request<T>('PATCH', url, body, options);
 const del = <T>(url: string) => request<T>('DELETE', url);
 
 const p = (id: string) => `/api/projects/${encodeURIComponent(id)}`;
@@ -127,14 +127,18 @@ export const api = {
 
   project: (id: string, options?: Options) => get<ProjectState>(p(id), options),
   createProject: (input: CreateProjectInput) => post<ProjectState>('/api/projects', input),
-  updateProject: (id: string, input: UpdateProjectInput) => patch<ProjectState>(p(id), input),
+  updateProject: (id: string, input: UpdateProjectInput, options?: Options) => patch<ProjectState>(p(id), input, options),
   deleteProject: (id: string) => del<{ ok: true }>(p(id)),
   artDirection: (id: string) => get<{ text: string }>(`${p(id)}/art-direction`),
   saveArtDirection: (id: string, text: string) => put<{ text: string }>(`${p(id)}/art-direction`, { text }),
 
   createScene: (id: string, input: CreateSceneInput) => post<SceneState>(`${p(id)}/scenes`, input),
-  updateScene: (id: string, sceneId: string, input: { name?: string; duration?: number; voiceOver?: SceneVoiceOver | null }) =>
-    patch<ProjectState>(`${p(id)}/scenes/${sceneId}`, input),
+  updateScene: (
+    id: string,
+    sceneId: string,
+    input: { name?: string; duration?: number; voiceOver?: SceneVoiceOverInput | null },
+    options?: Options,
+  ) => patch<ProjectState>(`${p(id)}/scenes/${sceneId}`, input, options),
   duplicateScene: (id: string, sceneId: string) => post<SceneState>(`${p(id)}/scenes/${sceneId}/duplicate`),
   deleteScene: (id: string, sceneId: string) => del<ProjectState>(`${p(id)}/scenes/${sceneId}`),
   reorder: (id: string, ids: string[]) => put<ProjectState>(`${p(id)}/order`, { ids }),

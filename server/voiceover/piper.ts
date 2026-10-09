@@ -25,9 +25,10 @@ export class PiperEngine implements SpeechEngine {
 
   async speak(input: { model: string; sentences: string[]; lengthScale: number; files: string[] }): Promise<void> {
     const { model, sentences, lengthScale, files } = input;
-    // Next to the targets, so that each WAV is renamed into place, never copied.
+    // Next to the targets, so that each WAV is renamed into place, never copied. Not recursive: a project deleted since
+    // its caller made the targets' folder stays deleted (ENOENT).
     const out = path.join(path.dirname(files[0]), `.piper-${randomToken(6)}`);
-    await fs.mkdir(out, { recursive: true });
+    await fs.mkdir(out);
     try {
       await new Promise<void>((resolve, reject) => {
         const child = spawn(this.bin, ['-m', model, '-d', out, '--length-scale', String(lengthScale)], {

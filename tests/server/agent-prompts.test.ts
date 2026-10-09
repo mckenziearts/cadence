@@ -170,8 +170,8 @@ test('the voice-over in the context: sentence times in scene seconds, pending sc
     voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1.2, musicLevel: 0.25 },
     voiceOverUrl: '/api/projects/demo/voice-over/audio?v=1',
     voiceOverLines: [
-      { sceneId: 'intro', text: 'Un.', start: 0.5, end: 2 },
-      { sceneId: 'intro', text: 'Deux.', start: 2, end: 4.6 },
+      { sceneId: 'intro', text: 'Un.', start: 0.5, end: 2, speaker: null, words: [], level: [] },
+      { sceneId: 'intro', text: 'Deux.', start: 2, end: 4.6, speaker: null, words: [], level: [] },
     ],
     voiceOverPending: ['outro'],
     voiceOverError: null,
@@ -204,4 +204,52 @@ test('the voice-over in the context: sentence times in scene seconds, pending sc
   assert.match(prompt, /\n- outro: from 0\.500 s, "Trois\."/);
   assert.doesNotMatch(prompt, /- intro:/, 'a scene chat sees its own voice-over only');
   assert.doesNotMatch(buildTurnPrompt({ ...context, scene: project.scenes[2] }), /Voice-over/);
+
+  const dialogue: ProjectState = {
+    ...project,
+    scenes: project.scenes.map((s) =>
+      s.id === 'outro'
+        ? {
+            ...s,
+            voiceOver: {
+              text: 'Trois.\nQuatre.',
+              at: 0.5,
+              lines: [
+                { id: 'trois', speaker: 'camille', text: 'Trois.' },
+                { id: 'quatre', speaker: 'sami', text: 'Quatre.' },
+              ],
+            },
+          }
+        : s,
+    ),
+    voiceOver: {
+      engine: 'elevenlabs',
+      voice: 'voice-narrator',
+      model: 'eleven_v3',
+      speed: 1,
+      musicLevel: 0.3,
+      speakers: [
+        { id: 'camille', name: 'Camille', voice: 'voice-camille' },
+        { id: 'sami', name: 'Sami', voice: 'voice-sami', model: 'eleven_multilingual_v2' },
+      ],
+    },
+    voiceOverLines: [
+      { sceneId: 'intro', text: 'Un.', start: 0.5, end: 2, speaker: 'camille', words: [], level: [] },
+      { sceneId: 'intro', text: 'Deux.', start: 2.2, end: 3, speaker: 'sami', words: [], level: [] },
+    ],
+  };
+  const spoken = projectOverview(dialogue);
+  assert.match(
+    spoken,
+    /\nVoice-over \(ElevenLabs voice voice-narrator, model eleven_v3, speed 1, music at 30 % while it speaks\)/,
+  );
+  assert.match(
+    spoken,
+    /\nSpeakers: camille "Camille" \(voice voice-camille\), sami "Sami" \(voice voice-sami, model eleven_multilingual_v2\)\n/,
+  );
+  assert.match(spoken, /\n- intro: 0\.500-2\.000 camille: "Un\." \/ 2\.200-3\.000 sami: "Deux\."\n/);
+  assert.match(spoken, /\n- outro: from 0\.500 s, camille: "Trois\." \/ sami: "Quatre\." \(not generated yet, so no timing\)$/);
+
+  const silent: ProjectState = { ...dialogue, scenes: dialogue.scenes.map(({ voiceOver: _, ...s }) => s), voiceOverLines: [] };
+  assert.match(projectOverview(silent), /\nSpeakers: camille "Camille"/, 'the speakers show before any scene has a voice-over');
 });

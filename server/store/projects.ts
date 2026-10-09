@@ -19,10 +19,21 @@ import {
   type SceneFile,
   type SceneState,
   type SceneVoiceOver,
+  type SceneVoiceOverInput,
+  type ScriptLine,
+  type Speaker,
   type UpdateProjectInput,
   type VoiceOverSettings,
 } from '../../src/shared/types';
-import type { BrandStore, CadenceConfig, FileEvents, ProjectStore, TemplateStore, VoiceOverProvider } from '../contracts';
+import type {
+  BrandStore,
+  CadenceConfig,
+  FileEvents,
+  ProjectStore,
+  TemplateComponent,
+  TemplateStore,
+  VoiceOverProvider,
+} from '../contracts';
 import { m } from '../i18n';
 import {
   HttpError,
@@ -66,14 +77,56 @@ const musicSchema = z.object({
   gridOffset: z.number().min(-0.25).max(0.25).optional(),
 });
 
+const MAX_SPEAKERS = 10;
+const SPEAKER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const PIPER_VOICE_PATTERN = /^[a-z]{2,3}_[A-Z]{2}-\w+-\w+$/;
+
+function speakersSchema<T extends z.ZodType<{ id: string }>>(speaker: T) {
+  return z
+    .array(speaker)
+    .max(MAX_SPEAKERS)
+    .superRefine((speakers, ctx) => {
+      const ids = speakers.map((s) => s.id);
+      const twice = ids.find((id, i) => ids.indexOf(id) !== i);
+      if (twice) ctx.addIssue({ code: 'custom', message: m().api.projects.duplicateSpeaker(twice) });
+    });
+}
+
+const speakerFields = {
+  id: z.string().regex(SPEAKER_ID_PATTERN),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(40)
+    .regex(/^[^\p{Cc}\p{Cf}]*$/u, { error: () => m().api.projects.speakerName }),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+};
+
+/** Shared with the API: a speaker's voice follows the project's engine, so the speakers are checked per engine. */
+export const piperSpeakersSchema = speakersSchema(
+  z.object({ ...speakerFields, voice: z.string().regex(PIPER_VOICE_PATTERN), model: z.never().optional() }),
+);
+export const elevenLabsSpeakersSchema = speakersSchema(
+  z.object({
+    ...speakerFields,
+    voice: z.string().regex(ELEVENLABS_VOICE_PATTERN),
+    model: z.string().regex(ELEVENLABS_MODEL_PATTERN).optional(),
+  }),
+);
+
 /** Ranges only: a voice this Cadence does not offer (a newer project) fails when spoken, not when read. */
-const voiceOverSchema = z
+export const voiceOverSchema = z
   .discriminatedUnion('engine', [
     z.object({
       engine: z.literal('piper').optional(),
-      voice: z.string().regex(/^[a-z]{2,3}_[A-Z]{2}-\w+-\w+$/),
+      voice: z.string().regex(PIPER_VOICE_PATTERN),
       speed: z.number().min(0.5).max(2).default(1),
       musicLevel: z.number().min(0).max(1).default(0.3),
+      speakers: piperSpeakersSchema.optional(),
     }),
     z.object({
       engine: z.literal('elevenlabs'),
@@ -81,15 +134,75 @@ const voiceOverSchema = z
       model: z.string().regex(ELEVENLABS_MODEL_PATTERN),
       speed: z.number().min(0.7).max(1.2).default(1),
       musicLevel: z.number().min(0).max(1).default(0.3),
+      speakers: elevenLabsSpeakersSchema.optional(),
     }),
   ])
-  // Piper settings keep the shape they had before ElevenLabs: no diff in the versions of existing projects.
-  .transform(({ engine, ...settings }) => (engine === 'elevenlabs' ? { engine, ...settings } : settings));
+  // Piper settings keep the shape they had before ElevenLabs, and settings without speakers the shape they had before
+  // speakers: no diff in the versions of existing projects.
+  .transform(({ engine, speakers, ...settings }) => ({
+    ...(engine === 'elevenlabs' ? { engine } : {}),
+    ...settings,
+    ...(speakers?.length ? { speakers } : {}),
+  }));
 
-const sceneVoiceOverSchema = z.object({
-  text: z.string().max(MAX_VOICE_OVER_CHARS),
+const scriptLinesSchema = z
+  .array(
+    z.object({
+      // One that is not an id counts as none: a hand-edited project.json still reads.
+      id: z.string().regex(ID_PATTERN).optional().catch(undefined),
+      speaker: z.string().regex(SPEAKER_ID_PATTERN),
+      text: z.string().trim().min(1),
+      gesture: z.string().max(64).optional(),
+    }),
+  )
+  .min(1)
+  .refine((lines) => joinLines(lines).length <= MAX_VOICE_OVER_CHARS, {
+    error: () => m().api.projects.scriptTooLong(MAX_VOICE_OVER_CHARS),
+  })
+  .transform(withLineIds);
+
+/**
+ * A line keeps the id it was sent with, so the editor's row follows it through its edits. One sent without (the agent's,
+ * a hand-written project.json) or with an id an earlier line holds gets one from its speaker, its text and its rank
+ * among equal lines: the same on every read, and the same when the agent sends an unchanged line again.
+ */
+function withLineIds<T extends { id?: string; speaker: string; text: string }>(lines: T[]): (T & { id: string })[] {
+  const taken = new Set<string>();
+  const kept = lines.map((line) => line.id !== undefined && !taken.has(line.id) && Boolean(taken.add(line.id)));
+  const seen = new Map<string, number>();
+  return lines.map((line, i) => {
+    if (kept[i]) return line as T & { id: string };
+    const said = `${line.speaker}\n${line.text}`;
+    let n = seen.get(said) ?? 0;
+    let id = shortHash(`${said}\n${n}`);
+    while (taken.has(id)) id = shortHash(`${said}\n${++n}`);
+    seen.set(said, n + 1);
+    taken.add(id);
+    const { id: _, ...rest } = line;
+    return { id, ...rest } as T & { id: string };
+  });
+}
+
+const sceneVoiceOverFields = z.object({
+  text: z.string().max(MAX_VOICE_OVER_CHARS).optional(),
+  lines: scriptLinesSchema.optional(),
   at: z.number().min(0).max(MAX_DURATION).default(0),
 });
+
+/** Lines carry the text: with lines, `text` is derived from them. */
+function toSceneVoiceOver({ text = '', lines, at }: z.output<typeof sceneVoiceOverFields>): SceneVoiceOver {
+  return lines ? { text: joinLines(lines), at, lines } : { text, at };
+}
+
+/** As project.json holds it: the text, or the lines with the text derived from them. */
+const sceneVoiceOverSchema = sceneVoiceOverFields
+  .refine((v) => v.text !== undefined || v.lines !== undefined, { error: () => m().api.projects.textOrLines })
+  .transform(toSceneVoiceOver);
+
+/** What a client sends (shared with the API): the text or the lines, not both. */
+export const sceneVoiceOverInputSchema = sceneVoiceOverFields
+  .refine((v) => (v.text === undefined) !== (v.lines === undefined), { error: () => m().api.projects.textOrLines })
+  .transform(toSceneVoiceOver);
 
 const projectFileSchema = z.object({
   version: z.literal(1).default(1),
@@ -278,7 +391,10 @@ export class FileProjectStore implements ProjectStore {
     // Resolve every scene template before touching the disk, so a broken campaign template leaves nothing behind.
     const sceneSources = template
       ? await Promise.all(
-          template.scenes.map(async (s) => ({ ...s, code: (await this.templates.sceneTemplate(s.template)).code })),
+          template.scenes.map(async (s) => {
+            const { code, components } = await this.templates.sceneTemplate(s.template);
+            return { ...s, code, components };
+          }),
         )
       : null;
 
@@ -308,11 +424,11 @@ export class FileProjectStore implements ProjectStore {
           duration: clampDuration((source.bars * 240) / tempo),
           template: source.template,
         });
-        await writeFileAtomic(this.sceneFile(id, sceneId), source.code);
+        await this.writeScene(id, sceneId, source.code);
       }
     } else {
       scenes.push({ id: 'titre', name: m().api.projects.starterScene, duration: clampDuration((2 * 240) / tempo) });
-      await writeFileAtomic(this.sceneFile(id, 'titre'), starterScene(name));
+      await this.writeScene(id, 'titre', starterScene(name));
     }
     await fs.mkdir(path.join(dir, 'components'), { recursive: true });
     await fs.mkdir(path.join(dir, 'assets', 'refs'), { recursive: true });
@@ -323,6 +439,9 @@ export class FileProjectStore implements ProjectStore {
       .filter(Boolean)
       .join('\n\n');
     await writeFileAtomic(path.join(dir, 'art-direction.md'), `${artDirection}\n`);
+    // Once, here: a later change of the default never re-speaks (nor bills) an existing video. The campaign's voices
+    // win over the default voice: its speakers are part of the template.
+    const voiceOver = template?.voiceOver ?? (input.voiceOver ? parseVoiceOver(input.voiceOver) : null);
     const now = nowIso();
     const project: ProjectFile = {
       version: 1,
@@ -334,12 +453,14 @@ export class FileProjectStore implements ProjectStore {
       ...(input.language ? { language: parseLanguage(input.language) } : {}),
       scenes,
       music: null,
-      // Once, here: a later change of the default never re-speaks (nor bills) an existing video.
-      ...(input.voiceOver ? { voiceOver: parseVoiceOver(input.voiceOver) } : {}),
+      ...(voiceOver ? { voiceOver } : {}),
       createdAt: now,
       updatedAt: now,
     };
-    await this.withLock(id, () => this.write(id, project));
+    await this.withLock(id, async () => {
+      await this.copyComponents(id, sceneSources?.flatMap((s) => s.components) ?? []);
+      await this.write(id, project);
+    });
     this.events.emit('list-changed');
     return this.get(id);
   }
@@ -357,7 +478,7 @@ export class FileProjectStore implements ProjectStore {
       if (patch.fps !== undefined) data.fps = parseFps(patch.fps);
       if (patch.tempo !== undefined) data.tempo = parseTempo(patch.tempo);
       if (patch.language !== undefined) data.language = parseLanguage(patch.language);
-      if (patch.voiceOver !== undefined) data.voiceOver = patch.voiceOver && parseVoiceOver(patch.voiceOver);
+      if (patch.voiceOver !== undefined) setVoiceOver(data, patch.voiceOver);
       if (patch.captions !== undefined) {
         if (parseCaptions(patch.captions)) data.captions = true;
         else delete data.captions;
@@ -367,6 +488,11 @@ export class FileProjectStore implements ProjectStore {
     if (patch.name !== undefined || brand !== undefined || patch.formats !== undefined) this.events.emit('list-changed');
     // The brand's files are part of the project's code (frames import the kit), so a new brand is a code change.
     if (brand !== undefined && brand !== before) await this.syncCode(id);
+    return this.get(id);
+  }
+
+  async setSpeakers(id: string, speakers: Speaker[], settings: VoiceOverSettings): Promise<ProjectState> {
+    await this.mutate(id, (data) => setVoiceOver(data, { ...(data.voiceOver ?? settings), speakers }));
     return this.get(id);
   }
 
@@ -385,11 +511,11 @@ export class FileProjectStore implements ProjectStore {
   async createScene(id: string, input: CreateSceneInput): Promise<SceneState> {
     const name = requireName(input.name, 'scene');
     let code = input.code;
-    let template: { id: string; bars: number } | null = null;
+    let template: { id: string; bars: number; components: TemplateComponent[] } | null = null;
     if (code === undefined && input.template) {
       const found = await this.templates.sceneTemplate(input.template);
       code = found.code;
-      template = { id: found.meta.id, bars: found.meta.bars };
+      template = { id: found.meta.id, bars: found.meta.bars, components: found.components };
     }
     if (code !== undefined && Buffer.byteLength(code) > MAX_CODE_BYTES) {
       throw new HttpError(413, m().api.projects.codeTooLarge);
@@ -413,7 +539,10 @@ export class FileProjectStore implements ProjectStore {
       ];
       sceneId = uniqueId(slugify(name, 'scene'), taken);
       const seconds = duration ?? clampDuration(template ? (template.bars * 240) / data.tempo : DEFAULT_SCENE_DURATION);
-      await writeFileAtomic(this.sceneFile(id, sceneId), code ?? blankScene(name));
+      // Both folders are checked before either write, so a refusal leaves the project untouched.
+      await this.ownFolder(id, 'scenes');
+      if (template) await this.copyComponents(id, template.components);
+      await this.writeScene(id, sceneId, code ?? blankScene(name));
       data.scenes.splice(at, 0, { id: sceneId, name, duration: seconds, ...(template ? { template: template.id } : {}) });
     });
     await this.syncCode(id);
@@ -423,7 +552,7 @@ export class FileProjectStore implements ProjectStore {
   async updateScene(
     id: string,
     sceneId: string,
-    patch: { name?: string; duration?: number; voiceOver?: SceneVoiceOver | null },
+    patch: { name?: string; duration?: number; voiceOver?: SceneVoiceOver | SceneVoiceOverInput | null },
   ): Promise<ProjectState> {
     await this.mutate(id, (data) => {
       const scene = requireScene(data, sceneId);
@@ -431,6 +560,8 @@ export class FileProjectStore implements ProjectStore {
       if (patch.duration !== undefined) scene.duration = parseDuration(patch.duration);
       if (patch.voiceOver !== undefined) {
         const voiceOver = patch.voiceOver && parseSceneVoiceOver(patch.voiceOver);
+        const speaker = voiceOver?.lines && unknownSpeaker(data.voiceOver, voiceOver.lines);
+        if (speaker) throw new HttpError(400, m().api.projects.unknownSpeaker(speaker));
         if (voiceOver) scene.voiceOver = voiceOver;
         else delete scene.voiceOver;
       }
@@ -581,7 +712,7 @@ export class FileProjectStore implements ProjectStore {
         name: s.name?.trim() || s.id,
         duration: clampDuration(s.duration),
         ...(s.template ? { template: s.template } : {}),
-        ...(s.voiceOver?.text.trim() ? { voiceOver: { text: s.voiceOver.text, at: s.voiceOver.at } } : {}),
+        ...(s.voiceOver?.lines || s.voiceOver?.text.trim() ? { voiceOver: s.voiceOver } : {}),
       })),
       music: data.music ? { ...data.music, start: roundMs(data.music.start) } : null,
       ...(data.voiceOver ? { voiceOver: data.voiceOver } : {}),
@@ -593,6 +724,32 @@ export class FileProjectStore implements ProjectStore {
 
   private async write(id: string, data: ProjectFile): Promise<void> {
     await writeJsonAtomic(path.join(this.dir(id), 'project.json'), data);
+  }
+
+  /** Under the project lock. A file already there (maybe edited by the person) is kept: the project owns its copy. */
+  private async copyComponents(id: string, components: TemplateComponent[]): Promise<void> {
+    if (!components.length) return;
+    const folder = await this.ownFolder(id, 'components');
+    for (const { name, code } of components) {
+      const file = path.join(folder, name);
+      if (!(await fs.lstat(file).catch(() => null))) await writeFileAtomic(file, code);
+    }
+  }
+
+  private async writeScene(id: string, sceneId: string, code: string): Promise<void> {
+    await this.ownFolder(id, 'scenes');
+    await writeFileAtomic(this.sceneFile(id, sceneId), code);
+  }
+
+  /** An agent turn can swap a project folder for a symlink: a write through it would land anywhere on the disk. */
+  private async ownFolder(id: string, sub: 'scenes' | 'components'): Promise<string> {
+    const folder = path.join(this.dir(id), sub);
+    const real = await fs
+      .mkdir(folder, { recursive: true })
+      .then(() => fs.realpath(folder))
+      .catch(() => null);
+    if (!real || !isInside(await fs.realpath(this.dir(id)), real)) throw new HttpError(409, m().api.projects.outsideProject(sub));
+    return folder;
   }
 
   /** Read-modify-write project.json under the project lock, then emit 'changed'. Returns what `fn` returns. */
@@ -786,12 +943,40 @@ function parseVoiceOver(value: unknown): VoiceOverSettings {
   return parsed.data;
 }
 
+/** Save the project's voice-over settings: a speaker who still says lines cannot go. */
+function setVoiceOver(data: ProjectFile, settings: VoiceOverSettings | null): void {
+  const voiceOver = settings && parseVoiceOver(settings);
+  // A speaker already missing (a hand-edited project.json) is not this change's doing: only a removal is refused.
+  const known = new Set(data.voiceOver?.speakers?.map((s) => s.id));
+  for (const scene of data.scenes) {
+    const lines = scene.voiceOver?.lines?.filter((l) => known.has(l.speaker));
+    const speaker = lines && unknownSpeaker(voiceOver, lines);
+    if (speaker) throw new HttpError(400, m().api.projects.speakerInUse(speaker, scene.name));
+  }
+  data.voiceOver = voiceOver;
+}
+
 /** null for a blank text: the scene has no voice-over. */
 export function parseSceneVoiceOver(value: unknown): SceneVoiceOver | null {
   const parsed = sceneVoiceOverSchema.safeParse(value);
   if (!parsed.success) throw new HttpError(400, m().api.projects.sceneVoiceOver(formatIssues(parsed.error)));
+  const { lines, at } = parsed.data;
+  if (lines) return { text: parsed.data.text, at: roundMs(at), lines };
   const text = parsed.data.text.trim();
-  return text ? { text, at: roundMs(parsed.data.at) } : null;
+  return text ? { text, at: roundMs(at) } : null;
+}
+
+function joinLines(lines: { text: string }[]): string {
+  return lines.map((l) => l.text).join('\n');
+}
+
+/** The first speaker the lines name that the settings do not have. */
+export function unknownSpeaker(
+  settings: VoiceOverSettings | null | undefined,
+  lines: Pick<ScriptLine, 'speaker'>[],
+): string | undefined {
+  const ids = new Set(settings?.speakers?.map((s) => s.id));
+  return lines.find((l) => !ids.has(l.speaker))?.speaker;
 }
 
 /** Durations from users and the agent: positive seconds, clamped to 0.1-600 and rounded to the millisecond. */

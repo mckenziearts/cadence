@@ -17,7 +17,7 @@ interface SceneProps {
   orientation: 'landscape' | 'portrait' | 'square';   // 4:5 is portrait
   fps: number;
   music: Music;         // beat grid in scene seconds (see Music)
-  voiceOver: VoiceOverInfo;  // { text, lines: { text, start, end }[] } in scene seconds (see Voice-over)
+  voiceOver: VoiceOverInfo;  // { text, lines: { text, start, end, speaker, words, level, gesture? }[] } in scene seconds (see Voice-over)
   scene: SceneInfo;     // { id, name, index, count, start (video seconds) }
   brand: BrandKit;      // same object as useBrand()
 }
@@ -179,10 +179,20 @@ const cardIn = progress(t, music.beat(0), music.beat(2), ease.outExpo);
 ## Voice-over (scene seconds)
 
 `voiceOver.text` is what the voice says over this scene ('' when nothing); `voiceOver.lines` lists its sentences with
-`start` and `end` once Cadence has spoken them (empty before: draw the scene so it still works). Key a word on screen to
-the sentence that says it: `progress(t, voiceOver.lines[0]?.start ?? 0, (voiceOver.lines[0]?.start ?? 0) + 0.4)`. The
-voice is set with the `set_voice_over` tool, never in the scene's code; keep the scene at least as long as its last
-`end`. Timing is per sentence, not per word.
+`start` and `end` once Cadence has spoken them (empty before: draw the scene so it still works). Each line also has
+`speaker` (the project speaker's id, null when the scene has no script lines), `words` (`{ text, start, end }[]`, each
+word heard), `level` (loudness 0-255, 25 values per second from `start`) and `gesture` (its script line's free text, if
+any). Key a word on screen to the sentence or word that says it:
+`progress(t, voiceOver.lines[0]?.start ?? 0, (voiceOver.lines[0]?.start ?? 0) + 0.4)`. The voice is set with the
+`set_voice_over` tool, never in the scene's code; keep the scene at least as long as its last `end`.
+
+`voiceLevel(voiceOver, t, speaker?)` is 0 to 1: the level of the sentence spoken at `t`, interpolated; 0 when nobody
+speaks, or when `speaker` is given and someone else does. A mouth that follows its speaker:
+
+```tsx
+const open = voiceLevel(voiceOver, t, 'ana');
+<ellipse cx={0} cy={40} rx={28} ry={3 + 22 * open} fill="#1a1a1a" />
+```
 
 ## Sound effects (scene seconds; a sound per meaningful contact, not per beat)
 

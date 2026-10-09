@@ -80,6 +80,8 @@ export default {
     all: 'Toutes',
     newHint: 'Modèle, marque et formats',
     noMatch: (query: string) => `Aucun projet ne correspond à « ${query} ».`,
+    pages: 'Pages des projets',
+    page: (n: number) => `Page ${n}`,
     /** `when` comes from relative(): a date ("12 sept., 14:05") takes "le", "hier, 14:05" does not. */
     edited: (when: string) => `Modifié ${/^\d/.test(when) ? `le ${when}` : when}`,
     delete: (name: string) => `Supprimer le projet « ${name} »`,

@@ -78,6 +78,8 @@ export default {
     all: 'All',
     newHint: 'Template, brand and formats',
     noMatch: (query: string) => `No project matches "${query}".`,
+    pages: 'Project pages',
+    page: (n: number) => `Page ${n}`,
     edited: (when: string) => `Edited ${when}`,
     delete: (name: string) => `Delete project "${name}"`,
     deleteConfirm: 'Delete project?',

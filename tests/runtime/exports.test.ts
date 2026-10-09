@@ -16,6 +16,7 @@ const REQUIRED = [
   ...['Stage3D', 'Camera', 'DrawPath', 'Glow', 'Callout', 'Dimension', 'RadiusArc', 'Guide', 'Tag', 'Highlight'],
   ...['Cursor', 'ClickRipple', 'BrowserFrame', 'PhoneFrame', 'Grain', 'Vignette'],
   'createMusic',
+  'voiceLevel',
 ];
 
 test('index exports everything the architecture requires', () => {
@@ -56,4 +57,12 @@ test('the runtime exports the sound types, and API.md documents sound effects', 
     assert.ok(section.includes(rule), rule);
   }
   for (const name of SOUND_NAMES) assert.ok(section.includes(`- \`${name}\``), name);
+});
+
+test('API.md documents the voice-over line fields and voiceLevel', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## Voice-over'), api.indexOf('## Sound effects'));
+  for (const rule of ['`speaker`', '`words`', '`level`', '`gesture`', 'voiceLevel(voiceOver, t, speaker?)', '0 to 1']) {
+    assert.ok(section.includes(rule), rule);
+  }
 });

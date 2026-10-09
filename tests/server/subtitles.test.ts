@@ -20,6 +20,33 @@ test('subtitleCues: a long sentence splits into balanced chunks, timed in propor
   ]);
 });
 
+test("subtitleCues: with the sentence's words, a chunk starts when its first word is said", () => {
+  const words = [
+    { text: 'aa', start: 0.1, end: 0.5 },
+    { text: 'bb', start: 0.6, end: 1 },
+    { text: 'cc', start: 1.1, end: 1.5 },
+    { text: 'dd', start: 2, end: 2.2 },
+    { text: 'ee', start: 2.3, end: 2.5 },
+  ];
+  assert.deepEqual(subtitleCues([{ ...line('aa bb cc dd ee', 0, 2.6), words }], { maxChars: 12 }), [
+    { start: 0, end: 2, text: 'aa bb cc' },
+    { start: 2, end: 2.6, text: 'dd ee' },
+  ]);
+  // A word cut across two chunks: the second starts when its letters are, in proportion to the word.
+  assert.deepEqual(
+    subtitleCues([{ ...line('abcdefgh', 0, 3), words: [{ text: 'abcdefgh', start: 1, end: 2 }] }], { maxChars: 4 }),
+    [
+      { start: 0, end: 1.5, text: 'abcd' },
+      { start: 1.5, end: 3, text: 'efgh' },
+    ],
+  );
+  // Words that do not spell the sentence (an older sidecar): the chunks keep the proportion of their characters.
+  assert.deepEqual(subtitleCues([{ ...line('aa bb cc dd ee', 0, 2.6), words: words.slice(1) }], { maxChars: 12 }), [
+    { start: 0, end: 1.6, text: 'aa bb cc' },
+    { start: 1.6, end: 2.6, text: 'dd ee' },
+  ]);
+});
+
 test('subtitleCues: a chunk ends after punctuation when one is close enough to the middle', () => {
   assert.deepEqual(subtitleCues([line('Voici Cadence, un studio de motion design.', 0, 4.1)], { maxChars: 30 }), [
     { start: 0, end: 1.4, text: 'Voici Cadence,' },
@@ -158,4 +185,98 @@ test('toVtt: an arrow in a sentence never reads as a timing line', () => {
     toVtt([{ start: 0, end: 1, text: 'Avant --> après' }]),
     'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nAvant --&gt; après\n',
   );
+});
+
+const camille = { id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium' };
+const leo = { id: 'leo', name: 'Léo', voice: 'fr_FR-tom-medium', color: '#ff0000' };
+const said = (speaker: string | null, text: string, start: number, end: number) => ({ ...line(text, start, end), speaker });
+
+test('subtitleCues: with the speakers, each cue keeps its line speaker and never mixes two lines', () => {
+  assert.deepEqual(
+    subtitleCues([said('camille', 'aa bb cc dd ee', 0, 2.6), said('leo', 'Oui.', 2.6, 3), said(null, 'Fin.', 3, 4)], {
+      maxChars: 22,
+      speakers: [camille, leo],
+    }),
+    [
+      { start: 0, end: 1.6, text: 'aa bb cc', speaker: camille },
+      { start: 1.6, end: 2.6, text: 'dd ee', speaker: camille },
+      { start: 2.6, end: 3, text: 'Oui.', speaker: leo },
+      { start: 3, end: 4, text: 'Fin.' },
+    ],
+  );
+  // The same words said back to back by two speakers stay two cues.
+  assert.deepEqual(
+    subtitleCues([said('camille', 'Oui.', 0, 1), said('leo', 'Oui.', 1, 2)], { maxChars: 84, speakers: [camille, leo] }),
+    [
+      { start: 0, end: 1, text: 'Oui.', speaker: camille },
+      { start: 1, end: 2, text: 'Oui.', speaker: leo },
+    ],
+  );
+  // Without the speakers, or for a speaker the project no longer has, the cues carry none.
+  assert.deepEqual(subtitleCues([said('camille', 'Oui.', 0, 1)], { maxChars: 84 }), [{ start: 0, end: 1, text: 'Oui.' }]);
+  assert.deepEqual(subtitleCues([said('gone', 'Oui.', 0, 1)], { maxChars: 84, speakers: [camille] }), [
+    { start: 0, end: 1, text: 'Oui.' },
+  ]);
+});
+
+test('toSrt / toVtt: from two speakers on, the name goes before the text, in the typography of the language', () => {
+  const cues = [
+    { start: 0, end: 1, text: 'Bonjour.', speaker: camille },
+    { start: 1, end: 2, text: 'Salut !', speaker: leo },
+    { start: 2, end: 3, text: 'La voix du projet.' },
+  ];
+  assert.equal(
+    toSrt(cues, 'fr'),
+    '1\n00:00:00,000 --> 00:00:01,000\nCamille : Bonjour.\n\n2\n00:00:01,000 --> 00:00:02,000\nLéo : Salut !\n\n' +
+      '3\n00:00:02,000 --> 00:00:03,000\nLa voix du projet.\n',
+  );
+  assert.equal(toSrt(cues.slice(0, 2), 'en').split('\n\n')[0], '1\n00:00:00,000 --> 00:00:01,000\nCamille: Bonjour.');
+  assert.equal(
+    toVtt(cues),
+    'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n<v Camille>Bonjour.</v>\n\n00:00:01.000 --> 00:00:02.000\n<v Léo>Salut !</v>\n\n' +
+      '00:00:02.000 --> 00:00:03.000\nLa voix du projet.\n',
+  );
+  const odd = [
+    { start: 0, end: 1, text: 'a < b', speaker: { ...camille, name: 'Tom & <Jerry>' } },
+    { start: 1, end: 2, text: 'Oui.', speaker: leo },
+  ];
+  assert.equal(toVtt(odd).split('\n\n')[1], '00:00:00.000 --> 00:00:01.000\n<v Tom &amp; &lt;Jerry&gt;>a &lt; b</v>');
+});
+
+test('toSrt / toVtt: one speaker or none, the files are those of a voice without speakers', () => {
+  const plain = [
+    { start: 0, end: 1, text: 'Bonjour.' },
+    { start: 1, end: 2, text: 'Au revoir.' },
+  ];
+  const one = plain.map((cue) => ({ ...cue, speaker: camille }));
+  for (const language of ['fr', 'en'] as const) assert.equal(toSrt(one, language), toSrt(plain));
+  assert.equal(toVtt(one), toVtt(plain));
+  assert.equal(toVtt([{ ...plain[0], speaker: camille }, plain[1]]), toVtt(plain));
+});
+
+test('subtitleCues: from two speakers on, a cue keeps room for its speaker name within maxChars', () => {
+  const marie = { id: 'marie', name: 'Marie-Christine Dupont', voice: 'fr_FR-siwis-medium' };
+  const text = 'Nous avons préparé une présentation complète de la nouvelle offre pour votre équipe.';
+  const lines = [said('marie', text, 0, 4), said('leo', 'Oui.', 4, 5)];
+  const srt = toSrt(subtitleCues(lines, { maxChars: 84, speakers: [marie, leo] }), 'fr');
+  const texts = srt.split('\n').filter((row) => row && !/^\d+$/.test(row) && !row.includes(' --> '));
+  assert.equal(texts.length, 3);
+  for (const row of texts) assert.ok(row.length <= 84, row);
+  // One voice shows no name, so it keeps the whole width.
+  assert.equal(subtitleCues([said('marie', text, 0, 4)], { maxChars: 84, speakers: [marie, leo] }).length, 1);
+});
+
+test('subtitleCues: the room kept for a speaker name is exactly the name and its colon', () => {
+  const ab = { id: 'ab', name: 'Ab', voice: 'fr_FR-siwis-medium' };
+  const cues = (text: string) =>
+    subtitleCues([said('ab', text, 0, 2), said('leo', 'Oui.', 2, 3)], { maxChars: 20, speakers: [ab, leo] });
+  // 20 - 'Ab'.length - ' : '.length leaves 15 characters.
+  assert.equal(cues('aaaaaaa bbbbbbb').length, 2);
+  assert.equal(cues('aaaaaaa bbbbbbbb').length, 3);
+  for (const text of ['aaaaaaa bbbbbbb', 'aaaaaaa bbbbbbbb']) {
+    const rows = toSrt(cues(text), 'fr')
+      .split('\n')
+      .filter((row) => row && !/^\d+$/.test(row) && !row.includes(' --> '));
+    for (const row of rows) assert.ok(row.length <= 20, row);
+  }
 });
