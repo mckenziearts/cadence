@@ -454,6 +454,7 @@ export class FileProjectStore implements ProjectStore {
       scenes,
       music: null,
       ...(voiceOver ? { voiceOver } : {}),
+      ...(template?.captions ? { captions: true } : {}),
       createdAt: now,
       updatedAt: now,
     };

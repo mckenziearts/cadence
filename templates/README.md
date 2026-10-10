@@ -108,7 +108,7 @@ fois. Dans un projet, mieux vaut déplacer ces blocs dans `components/` et les i
 
 `template.json` (type `ProjectTemplateMeta`) : `name`, `description`, `fps` (24, 30 ou 60), `formats`, `bpm` (le
 tempo qui convertit les mesures en secondes tant qu'il n'y a pas de musique) et `scenes` (`template`, `name`,
-`bars`), et optionnellement `voiceOver`. `art-direction.md` est ajouté sous la direction artistique de la marque : il commence par un titre `##`,
+`bars`), et optionnellement `voiceOver` et `captions`. `art-direction.md` est ajouté sous la direction artistique de la marque : il commence par un titre `##`,
 décrit la structure, ce qu'il faut adapter dès la création, le rythme et les raccords.
 
 `voiceOver` reprend les réglages de voix d'un projet (`VoiceOverSettings`, lus avec le même schéma que
@@ -116,6 +116,9 @@ décrit la structure, ce qu'il faut adapter dès la création, le rythme et les 
 dix, chacun avec son `id`, son `name`, sa `voice` et en option sa `color`). Un projet créé depuis la campagne
 démarre avec ces réglages, à la place de la voix par défaut ; `list_templates` nomme ses interlocuteurs. Un
 `voiceOver` invalide écarte la campagne, avec le même avertissement qu'un autre champ invalide.
+
+`captions: true` fait démarrer un projet créé depuis la campagne avec les sous-titres affichés ; absent, ils sont
+masqués, comme dans un projet vide. Une autre valeur qu'un booléen écarte la campagne.
 
 ```json
 "voiceOver": {
