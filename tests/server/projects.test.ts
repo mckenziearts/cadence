@@ -593,6 +593,20 @@ describe('templates with components and voices', () => {
     assert.deepEqual(await fs.readdir(path.join(p.dir, 'components')), []);
     const file = JSON.parse(await fs.readFile(path.join(p.dir, 'project.json'), 'utf8'));
     assert.equal('voiceOver' in file, false);
+    assert.equal('captions' in file, false);
+    assert.equal(p.captions, false);
+  });
+
+  test('a campaign with captions starts with them on, and refuses a captions value that is not a boolean', async () => {
+    const duo = JSON.parse(await fs.readFile(path.join(t.config.templatesDir, 'projects/duo/template.json'), 'utf8'));
+    await write('projects/duo/template.json', { ...duo, captions: true });
+    const p = await store.create({ ...base, name: 'Duo', template: 'duo' });
+    assert.equal(p.captions, true);
+    const file = JSON.parse(await fs.readFile(path.join(p.dir, 'project.json'), 'utf8'));
+    assert.equal(file.captions, true);
+
+    await write('projects/duo/template.json', { ...duo, captions: 'yes' });
+    await rejectsWithStatus(store.create({ ...base, name: 'Duo bis', template: 'duo' }), 500, /captions/);
   });
 
   test('a campaign without voiceOver starts with the default voice it is given', async () => {

@@ -37,6 +37,7 @@ const projectTemplateSchema = z
       .min(1),
     // Lazy: projects.ts imports this module, so its schema is only read once both are loaded.
     voiceOver: z.lazy(() => voiceOverSchema).optional(),
+    captions: z.boolean().optional(),
     /** The same texts in English, for an English interface; `scenes` names the scenes in order. */
     en: z.object({ name: z.string().min(1), description: z.string(), scenes: z.array(z.string().min(1)) }).optional(),
   })

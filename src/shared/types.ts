@@ -644,6 +644,8 @@ export interface ProjectTemplateMeta {
   scenes: { template: string; name: string; bars: number }[];
   /** The voice-over settings (speakers included) a project created from it starts with; absent = the default voice. */
   voiceOver?: VoiceOverSettings;
+  /** A project created from it starts with captions on; absent = off. */
+  captions?: boolean;
 }
 
 // Versions (projects/<id>/.cadence/versions)
