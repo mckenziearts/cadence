@@ -300,7 +300,7 @@ function ProjectSwitcher() {
   const choose = (id: string) => {
     setOpen(false);
     setQuery('');
-    if (id !== project?.id) void openProject(id).catch(ignore);
+    void openProject(id).catch(ignore);
   };
 
   return (

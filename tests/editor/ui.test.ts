@@ -180,6 +180,36 @@ async function rewriteProject(page: Page, edit: (project: ProjectState) => Proje
   });
 }
 
+/**
+ * Holds the page's GETs of a project (only the first with `once`): `asked` resolves when one is held, `release` lets it
+ * through and waits for its answer.
+ */
+async function holdProject(
+  page: Page,
+  id: string,
+  once = false,
+): Promise<{ asked: Promise<void>; release: () => Promise<void> }> {
+  let ask!: () => void;
+  const asked = new Promise<void>((resolve) => (ask = resolve));
+  let answer!: () => void;
+  const held = new Promise<void>((resolve) => (answer = resolve));
+  let gets = 0;
+  await page.route(`**/api/projects/${id}`, async (route) => {
+    if (route.request().method() !== 'GET' || (once && ++gets > 1)) return route.fallback();
+    ask();
+    await held;
+    return route.fallback();
+  });
+  return {
+    asked,
+    release: async () => {
+      const answered = page.waitForResponse((r) => r.url().endsWith(`/api/projects/${id}`));
+      answer();
+      await answered;
+    },
+  };
+}
+
 before(
   async () => {
     // Own dependency cache: never disturb the optimizer of a Cadence the user is running.
@@ -275,6 +305,80 @@ describe('editor', () => {
     await page.getByText('Suggestions', { exact: true }).waitFor({ timeout: 30_000 });
     await page.waitForTimeout(2000);
     assert.equal(await page.getByLabel('Chargement de la conversation').count(), 0);
+    await page.context().close();
+  });
+
+  it('stays on the home asked for while a project loads, whose answer comes after', { timeout: 90_000 }, async () => {
+    const page = await newPage();
+    const load = await holdProject(page, A);
+    await page.goto(`${server.config.editorOrigin}/#/${A}`);
+    await load.asked;
+    await page.evaluate(() => (location.hash = '#/'));
+    await load.release();
+    await page.getByRole('searchbox', { name: 'Rechercher un projet' }).waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(500);
+    assert.equal(await page.getByRole('group', { name: 'Panneau' }).count(), 0);
+    assert.equal(new URL(page.url()).hash, '');
+    await page.context().close();
+  });
+
+  it('stays on the home asked for while the open project refetches, whose answer comes after', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-h`;
+    await api('POST', '/api/projects', { name: 'Accueil', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    const page = await open(id);
+    const refetch = await holdProject(page, id);
+    await api('PATCH', `/api/projects/${id}`, { name: 'Accueil 2' });
+    await refetch.asked;
+    await page.evaluate(() => (location.hash = '#/'));
+    await page.getByRole('searchbox', { name: 'Rechercher un projet' }).waitFor({ timeout: 30_000 });
+    await refetch.release();
+    await page.waitForTimeout(500);
+    assert.equal(await page.getByRole('group', { name: 'Panneau' }).count(), 0);
+    assert.equal(new URL(page.url()).hash, '');
+    await page.context().close();
+  });
+
+  it('shows the project asked for last when the one asked before answers after it', { timeout: 90_000 }, async () => {
+    const page = await newPage();
+    const load = await holdProject(page, A);
+    await page.goto(`${server.config.editorOrigin}/#/${A}`);
+    await load.asked;
+    await page.evaluate((id) => (location.hash = `#/${id}`), B);
+    await page.getByRole('button', { name: 'Éditeur B' }).waitFor({ timeout: 30_000 });
+    await load.release();
+    await page.waitForTimeout(500);
+    assert.equal(await page.getByRole('button', { name: 'Éditeur A' }).count(), 0);
+    assert.ok(new URL(page.url()).hash.startsWith(`#/${B}`));
+    await page.context().close();
+  });
+
+  it('opens a project asked for again after leaving it while it loaded', { timeout: 90_000 }, async () => {
+    const page = await newPage();
+    const load = await holdProject(page, A, true);
+    await page.goto(`${server.config.editorOrigin}/#/${A}`);
+    await load.asked;
+    await page.evaluate(() => (location.hash = '#/'));
+    await page.waitForFunction(() => location.hash === '');
+    await page.evaluate((id) => (location.hash = `#/${id}`), A);
+    await page.getByRole('button', { name: 'Éditeur A' }).waitFor({ timeout: 30_000 });
+    await load.release();
+    await page.waitForTimeout(500);
+    assert.equal(await page.getByRole('button', { name: 'Éditeur A' }).count(), 1);
+    assert.ok(new URL(page.url()).hash.startsWith(`#/${A}`));
+    await page.context().close();
+  });
+
+  it('stays on the open project asked for again while another one loads', { timeout: 90_000 }, async () => {
+    const page = await open(A);
+    const load = await holdProject(page, B);
+    await page.evaluate((id) => (location.hash = `#/${id}`), B);
+    await load.asked;
+    await page.evaluate(() => history.back());
+    await page.waitForFunction((id) => location.hash.startsWith(`#/${id}`), A);
+    await load.release();
+    await page.waitForTimeout(500);
+    assert.equal(await page.getByRole('button', { name: 'Éditeur B' }).count(), 0);
+    assert.ok(new URL(page.url()).hash.startsWith(`#/${A}`));
     await page.context().close();
   });
 

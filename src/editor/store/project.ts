@@ -55,6 +55,15 @@ let opening: { id: string; done: Promise<void> } | null = null;
 export function openProject(id: string, sceneId?: string | null): Promise<void> {
   // A second load would empty the chats the first one already filled, and the open chat would never reload.
   if (opening?.id === id) return opening.done;
+  if (get().project?.id === id) {
+    // Back to the open project while another one loads: that one is dropped, this one never reloads.
+    if (opening) {
+      dropLoad();
+      set({ projectLoading: false });
+    }
+    if (sceneId && sceneId !== get().sceneId) selectScene(sceneId);
+    return Promise.resolve();
+  }
   const done = loadProject(id, sceneId).finally(() => {
     if (opening?.done === done) opening = null;
   });
@@ -62,10 +71,21 @@ export function openProject(id: string, sceneId?: string | null): Promise<void> 
   return done;
 }
 
+/** Counts the opens and the closes: a load whose answer comes after another one, or after the home, drops it. */
+let openings = 0;
+
+/** The load in flight, if any, changes nothing when its answer comes. */
+function dropLoad(): void {
+  openings++;
+  opening = null;
+}
+
 async function loadProject(id: string, sceneId?: string | null): Promise<void> {
+  const opened = ++openings;
   set({ projectLoading: true, playing: false });
   try {
     const project = await api.project(id);
+    if (opened !== openings) return;
     const scene = project.scenes.find((x) => x.id === sceneId) ?? project.scenes[0] ?? null;
     const format = project.formats.includes(get().format) ? get().format : project.formats[0];
     set({
@@ -93,13 +113,14 @@ async function loadProject(id: string, sceneId?: string | null): Promise<void> {
     void loadRenders();
     void loadCost();
   } finally {
-    set({ projectLoading: false });
+    if (opened === openings) set({ projectLoading: false });
   }
 }
 
-/** Back to the home, or to the page the URL now names (`keepUrl`). */
+/** Back to the home, or to the page the URL now names (`keepUrl`), even from a project still loading. */
 export function closeProject(keepUrl = false): void {
-  set({ project: null, sceneId: null, playing: false, chats: {}, seams: [], cost: null });
+  dropLoad();
+  set({ project: null, sceneId: null, playing: false, chats: {}, seams: [], cost: null, projectLoading: false });
   if (!keepUrl) history.replaceState(null, '', location.pathname);
 }
 
@@ -135,10 +156,13 @@ export function refreshProject(): Promise<void> {
   return refreshing;
 }
 
-/** Take a fresh ProjectState (from a refetch or a mutation response) and keep the selection valid. */
+/**
+ * Take a fresh ProjectState (from a refetch or a mutation response) and keep the selection valid. An answer for a project
+ * closed meanwhile is dropped: applied on the home, it would open that project again.
+ */
 export function applyProject(project: ProjectState): void {
   const s = get();
-  if (s.project && s.project.id !== project.id) return;
+  if (s.project?.id !== project.id) return;
   const sceneId = project.scenes.some((x) => x.id === s.sceneId) ? s.sceneId : (project.scenes[0]?.id ?? null);
   const format = project.formats.includes(s.format) ? s.format : project.formats[0];
   const app = s.app && {
