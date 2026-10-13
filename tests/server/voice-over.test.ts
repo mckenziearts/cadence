@@ -226,6 +226,39 @@ test('a sidecar that does not parse or holds the wrong shape is computed again f
   assert.equal(spoken.length + elevenLabsSpoken.length, 0);
 });
 
+test('a WAV whose header gives an absurd sample rate or channel count is not spoken, never read as hours of audio', async () => {
+  // A project imported from an archive brings its .cadence/voice-over as is.
+  const id = await twoScenes();
+  const dir = path.join(store.dir(id), '.cadence', 'voice-over');
+  await fs.mkdir(dir, { recursive: true });
+  await store.updateScene(id, 'demo', { voiceOver: { text: 'Bonjour.', at: 0 } });
+  const header = (offset: number, value: number) => {
+    const wav = writeWav({ sampleRate: RATE, samples: new Int16Array(RATE / 2) });
+    if (offset === 22) wav.writeUInt16LE(value, offset);
+    else wav.writeUInt32LE(value, offset);
+    return wav;
+  };
+  for (const [label, wav] of [
+    ['sample rate 1', header(24, 1)],
+    ['sample rate 1 000 000', header(24, 1_000_000)],
+    ['no channel', header(22, 0)],
+    ['9 channels', header(22, 9)],
+  ] as const) {
+    assert.throws(() => readWav(wav), Error, label);
+    await fs.writeFile(path.join(dir, 'ece9da11ffb1.wav'), wav);
+    const fresh = new LocalVoiceOverService({ ...deps, engine: { ...deps.engine, speak: async () => undefined } });
+    store.setVoiceOverProvider(fresh.provider);
+    assert.deepEqual((await store.get(id)).voiceOverLines, [], label);
+  }
+  for (const [label, wav] of [
+    ['sample rate 8000', header(24, 8000)],
+    ['sample rate 192 000', header(24, 192_000)],
+    ['8 channels', header(22, 8)],
+  ] as const) {
+    assert.doesNotThrow(() => readWav(wav), label);
+  }
+});
+
 test('ElevenLabs speaks with the saved key, voice, model and speed, into its own cache names; Piper is not asked', async () => {
   const id = await twoScenes();
   await fs.writeFile(path.join(t.config.stateDir, 'elevenlabs.json'), JSON.stringify({ key: 'sk_saved' }));

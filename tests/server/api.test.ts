@@ -58,7 +58,7 @@ import {
   type VoiceInfo,
   type VoiceOverSettings,
 } from '../../src/shared/types';
-import { fakeNetwork, makeRoot, type TestRoot } from './helpers';
+import { fakeNetwork, makeRoot, writeCompleteBrand, type TestRoot } from './helpers';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 const SIWIS: VoiceInfo = {
@@ -252,7 +252,7 @@ beforeEach(async () => {
     store,
     brands,
     templates,
-    versions: new FileVersionStore(store),
+    versions: new FileVersionStore(store, brands),
     assets: new FileAssetStore(store, capture),
     capture,
     seams,
@@ -984,6 +984,7 @@ test('archives: a download dropped before any byte closes the archive; a full on
         setImmediate(handed);
         return made;
       },
+      import: (body) => deps.archives.import(body),
     },
   });
   const server = http.createServer(getRequestListener(app.fetch));
@@ -1015,7 +1016,10 @@ test('archives: a download dropped before any byte closes the archive; a full on
 test('archives: HEAD answers the headers and closes the archive without streaming it', async () => {
   await fs.writeFile(path.join(t.root, 'package.json'), JSON.stringify({ version: '9.9.9' }));
   let made: Readable | undefined;
-  app = createApi({ ...deps, archives: { export: async (ids) => (made = await deps.archives.export(ids)) } });
+  app = createApi({
+    ...deps,
+    archives: { export: async (ids) => (made = await deps.archives.export(ids)), import: (body) => deps.archives.import(body) },
+  });
   for (const url of ['/api/projects/demo/export', '/api/export']) {
     const res = await call('HEAD', url);
     assert.equal(res.status, 200, url);
@@ -1024,6 +1028,93 @@ test('archives: HEAD answers the headers and closes the archive without streamin
     assert.ok(made?.destroyed, `${url}: archive closed`);
   }
   assert.equal((await call('HEAD', '/api/projects/nope/export')).status, 404);
+});
+
+test('archives: POST /api/import takes the gzip body, answers the report and tells the editor about a new brand', async () => {
+  await fs.writeFile(path.join(t.root, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+  await writeCompleteBrand(t.root, 'orbit');
+  await store.create({ name: 'Promo Orbit', brand: 'orbit', formats: ['16:9'], fps: 30 });
+  const archive = Buffer.from(await (await call('GET', '/api/projects/promo-orbit/export')).arrayBuffer());
+  await fs.rm(path.join(t.root, 'brands/orbit'), { recursive: true });
+
+  const first = await call('POST', '/api/import', new Blob([archive]));
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), {
+    projects: [{ from: 'promo-orbit', id: 'promo-orbit-2', name: 'Promo Orbit' }],
+    brands: { installed: ['orbit'], reused: [] },
+  });
+  assert.deepEqual(
+    events.filter((e) => e.type === 'brands-changed'),
+    [{ type: 'brands-changed' }],
+  );
+
+  events.length = 0;
+  const second = await call('POST', '/api/import', new Blob([archive]));
+  assert.equal(second.status, 200);
+  assert.deepEqual((await second.json()).brands, { installed: [], reused: ['orbit'] });
+  assert.deepEqual(
+    events.filter((e) => e.type === 'brands-changed'),
+    [],
+  );
+
+  // Over the 2 MB JSON limit: the import route has its own.
+  const garbage = await call('POST', '/api/import', new Blob([Buffer.alloc(3 * 1024 * 1024, 1)]));
+  assert.equal(garbage.status, 400);
+  assert.match((await garbage.json()).error, /\w/);
+});
+
+test('archives: POST /api/import reads a chunked body as it comes, stopped past 2 GiB', { timeout: 30_000 }, async () => {
+  await fs.writeFile(path.join(t.root, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+  const archive = Buffer.from(await (await call('GET', '/api/projects/demo/export')).arrayBuffer());
+  const streamed = (chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>) => {
+    const next = (async function* () {
+      yield* chunks;
+    })();
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const { done, value } = await next.next();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+    });
+    return app.fetch(new Request('http://127.0.0.1:5299/api/import', { method: 'POST', body, duplex: 'half' } as RequestInit));
+  };
+
+  const ok = await streamed([archive.subarray(0, 100), archive.subarray(100)]);
+  assert.equal(ok.status, 200);
+  assert.deepEqual((await ok.json()).projects, [{ from: 'demo', id: 'demo-2', name: 'Démo' }]);
+
+  // The rest of the body is sent only once the import has read its start: a route holding it whole would wait forever.
+  let read = 0;
+  let started!: () => void;
+  const reading = new Promise<void>((resolve) => (started = resolve));
+  app = createApi({
+    ...deps,
+    archives: {
+      ...deps.archives,
+      import: async (body) => {
+        for await (const chunk of body) {
+          read += chunk.length;
+          started();
+        }
+        return { projects: [], brands: { installed: [], reused: [] } };
+      },
+    },
+  });
+  const chunk = new Uint8Array(256 * 1024 * 1024);
+  const tooLarge = await streamed(
+    (async function* () {
+      yield chunk.subarray(0, 1);
+      await reading;
+      for (let i = 0; i < 9; i++) yield chunk;
+    })(),
+  );
+  assert.equal(tooLarge.status, 413);
+  assert.match((await tooLarge.json()).error, /2048/);
+  assert.ok(read > 0 && read <= 2048 * 1024 * 1024, `${read} bytes reached the import`);
+
+  const declared = await call('POST', '/api/import', new Blob([archive]), { 'content-length': String(3 * 1024 ** 3) });
+  assert.equal(declared.status, 413);
 });
 
 test('subtitles: SRT and VTT of the voice-over sentences as downloads, without ever speaking', async () => {

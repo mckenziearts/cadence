@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
+import { FileBrandStore } from '../../server/store/brands';
 import { FileProjectStore } from '../../server/store/projects';
 import { FileVersionStore } from '../../server/store/versions';
 import { sha256 } from '../../server/util';
-import { makeRoot, nextEvent, rejectsWithStatus, type TestRoot } from './helpers';
+import { makeRoot, nextEvent, rejectsWithStatus, writeCompleteBrand, type TestRoot } from './helpers';
 
 let t: TestRoot;
 let store: FileProjectStore;
@@ -16,7 +17,7 @@ const id = 'film';
 beforeEach(async () => {
   t = await makeRoot();
   store = new FileProjectStore(t.config);
-  versions = new FileVersionStore(store);
+  versions = new FileVersionStore(store, new FileBrandStore(t.config));
   dir = (await store.create({ name: 'Film', brand: null, formats: ['16:9'], fps: 60 })).dir;
   await store.createScene(id, { name: 'Deux', code: 'export default () => "deux v1";\n', duration: 2 });
 });
@@ -318,6 +319,70 @@ test('an edit racing a restore is never lost', async () => {
   const current = (await store.get(id)).scenes[0].name;
   const recorded = await Promise.all((await versions.list(id)).map((v) => versions.read(id, v.id, 'project.json')));
   assert.ok(current === 'Renommée' || recorded.some((json) => json!.includes('"Renommée"')));
+});
+
+test('a restore writes only tracked paths, whatever an imported manifest lists', async () => {
+  await baseline();
+  const object = 'export const X = 1;\n';
+  await write(`.cadence/versions/objects/${sha256(object)}`, object);
+  const manifestFile = path.join(dir, '.cadence', 'versions', 'manifests', 'v0001.json');
+  const manifest = JSON.parse(await fs.readFile(manifestFile, 'utf8')) as Record<string, string>;
+  const untracked = [
+    'package.json',
+    'tsconfig.json',
+    'renders/a.mp4',
+    '.cadence/publications.json',
+    'node_modules/x/y.css',
+    'components/node_modules/x/y.css',
+    'components/Package.json',
+    'scenes/.hidden.tsx',
+    'scenes/../package.json',
+    'scenes/../../outside.ts',
+  ];
+  for (const rel of [...untracked, 'components/kept.ts']) manifest[rel] = sha256(object);
+  await fs.writeFile(manifestFile, JSON.stringify(manifest));
+
+  await versions.restore(id, 'v0001');
+
+  for (const rel of untracked)
+    assert.equal(
+      await fs.access(path.join(dir, rel)).then(
+        () => true,
+        () => false,
+      ),
+      false,
+      rel,
+    );
+  assert.equal(await read('components/kept.ts'), object);
+});
+
+test('a version whose brand is not installed here is refused by name, the project and its history left as they were', async () => {
+  await baseline();
+  await writeCompleteBrand(t.root, 'orbit');
+  await store.update(id, { brand: 'orbit' });
+  const withOrbit = (await versions.snapshot(id, { label: 'Orbit', source: 'manual' }))!;
+  await store.update(id, { brand: null });
+  await fs.rm(path.join(t.root, 'brands/orbit'), { recursive: true });
+  const before = await read('project.json');
+  const history = await versions.list(id);
+
+  await rejectsWithStatus(versions.restore(id, withOrbit.id), 400, /Marque inconnue : orbit/);
+  assert.equal(await read('project.json'), before);
+  assert.deepEqual(await versions.list(id), history);
+
+  await writeCompleteBrand(t.root, 'orbit');
+  await versions.restore(id, withOrbit.id);
+  assert.equal((await store.get(id)).brand, 'orbit');
+});
+
+test('a version id of an imported index that is not v0001-like is never read as a file name', async () => {
+  await baseline();
+  const indexFile = path.join(dir, '.cadence', 'versions', 'index.json');
+  const index = JSON.parse(await fs.readFile(indexFile, 'utf8')) as { id: string }[];
+  await write('.cadence/versions/evil.json', '{}');
+  await fs.writeFile(indexFile, JSON.stringify([...index, { ...index[0], id: '../evil' }]));
+  await rejectsWithStatus(versions.restore(id, '../evil'), 500, /evil/);
+  await rejectsWithStatus(versions.snapshot(id, { label: 'x', source: 'manual' }), 500, /evil/);
 });
 
 test('an unreadable index is an error, never an empty history', async () => {

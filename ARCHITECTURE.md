@@ -499,7 +499,8 @@ written and read by `server/archive/tar.ts` with no dependency. Entries, in orde
 
 What is left out, by `exportableProjectPath` and `exportableBrandPath` (the same rule decides what an import keeps):
 `renders/` (videos are made again from the code), a project's `tsconfig.json` (its `extends` points into this
-installation and breaks Vite on another one), `node_modules/`, dotfiles (`.building` included), and in `.cadence/`
+installation and breaks Vite on another one), `node_modules/` and `package.json` under any case (the frame server
+refuses them above a stylesheet), dotfiles (`.building` included), and in `.cadence/`
 everything but `chats/`, `versions/` and `voice-over/` (thumbnails, frames, seams, sounds, trash and publications are
 cache or tied to this machine). Only regular files and folders are walked, from `lstat` types: a symlink is skipped,
 never followed, and `writeTar` opens each file with `O_NOFOLLOW`.
@@ -511,6 +512,70 @@ is a symlink (409) are checked before the first byte. A folder with no `project.
 is not a project and stays out. A HEAD answers the headers and closes the archive unread; a read error later ends the
 stream, so the file is truncated (and an import refuses it). No project lock is held while the archive streams, which
 would block writes for the length of a download: an export taken while the agent writes may mix two states (accepted).
+
+Import (`POST /api/import`, the raw gzip body, editor token, 2 GiB upload limit counted by the route as the body
+arrives, with or without Content-Length) runs in this order:
+
+1. Staging folders older than an hour (left by a crash) are removed from `projects/.import/` and `brands/.import/`,
+   as they are when the server starts (`ProjectArchiver.sweep`). A younger one may be another process's import.
+2. The archive is unpacked as it arrives into `projects/.import/<uuid>/<id>/` and `brands/.import/<uuid>/<id>/`, on
+   the volume of their targets so each move is one rename. Caps: 4 GiB unpacked, 100 000 entries, 10 MiB for
+   each file the server later reads whole (`.css`, `.json`, `.md`, scripts), so only media can be larger; an overrun
+   answers 413. `manifest.json` must come first; a `format` above 1 asks for a newer Cadence. Only `projects/<id>/` and `brands/<id>/` of listed ids
+   are accepted, and only the paths an export would write; `brands/cadence/` is skipped (reported as reused). Files are
+   created with `wx`, so two entries never land on one path. Each `.css` file is scanned as it streams to the disk:
+   one that holds `@plugin` or `@config`, comments removed as Tailwind removes them (a backslash in a comment escapes
+   the next character), refuses the import. Other files are not scanned, so chats, history and notes may quote the
+   directives: Tailwind reads one only through a stylesheet that imports it by path, which step 3 refuses. Inside the
+   app, the frame server's guard (`assertNoCssCodeExec`) scans every managed `.css` file and checks each `@import` and
+   `@reference` on its own, even one inside a string. Only two kinds pass: a package name (`tailwindcss`,
+   `@fontsource-variable/inter/standard.css`), and a path or `@brands/` import that names a `.css` file the scan reads,
+   never a folder, a link to another kind of file, a file under `.git` or behind a linked folder that leads out of the
+   managed dirs. Anything else is refused: Tailwind's fallback resolver opens `file:` URLs and reads `?` and `#` as
+   part of the file name (`./a.css?.png`), so a file of another kind the agent writes is never compiled. A request
+   whose query makes Tailwind compile a file of another kind (`&lang.css`, `index=<n>.css`) is refused by the build
+   and answered 404 by the frame origin. The guard also refuses a `node_modules/` or `package.json` in a managed
+   folder that holds a stylesheet at any depth: Tailwind's fallback resolver looks for them (packages, `imports` with
+   `#`) in the folders above the importing stylesheet and follows them to files of any extension that the scan never
+   reads. Names are compared as a case-insensitive disk compares them (APFS opens `Node_Modules` for `node_modules`
+   and `a.CSS` for `a.css`).
+3. Checks, one import at a time from here on, before anything moves: the staging folders pass the frame server's
+   guard (`cssCodeOffenders`), with each path import read from where its folder lands (and looked up in the staging
+   folders too), so nothing that would stop every frame compile moves in; a brand of the archive being
+   built here (its folder holds `.building`) refuses the whole import (409), and so does a local folder of that id that
+   holds no brand; a brand not installed here must pass `brandProblems`; each `project.json` must pass the
+   store's schema (the rules `read()` applies, duplicate scene ids included), and its brand must be `cadence`, in the
+   archive, or installed here and not being built. The empty folders a new project starts with (`components/`,
+   `assets/refs/`) are made in the staging folder, so a file of that name refuses the import here.
+4. Brands move first (`BrandStore.adopt`: an `mkdir` claim like a build's, then a rename onto that claim only; a
+   brand already installed is reused as it is, even when its files differ or its folder is a link, and any other
+   folder answers 409, since an empty one may be a build that has claimed it and not yet written its marker), then
+   projects (`ProjectStore.adopt`: `<id>`, or `<id>-2`... when taken). Imports check and move one at a time, so of two
+   imports of one archive the first installs a brand and the second reuses it. A brand moved in sends
+   `brands-changed`; each project emits `list-changed`. Both staging folders are removed whatever happens.
+
+Any refusal answers 400 (409 for a brand being built, 413 over a cap) naming the cause, and leaves `projects/` and
+`brands/` as they were. Chats keep their session id when it is a UUID (any other value is dropped, since it reaches
+the CLI's argv): a Claude Code session missing on this machine starts again (the `session-lost` retry).
+
+An archive is untrusted. Its scenes and kit components run in the frame like any scene (frame origin, CSP, no access
+to the editor token); its text (`project.json`, notes, chats, `KIT.md`) reaches the agent like any project file,
+under the agent's usual restrictions. The reader accepts only regular files under safe relative paths (no `..`, no
+absolute path, no link, no duplicate under APFS case folding), and nothing outside the staging folders is written
+before the checks pass. Accepted risks: a scene can still render anything a scene can (it is code the user chose to
+import), a reused brand may differ from the one the projects were made with, a crash between two moves leaves the
+projects and brands already moved in place (each one complete), a crash between a brand's claim and its rename leaves
+an empty `brands/<id>/` that the next import of that brand refuses until it is removed, and a build that claims a
+brand id between the checks and the moves makes the import answer 409 after earlier brands moved in. While an import
+runs, its staging folders sit under the managed folders that the frame server's guard walks on every CSS compile, so a
+staged stylesheet the guard refuses (one importing a `.png`, refused only at step 3, once the whole upload is read)
+fails every frame CSS compile until the import ends; after a crash, until the folder is an hour old and the next start
+or import removes it. The guard does not skip `.import/`: a scene could import a staged file by path.
+
+The history in `.cadence/versions/` travels as the archive gives it, so a restore writes only the paths a snapshot
+tracks (`project.json`, `art-direction.md`, `scenes/**`, `components/**`, no dot segment, no `node_modules` or
+`package.json`), and a version id must look like `v0001` before it names a manifest file. Only the brands the projects
+use now travel: a full restore of a version whose brand is not installed answers 400 naming it, before any write.
 
 ## REST API (editor origin, JSON, error messages `{ error }` in the interface language)
 
@@ -557,6 +622,8 @@ GET    /api/projects/:id/export                    the project and its brand as 
                                                    (see "Project archives"); 404 unknown project, 409 unreadable project.json
                                                    or brand not on this machine
 GET    /api/export                                 every project and their brands as `cadence-<YYYY-MM-DD>.tar.gz`, same errors
+POST   /api/import                                 the raw .tar.gz body (up to 2 GiB), answers ImportReport; 400 refused archive,
+                                                   409 a brand of it being built here, 413 over a cap
 GET    /api/projects/:id/versions                  ?scene=, answers VersionEntry[]
 POST   /api/projects/:id/versions                  { label }, answers VersionEntry | null
 POST   /api/projects/:id/versions/:vid/restore     { sceneId? }, answers VersionEntry (409 while a turn runs)

@@ -9,43 +9,12 @@ import { buffer } from 'node:stream/consumers';
 import { test } from 'node:test';
 import { createGunzip, createGzip } from 'node:zlib';
 import { readTar, writeTar, type ReadTarOptions } from '../../server/archive/tar';
+import { fileEntry, padded, rawHeader } from './helpers';
 
 const MiB = 1024 * 1024;
 const timed = { timeout: 10_000 };
 
-interface RawHeader {
-  name?: string;
-  type?: string;
-  size?: number;
-  prefix?: string;
-  sizeField?: Buffer;
-}
-
-function rawHeader({ name = '', type = '0', size = 0, prefix = '', sizeField }: RawHeader): Buffer {
-  const block = Buffer.alloc(512);
-  block.write(name, 0, 100);
-  block.write('0000644\0', 100);
-  block.write('0000000\0', 108);
-  block.write('0000000\0', 116);
-  if (sizeField) sizeField.copy(block, 124);
-  else block.write(`${size.toString(8).padStart(11, '0')}\0`, 124);
-  block.write('00000000000\0', 136);
-  block.write(type, 156);
-  block.write('ustar\x0000', 257);
-  block.write(prefix, 345, 155);
-  block.fill(' ', 148, 156);
-  const sum = block.reduce((total, byte) => total + byte, 0);
-  block.write(`${sum.toString(8).padStart(6, '0')}\0`, 148);
-  return block;
-}
-
-const padded = (data: Buffer) => Buffer.concat([data, Buffer.alloc((512 - (data.length % 512)) % 512)]);
 const END = Buffer.alloc(1024);
-
-function fileEntry(name: string, content = '', type = '0'): Buffer {
-  const data = Buffer.from(content);
-  return Buffer.concat([rawHeader({ name, type, size: data.length }), padded(data)]);
-}
 
 function paxEntry(records: Record<string, string>, type = 'x'): Buffer {
   const data = Buffer.from(

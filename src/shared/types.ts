@@ -354,6 +354,12 @@ export interface ArchiveManifest {
   brands: string[];
 }
 
+/** What POST /api/import did: each project under the id it got here, each brand installed or kept as it was. */
+export interface ImportReport {
+  projects: { from: string; id: string; name: string }[];
+  brands: { installed: string[]; reused: string[] };
+}
+
 export interface CreateProjectInput {
   name: string;
   /** Optional explicit id; derived from the name when omitted. */

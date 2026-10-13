@@ -153,6 +153,29 @@ This document is reread before every change. Describe here the style all scenes 
     projectUnreadable: (ids: string) => `Cannot read project.json of ${ids}: fix or delete it before exporting.`,
     brandLinked: (brand: string) => `The folder of the brand "${brand}" is a link: an export only reads real folders.`,
     brandMissing: (brand: string) => `The brand "${brand}" is not on this computer: its projects cannot be exported without it.`,
+    unreadable: (detail: string) => `This file is not a readable Cadence archive (${detail}).`,
+    refused: (detail: string) => `Archive refused: ${detail}`,
+    tooLarge: (detail: string) => `Archive too large: ${detail}`,
+    collision: (entry: string) => `Archive refused: ${entry} collides with another file of the archive.`,
+    cssCodeExec: (entry: string) =>
+      `Archive refused: ${entry} contains @plugin or @config, which would run code while the CSS compiles.`,
+    cssImport: (entry: string) =>
+      `Archive refused: ${entry} imports a file that is not a stylesheet, which Tailwind would read as CSS.`,
+    brandFolderTaken: (brand: string) =>
+      `The folder brands/${brand}/ exists on this computer but holds no brand: remove it, then import again.`,
+    manifestFirst: 'Archive refused: manifest.json must be its first file. Choose an archive exported by Cadence.',
+    manifestInvalid: (detail: string) => `Archive refused: manifest.json is invalid (${detail}).`,
+    newerFormat: (createdWith: string) =>
+      `This archive comes from Cadence ${createdWith}, newer than this installation: update Cadence to import it.`,
+    unexpectedEntry: (entry: string) => `Archive refused: ${entry} belongs to no project or brand of the manifest.`,
+    projectMissing: (id: string) => `Archive refused: the project "${id}" has no project.json.`,
+    projectInvalid: (id: string, issues: string) =>
+      `Archive refused: the project.json of the project "${id}" is invalid: ${issues}`,
+    brandUnavailable: (brand: string, project: string) =>
+      `Archive refused: the project "${project}" uses the brand "${brand}", which is neither in the archive nor on this computer.`,
+    brandIncomplete: (brand: string, problems: string) => `Archive refused: the brand "${brand}" is incomplete: ${problems}`,
+    brandBuilding: (brand: string) =>
+      `The brand "${brand}" is being built on this computer: wait for the end or cancel the build, then import again.`,
   },
   templates: {
     sceneSkipped: (error: string) => `[cadence] scene template skipped: ${error}`,

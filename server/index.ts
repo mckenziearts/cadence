@@ -186,7 +186,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       secrets,
     });
     const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub });
-    const versions = new FileVersionStore(store);
+    const versions = new FileVersionStore(store, brands);
     const assets = new FileAssetStore(store, capture);
     const tokens = new McpTokens(config);
     // Key by key rather than a spread: an undefined flag stays on, and a key the editor does not know is not served.
@@ -240,6 +240,8 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       diagnose,
     });
     await brandBuilds.sweep();
+    const archives = new ProjectArchiver({ config, store, brands });
+    await archives.sweep();
     const networks: Record<NetworkId, Network> = {
       youtube: new YouTubeNetwork(),
       linkedin: new LinkedInNetwork(),
@@ -280,7 +282,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       brandBuilds,
       accounts,
       publisher,
-      archives: new ProjectArchiver({ config, store, brands }),
+      archives,
       agentStatus: () => provider.status(),
       codexStatus: () => codex.status(),
       grokStatus: () => grokStatus(config),

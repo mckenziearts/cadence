@@ -160,7 +160,8 @@ async function create(args: string[]): Promise<number> {
   if (!name) throw new UsageError(m().media.cli.noName);
   const config = loadConfig();
   const templates = new FileTemplateStore(config);
-  const store = new FileProjectStore(config, { templates, brands: new FileBrandStore(config) });
+  const brands = new FileBrandStore(config);
+  const store = new FileProjectStore(config, { templates, brands });
   const template = values.template ? await templates.projectTemplate(values.template) : null;
   const project = await store.create({
     name,
@@ -171,7 +172,7 @@ async function create(args: string[]): Promise<number> {
     voiceOver: (await new FileSettingsStore(config).get()).defaultVoice,
   });
   const t = m().media.cli;
-  await new FileVersionStore(store)
+  await new FileVersionStore(store, brands)
     .snapshot(project.id, { label: m().api.versions.initial, source: 'baseline' })
     .catch((e: Error) => console.warn(t.versionNotSaved(e.message)));
   console.log(t.created(project.name, t.scenes(project.scenes.length), project.dir));

@@ -15,7 +15,7 @@ import {
   type ViteDevServer,
 } from 'vite';
 import type { CadenceConfig } from '../contracts';
-import { CSS_CODE_EXEC, isInside } from '../util';
+import { CssCodeScan, foldName, isInside, isResolverInput } from '../util';
 
 export async function createVite({
   config,
@@ -57,9 +57,10 @@ export async function createVite({
         deny: ['.env*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.cadence/**'],
       },
       // This watcher also feeds ProjectStore.watch(). What only piles up stays out (versions, chats and thumbnails under
-      // .cadence/, renders, soundtracks, trashed projects): on Linux each watched file holds an inotify watch.
+      // .cadence/, renders, soundtracks, trashed projects, imports being staged): on Linux each watched file holds an
+      // inotify watch.
       watch: {
-        ignored: ['**/.cadence/**', (file: string) => pilesUp(config.projectsDir, file)],
+        ignored: ['**/.cadence/**', (file: string) => pilesUp(config, file)],
       },
     },
     resolve: {
@@ -87,7 +88,7 @@ export async function createVite({
         ...(await brandIconSets(config.brandsDir)),
       ],
     },
-    plugins: [cadencePlugin(managed), react(), tailwindcss()],
+    plugins: [cadencePlugin(managed, config.brandsDir), react(), tailwindcss()],
   };
   const server = await createServer(mergeConfig(base, overrides) as InlineConfig);
   // Vite watches its root only: managed dirs a host app keeps elsewhere are added, so an edit made from a terminal
@@ -96,11 +97,12 @@ export async function createVite({
   return server;
 }
 
-/** Renders, soundtracks and trashed projects: by path rather than glob, so it holds wherever projectsDir lives. */
-function pilesUp(projectsDir: string, file: string): boolean {
+/** Renders, soundtracks, trashed projects, staged imports: by path rather than glob, so it holds wherever the dirs live. */
+function pilesUp({ projectsDir, brandsDir }: CadenceConfig, file: string): boolean {
+  if (isInside(brandsDir, file)) return path.relative(brandsDir, file).split(path.sep)[0] === '.import';
   if (!isInside(projectsDir, file)) return false;
   const [project, folder] = path.relative(projectsDir, file).split(path.sep);
-  return project === '.trash' || folder === 'renders' || folder === 'music';
+  return project === '.trash' || project === '.import' || folder === 'renders' || folder === 'music';
 }
 
 const ICON_SET = /['"](@heroicons\/react\/\d+\/(?:solid|outline)|@tabler\/icons-react)['"]/g;
@@ -115,11 +117,17 @@ async function brandIconSets(brandsDir: string): Promise<string[]> {
   return [...sets].sort();
 }
 
-// Only infra the agent can never write into, and that never holds a managed stylesheet. Everything else is read:
+// Only infra that never holds a managed stylesheet; an import that reaches into it is refused (importsOtherThanCss),
+// whoever wrote the file there. Everything else is read:
 // Tailwind inlines @import itself and honours neither this set nor Vite's server.fs rules, so a @plugin in any
 // import-reachable .css runs code at compile time. A name-based skip of e.g. `renders` was a bypass, because a dir
 // named `renders` under the agent-writable components/ is import-reachable (components/renders/evil.css).
-const SKIP_WALK = new Set(['.git', 'node_modules']);
+const SKIP_WALK = new Set(['.git']);
+// What a bare or `#` specifier resolves through (isResolverInput): Tailwind's fallback resolver (enhanced-resolve)
+// follows node_modules and package.json `imports` to a file of any extension, which the walk never reads. It looks for
+// them only in the folders above the importing stylesheet: one in a folder holding no stylesheet is out of its reach.
+// No project, brand or template needs either, archives leave them out, and outside the managed dirs only the app's own
+// are found.
 
 /**
  * Refuse any CSS under the managed dirs that carries `@plugin` or `@config`: Tailwind would load and run that module
@@ -127,22 +135,108 @@ const SKIP_WALK = new Set(['.git', 'node_modules']);
  * resolves @import itself, so a leaf reached through @import hops, in any directory, would otherwise slip past. CSS
  * compiles are infrequent (brand themes, scene-imported CSS), so walking the managed dirs each time stays cheap.
  */
-export async function assertNoCssCodeExec(managedDirs: string[]): Promise<void> {
+export async function assertNoCssCodeExec(managedDirs: string[], brandsDir: string): Promise<void> {
+  const offenders = await cssCodeOffenders(managedDirs, brandsDir);
+  if (offenders.length) {
+    throw new Error(
+      `CSS @plugin/@config runs code at build time and is not allowed here, nor node_modules or package.json, through which an @import reaches unchecked files:\n${offenders.join('\n')}`,
+    );
+  }
+}
+
+/**
+ * The files and folders under `dirs` that assertNoCssCodeExec refuses. `brandsDir` is where the `@brands` alias points.
+ * `moves` maps a staging folder to the folder it is about to be moved into: a stylesheet's path imports are then read
+ * from where it lands, and what they reach under a destination is looked up in the staging folder too.
+ */
+export async function cssCodeOffenders(
+  dirs: string[],
+  brandsDir: string,
+  moves: [staged: string, target: string][] = [],
+): Promise<string[]> {
   const offenders: string[] = [];
-  const walk = async (dir: string): Promise<void> => {
+  const roots = await Promise.all(
+    [...dirs, ...moves.map(([, target]) => target)].map((dir) => fs.realpath(dir).catch(() => dir)),
+  );
+  // Where the walk reads every stylesheet: a destination of `moves` is walked by the frame build before any compile.
+  const scanned = (real: string) =>
+    roots.some(
+      (root) =>
+        isInside(root, real) &&
+        path
+          .relative(root, real)
+          .split(path.sep)
+          .every((s) => !SKIP_WALK.has(s)),
+    );
+  /** Whether the folder holds a stylesheet, at any depth. */
+  const walk = async (dir: string): Promise<boolean> => {
+    const reachable: string[] = [];
+    let styled = false;
     for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const child = path.join(dir, entry.name);
+      if (isResolverInput(entry.name)) reachable.push(child);
       if (entry.isDirectory()) {
-        if (!SKIP_WALK.has(entry.name)) await walk(path.join(dir, entry.name));
-      } else if (entry.name.endsWith('.css')) {
-        const file = path.join(dir, entry.name);
-        if (CSS_CODE_EXEC.test(await fs.readFile(file, 'utf8').catch(() => ''))) offenders.push(file);
+        if (!SKIP_WALK.has(entry.name) && (await walk(child))) styled = true;
+      } else if (foldName(entry.name).endsWith('.css')) {
+        // A case-insensitive disk opens `a.CSS` for a request of `a.css`.
+        styled = true;
+        const scan = new CssCodeScan();
+        const text = scan.push(await fs.readFile(child, 'utf8').catch(() => ''));
+        if (scan.end() || (await importsOtherThanCss(child, text, { brandsDir, moves, scanned }))) offenders.push(child);
       }
     }
+    if (styled) offenders.push(...reachable);
+    return styled;
   };
-  await Promise.all(managedDirs.map(walk));
-  if (offenders.length) {
-    throw new Error(`CSS @plugin/@config runs code at build time and is not allowed here:\n${offenders.join('\n')}`);
+  await Promise.all(dirs.map(walk));
+  return offenders.sort();
+}
+
+// The lookahead consumes nothing, so a string holding `@import "` cannot swallow the import that follows it.
+const CSS_IMPORT = /@(?:import|reference)(?=\s*("[^"]*"|'[^']*'))/gi;
+// `tailwindcss`, `@fontsource-variable/inter/standard.css`: no scheme, query, fragment or dot segment.
+const PACKAGE = /^(@[\w-][\w.-]*\/)?[\w-][\w.-]*(\/[\w-][\w.-]*)*$/;
+
+/**
+ * Tailwind reads what a stylesheet imports as CSS whatever its extension, and its fallback resolver opens more than
+ * Vite would (`file:` URLs, `?` and `#` as part of a file name). So only two kinds of import pass. A package name, which
+ * resolves to the app's node_modules (one under the managed dirs is refused by the walk). A path (`./`, `../`, `/`) or
+ * the `@brands` alias, which must name a .css file the walk reads: not a folder, not a link to another kind of file, not
+ * under `.git` or a linked folder that leads out of the managed dirs.
+ */
+async function importsOtherThanCss(
+  file: string,
+  text: string,
+  { brandsDir, moves, scanned }: { brandsDir: string; moves: [string, string][]; scanned: (real: string) => boolean },
+): Promise<boolean> {
+  const from = path.dirname(relocate(file, moves));
+  for (const [, quoted] of text.matchAll(CSS_IMPORT)) {
+    const uri = quoted.slice(1, -1);
+    const alias = uri === '@brands' || uri.startsWith('@brands/');
+    if (!alias && !/^[./]/.test(uri)) {
+      if (PACKAGE.test(uri)) continue;
+      return true;
+    }
+    if (/[?#]/.test(uri)) return true;
+    const resolved = alias ? path.join(brandsDir, uri.slice('@brands'.length)) : path.resolve(from, uri);
+    const staged = relocate(
+      resolved,
+      moves.map(([stage, target]) => [target, stage]),
+    );
+    for (const candidate of new Set([resolved, staged])) {
+      // Missing: Tailwind cannot open it either.
+      const real = await fs.realpath(candidate).catch(() => null);
+      if (!(real ?? candidate).endsWith('.css')) return true;
+      if (real && (!scanned(real) || (await fs.stat(real)).isDirectory())) return true;
+    }
   }
+  return false;
+}
+
+/** `file` under the first `from` folder that holds it, moved under its `to`. */
+function relocate(file: string, moves: [from: string, to: string][]): string {
+  const move = moves.find(([from]) => isInside(from, file));
+  return move ? path.join(move[1], path.relative(move[0], file)) : file;
 }
 
 const GENERATION_PARAM = /([?&])g=[^&]*&?/;
@@ -154,7 +248,7 @@ const GENERATION_PARAM = /([?&])g=[^&]*&?/;
  * module per file anyway: a new `?g=` URL resolves to the plain id and re-transforms it. One module per generation
  * would keep one Tailwind compiler per brand theme per generation alive (about 1 MB each).
  */
-function cadencePlugin(managedDirs: string[]): Plugin {
+function cadencePlugin(managedDirs: string[], brandsDir: string): Plugin {
   return {
     name: 'cadence',
     enforce: 'pre',
@@ -181,10 +275,18 @@ function cadencePlugin(managedDirs: string[]): Plugin {
       // compiles any CSS that would run code. Tailwind inlines @import itself, so a check on this one file would miss
       // a two-hop @import to @plugin: scan the whole managed set instead.
       const file = id.replace(/[?#].*$/, '');
-      if (file.endsWith('.css') && managedDirs.some((dir) => isInside(dir, file))) await assertNoCssCodeExec(managedDirs);
+      if (!COMPILED_AS_CSS.test(id) || !managedDirs.some((dir) => isInside(dir, file))) return;
+      if (!file.endsWith('.css')) throw new Error(`Only a .css file is compiled as CSS here: ${file}`);
+      await assertNoCssCodeExec(managedDirs, brandsDir);
     },
   };
 }
+
+/**
+ * The ids @tailwindcss/vite compiles (its transform filter): a query ending in `.css`, `&lang.css` or `index=<n>.css`
+ * makes it compile a file of any extension, which the walk never reads.
+ */
+const COMPILED_AS_CSS = /\.css(?:\?.*)?$|&lang\.css|[?&]index=\d+\.css$/;
 
 const VITE_CLIENT_CONNECT = 'transport.connect(createHMRHandler(handleMessage));';
 

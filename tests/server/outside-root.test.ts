@@ -93,7 +93,7 @@ test('projects/CLAUDE.md outside the core names no path relative to the core', a
   assert.doesNotMatch(guide, /(^|[\s`(])(projects|src|brands|templates)\//m);
 });
 
-test('the watcher reports edits outside the core, and leaves out renders and soundtracks', async () => {
+test('the watcher reports edits outside the core, and leaves out renders, soundtracks, trash and import staging', async () => {
   const project = path.join(config.projectsDir, 'watched');
   const reported: string[] = [];
   const onFile = (_event: string, file: string) => reported.push(file);
@@ -106,6 +106,8 @@ test('the watcher reports edits outside the core, and leaves out renders and sou
       await write(path.join(project, 'renders', 'final.mp4'), String(attempt));
       await write(path.join(project, 'music', 'track.wav'), String(attempt));
       await write(path.join(config.projectsDir, '.trash', 'old', 'project.json'), String(attempt));
+      await write(path.join(config.projectsDir, '.import', 'staged', 'old', 'project.json'), String(attempt));
+      await write(path.join(config.brandsDir, '.import', 'staged', 'orbit', 'brand.json'), String(attempt));
       await write(notes, `# ${attempt}\n`);
       await sleep(200);
     }
@@ -116,7 +118,13 @@ test('the watcher reports edits outside the core, and leaves out renders and sou
     await brand;
     // Only this projectsDir: the watcher also sees the core's own projects/, where other test files render in parallel.
     assert.deepEqual(
-      reported.filter((file) => isInside(config.projectsDir, file) && /[/\\](renders|music|\.trash)([/\\]|$)/.test(file)),
+      reported.filter(
+        (file) => isInside(config.projectsDir, file) && /[/\\](renders|music|\.trash|\.import)([/\\]|$)/.test(file),
+      ),
+      [],
+    );
+    assert.deepEqual(
+      reported.filter((file) => isInside(path.join(config.brandsDir, '.import'), file)),
       [],
     );
   } finally {

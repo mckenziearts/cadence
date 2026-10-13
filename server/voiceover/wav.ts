@@ -32,6 +32,9 @@ function layout(head: Buffer, fileSize: number): Layout {
       };
     } else if (id === 'data') {
       if (!format || format.code !== 1 || format.bits !== 16) throw new Error('not 16-bit PCM');
+      // A WAV can come from an imported archive: a sample rate of 1 reads as hours of audio and sizes arrays by it.
+      if (format.channels < 1 || format.channels > 8) throw new Error(`${format.channels} channels`);
+      if (format.sampleRate < 8000 || format.sampleRate > 192_000) throw new Error(`sample rate ${format.sampleRate}`);
       return {
         sampleRate: format.sampleRate,
         channels: format.channels,

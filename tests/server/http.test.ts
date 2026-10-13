@@ -95,6 +95,7 @@ test('mutating API requests need the editor token', async () => {
   // The editor reloads on `code`, never on the wording, which follows the language.
   assert.deepEqual(JSON.parse(res.body), { error: 'Jeton Cadence manquant ou invalide', code: 'token' });
   assert.equal((await request('/api/projects', { method: 'POST', headers: { 'x-cadence-token': 'wrong' } })).status, 403);
+  assert.equal((await request('/api/import', { method: 'POST' })).status, 403, 'an archive upload too');
   assert.equal((await request('/api/projects/x', { method: 'DELETE', headers: { 'x-cadence-token': `${TOKEN}x` } })).status, 403);
   assert.equal((await request('/api/projects', { method: 'OPTIONS' })).status, 403, 'preflights are never approved');
   res = await request('/api/projects', {

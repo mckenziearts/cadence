@@ -8,13 +8,14 @@ import {
   type VersionSource,
   type VoiceOverSettings,
 } from '../../src/shared/types';
-import type { ProjectStore, VersionStore } from '../contracts';
+import type { BrandStore, ProjectStore, VersionStore } from '../contracts';
 import { m } from '../i18n';
 import { parseSceneVoiceOver, unknownSpeaker } from './projects';
 import {
   HttpError,
   KeyedMutex,
   assertId,
+  isResolverInput,
   nowIso,
   pathExists,
   resolveInside,
@@ -24,6 +25,7 @@ import {
 } from '../util';
 
 const MAX_TRACKED_BYTES = 2 * 1024 * 1024;
+const VERSION_ID = /^v\d{4,}$/;
 
 type Manifest = Record<string, string>;
 type SnapshotMeta = { label: string; source: VersionSource; chatKey?: ChatKey; costUsd?: number };
@@ -38,7 +40,10 @@ type SnapshotMeta = { label: string; source: VersionSource; chatKey?: ChatKey; c
 export class FileVersionStore implements VersionStore {
   private mutex = new KeyedMutex();
 
-  constructor(private store: ProjectStore) {}
+  constructor(
+    private store: ProjectStore,
+    private brands: BrandStore,
+  ) {}
 
   /** Newest first. */
   async list(projectId: string, opts: { sceneId?: string } = {}): Promise<VersionEntry[]> {
@@ -90,9 +95,14 @@ export class FileVersionStore implements VersionStore {
           );
         }
 
+        // An imported version can name a brand that never travelled, or one removed here since.
+        const brand = brandOf(manifest['project.json'] ? await this.readObject(projectId, manifest['project.json']) : null);
+        if (brand !== null && !(await this.brands.exists(brand))) throw new HttpError(400, m().api.projects.unknownBrand(brand));
+
         await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
         const current = await readTracked(dir);
         for (const [rel, hash] of Object.entries(manifest)) {
+          if (!restorable(rel)) continue;
           if (current.get(rel) && sha256(current.get(rel)!) === hash) continue;
           await writeFileAtomic(resolveInside(dir, rel), await this.readObject(projectId, hash));
         }
@@ -196,6 +206,8 @@ export class FileVersionStore implements VersionStore {
   }
 
   private async readManifest(projectId: string, versionId: string): Promise<Manifest> {
+    // The index of an imported project comes from an archive: its ids name files under manifests/.
+    if (!VERSION_ID.test(versionId)) throw new HttpError(500, m().api.versions.unreadableManifest(versionId));
     try {
       return JSON.parse(await fs.readFile(this.path(projectId, 'manifests', `${versionId}.json`), 'utf8')) as Manifest;
     } catch {
@@ -241,7 +253,27 @@ async function readTracked(dir: string): Promise<Map<string, Buffer>> {
   return out;
 }
 
+/**
+ * A manifest path a restore writes: one readTracked can list, minus what the frame build refuses. The manifests of an
+ * imported project come from an archive and may name any path, package.json or renders/ included.
+ */
+function restorable(rel: string): boolean {
+  const [top, ...rest] = rel.split('/');
+  if (!rest.length) return rel === 'project.json' || rel === 'art-direction.md';
+  return (top === 'scenes' || top === 'components') && !rest.some((s) => s === '' || s.startsWith('.') || isResolverInput(s));
+}
+
 type SceneFields = { duration?: unknown; voiceOver?: unknown };
+
+/** The brand a project.json snapshot names (null when it names none or cannot be read). */
+function brandOf(data: Buffer | null): string | null {
+  try {
+    const brand = (JSON.parse(data?.toString('utf8') ?? 'null') as { brand?: unknown } | null)?.brand;
+    return typeof brand === 'string' ? brand : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Each scene id with its duration and voice-over in a project.json snapshot (empty when absent or unreadable). */
 function sceneFields(data: Buffer | null): Map<string, SceneFields> {
