@@ -71,9 +71,123 @@ export function isInside(dir: string, file: string): boolean {
 
 // Tailwind loads and runs a JS/TS module in this process when it compiles a CSS file that carries `@plugin` or
 // `@config`. Scenes, components, brands and templates are written by the agent and never need either, so Cadence
-// refuses both before Tailwind sees the CSS. Matched on raw text (not after stripping comments): rejecting a
-// commented-out directive is safe, missing a real one is not.
-export const CSS_CODE_EXEC = /@(?:plugin|config)(?![\w-])/;
+// refuses both before Tailwind sees the CSS.
+const CSS_CODE_EXEC = /@(?:plugin|config)[^\w-]/;
+const CSS_CODE_EXEC_AT_END = /@(?:plugin|config)(?![\w-])/;
+const [TEXT, ESCAPE, SLASH, COMMENT, STAR, COMMENT_ESCAPE, STRING, STRING_ESCAPE] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+/**
+ * Whether Tailwind would run code compiling a text fed piece by piece (a stream of any size). Tailwind drops comments,
+ * even one inside the directive's name, so the directive is looked for once comments are gone, and in the raw text too
+ * (refusing a commented-out one is safe). As in Tailwind's parser, a `/*` inside a string or after a backslash opens
+ * no comment, and a backslash in a comment escapes the next character, so an escaped star never closes it. A twin
+ * scan reads comments without that escape: should Tailwind's rule ever change, a directive either rule reveals is
+ * refused. Every character that matters is ASCII, so bytes can be fed as latin1.
+ */
+export class CssCodeScan {
+  private readonly twin: CssCodeScan | null;
+  private state = TEXT;
+  private quote = 0;
+  private rawTail = '';
+  private textTail = '';
+  private found = false;
+
+  constructor(private readonly commentEscapes = true) {
+    this.twin = commentEscapes ? new CssCodeScan(false) : null;
+  }
+
+  /** Feeds the next piece and answers its text with comments removed. */
+  push(piece: string): string {
+    this.twin?.push(piece);
+    let state = this.state;
+    let text = '';
+    let run = -1;
+    for (let i = 0; i < piece.length; i++) {
+      const c = piece.charCodeAt(i);
+      let visible = true;
+      switch (state) {
+        case SLASH:
+          if (c === 0x2a) {
+            state = COMMENT;
+            visible = false;
+            break;
+          }
+          text += '/';
+          state = TEXT;
+        // falls through: the character after a lone slash is plain text
+        case TEXT:
+          if (c === 0x5c) state = ESCAPE;
+          else if (c === 0x2f) [state, visible] = [SLASH, false];
+          else if (c === 0x22 || c === 0x27) [state, this.quote] = [STRING, c];
+          break;
+        case ESCAPE:
+          state = TEXT;
+          break;
+        case COMMENT:
+        case STAR:
+          visible = false;
+          if (state === STAR && c === 0x2f) state = TEXT;
+          else if (c === 0x5c && this.commentEscapes) state = COMMENT_ESCAPE;
+          else state = c === 0x2a ? STAR : COMMENT;
+          break;
+        case COMMENT_ESCAPE:
+          visible = false;
+          state = COMMENT;
+          break;
+        case STRING:
+          if (c === 0x5c) state = STRING_ESCAPE;
+          else if (c === this.quote) state = TEXT;
+          break;
+        case STRING_ESCAPE:
+          state = STRING;
+      }
+      if (visible && run < 0) run = i;
+      else if (!visible && run >= 0) {
+        text += piece.slice(run, i);
+        run = -1;
+      }
+    }
+    if (run >= 0) text += piece.slice(run);
+    this.state = state;
+    const raw = this.rawTail + piece;
+    const seen = this.textTail + text;
+    this.found ||= CSS_CODE_EXEC.test(raw) || CSS_CODE_EXEC.test(seen);
+    // A directive is 7 characters: the tails keep one that a cut leaves without the character after it.
+    this.rawTail = raw.slice(-7);
+    this.textTail = seen.slice(-7);
+    return text;
+  }
+
+  /** Whether the whole text runs code. */
+  end(): boolean {
+    const text = this.textTail + (this.state === SLASH ? '/' : '');
+    if (this.twin?.end()) return true;
+    return this.found || CSS_CODE_EXEC_AT_END.test(this.rawTail) || CSS_CODE_EXEC_AT_END.test(text);
+  }
+}
+
+export function cssRunsCode(css: string): boolean {
+  const scan = new CssCodeScan();
+  scan.push(css);
+  return scan.end();
+}
+
+/**
+ * A file name as a case-insensitive disk compares it: APFS takes `Node_Modules` and even `node_module\u017f` (long s)
+ * for `node_modules`, so the name is upper- then lower-cased, which folds both.
+ */
+export function foldName(name: string): string {
+  return name.normalize('NFD').toUpperCase().toLowerCase();
+}
+
+/** A frame the agent looked at, as saved under `.cadence/frames`: JPEG normally, PNG from the MCP tool. */
+export const AGENT_FRAME_NAME = /^[\w.-]+\.(jpe?g|png)$/;
+
+/** A `node_modules` folder or a `package.json`, through which Tailwind's fallback resolver reaches a file of any kind. */
+export function isResolverInput(name: string): boolean {
+  const folded = foldName(name);
+  return folded === 'node_modules' || folded === 'package.json';
+}
 
 /** "Mon super Projet !" becomes "mon-super-projet" (ASCII, kebab-case, max 64 chars, valid ID_PATTERN). */
 export function slugify(input: string, fallback = 'item'): string {

@@ -143,10 +143,10 @@ const elevenLabs: ElevenLabsApi = {
 let server: RunningServer;
 let browser: Browser;
 
-async function api<T>(method: string, pathname: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${server.config.editorOrigin}${pathname}`, {
+async function api<T>(method: string, pathname: string, body?: unknown, on = server): Promise<T> {
+  const res = await fetch(`${on.config.editorOrigin}${pathname}`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': server.editorToken },
+    headers: { 'Content-Type': 'application/json', 'X-Cadence-Token': on.editorToken },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -494,9 +494,9 @@ describe('editor', () => {
     await page.getByRole('heading', { name: 'Projets' }).waitFor({ timeout: 60_000 });
     const search = page.getByRole('searchbox', { name: 'Rechercher un projet' });
     await search.fill('Éditeur B');
-    assert.equal(await page.getByRole('link', { name: /Éditeur A/i }).count(), 0);
+    assert.equal(await page.locator(`a[href="#/${A}"]`).count(), 0);
     await search.fill('');
-    await page.getByRole('link', { name: /Éditeur A/i }).click();
+    await page.locator(`a[href="#/${A}"]`).click();
     await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
     assert.equal(new URL(page.url()).hash, `#/${A}/titre`);
     await page.getByRole('link', { name: 'Cadence, accueil des projets' }).click();
@@ -697,10 +697,10 @@ describe('editor', () => {
     await api('POST', '/api/projects', { name: 'Éditeur C', id: C, brand: 'cadence', formats: ['16:9'], fps: 30 });
     const page = await newPage();
     await page.goto(`${server.config.editorOrigin}/`);
-    await page.getByRole('link', { name: /Éditeur C/ }).hover({ timeout: 60_000 });
+    await page.locator(`a[href="#/${C}"]`).hover({ timeout: 60_000 });
     await page.getByRole('button', { name: 'Supprimer le projet « Éditeur C »' }).click();
     await page.getByRole('button', { name: 'Supprimer le projet ?' }).click();
-    await page.getByRole('link', { name: /Éditeur C/ }).waitFor({ state: 'detached' });
+    await page.locator(`a[href="#/${C}"]`).waitFor({ state: 'detached' });
     assert.ok((await readdir(path.join(server.config.projectsDir, '.trash'))).some((name) => name.startsWith(`${C}-`)));
     await page.context().close();
   });
@@ -2951,4 +2951,89 @@ describe('pitch', () => {
     assert.equal(await heading.textContent(), title);
     await context.close();
   });
+});
+
+describe('archives', () => {
+  let t: Awaited<ReturnType<typeof makeRoot>>;
+  let hosted: RunningServer;
+
+  before(async () => {
+    t = await makeRoot();
+    const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
+    hosted = await startServer({
+      root: ROOT,
+      projectsDir,
+      brandsDir,
+      templatesDir,
+      stateDir,
+      editorPort: 0,
+      framePort: 0,
+      quiet: true,
+      provider,
+    });
+  });
+
+  after(async () => {
+    await hosted?.close();
+    await t?.cleanup();
+  });
+
+  it(
+    'exports a project from its card and imports the file back as a copy, its brand already there',
+    { timeout: 120_000 },
+    async () => {
+      const page = await newPage();
+      await page.goto(`${hosted.config.editorOrigin}/`);
+      // A fresh installation can start from an archive; there is nothing to export yet.
+      const importer = page.getByRole('button', { name: 'Importer', exact: true });
+      await importer.waitFor({ timeout: 60_000 });
+      assert.equal(await page.getByRole('link', { name: 'Tout exporter' }).count(), 0);
+
+      await api('POST', '/api/projects', { name: 'Archive', id: 'archive', brand: 'orbit', formats: ['16:9'], fps: 30 }, hosted);
+      assert.equal(
+        await page.getByRole('link', { name: 'Tout exporter' }).getAttribute('href', { timeout: 30_000 }),
+        '/api/export',
+      );
+      await page.locator('a[href="#/archive"]').hover();
+      const exporter = page.getByRole('link', { name: 'Exporter le projet « Archive »' });
+      assert.equal(await exporter.getAttribute('href'), '/api/projects/archive/export');
+      const [download] = await Promise.all([page.waitForEvent('download'), exporter.click()]);
+      assert.match(download.suggestedFilename(), /^cadence-archive-\d{4}-\d{2}-\d{2}\.tar\.gz$/);
+      const file = path.join(t.root, 'archive.tar.gz');
+      await download.saveAs(file);
+
+      // Held, the request shows on the button, which takes no second file meanwhile.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      await page.route('**/api/import', async (route) => {
+        await held;
+        return route.fallback();
+      });
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), importer.click()]);
+      await chooser.setFiles(file);
+      await page.locator('button:disabled', { hasText: 'Importer' }).waitFor();
+      // Emptied once read, so picking the same file again still fires a change.
+      assert.equal(await page.locator('input[type="file"]').evaluate((input: HTMLInputElement) => input.value), '');
+      release();
+      await page.getByText(`1${NBSP}projet importé. Marque déjà présente : Orbit.`).waitFor({ timeout: 30_000 });
+      await page.locator('a[href="#/archive-2"]').waitFor();
+      assert.ok(await importer.isEnabled());
+      assert.deepEqual((await readdir(t.config.projectsDir)).filter((name) => name.startsWith('archive')).sort(), [
+        'archive',
+        'archive-2',
+      ]);
+      assert.deepEqual((await readdir(t.config.brandsDir)).filter((name) => !name.startsWith('.')).sort(), ['cadence', 'orbit']);
+
+      // A file that is no archive: the server's message, as a toast.
+      await page.unroute('**/api/import');
+      await page.locator('input[type="file"]').setInputFiles({
+        name: 'notes.tar.gz',
+        mimeType: 'application/gzip',
+        buffer: Buffer.from('pas une archive'),
+      });
+      await page.getByText(/^Ce fichier n'est pas une archive Cadence lisible/).waitFor({ timeout: 30_000 });
+      await page.locator('button:enabled', { hasText: 'Importer' }).waitFor();
+      await page.context().close();
+    },
+  );
 });

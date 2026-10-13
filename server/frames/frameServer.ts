@@ -64,7 +64,7 @@ export function createFrameHandler(deps: {
       return send(res, req, 405, 'text/plain; charset=utf-8', m().api.frames.method);
     }
     const url = req.url ?? '/';
-    const { pathname } = new URL(url, 'http://frame');
+    const { pathname, search } = new URL(url, 'http://frame');
     if (pathname === '/frame.html' || pathname === '/kit.html') {
       res.setHeader('Cache-Control', 'no-store');
       return send(
@@ -90,7 +90,13 @@ export function createFrameHandler(deps: {
       return json(res, req, 200, { error: await diagnoseFile(vite, file) });
     }
     // Vite's /__open-in-editor would let any page (or scene) launch the user's code editor.
-    if (pathname === '/' || pathname === '/index.html' || /^\/(api|mcp|frame-api|__open-in-editor)(\/|$)/.test(pathname)) {
+    // Tailwind would compile the file as CSS whatever its extension (see COMPILED_AS_CSS in vite.ts).
+    if (
+      pathname === '/' ||
+      pathname === '/index.html' ||
+      /^\/(api|mcp|frame-api|__open-in-editor)(\/|$)/.test(pathname) ||
+      compiledAsCss(search)
+    ) {
       return send(res, req, 404, 'text/plain; charset=utf-8', m().core.http.notFound);
     }
     // The editor's brand panel loads the brand fonts from here: kit.html tells it the files, never the kit's CSS.
@@ -110,6 +116,15 @@ export function createFrameHandler(deps: {
       json(res, req, status, { error: message });
     });
   };
+}
+
+/** Vite decodes the URL before Tailwind sees it; a query that does not decode is refused too. */
+function compiledAsCss(search: string): boolean {
+  try {
+    return /lang\.css|index=\d+\.css/i.test(decodeURIComponent(search));
+  } catch {
+    return true;
+  }
 }
 
 /** The editor may be opened as 127.0.0.1 or localhost (the editor server accepts both). */

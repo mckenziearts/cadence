@@ -1,9 +1,9 @@
 // Projects home: one card per project (a frame of its first scene), search, brand filter and pages; the pitch before the first.
 import clsx from 'clsx';
-import { Plus, Search, Trash2 } from 'lucide-react';
+import { Download, Plus, Search, Trash2, Upload } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BrandSummary, ProjectSummary } from '../../shared/types';
-import { api } from '../api';
+import { api, ignore } from '../api';
 import { useT } from '../i18n';
 import { relative, secsLabel } from '../lib/format';
 import { projectsPage } from '../lib/pages';
@@ -11,7 +11,7 @@ import { NONE, useStore } from '../store';
 import { openModal, toast } from '../store/ui';
 import { AGENTS } from './agents';
 import { BrandMark, Logo } from './TopBar';
-import { Button, ConfirmButton, Segmented, fieldBase } from './ui';
+import { Button, ConfirmButton, Segmented, buttonClass, fieldBase } from './ui';
 
 /** Brand filter value for every project (brand ids are folder names, never "*"). */
 const ALL = '*';
@@ -72,6 +72,13 @@ export function Home() {
               className="h-full min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-ink-4"
             />
           </label>
+          <div className="flex gap-3">
+            <a href={api.exportUrl()} download className={buttonClass('secondary', 'lg')}>
+              <Download className="size-4" aria-hidden />
+              {t.shell.home.exportAll}
+            </a>
+            <ImportArchive />
+          </div>
         </div>
         {counts.size > 1 && (
           <Segmented
@@ -110,7 +117,7 @@ export function Home() {
           {paged.projects.map((p) => (
             <li key={p.id} className="group relative">
               <ProjectCard project={p} brand={brands.find((b) => b.id === brandOf(p))} />
-              <DeleteProject project={p} />
+              <ProjectActions project={p} />
             </li>
           ))}
         </ul>
@@ -167,11 +174,21 @@ function ProjectCard({ project, brand }: { project: ProjectSummary; brand: Brand
   );
 }
 
-/** Over the cover, on hover or keyboard focus: a link cannot hold a button, so it sits next to the card. */
-function DeleteProject({ project }: { project: ProjectSummary }) {
+/** Over the cover, on hover or keyboard focus: a link cannot hold a button, so they sit next to the card. */
+function ProjectActions({ project }: { project: ProjectSummary }) {
   const t = useT();
+  const label = t.shell.home.export(project.name);
   return (
-    <div className="absolute top-2.5 right-2.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
+    <div className="absolute top-2.5 right-2.5 flex gap-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
+      <a
+        href={api.exportUrl(project.id)}
+        download
+        aria-label={label}
+        title={label}
+        className={buttonClass('secondary', 'sm', true)}
+      >
+        <Download className="size-3.5" aria-hidden />
+      </a>
       <ConfirmButton
         variant="secondary"
         iconOnly
@@ -184,6 +201,43 @@ function DeleteProject({ project }: { project: ProjectSummary }) {
         }}
       />
     </div>
+  );
+}
+
+/** Projects from a .tar.gz exported here or by another installation: the home lists them once the server has moved them in. */
+function ImportArchive() {
+  const t = useT();
+  const brands = useStore((s) => s.app?.brands ?? NONE);
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const name = (id: string) => brands.find((b) => b.id === id)?.name ?? id;
+  const send = (file: File) => {
+    setBusy(true);
+    api
+      .importArchive(file)
+      .then(({ projects, brands: moved }) =>
+        toast(t.shell.home.imported(projects.length, moved.installed.map(name), moved.reused.map(name)), 'success'),
+      )
+      .catch(ignore)
+      .finally(() => setBusy(false));
+  };
+  return (
+    <>
+      <Button size="lg" icon={<Upload className="size-4" />} loading={busy} onClick={() => input.current?.click()}>
+        {t.shell.home.import}
+      </Button>
+      <input
+        ref={input}
+        type="file"
+        accept=".gz,.tgz,application/gzip"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) send(file);
+          e.target.value = '';
+        }}
+      />
+    </>
   );
 }
 
@@ -221,15 +275,17 @@ function Pitch({ brands }: { brands: BrandSummary[] }) {
           {t.shell.home.pitch.title(picker ? <AgentNames names={names} /> : t.shell.home.pitch.ourAi)}
         </h1>
         <p className="mt-5 max-w-xl text-[15px]/6 text-pretty text-ink-2">{t.shell.home.pitch.body}</p>
-        <Button
-          variant="primary"
-          size="lg"
-          className="mt-7"
-          icon={<Plus className="size-4" />}
-          onClick={() => openModal({ kind: 'new-project' })}
-        >
-          {t.shell.home.pitch.create}
-        </Button>
+        <div className="mt-7 flex flex-wrap gap-3">
+          <Button
+            variant="primary"
+            size="lg"
+            icon={<Plus className="size-4" />}
+            onClick={() => openModal({ kind: 'new-project' })}
+          >
+            {t.shell.home.pitch.create}
+          </Button>
+          <ImportArchive />
+        </div>
         {brands.length > 0 && (
           <section className="mt-14">
             <h2 className="display-caps text-[22px]/7 text-ink">{t.shell.home.pitch.brands}</h2>

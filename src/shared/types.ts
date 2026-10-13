@@ -344,6 +344,22 @@ export interface ProjectSummary {
   cover: string | null;
 }
 
+/** manifest.json, the first entry of a project archive (see ARCHITECTURE.md "Project archives"). */
+export interface ArchiveManifest {
+  format: 1;
+  /** Cadence version that wrote the archive. */
+  createdWith: string;
+  projects: string[];
+  /** Brands the projects use, `cadence` aside (every installation has it). */
+  brands: string[];
+}
+
+/** What POST /api/import did: each project under the id it got here, each brand installed or kept as it was. */
+export interface ImportReport {
+  projects: { from: string; id: string; name: string }[];
+  brands: { installed: string[]; reused: string[] };
+}
+
 export interface CreateProjectInput {
   name: string;
   /** Optional explicit id; derived from the name when omitted. */

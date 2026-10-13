@@ -153,6 +153,37 @@ Ce document est relu avant chaque modification. Décrivez ici le style commun à
     skipped: (error: string) => `[cadence] marque ignorée : ${error}`,
     building: "Cette marque est en construction : annulez d'abord la construction.",
   },
+  archives: {
+    projectUnreadable: (ids: string) =>
+      `Le project.json de ${ids} est illisible : corrigez-le ou supprimez le projet avant d'exporter.`,
+    brandLinked: (brand: string) => `Le dossier de la marque « ${brand} » est un lien : un export ne lit que de vrais dossiers.`,
+    brandMissing: (brand: string) =>
+      `La marque « ${brand} » n'est pas sur cet ordinateur : ses projets ne peuvent pas être exportés sans elle.`,
+    unreadable: (detail: string) => `Ce fichier n'est pas une archive Cadence lisible (${detail}).`,
+    refused: (detail: string) => `Archive refusée : ${detail}`,
+    tooLarge: (detail: string) => `Archive trop grande : ${detail}`,
+    collision: (entry: string) => `Archive refusée : ${entry} entre en conflit avec un autre fichier de l'archive.`,
+    cssCodeExec: (entry: string) =>
+      `Archive refusée : ${entry} contient @plugin ou @config, qui exécuteraient du code pendant la compilation du CSS.`,
+    cssImport: (entry: string) =>
+      `Archive refusée : ${entry} importe un fichier qui n'est pas une feuille de style, que Tailwind lirait comme du CSS.`,
+    brandFolderTaken: (brand: string) =>
+      `Le dossier brands/${brand}/ existe sur cet ordinateur mais ne contient aucune marque : supprimez-le, puis importez à nouveau.`,
+    manifestFirst:
+      'Archive refusée : manifest.json doit en être le premier fichier. Choisissez une archive exportée par Cadence.',
+    manifestInvalid: (detail: string) => `Archive refusée : manifest.json est invalide (${detail}).`,
+    newerFormat: (createdWith: string) =>
+      `Cette archive vient de Cadence ${createdWith}, plus récent que cette installation : mettez Cadence à jour pour l'importer.`,
+    unexpectedEntry: (entry: string) => `Archive refusée : ${entry} n'appartient à aucun projet ni à aucune marque du manifeste.`,
+    projectMissing: (id: string) => `Archive refusée : le projet « ${id} » n'a pas de project.json.`,
+    projectInvalid: (id: string, issues: string) =>
+      `Archive refusée : le project.json du projet « ${id} » est invalide : ${issues}`,
+    brandUnavailable: (brand: string, project: string) =>
+      `Archive refusée : le projet « ${project} » utilise la marque « ${brand} », qui n'est ni dans l'archive ni sur cet ordinateur.`,
+    brandIncomplete: (brand: string, problems: string) => `Archive refusée : la marque « ${brand} » est incomplète : ${problems}`,
+    brandBuilding: (brand: string) =>
+      `La marque « ${brand} » est en construction sur cet ordinateur : attendez la fin ou annulez la construction, puis importez à nouveau.`,
+  },
   templates: {
     sceneSkipped: (error: string) => `[cadence] modèle de scène ignoré : ${error}`,
     projectSkipped: (error: string) => `[cadence] modèle de projet ignoré : ${error}`,

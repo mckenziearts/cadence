@@ -124,6 +124,27 @@ export class FileBrandStore implements BrandStore {
     await fs.rename(this.dir(id), path.join(trash, `${id}-${Date.now()}`));
   }
 
+  async adopt(staged: string, id: string): Promise<'installed' | 'reused'> {
+    const dir = this.dir(id);
+    // Claimed like a build reserves its folder (server/brands/build.ts), so a build starting now takes the next id. Only
+    // a folder this call created is replaced: an empty one may be a build that has claimed it and not yet written its
+    // marker.
+    try {
+      await fs.mkdir(dir);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      if (!(await pathExists(path.join(dir, BUILDING_MARKER))) && (await this.exists(id))) return 'reused';
+      throw new HttpError(409, m().api.archives.brandBuilding(id));
+    }
+    try {
+      await fs.rename(staged, dir);
+    } catch (e) {
+      await fs.rmdir(dir).catch(() => undefined);
+      throw e;
+    }
+    return 'installed';
+  }
+
   async describe(id: string | null): Promise<string> {
     const brandId = id ?? DEFAULT_BRAND;
     const brand = await this.get(brandId);

@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { BrandColors, BrandFile } from '../../src/shared/types';
 import type { CaptureService } from '../contracts';
 import { m } from '../i18n';
-import { CSS_CODE_EXEC } from '../util';
+import { cssRunsCode } from '../util';
 
 export const COLOR_KEYS: (keyof BrandColors)[] = [
   'background',
@@ -116,7 +116,7 @@ export async function brandProblems(dir: string, root: string): Promise<string[]
 
   // theme.css is the compiled entry, but it can @import other CSS in the folder: scan them all, not just the entry.
   for (const rel of (await fs.readdir(dir, { recursive: true, encoding: 'utf8' })).filter((f) => f.endsWith('.css'))) {
-    if (CSS_CODE_EXEC.test((await read(path.join(dir, rel))) ?? '')) problems.push(t.cssCodeExec(rel));
+    if (cssRunsCode((await read(path.join(dir, rel))) ?? '')) problems.push(t.cssCodeExec(rel));
   }
 
   for (const note of ['art-direction.md', 'KIT.md']) {

@@ -95,6 +95,7 @@ test('mutating API requests need the editor token', async () => {
   // The editor reloads on `code`, never on the wording, which follows the language.
   assert.deepEqual(JSON.parse(res.body), { error: 'Jeton Cadence manquant ou invalide', code: 'token' });
   assert.equal((await request('/api/projects', { method: 'POST', headers: { 'x-cadence-token': 'wrong' } })).status, 403);
+  assert.equal((await request('/api/import', { method: 'POST' })).status, 403, 'an archive upload too');
   assert.equal((await request('/api/projects/x', { method: 'DELETE', headers: { 'x-cadence-token': `${TOKEN}x` } })).status, 403);
   assert.equal((await request('/api/projects', { method: 'OPTIONS' })).status, 403, 'preflights are never approved');
   res = await request('/api/projects', {
@@ -117,8 +118,8 @@ test('mutating API requests need the editor token', async () => {
 test('API reads: Sec-Fetch-Site same-origin, none or absent only', async () => {
   for (const site of ['same-origin', 'none'])
     assert.equal((await request('/api/state', { headers: { 'sec-fetch-site': site } })).status, 200, site);
-  // The subtitles download too: scene code in the frame must not read the voice-over text.
-  for (const route of ['/api/state', '/api/projects/demo/subtitles?format=srt'])
+  // The downloads too: scene code in the frame must not read the voice-over text or a project archive.
+  for (const route of ['/api/state', '/api/projects/demo/subtitles?format=srt', '/api/projects/demo/export', '/api/export'])
     for (const site of ['same-site', 'cross-site']) {
       const res = await request(route, { headers: { 'sec-fetch-site': site } });
       assert.equal(res.status, 403, `${route} ${site}`);

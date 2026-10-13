@@ -204,7 +204,7 @@ export const sceneVoiceOverInputSchema = sceneVoiceOverFields
   .refine((v) => (v.text === undefined) !== (v.lines === undefined), { error: () => m().api.projects.textOrLines })
   .transform(toSceneVoiceOver);
 
-const projectFileSchema = z.object({
+export const projectFileSchema = z.object({
   version: z.literal(1).default(1),
   name: z.string().trim().min(1),
   brand: z.string().regex(ID_PATTERN).nullable().default(null),
@@ -222,6 +222,11 @@ const projectFileSchema = z.object({
         voiceOver: sceneVoiceOverSchema.optional(),
       }),
     )
+    .superRefine((scenes, ctx) => {
+      const seen = new Set<string>();
+      const twice = scenes.find((s) => seen.size === seen.add(s.id).size)?.id;
+      if (twice) ctx.addIssue({ code: 'custom', message: m().api.projects.duplicateScene(twice) });
+    })
     .default([]),
   music: musicSchema.nullable().default(null),
   voiceOver: voiceOverSchema.nullable().default(null),
@@ -507,6 +512,28 @@ export class FileProjectStore implements ProjectStore {
     this.events.emit('list-changed');
   }
 
+  async adopt(staged: string, id: string): Promise<string> {
+    await fs.mkdir(this.root, { recursive: true });
+    for (;;) {
+      const free = uniqueId(id, await fs.readdir(this.root));
+      // Claimed first: a project created or imported at the same time gets EEXIST and the next id.
+      try {
+        await fs.mkdir(this.dir(free));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        throw e;
+      }
+      try {
+        await fs.rename(staged, this.dir(free));
+      } catch (e) {
+        await fs.rmdir(this.dir(free)).catch(() => undefined);
+        throw e;
+      }
+      this.events.emit('list-changed');
+      return free;
+    }
+  }
+
   // Scenes
 
   async createScene(id: string, input: CreateSceneInput): Promise<SceneState> {
@@ -692,13 +719,6 @@ export class FileProjectStore implements ProjectStore {
     const parsed = projectFileSchema.safeParse(raw);
     if (!parsed.success) throw new HttpError(500, m().api.invalidFile(`projects/${id}/project.json`, formatIssues(parsed.error)));
     const data = parsed.data;
-    const ids = new Set<string>();
-    for (const scene of data.scenes) {
-      if (ids.has(scene.id)) {
-        throw new HttpError(500, m().api.invalidFile(`projects/${id}/project.json`, m().api.projects.duplicateScene(scene.id)));
-      }
-      ids.add(scene.id);
-    }
     const stamp = data.createdAt && data.updatedAt ? null : (await fs.stat(file)).mtime.toISOString();
     return {
       version: 1,
@@ -991,7 +1011,7 @@ function clampDuration(seconds: number): number {
   return roundMs(Math.min(MAX_DURATION, Math.max(MIN_DURATION, seconds)));
 }
 
-function formatIssues(error: z.ZodError): string {
+export function formatIssues(error: z.ZodError): string {
   return error.issues.map((i) => `${i.path.join('.') || m().api.projects.root} (${i.message})`).join(', ');
 }
 

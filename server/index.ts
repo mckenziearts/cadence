@@ -11,6 +11,7 @@ import { CodexProvider, codexModels } from './agent/codex';
 import { RoutingProvider } from './agent/router';
 import { writeProjectsGuide } from './agent/guide';
 import { createApi } from './api';
+import { ProjectArchiver } from './archive/projects';
 import { BrandBuilder } from './brands/build';
 import { GitHubSource, GitLabSource } from './brands/source';
 import { PlaywrightCapture } from './capture/capture';
@@ -185,7 +186,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       secrets,
     });
     const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub });
-    const versions = new FileVersionStore(store);
+    const versions = new FileVersionStore(store, brands);
     const assets = new FileAssetStore(store, capture);
     const tokens = new McpTokens(config);
     // Key by key rather than a spread: an undefined flag stays on, and a key the editor does not know is not served.
@@ -239,6 +240,8 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       diagnose,
     });
     await brandBuilds.sweep();
+    const archives = new ProjectArchiver({ config, store, brands });
+    await archives.sweep();
     const networks: Record<NetworkId, Network> = {
       youtube: new YouTubeNetwork(),
       linkedin: new LinkedInNetwork(),
@@ -279,6 +282,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       brandBuilds,
       accounts,
       publisher,
+      archives,
       agentStatus: () => provider.status(),
       codexStatus: () => codex.status(),
       grokStatus: () => grokStatus(config),

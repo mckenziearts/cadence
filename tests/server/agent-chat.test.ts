@@ -601,10 +601,12 @@ test('errors become assistant messages in French', async (t) => {
   assert.equal(reply.error, 'Erreur interne : le fournisseur a planté');
 });
 
+const OLD_SESSION = '7d3f8a52-1c2b-4e6f-9a0d-3b5c7e9f1a2b';
+
 test('a lost session is restarted once, with the full context', async (t) => {
   const env = await setup(async function* (turn) {
     if (turn.resume) {
-      yield { type: 'done', text: 'No conversation found with session ID: old-session', isError: true, durationMs: 1 };
+      yield { type: 'done', text: `No conversation found with session ID: ${OLD_SESSION}`, isError: true, durationMs: 1 };
       return;
     }
     yield { type: 'init', sessionId: turn.sessionId };
@@ -613,12 +615,12 @@ test('a lost session is restarted once, with the full context', async (t) => {
   t.after(() => fs.rm(env.root, { recursive: true, force: true }));
   const file = path.join(env.projectDir, '.cadence', 'chats', 'project.json');
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify({ key: 'project', sessionId: 'old-session', briefHash: 'x', messages: [] }));
+  await fs.writeFile(file, JSON.stringify({ key: 'project', sessionId: OLD_SESSION, briefHash: 'x', messages: [] }));
 
   await env.manager.send('demo', 'project', { text: 'Bonjour' });
   await env.idle('project');
   assert.deepEqual(
-    env.turns.map((turn) => [turn.resume, turn.sessionId === 'old-session']),
+    env.turns.map((turn) => [turn.resume, turn.sessionId === OLD_SESSION]),
     [
       [true, true],
       [false, false],
@@ -628,6 +630,26 @@ test('a lost session is restarted once, with the full context', async (t) => {
   const state = await env.manager.get('demo', 'project');
   assert.equal(state.messages[1].status, 'done');
   assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).sessionId, env.turns[1].sessionId);
+});
+
+test('an imported chat whose session id is not a UUID starts a new session instead of passing it to the CLI', async (t) => {
+  for (const sessionId of ['--x', `--x ${OLD_SESSION}`, `${OLD_SESSION} --x`, `${OLD_SESSION}\n`, 42]) {
+    const env = await setup(async function* (turn) {
+      yield { type: 'init', sessionId: turn.sessionId };
+      yield { type: 'done', text: 'OK', isError: false, durationMs: 1, sessionId: turn.sessionId };
+    });
+    t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+    const file = path.join(env.projectDir, '.cadence', 'chats', 'project.json');
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify({ key: 'project', sessionId, briefHash: 'x', messages: [] }));
+
+    await env.manager.send('demo', 'project', { text: 'Bonjour' });
+    await env.idle('project');
+    assert.equal(env.turns.length, 1, JSON.stringify(sessionId));
+    assert.equal(env.turns[0].resume, false, JSON.stringify(sessionId));
+    assert.match(env.turns[0].sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.notEqual(env.turns[0].sessionId, OLD_SESSION);
+  }
 });
 
 test('clear archives the conversation and starts a new session', async (t) => {
@@ -699,6 +721,36 @@ test('a reply left streaming by a crash is shown as interrupted', async (t) => {
   const [message] = (await env.manager.get('demo', 'project')).messages;
   assert.equal(message.status, 'error');
   assert.match(message.error ?? '', /interrompue/);
+});
+
+test("an imported chat shows only this project's agent frames, never an image from another address", async (t) => {
+  const env = await setup(async function* () {
+    yield { type: 'done', text: 'OK', isError: false, durationMs: 1 };
+  });
+  t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+  const file = path.join(env.projectDir, '.cadence', 'chats', 'project.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const own = '/api/projects/demo/agent-frames/f1.jpg';
+  const images = [
+    own,
+    'https://tracker.example/pixel.png',
+    '//tracker.example/pixel.png',
+    '/api/projects/other/agent-frames/f1.jpg',
+    '/api/projects/demo/agent-frames/../../other/agent-frames/f1.jpg',
+    '/api/projects/demo/agent-frames/f1.jpg?x=1',
+    42,
+  ];
+  const activity = [
+    { id: 'a', tool: 't', label: 'l', status: 'ok', images },
+    { id: 'b', tool: 't', label: 'l', status: 'ok' },
+  ];
+  const reply = { id: 'r', role: 'assistant', text: 'vu', createdAt: '', status: 'done', activity };
+  await fs.writeFile(file, JSON.stringify({ key: 'project', sessionId: null, briefHash: null, messages: [reply] }));
+  const [message] = (await env.manager.get('demo', 'project')).messages;
+  assert.deepEqual(
+    message.activity?.map((a) => a.images),
+    [[own], undefined],
+  );
 });
 
 test('a damaged chat file is reported, never replaced by the next message', async (t) => {

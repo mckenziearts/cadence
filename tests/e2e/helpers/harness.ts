@@ -152,6 +152,7 @@ export class FixtureProjectStore implements ProjectStore {
   writeArtDirection = unused;
   setMusicGridProvider = unused;
   setVoiceOverProvider = unused;
+  adopt = unused;
 }
 
 export class FixtureBrandStore implements BrandStore {
@@ -174,6 +175,7 @@ export class FixtureBrandStore implements BrandStore {
   list = unused;
   describe = unused;
   remove = unused;
+  adopt = unused;
 }
 
 export class RecordingHub implements Hub {

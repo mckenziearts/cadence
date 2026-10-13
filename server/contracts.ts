@@ -3,6 +3,7 @@
 // Modules must depend on these interfaces, never on each other's concrete classes.
 import type { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Readable } from 'node:stream';
 import type { HttpBindings } from '@hono/node-server';
 import type { Hono } from 'hono';
 import type { AuditFinding } from '../src/shared/frameProtocol';
@@ -21,6 +22,7 @@ import type {
   FormatId,
   GitAccount,
   GitHost,
+  ImportReport,
   MusicAnalysis,
   MusicGridData,
   MusicSettings,
@@ -166,6 +168,11 @@ export interface ProjectStore {
   setMusicGridProvider(fn: (id: string) => Promise<MusicGridData | null>): void;
   /** Injected by server/index.ts: resolves the voice-over fields of ProjectState from what is already generated. */
   setVoiceOverProvider(fn: VoiceOverProvider): void;
+  /**
+   * Move a checked project folder (staged on the same volume) in under `id`, or `<id>-2`... when it is taken, and
+   * emit 'list-changed'. Returns the id it got.
+   */
+  adopt(staged: string, id: string): Promise<string>;
 }
 
 export type VoiceOverProvider = (
@@ -185,6 +192,28 @@ export interface BrandStore {
   remove(id: string): Promise<void>;
   /** Markdown for the agent: tokens, fonts, voice, kit components and extras (from brands/<id>/KIT.md). */
   describe(id: string | null): Promise<string>;
+  /**
+   * Move a checked brand folder (staged on the same volume) in under `id` when the id is free ('installed'); a brand
+   * already there is kept as it is ('reused'); a brand being built, or any other folder, refuses (409).
+   */
+  adopt(staged: string, id: string): Promise<'installed' | 'reused'>;
+}
+
+// server/archive/projects.ts: export class ProjectArchiver implements ProjectArchives
+//   constructor({ config, store, brands }: { config: CadenceConfig; store: ProjectStore; brands: BrandStore })
+
+export interface ProjectArchives {
+  /**
+   * A .tar.gz of the projects (every project when `ids` is omitted) and the brands they use, `cadence` aside. An unknown
+   * project (404) or a brand missing on this machine (409) rejects before any byte; a read error later ends the stream
+   * with an error, so the download is truncated.
+   */
+  export(ids?: string[]): Promise<Readable>;
+  /**
+   * Unpack a .tar.gz made by `export` into staging folders, check everything, then move the brands in, then the
+   * projects. A refusal (400, 409, 413 over a cap) leaves projects/ and brands/ as they were.
+   */
+  import(body: AsyncIterable<Uint8Array> | Iterable<Uint8Array>): Promise<ImportReport>;
 }
 
 // server/brands/source.ts: export class GitHubSource, GitLabSource implements BrandSource
@@ -686,6 +715,7 @@ export interface ApiDeps {
   brandBuilds: BrandBuildService;
   accounts: AccountService;
   publisher: PublishService;
+  archives: ProjectArchives;
   agentStatus: () => Promise<import('../src/shared/types').AgentStatus>;
   /** CLI status on this computer for the other agents, for the Profile's cards (the running agent stays Claude for now). */
   codexStatus: () => Promise<import('../src/shared/types').AgentStatus>;

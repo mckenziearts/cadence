@@ -169,3 +169,82 @@ export function fakeNetwork(
     },
   };
 }
+
+/**
+ * A brand folder that passes brandProblems with no font package installed: its one face is a file of the folder.
+ * Overwrites what makeRoot wrote for `id`.
+ */
+export async function writeCompleteBrand(root: string, id: string): Promise<void> {
+  const dir = path.join(root, 'brands', id);
+  const family = "'Orbit Sans', sans-serif";
+  const brand = {
+    ...BRAND_JSON,
+    id,
+    name: 'Orbit',
+    fonts: { display: family, body: family, mono: 'monospace', preload: ["400 16px 'Orbit Sans'"] },
+  };
+  const kebab = (key: string) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+  const theme = [
+    "@import 'tailwindcss' source(none);",
+    "@source '../../projects';",
+    "@source '../../templates';",
+    "@source '.';",
+    "@font-face { font-family: 'Orbit Sans'; src: url('./fonts/orbit.woff2'); }",
+    '@theme {',
+    ...Object.entries(brand.colors).map(([key, value]) => `  --color-${kebab(key)}: ${value};`),
+    ...Object.entries(brand.fonts)
+      .filter(([key]) => key !== 'preload')
+      .map(([key, value]) => `  --font-${key}: ${value};`),
+    ...Object.entries(brand.radius).map(([key, value]) => `  --radius-${key}: ${value}px;`),
+    '}',
+  ];
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>';
+  const files: Record<string, string | Buffer> = {
+    'brand.json': JSON.stringify(brand, null, 2),
+    'theme.css': `${theme.join('\n')}\n`,
+    'fonts/orbit.woff2': Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 7919) % 256)),
+    'assets/logo-mark.svg': svg,
+    'assets/logo-full.svg': svg.replace('<rect', '<rect id="full"'),
+    'art-direction.md': `# Orbit\n\n${'Fond sombre, accents vifs, texte court. '.repeat(15)}\n`,
+    'KIT.md': `# Kit Orbit\n\n${'Utilisez ui.Card pour les panneaux et ui.Stat pour les chiffres. '.repeat(10)}\n`,
+  };
+  await fs.rm(dir, { recursive: true, force: true });
+  for (const [rel, content] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+    await fs.writeFile(path.join(dir, rel), content);
+  }
+}
+
+/** Raw ustar headers, to build archives writeTar would never write. */
+export interface RawHeader {
+  name?: string;
+  type?: string;
+  size?: number;
+  prefix?: string;
+  sizeField?: Buffer;
+}
+
+export function rawHeader({ name = '', type = '0', size = 0, prefix = '', sizeField }: RawHeader): Buffer {
+  const block = Buffer.alloc(512);
+  block.write(name, 0, 100);
+  block.write('0000644\0', 100);
+  block.write('0000000\0', 108);
+  block.write('0000000\0', 116);
+  if (sizeField) sizeField.copy(block, 124);
+  else block.write(`${size.toString(8).padStart(11, '0')}\0`, 124);
+  block.write('00000000000\0', 136);
+  block.write(type, 156);
+  block.write('ustar\x0000', 257);
+  block.write(prefix, 345, 155);
+  block.fill(' ', 148, 156);
+  const sum = block.reduce((total, byte) => total + byte, 0);
+  block.write(`${sum.toString(8).padStart(6, '0')}\0`, 148);
+  return block;
+}
+
+export const padded = (data: Buffer) => Buffer.concat([data, Buffer.alloc((512 - (data.length % 512)) % 512)]);
+
+export function fileEntry(name: string, content = '', type = '0'): Buffer {
+  const data = Buffer.from(content);
+  return Buffer.concat([rawHeader({ name, type, size: data.length }), padded(data)]);
+}

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { addAbortSignal, Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import type { HttpBindings } from '@hono/node-server';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
@@ -31,7 +31,7 @@ import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
 import { elevenLabsSpeakersSchema, piperSpeakersSchema, sceneVoiceOverInputSchema } from '../store/projects';
-import { HttpError, pathExists, resolveInside } from '../util';
+import { AGENT_FRAME_NAME, HttpError, pathExists, resolveInside } from '../util';
 import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
 import { VOICES } from '../voiceover/voices';
 import { dataUrl, sendFile, sendImage } from './files';
@@ -40,8 +40,9 @@ const MB = 1024 * 1024;
 const JSON_LIMIT = 2 * MB;
 const MUSIC_LIMIT = 201 * MB;
 const ASSET_LIMIT = 51 * MB;
-/** POST routes that take a multipart file with their own, larger body limit. */
-const UPLOAD_ROUTE = /^\/api\/projects\/[^/]+\/(music|assets)$/;
+const ARCHIVE_LIMIT = 2048 * MB;
+/** POST routes that take a file with their own, larger body limit. */
+const UPLOAD_ROUTE = /^\/api\/(projects\/[^/]+\/(music|assets)|import)$/;
 /** Two lines of 42 characters, the usual limit of subtitle files. */
 const SUBTITLE_MAX_CHARS = 84;
 const ZOD_LOCALES = { fr: z.locales.fr(), en: z.locales.en() };
@@ -183,7 +184,7 @@ export function createApi(deps: ApiDeps) {
   });
   app.notFound((c) => c.json({ error: m().api.routes.unknownRoute(c.req.method, c.req.path) }, 404));
 
-  // Bodies are small JSON, whatever their content type; the two upload routes set their own limit.
+  // Bodies are small JSON, whatever their content type; the upload routes set their own limit.
   const jsonLimit = bodyLimit({ maxSize: JSON_LIMIT, onError: (c) => c.json({ error: m().api.routes.tooLarge }, 413) });
   app.use('*', (c, next) => (c.req.method === 'POST' && UPLOAD_ROUTE.test(c.req.path) ? next() : jsonLimit(c, next)));
 
@@ -251,6 +252,31 @@ export function createApi(deps: ApiDeps) {
     const { text } = await body(c, schemas.text);
     await store.writeArtDirection(c.req.param('id'), text);
     return c.json({ text });
+  });
+
+  // Archives: a download link (`<a download>`), so a large archive streams to disk instead of sitting in the page's memory.
+  app.get('/projects/:id/export', async (c) => {
+    const id = c.req.param('id');
+    return download(c, await deps.archives.export([id]), `cadence-${id}-${today()}.tar.gz`);
+  });
+  app.get('/export', async (c) => download(c, await deps.archives.export(), `cadence-${today()}.tar.gz`));
+  // The body is the .tar.gz itself, unpacked as it arrives. Its bytes are counted here: Hono's bodyLimit holds a body
+  // sent without Content-Length whole before the route runs.
+  app.post('/import', async (c) => {
+    const tooLarge = () => new HttpError(413, m().api.routes.fileTooLarge(2048));
+    if (Number(c.req.header('content-length')) > ARCHIVE_LIMIT) throw tooLarge();
+    const body = c.req.raw.body ? Readable.fromWeb(c.req.raw.body as WebReadableStream<Uint8Array>) : [];
+    let received = 0;
+    const counted = async function* () {
+      for await (const chunk of body as AsyncIterable<Uint8Array>) {
+        received += chunk.length;
+        if (received > ARCHIVE_LIMIT) throw tooLarge();
+        yield chunk;
+      }
+    };
+    const report = await deps.archives.import(counted());
+    if (report.brands.installed.length) hub.send({ type: 'brands-changed' });
+    return c.json(report);
   });
 
   // Scenes
@@ -417,8 +443,7 @@ export function createApi(deps: ApiDeps) {
   app.delete('/projects/:id/chats/:key', async (c) => c.json(await chats.clear(c.req.param('id'), chatKey(c))));
   app.get('/projects/:id/agent-frames/:name', async (c) => {
     const name = c.req.param('name');
-    // JPEG normally; the MCP tool may save PNG frames too.
-    if (!/^[\w.-]+\.(jpe?g|png)$/.test(name)) throw new HttpError(400, m().api.routes.imageName(name));
+    if (!AGENT_FRAME_NAME.test(name)) throw new HttpError(400, m().api.routes.imageName(name));
     return sendFile(c, path.join(store.dir(c.req.param('id')), '.cadence', 'frames', name));
   });
   app.get('/projects/:id/cost', async (c) => c.json({ totalUsd: await chats.totalCost(c.req.param('id')) }));
@@ -608,6 +633,30 @@ async function uploadedFile(c: Context): Promise<{ name: string; data: Buffer }>
   const file = form.file;
   if (!(file instanceof File)) throw new HttpError(400, m().api.routes.noFile);
   return { name: file.name, data: Buffer.from(await file.arrayBuffer()) };
+}
+
+function download(c: Context, archive: Readable, name: string): Response {
+  const headers = {
+    'Content-Type': 'application/gzip',
+    'Content-Disposition': `attachment; filename="${name}"`,
+    'X-Content-Type-Options': 'nosniff',
+  };
+  // A client gone before the first byte leaves a body node-server never reads nor cancels, holding a file open: the
+  // signal closes the archive then (at once when it is already aborted), and on any later disconnect.
+  addAbortSignal(c.req.raw.signal, archive);
+  // Hono answers HEAD with the GET handler and drops its body without cancelling it: close the archive here.
+  if (c.req.method === 'HEAD') {
+    archive.destroy();
+    return c.body(null, 200, headers);
+  }
+  return c.body(Readable.toWeb(archive) as ReadableStream, 200, headers);
+}
+
+/** The server's local date, YYYY-MM-DD. */
+function today(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 function chatKey(c: Context): ChatKey {

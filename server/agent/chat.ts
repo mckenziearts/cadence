@@ -45,6 +45,7 @@ import { m } from '../i18n';
 import { PROJECT_TOOLS, SCENE_TOOLS, STRIP_FRAMES } from '../mcp/tools';
 import { NO_TOKENS, addedSince } from '../usage';
 import {
+  AGENT_FRAME_NAME,
   HttpError,
   KeyedMutex,
   assertId,
@@ -98,6 +99,8 @@ const MCP_PREFIX = 'mcp__cadence__';
 /** The pre-turn capture only adds context: never let it hold the turn back for long. */
 const ERRORS_TIMEOUT_MS = 15_000;
 
+/** Claude sessions and Codex threads. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const chatId = (projectId: string, key: ChatKey) => `${projectId}/${key}`;
 const emptyChat = (key: ChatKey): ChatFile => ({ key, sessionId: null, briefHash: null, messages: [] });
 const sumCost = (messages: ChatMessage[]) => Math.round(messages.reduce((sum, m) => sum + (m.costUsd ?? 0), 0) * 1e6) / 1e6;
@@ -363,16 +366,24 @@ export class ChatManager implements ChatService {
   private async load(projectId: string, key: ChatKey): Promise<ChatFile> {
     const stored = await readJsonOr<Partial<ChatFile>>(path.join(this.chatsDir(projectId), `${this.fileName(key)}.json`), {});
     const messages = Array.isArray(stored.messages) ? stored.messages : [];
-    // Called under the chat's file lock with no turn pending: a reply still "streaming" was cut off by a restart.
+    // A chat can come from an archive: the editor would load an image from any address.
+    const frames = `/api/projects/${projectId}/agent-frames/`;
+    const ownFrame = (url: unknown) =>
+      typeof url === 'string' && url.startsWith(frames) && AGENT_FRAME_NAME.test(url.slice(frames.length));
     for (const message of messages) {
+      // Called under the chat's file lock with no turn pending: a reply still "streaming" was cut off by a restart.
       if (message.status === 'streaming') {
         message.status = 'error';
         message.error = m().agent.chat.interrupted;
       }
+      for (const activity of Array.isArray(message.activity) ? message.activity : []) {
+        if (activity.images) activity.images = Array.isArray(activity.images) ? activity.images.filter(ownFrame) : [];
+      }
     }
     return {
       key,
-      sessionId: stored.sessionId ?? null,
+      // A chat can come from an archive: anything but a UUID would reach the CLI's argv as an option.
+      sessionId: typeof stored.sessionId === 'string' && UUID.test(stored.sessionId) ? stored.sessionId : null,
       briefHash: stored.briefHash ?? null,
       messages,
       sessionUsage: stored.sessionUsage,

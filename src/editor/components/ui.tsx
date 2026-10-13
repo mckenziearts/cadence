@@ -67,6 +67,14 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   ref?: RefObject<HTMLButtonElement | null>;
 }
 
+/** A Button's look, for a link that has to stay an `<a>` (a download). */
+export const buttonClass = (variant: Variant = 'secondary', size: Size = 'md', square?: boolean) =>
+  clsx(
+    'focus-ring inline-flex shrink-0 items-center justify-center whitespace-nowrap select-none [&>svg]:shrink-0',
+    VARIANTS[variant],
+    square ? SQUARES[size] : [SIZES[size], TEXT[size][KEYS.has(variant) ? 0 : 1]],
+  );
+
 export function Button({
   variant = 'secondary',
   size = 'md',
@@ -83,12 +91,7 @@ export function Button({
       type="button"
       {...rest}
       disabled={disabled || loading}
-      className={clsx(
-        'focus-ring inline-flex shrink-0 items-center justify-center whitespace-nowrap select-none [&>svg]:shrink-0',
-        VARIANTS[variant],
-        square ? SQUARES[size] : [SIZES[size], TEXT[size][KEYS.has(variant) ? 0 : 1]],
-        className,
-      )}
+      className={clsx(buttonClass(variant, size, square), className)}
     >
       {loading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : icon}
       {children}
