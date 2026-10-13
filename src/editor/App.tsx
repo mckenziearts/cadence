@@ -24,7 +24,6 @@ import {
   openInitialProject,
   openProject,
   PROFILE_PAGE,
-  selectScene,
   setPlaying,
   stepFrame,
   stepScene,
@@ -324,17 +323,16 @@ function useShortcuts() {
       const { page, projectId, sceneId } = parseHash(location.hash);
       const s = get();
       if (page) {
-        if (s.project) closeProject(true);
+        if (s.project || s.projectLoading) closeProject(true);
         set({ page });
         return;
       }
       if (s.page) set({ page: null });
       if (!projectId) {
-        if (s.project) closeProject();
+        if (s.project || s.projectLoading) closeProject();
         return;
       }
-      if (projectId !== s.project?.id) void openProject(projectId, sceneId).catch(ignore);
-      else if (sceneId && sceneId !== s.sceneId) selectScene(sceneId);
+      void openProject(projectId, sceneId).catch(ignore);
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('pointerdown', onPointer, true);
