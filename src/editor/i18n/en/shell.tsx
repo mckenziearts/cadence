@@ -84,6 +84,17 @@ export default {
     delete: (name: string) => `Delete project "${name}"`,
     deleteConfirm: 'Delete project?',
     deleted: (name: string) => `Project "${name}" deleted (the folder is in projects/.trash)`,
+    export: (name: string) => `Export project "${name}"`,
+    exportAll: 'Export all',
+    import: 'Import',
+    imported: (projects: number, installed: string[], reused: string[]) =>
+      [
+        `${plural(projects, 'project imported', 'projects imported')}.`,
+        installed.length > 0 && `${installed.length === 1 ? 'Brand installed' : 'Brands installed'}: ${installed.join(', ')}.`,
+        reused.length > 0 && `${reused.length === 1 ? 'Brand already here' : 'Brands already here'}: ${reused.join(', ')}.`,
+      ]
+        .filter(Boolean)
+        .join(' '),
     pitch: {
       title: (agents: ReactNode): ReactNode => (
         <>

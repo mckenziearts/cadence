@@ -16,6 +16,7 @@ import type {
   FormatId,
   GitAccount,
   GitHost,
+  ImportReport,
   ModelSpec,
   MusicAnalysis,
   MusicSettingsPatch,
@@ -129,6 +130,9 @@ export const api = {
   createProject: (input: CreateProjectInput) => post<ProjectState>('/api/projects', input),
   updateProject: (id: string, input: UpdateProjectInput, options?: Options) => patch<ProjectState>(p(id), input, options),
   deleteProject: (id: string) => del<{ ok: true }>(p(id)),
+  // A link, not a fetch: the archive streams to disk instead of sitting in the page's memory.
+  exportUrl: (id?: string) => (id ? `${p(id)}/export` : '/api/export'),
+  importArchive: (file: File) => post<ImportReport>('/api/import', file),
   artDirection: (id: string) => get<{ text: string }>(`${p(id)}/art-direction`),
   saveArtDirection: (id: string, text: string) => put<{ text: string }>(`${p(id)}/art-direction`, { text }),
 

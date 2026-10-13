@@ -5,6 +5,8 @@ import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { MusicGridData, ProjectState, SceneState, ScriptLine, Speaker } from '../../src/shared/types';
 import { frameErrors } from '../../src/editor/components/FrameView';
+import en from '../../src/editor/i18n/en/shell';
+import fr from '../../src/editor/i18n/fr/shell';
 import {
   bars,
   bytes,
@@ -367,4 +369,21 @@ test('projects home pages: 11 projects next to the new-project card, then 12 a p
   assert.deepEqual(projectsPage(ids.slice(0, 12), 2), { projects: [12], page: 2, pages: 2 });
   assert.deepEqual(projectsPage(ids.slice(0, 11), 1), { projects: ids.slice(0, 11), page: 1, pages: 1 });
   assert.deepEqual(projectsPage([], 1), { projects: [], page: 1, pages: 1 });
+});
+
+test('import toast: how many projects, then the brands installed and those already there, in both languages', () => {
+  assert.equal(fr.home.imported(1, [], []), `1${S}projet importé.`);
+  assert.equal(fr.home.imported(1, ['Orbit'], []), `1${S}projet importé. Marque installée : Orbit.`);
+  assert.equal(
+    fr.home.imported(3, ['Orbit', 'Nova'], ['Cadence', 'Atlas']),
+    `3${S}projets importés. Marques installées : Orbit, Nova. Marques déjà présentes : Cadence, Atlas.`,
+  );
+  assert.equal(
+    en.home.imported(1, ['Orbit'], ['Cadence']),
+    `1${S}project imported. Brand installed: Orbit. Brand already here: Cadence.`,
+  );
+  assert.equal(
+    en.home.imported(2, ['Orbit', 'Nova'], ['Cadence', 'Atlas']),
+    `2${S}projects imported. Brands installed: Orbit, Nova. Brands already here: Cadence, Atlas.`,
+  );
 });

@@ -87,6 +87,19 @@ export default {
     delete: (name: string) => `Supprimer le projet « ${name} »`,
     deleteConfirm: 'Supprimer le projet ?',
     deleted: (name: string) => `Projet « ${name} » supprimé (le dossier est dans projects/.trash)`,
+    export: (name: string) => `Exporter le projet « ${name} »`,
+    exportAll: 'Tout exporter',
+    import: 'Importer',
+    /** Brand names, or ids for a brand the page does not list yet. */
+    imported: (projects: number, installed: string[], reused: string[]) =>
+      [
+        `${plural(projects, 'projet importé', 'projets importés')}.`,
+        installed.length > 0 &&
+          `${installed.length === 1 ? 'Marque installée' : 'Marques installées'} : ${installed.join(', ')}.`,
+        reused.length > 0 && `${reused.length === 1 ? 'Marque déjà présente' : 'Marques déjà présentes'} : ${reused.join(', ')}.`,
+      ]
+        .filter(Boolean)
+        .join(' '),
     pitch: {
       /** `agents` names the agents a video can be written with. */
       title: (agents: ReactNode): ReactNode => (
