@@ -153,6 +153,13 @@ Ce document est relu avant chaque modification. Décrivez ici le style commun à
     skipped: (error: string) => `[cadence] marque ignorée : ${error}`,
     building: "Cette marque est en construction : annulez d'abord la construction.",
   },
+  archives: {
+    projectUnreadable: (ids: string) =>
+      `Le project.json de ${ids} est illisible : corrigez-le ou supprimez le projet avant d'exporter.`,
+    brandLinked: (brand: string) => `Le dossier de la marque « ${brand} » est un lien : un export ne lit que de vrais dossiers.`,
+    brandMissing: (brand: string) =>
+      `La marque « ${brand} » n'est pas sur cet ordinateur : ses projets ne peuvent pas être exportés sans elle.`,
+  },
   templates: {
     sceneSkipped: (error: string) => `[cadence] modèle de scène ignoré : ${error}`,
     projectSkipped: (error: string) => `[cadence] modèle de projet ignoré : ${error}`,

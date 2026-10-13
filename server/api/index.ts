@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { addAbortSignal, Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import type { HttpBindings } from '@hono/node-server';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
@@ -252,6 +252,13 @@ export function createApi(deps: ApiDeps) {
     await store.writeArtDirection(c.req.param('id'), text);
     return c.json({ text });
   });
+
+  // Archives: a download link (`<a download>`), so a large archive streams to disk instead of sitting in the page's memory.
+  app.get('/projects/:id/export', async (c) => {
+    const id = c.req.param('id');
+    return download(c, await deps.archives.export([id]), `cadence-${id}-${today()}.tar.gz`);
+  });
+  app.get('/export', async (c) => download(c, await deps.archives.export(), `cadence-${today()}.tar.gz`));
 
   // Scenes
   app.post('/projects/:id/scenes', async (c) => {
@@ -608,6 +615,30 @@ async function uploadedFile(c: Context): Promise<{ name: string; data: Buffer }>
   const file = form.file;
   if (!(file instanceof File)) throw new HttpError(400, m().api.routes.noFile);
   return { name: file.name, data: Buffer.from(await file.arrayBuffer()) };
+}
+
+function download(c: Context, archive: Readable, name: string): Response {
+  const headers = {
+    'Content-Type': 'application/gzip',
+    'Content-Disposition': `attachment; filename="${name}"`,
+    'X-Content-Type-Options': 'nosniff',
+  };
+  // A client gone before the first byte leaves a body node-server never reads nor cancels, holding a file open: the
+  // signal closes the archive then (at once when it is already aborted), and on any later disconnect.
+  addAbortSignal(c.req.raw.signal, archive);
+  // Hono answers HEAD with the GET handler and drops its body without cancelling it: close the archive here.
+  if (c.req.method === 'HEAD') {
+    archive.destroy();
+    return c.body(null, 200, headers);
+  }
+  return c.body(Readable.toWeb(archive) as ReadableStream, 200, headers);
+}
+
+/** The server's local date, YYYY-MM-DD. */
+function today(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 function chatKey(c: Context): ChatKey {

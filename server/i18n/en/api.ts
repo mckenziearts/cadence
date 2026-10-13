@@ -149,6 +149,11 @@ This document is reread before every change. Describe here the style all scenes 
     skipped: (error: string) => `[cadence] brand skipped: ${error}`,
     building: 'This brand is being built: cancel the build first.',
   },
+  archives: {
+    projectUnreadable: (ids: string) => `Cannot read project.json of ${ids}: fix or delete it before exporting.`,
+    brandLinked: (brand: string) => `The folder of the brand "${brand}" is a link: an export only reads real folders.`,
+    brandMissing: (brand: string) => `The brand "${brand}" is not on this computer: its projects cannot be exported without it.`,
+  },
   templates: {
     sceneSkipped: (error: string) => `[cadence] scene template skipped: ${error}`,
     projectSkipped: (error: string) => `[cadence] project template skipped: ${error}`,

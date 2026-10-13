@@ -3,6 +3,7 @@
 // Modules must depend on these interfaces, never on each other's concrete classes.
 import type { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Readable } from 'node:stream';
 import type { HttpBindings } from '@hono/node-server';
 import type { Hono } from 'hono';
 import type { AuditFinding } from '../src/shared/frameProtocol';
@@ -185,6 +186,18 @@ export interface BrandStore {
   remove(id: string): Promise<void>;
   /** Markdown for the agent: tokens, fonts, voice, kit components and extras (from brands/<id>/KIT.md). */
   describe(id: string | null): Promise<string>;
+}
+
+// server/archive/projects.ts: export class ProjectArchiver implements ProjectArchives
+//   constructor({ config, store, brands }: { config: CadenceConfig; store: ProjectStore; brands: BrandStore })
+
+export interface ProjectArchives {
+  /**
+   * A .tar.gz of the projects (every project when `ids` is omitted) and the brands they use, `cadence` aside. An unknown
+   * project (404) or a brand missing on this machine (409) rejects before any byte; a read error later ends the stream
+   * with an error, so the download is truncated.
+   */
+  export(ids?: string[]): Promise<Readable>;
 }
 
 // server/brands/source.ts: export class GitHubSource, GitLabSource implements BrandSource
@@ -686,6 +699,7 @@ export interface ApiDeps {
   brandBuilds: BrandBuildService;
   accounts: AccountService;
   publisher: PublishService;
+  archives: ProjectArchives;
   agentStatus: () => Promise<import('../src/shared/types').AgentStatus>;
   /** CLI status on this computer for the other agents, for the Profile's cards (the running agent stays Claude for now). */
   codexStatus: () => Promise<import('../src/shared/types').AgentStatus>;

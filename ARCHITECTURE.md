@@ -60,6 +60,7 @@ cadence/
     accounts/               accounts.ts (FileAccountService, <root>/.cadence/accounts.json), publish.ts (Publisher)
     networks/               youtube.ts, linkedin.ts, instagram.ts (through Facebook Login), tiktok.ts (drafts)
     api/                    Hono routes under /api (index.ts = createApi)
+    archive/                tar.ts (ustar reader and writer, no dependency), projects.ts (ProjectArchiver)
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
     capture/                capture.ts (Playwright), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
@@ -487,6 +488,30 @@ with and **Remove the key**; see "Voice-over") and the networks Cadence publishe
   a finished upload is kept in `projects/<id>/.cadence/publications.json`. Deleting the project waits for its
   uploads, deleting an exported video for its own. Jobs live for the run.
 
+## Project archives (`server/archive/`)
+
+An archive moves projects to another installation: a gzip POSIX tar (ustar, a pax `path` header for long names),
+written and read by `server/archive/tar.ts` with no dependency. Entries, in order:
+
+- `manifest.json` (`ArchiveManifest`): `{ format: 1, createdWith: <package.json version>, projects: [ids], brands: [ids] }`;
+- `projects/<id>/<path>` for each project;
+- `brands/<id>/<path>` once per brand the projects use. Never `brands/cadence`: every installation has it.
+
+What is left out, by `exportableProjectPath` and `exportableBrandPath` (the same rule decides what an import keeps):
+`renders/` (videos are made again from the code), a project's `tsconfig.json` (its `extends` points into this
+installation and breaks Vite on another one), `node_modules/`, dotfiles (`.building` included), and in `.cadence/`
+everything but `chats/`, `versions/` and `voice-over/` (thumbnails, frames, seams, sounds, trash and publications are
+cache or tied to this machine). Only regular files and folders are walked, from `lstat` types: a symlink is skipped,
+never followed, and `writeTar` opens each file with `O_NOFOLLOW`.
+
+Export is a GET (`<a download>`): the same-origin guard lets it through without the editor token, and the archive
+streams to disk instead of sitting in the page's memory. Unknown projects (404), a project whose `project.json` cannot
+be read (409 naming it, rather than an archive that leaves it out), and brands missing on this machine or whose folder
+is a symlink (409) are checked before the first byte. A folder with no `project.json` (an import staged in `.import/`)
+is not a project and stays out. A HEAD answers the headers and closes the archive unread; a read error later ends the
+stream, so the file is truncated (and an import refuses it). No project lock is held while the archive streams, which
+would block writes for the length of a download: an export taken while the agent writes may mix two states (accepted).
+
 ## REST API (editor origin, JSON, error messages `{ error }` in the interface language)
 
 ```
@@ -528,6 +553,10 @@ POST   /api/projects/:id/voice-over/sync           speaks what is missing, failu
 GET    /api/projects/:id/voice-over/audio          ?v=, the voice-over track as audio/wav
 GET    /api/projects/:id/subtitles                 ?format=srt|vtt, the voice-over sentences as a `<id>.srt` / `<id>.vtt`
                                                    attachment; 409 while a scene is not spoken, 404 without any sentence
+GET    /api/projects/:id/export                    the project and its brand as a `cadence-<id>-<YYYY-MM-DD>.tar.gz` attachment
+                                                   (see "Project archives"); 404 unknown project, 409 unreadable project.json
+                                                   or brand not on this machine
+GET    /api/export                                 every project and their brands as `cadence-<YYYY-MM-DD>.tar.gz`, same errors
 GET    /api/projects/:id/versions                  ?scene=, answers VersionEntry[]
 POST   /api/projects/:id/versions                  { label }, answers VersionEntry | null
 POST   /api/projects/:id/versions/:vid/restore     { sceneId? }, answers VersionEntry (409 while a turn runs)

@@ -11,6 +11,7 @@ import { CodexProvider, codexModels } from './agent/codex';
 import { RoutingProvider } from './agent/router';
 import { writeProjectsGuide } from './agent/guide';
 import { createApi } from './api';
+import { ProjectArchiver } from './archive/projects';
 import { BrandBuilder } from './brands/build';
 import { GitHubSource, GitLabSource } from './brands/source';
 import { PlaywrightCapture } from './capture/capture';
@@ -279,6 +280,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       brandBuilds,
       accounts,
       publisher,
+      archives: new ProjectArchiver({ config, store, brands }),
       agentStatus: () => provider.status(),
       codexStatus: () => codex.status(),
       grokStatus: () => grokStatus(config),

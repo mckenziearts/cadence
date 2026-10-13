@@ -101,7 +101,7 @@ async function tempDir(t: { after(fn: () => Promise<void>): void }) {
 const LONG_SPLIT = `deep/${'d'.repeat(60)}/${'f'.repeat(70)}.bin`;
 const LONG_PAX = `${'p'.repeat(150)}/${'q'.repeat(149)}`;
 
-test('a tree goes through writeTar + gzip and comes back byte for byte through gunzip + readTar', timed, async (t) => {
+test('files from disk and from memory go through writeTar + gzip and come back byte for byte', timed, async (t) => {
   const dir = await tempDir(t);
   const binary = Buffer.alloc(MiB);
   for (let i = 0; i < binary.length; i++) binary[i] = (i * 7919) % 256;
@@ -118,17 +118,22 @@ test('a tree goes through writeTar + gzip and comes back byte for byte through g
   }
   assert.equal(LONG_SPLIT.length, 140);
 
+  const inline = new Map([
+    ['manifest.json', Buffer.from('{"format":1}\n')],
+    [`${LONG_PAX}.json`, Buffer.alloc(0)],
+  ]);
   const entries = [
     { path: 'music', directory: true as const },
     ...[...tree.keys()].map((rel) => ({ path: rel, file: path.join(dir, 'src', rel) })),
+    ...[...inline].map(([rel, data]) => ({ path: rel, data })),
   ];
   const gzipped = await buffer(writeTar(entries).pipe(createGzip()));
-  assert.deepEqual(await read(Readable.from([gzipped]).pipe(createGunzip())), tree);
+  assert.deepEqual(await read(Readable.from([gzipped]).pipe(createGunzip())), new Map([...tree, ...inline]));
 
   const file = path.join(dir, 'tree.tar.gz');
   await fs.writeFile(file, gzipped);
   const listed = execFileSync('tar', ['-tzf', file], { encoding: 'utf8' }).trim().split('\n').sort();
-  assert.deepEqual(listed, ['music/', ...tree.keys()].sort());
+  assert.deepEqual(listed, ['music/', ...tree.keys(), ...inline.keys()].sort());
 });
 
 test(

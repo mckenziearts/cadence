@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import { PassThrough, Readable } from 'node:stream';
 
-export type TarEntry = { path: string; file: string } | { path: string; directory: true };
+export type TarEntry = { path: string; file: string } | { path: string; data: Buffer } | { path: string; directory: true };
 
 export interface TarFile {
   path: string;
@@ -43,6 +43,12 @@ async function* generate(entries: Iterable<TarEntry> | AsyncIterable<TarEntry>):
   for await (const entry of entries) {
     if ('directory' in entry) {
       yield header(`${entry.path}/`, '5', 0, 0o755);
+      continue;
+    }
+    if ('data' in entry) {
+      yield header(entry.path, '0', entry.data.length, 0o644);
+      yield entry.data;
+      yield Buffer.alloc(padding(entry.data.length));
       continue;
     }
     // No symlink is followed: a file swapped for a link after the caller listed it is refused, never read.

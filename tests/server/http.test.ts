@@ -117,8 +117,8 @@ test('mutating API requests need the editor token', async () => {
 test('API reads: Sec-Fetch-Site same-origin, none or absent only', async () => {
   for (const site of ['same-origin', 'none'])
     assert.equal((await request('/api/state', { headers: { 'sec-fetch-site': site } })).status, 200, site);
-  // The subtitles download too: scene code in the frame must not read the voice-over text.
-  for (const route of ['/api/state', '/api/projects/demo/subtitles?format=srt'])
+  // The downloads too: scene code in the frame must not read the voice-over text or a project archive.
+  for (const route of ['/api/state', '/api/projects/demo/subtitles?format=srt', '/api/projects/demo/export', '/api/export'])
     for (const site of ['same-site', 'cross-site']) {
       const res = await request(route, { headers: { 'sec-fetch-site': site } });
       assert.equal(res.status, 403, `${route} ${site}`);
