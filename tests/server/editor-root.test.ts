@@ -10,11 +10,13 @@ import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
 import { builtEditor } from '../../server/editor';
 import { m } from '../../server/i18n';
+import type { BrandSource, HostBrandSource } from '../../server/contracts';
 import { startServer, type RunningServer } from '../../server/index';
 import { makeRoot, type TestRoot } from './helpers';
 
 const repo = path.resolve(import.meta.dirname, '../..');
 const HOST_PAGE = 'Host page marker';
+const NEW_BRAND_PAGE = 'Host new brand page';
 let t: TestRoot;
 let host: string;
 let server: RunningServer;
@@ -32,7 +34,34 @@ async function writeHost(dir: string): Promise<void> {
   );
   await fs.writeFile(
     path.join(src, 'main.tsx'),
-    `import { createRoot } from 'react-dom/client';\nimport { App, Profile } from '${core}/index';\nimport './styles.css';\n\nfunction X() {\n  return <p>${HOST_PAGE}</p>;\n}\n\ncreateRoot(document.getElementById('root')!).render(\n  <div className="bg-[#c0ffee]">\n    <App pages={{ '@x': X, '@moi': () => <Profile /> }} profile={false} />\n  </div>,\n);\n`,
+    `import { createRoot } from 'react-dom/client';
+import { App, Profile, api, openNewBrand } from '${core}/index';
+import './styles.css';
+
+function X() {
+  return <p>${HOST_PAGE}</p>;
+}
+
+const build = (input: Parameters<typeof api.startBrandBuild>[0]) =>
+  void api.startBrandBuild(input).then((b) => openNewBrand(b.id));
+
+function NewBrand() {
+  return (
+    <div>
+      <p>${NEW_BRAND_PAGE}</p>
+      <button onClick={() => openNewBrand()}>Repositories</button>
+      <button onClick={() => build({ source: 'site', ref: 'r1', name: 'Host brand' })}>From the host</button>
+      <button onClick={() => build({ repo: 'acme/host-site', name: 'Repository brand' })}>From a repository</button>
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(
+  <div className="bg-[#c0ffee]">
+    <App pages={{ '@x': X, '@moi': () => <Profile />, '@new': NewBrand }} newBrand="@new" profile={false} />
+  </div>,
+);
+`,
   );
   await fs.writeFile(path.join(src, 'styles.css'), `@import '${core}/styles.css';\n@source './';\n`);
   for (const name of ['react', 'react-dom', 'scheduler'])
@@ -47,6 +76,40 @@ async function load(html: string, origin: string) {
   };
   return { html, js: await text('js'), css: await text('css') };
 }
+
+/** One repository to pick; its copy fails, so the build ends in error without an agent turn. */
+const github: BrandSource = {
+  account: async () => ({ available: true, account: 'host' }),
+  repos: async () => ({
+    available: true,
+    account: 'host',
+    repos: [
+      {
+        fullName: 'acme/host-site',
+        description: null,
+        private: false,
+        pushedAt: '2026-10-01T10:00:00Z',
+        url: 'https://github.com/acme/host-site',
+        homepage: null,
+      },
+    ],
+  }),
+  fetch: async () => {
+    throw new Error('copy failed');
+  },
+};
+const gitlab: BrandSource = {
+  account: async () => ({ available: false, reason: 'missing' }),
+  repos: async () => ({ available: false, reason: 'missing' }),
+  fetch: async () => undefined,
+};
+/** A brand source of the host app whose fill fails. */
+const site: HostBrandSource = {
+  describe: async (ref) => ({ label: `Site ${ref}` }),
+  fill: async () => {
+    throw new Error('fill failed');
+  },
+};
 
 const reactElements = (js: string) => js.split('react.transitional.element').length - 1;
 
@@ -75,6 +138,8 @@ before(async () => {
     quiet: true,
     provider,
     editorRoot: host,
+    brandSources: { github, gitlab },
+    hostBrandSources: { site },
   });
   const { editorOrigin } = server.config;
   hostBuild = await load(await (await fetch(`${editorOrigin}/`)).text(), editorOrigin);
@@ -131,6 +196,42 @@ test('a host page opens from the hash, the core Profile too, an unknown page goe
     await page.goto(`${server.config.editorOrigin}/#/@nope`);
     await page.waitForFunction(() => location.hash === '#/', null, { timeout: 30_000 });
     assert.equal(await page.getByText(HOST_PAGE, { exact: true }).count(), 0);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('the New brand card opens the host page, whose buttons open the repository modal and a build', async (t) => {
+  const browser = await chromium.launch().catch(() => null);
+  if (!browser) return t.skip('Chromium missing (npm run setup)');
+  try {
+    const page = await browser.newPage();
+    const dialog = page.getByRole('dialog');
+    await page.goto(`${server.config.editorOrigin}/#/`);
+    await page.getByRole('button', { name: /^(Créer un projet|Create a project)$/ }).click({ timeout: 30_000 });
+    await dialog.getByRole('button', { name: /Nouvelle marque|New brand/ }).click();
+    await page.getByText(NEW_BRAND_PAGE, { exact: true }).waitFor();
+    assert.equal(new URL(page.url()).hash, '#/@new');
+    assert.equal(await dialog.count(), 0, 'the card closed the new project modal');
+
+    await page.getByRole('button', { name: 'Repositories', exact: true }).click();
+    await dialog.getByRole('button', { name: /acme\/host-site/ }).waitFor();
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({ state: 'detached' });
+
+    const failed = page.getByRole('heading', { name: /^(La marque n’a pas pu être construite|The brand could not be built)$/ });
+    const restart = dialog.getByRole('button', { name: /^(Recommencer|Start over)$/ });
+    await page.getByRole('button', { name: 'From the host', exact: true }).click();
+    await dialog.getByText(/^(Depuis|From) Site r1$/).waitFor();
+    await failed.waitFor({ timeout: 30_000 });
+    assert.equal(await restart.count(), 0, 'a host source build has no Restart');
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({ state: 'detached' });
+
+    await page.getByRole('button', { name: 'From a repository', exact: true }).click();
+    await dialog.getByText(/^(Depuis|From) acme\/host-site$/).waitFor();
+    await failed.waitFor({ timeout: 30_000 });
+    await restart.waitFor();
   } finally {
     await browser.close();
   }

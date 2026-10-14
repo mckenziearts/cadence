@@ -136,7 +136,7 @@ export default {
   brands: {
     build: {
       tools: {
-        copy_from_repo: 'Copie d’un fichier du dépôt',
+        copy_from_repo: 'Copie d’un fichier de la source',
         add_google_font: 'Téléchargement d’une police',
         preview_brand: 'Regarde la planche du kit',
         check_brand: 'Vérifie la marque',
@@ -145,8 +145,9 @@ export default {
       badRepo: 'Dépôt non reconnu : owner/nom, ou une adresse github.com ou gitlab.com (https://\u2026 ou git@\u2026).',
       noName: 'Donnez un nom à la marque.',
       notFound: 'Construction de marque introuvable',
+      unknownSource: (source: string) => `Source de marque inconnue : ${source}`,
       cloning: (repo: string) => `Copie de ${repo}`,
-      reading: (agent: string | null) => `${agent ?? 'Notre IA'} lit le dépôt`,
+      reading: (agent: string | null) => `${agent ?? 'Notre IA'} lit la source`,
       checking: 'Vérification de la marque',
       fixing: (agent: string | null) => `${agent ?? 'Notre IA'} corrige ce que la vérification a trouvé`,
       checkingAgain: 'Nouvelle vérification',

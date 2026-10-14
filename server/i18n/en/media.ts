@@ -135,7 +135,7 @@ export default {
   brands: {
     build: {
       tools: {
-        copy_from_repo: 'Copying a file from the repository',
+        copy_from_repo: 'Copying a file from the source',
         add_google_font: 'Downloading a font',
         preview_brand: 'Looking at the kit sheet',
         check_brand: 'Checking the brand',
@@ -144,8 +144,9 @@ export default {
       badRepo: 'Repository not recognized: owner/name, or a github.com or gitlab.com URL (https://... or git@...).',
       noName: 'Give the brand a name.',
       notFound: 'Brand build not found',
+      unknownSource: (source: string) => `Unknown brand source: ${source}`,
       cloning: (repo: string) => `Copying ${repo}`,
-      reading: (agent: string | null) => `${agent ?? 'Our AI'} is reading the repository`,
+      reading: (agent: string | null) => `${agent ?? 'Our AI'} is reading the source`,
       checking: 'Checking the brand',
       fixing: (agent: string | null) => `${agent ?? 'Our AI'} is fixing what the check found`,
       checkingAgain: 'Checking again',

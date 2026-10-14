@@ -1,6 +1,7 @@
-// Brand builds: copy a repository, let a restricted Claude turn make brands/<id>/ (a copy of the neutral kit) the
-// product's kit, check it, then list it. One build at a time. The brand folder stays out of the brand list while it
-// holds `.building`, and is removed if the build fails or is cancelled; the clone is always removed.
+// Brand builds: copy a repository (or let a host app's brand source fill the source folder), let a restricted Claude
+// turn make brands/<id>/ (a copy of the neutral kit) the product's kit, check it, then list it. One build at a time. The
+// brand folder stays out of the brand list while it holds `.building`, and is removed if the build fails or is
+// cancelled; the source folder is always removed.
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -25,6 +26,7 @@ import type {
   BrandStore,
   CadenceConfig,
   CaptureService,
+  HostBrandSource,
   Hub,
   McpTokenIssuer,
   RepoRef,
@@ -37,7 +39,7 @@ import { BUILDING_MARKER } from '../store/brands';
 import { NO_TOKENS, addedSince } from '../usage';
 import { HttpError, isInside, nowIso, slugify, writeJsonAtomic } from '../util';
 import { checkBrand } from './check';
-import { parseRepo } from './source';
+import { REPOSITORY_GUIDE, parseRepo } from './source';
 
 const TEMPLATE = 'cadence';
 const MCP_PREFIX = 'mcp__cadence__';
@@ -55,7 +57,8 @@ class BrandIncomplete extends Error {
 
 interface State {
   build: BrandBuild;
-  repo: RepoRef;
+  /** What `ref` names stays here, never in the build record or the logs: only the source's label goes there. */
+  repo: RepoRef | { source: HostBrandSource; ref: string };
   abort: AbortController;
   done: Promise<BrandBuild>;
   settle: (build: BrandBuild) => void;
@@ -70,6 +73,8 @@ export interface BrandBuilderDeps {
   config: CadenceConfig;
   brands: BrandStore;
   sources: Record<GitHost, BrandSource>;
+  /** A host app's brand sources, by key (never `github` or `gitlab`, `startServer()` checks). */
+  hostSources: Record<string, HostBrandSource>;
   provider: AgentProvider;
   tokens: McpTokenIssuer;
   settings: SettingsStore;
@@ -89,10 +94,11 @@ export class BrandBuilder implements BrandBuildService {
   constructor(private readonly deps: BrandBuilderDeps) {}
 
   async start(input: StartBrandBuildInput): Promise<BrandBuild> {
-    const repo = parseRepo(input.repo ?? '');
+    const repo = 'source' in input ? this.hostSource(input.source, input.ref) : parseRepo(input.repo ?? '');
     if (!repo) throw new HttpError(400, m().media.brands.build.badRepo);
     const name = (input.name ?? '').trim();
     if (!name) throw new HttpError(400, m().media.brands.build.noName);
+    const label = 'source' in repo ? (await repo.source.describe(repo.ref)).label : repoLabel(repo);
     const id = randomUUID();
     const brandId = await this.reserve(slugify(name, 'marque'), id);
     let settle!: (build: BrandBuild) => void;
@@ -101,8 +107,8 @@ export class BrandBuilder implements BrandBuildService {
       id,
       brandId,
       name,
-      // owner/name stays GitHub when pasted again (« Recommencer »): GitLab keeps its host.
-      repo: repo.host === 'gitlab' ? `gitlab.com/${repo.fullName}` : repo.fullName,
+      repo: label,
+      ...('source' in input && { source: input.source }),
       status: 'queued',
       activity: null,
       files: [],
@@ -163,6 +169,13 @@ export class BrandBuilder implements BrandBuildService {
     await Promise.all(open.map((s) => s.done));
   }
 
+  private hostSource(key: string, ref: string): State['repo'] {
+    // A key like `constructor` is no source: only the host's own entries count.
+    const source = Object.hasOwn(this.deps.hostSources, key) ? this.deps.hostSources[key] : undefined;
+    if (!source) throw new HttpError(404, m().media.brands.build.unknownSource(key));
+    return { source, ref };
+  }
+
   /** A free brand id from `base`, its folder created at once (with the marker) so two builds never share it. */
   private async reserve(base: string, buildId: string): Promise<string> {
     for (let i = 1; ; i++) {
@@ -199,7 +212,18 @@ export class BrandBuilder implements BrandBuildService {
     try {
       this.patch(state, { status: 'cloning', activity: m().media.brands.build.cloning(build.repo) });
       await fs.mkdir(path.dirname(repoDir), { recursive: true });
-      await sources[state.repo.host].fetch(state.repo, repoDir, abort.signal);
+      const { repo } = state;
+      // A late progress call never overwrites the activity of a later step. A host source reports few steps,
+      // so each one is sent past the throttle: the cloning event just went out.
+      const progress = (activity: string) => {
+        if (state.build.status !== 'cloning') return;
+        state.build.activity = activity;
+        this.emit(state, true);
+      };
+      const guide =
+        'source' in repo
+          ? await repo.source.fill(repo.ref, repoDir, abort.signal, progress)
+          : await sources[repo.host].fetch(repo, repoDir, abort.signal).then(() => REPOSITORY_GUIDE);
       await removeLinks(repoDir);
       this.stopIfCancelled(state);
 
@@ -209,12 +233,12 @@ export class BrandBuilder implements BrandBuildService {
       await writeJsonAtomic(path.join(brandDir, 'brand.json'), { ...file, id: build.brandId, name: build.name });
 
       token = tokens.issue({ kind: 'brand', brandId: build.brandId, repoDir }, { ttlMs: TOKEN_TTL_MS });
-      const turn = await this.turn(state, brandDir, repoDir, token);
+      const turn = await this.turn(state, brandDir, repoDir, token, guide);
       this.patch(state, { status: 'building', activity: m().media.brands.build.reading(this.agentName(state)) });
       await this.stream(state, brandDir, repoDir, {
         ...turn,
         prompt:
-          `Construis la marque « ${build.name} » à partir du dépôt ${build.repo}, copié dans ${repoDir}. ` +
+          `Construis la marque « ${build.name} » à partir de la source ${build.repo}, copiée dans ${repoDir}. ` +
           `Le dossier ${brandDir} est une copie du kit neutre de Cadence : adapte chaque fichier au produit en suivant ` +
           'le guide, puis appelle check_brand jusqu’à ce qu’il ne signale plus rien.',
         resume: false,
@@ -229,7 +253,7 @@ export class BrandBuilder implements BrandBuildService {
           ...turn,
           prompt:
             `La vérification finale de Cadence signale encore :\n- ${problems.join('\n- ')}\n\n` +
-            `Corrige ces points, appelle check_brand jusqu’à ce qu’il ne signale plus rien, puis résume en ${language() === 'en' ? 'anglais' : 'français'} ce que tu as repris du dépôt et ce que tu as dû approcher.`,
+            `Corrige ces points, appelle check_brand jusqu’à ce qu’il ne signale plus rien, puis résume en ${language() === 'en' ? 'anglais' : 'français'} ce que tu as repris de la source et ce que tu as dû approcher.`,
           resume: true,
         });
         this.patch(state, { status: 'checking', activity: m().media.brands.build.checkingAgain });
@@ -261,6 +285,7 @@ export class BrandBuilder implements BrandBuildService {
     brandDir: string,
     repoDir: string,
     token: string,
+    guide: string,
   ): Promise<Omit<AgentTurn, 'prompt' | 'resume'>> {
     const { config } = this.deps;
     const settings = await this.deps.settings.get();
@@ -279,6 +304,7 @@ export class BrandBuilder implements BrandBuildService {
       systemPrompt: buildBrandGuide({
         REPO_DIR: repoDir,
         REPO: state.build.repo,
+        SOURCE: guide,
         BRAND_DIR: brandDir,
         BRAND_ID: state.build.brandId,
         BRAND_NAME: state.build.name,
@@ -378,6 +404,11 @@ export class BrandBuilder implements BrandBuildService {
     state.lastEmit = now;
     this.deps.hub.send({ type: 'brand-build', build: { ...state.build, files: [...state.build.files] } });
   }
+}
+
+/** owner/name stays GitHub when pasted again (« Recommencer »): GitLab keeps its host. */
+function repoLabel(repo: RepoRef): string {
+  return repo.host === 'gitlab' ? `gitlab.com/${repo.fullName}` : repo.fullName;
 }
 
 function alive(pid: number): boolean {

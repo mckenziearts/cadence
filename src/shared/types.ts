@@ -517,19 +517,21 @@ export type RepoListing =
   | { available: false; reason: 'missing' | 'logged-out' | 'error'; detail?: string };
 
 /** POST /api/brand-builds */
-export interface StartBrandBuildInput {
-  /** owner/name (GitHub), or a github.com or gitlab.com address, https or SSH. */
-  repo: string;
-  name: string;
-}
+/**
+ * `repo`: owner/name (GitHub), or a github.com or gitlab.com address, https or SSH. `source` and `ref`: a host app's
+ * brand source (`hostBrandSources` of `startServer()`) and what it reads.
+ */
+export type StartBrandBuildInput = { name: string } & ({ repo: string } | { source: string; ref: string });
 
 /** A brand kit Claude builds from a repository into brands/<brandId>/ (hidden from the brand list until done). */
 export interface BrandBuild {
   id: string;
   brandId: string;
   name: string;
-  /** owner/name on GitHub, gitlab.com/group/name on GitLab. */
+  /** owner/name on GitHub, gitlab.com/group/name on GitLab, or the label a host brand source gave. */
   repo: string;
+  /** The host brand source's key, for a build that did not start from a Git repository. */
+  source?: string;
   status: 'queued' | 'cloning' | 'building' | 'checking' | 'done' | 'error' | 'cancelled';
   /** What Claude is doing now, for the progress line. */
   activity: string | null;
@@ -538,7 +540,7 @@ export interface BrandBuild {
   costUsd: number | null;
   createdAt: string;
   finishedAt?: string;
-  /** Claude's closing words: what it took from the repository and what it had to approximate. */
+  /** Claude's closing words: what it took from the source and what it had to approximate. */
   summary?: string;
   error?: string;
   /** What the final check still found wrong (status error). */

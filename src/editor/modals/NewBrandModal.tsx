@@ -328,9 +328,12 @@ function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: 
             <Button variant="ghost" onClick={closeModal}>
               {t.common.close}
             </Button>
-            <Button variant="primary" onClick={() => void restart()}>
-              {t.dialogs.newBrand.progress.restart}
-            </Button>
+            {/* A host source's ref stays on the server: only a repository build can start again from here. */}
+            {!build.source && (
+              <Button variant="primary" onClick={() => void restart()}>
+                {t.dialogs.newBrand.progress.restart}
+              </Button>
+            )}
           </>
         )
       }

@@ -26,6 +26,7 @@ import { closeModal, openModal, toast } from '../store/ui';
 export function NewProjectModal({ brand: initialBrand }: { brand?: string | null }) {
   const t = useT();
   const app = useStore((s) => s.app)!;
+  const newBrand = useStore((s) => s.newBrand);
   const [name, setName] = useState('');
   const [brand, setBrand] = useState<string>(initialBrand ?? app.brands[0]?.id ?? 'cadence');
   const [template, setTemplate] = useState<string | null>(null);
@@ -184,7 +185,11 @@ export function NewProjectModal({ brand: initialBrand }: { brand?: string | null
               ))}
             <button
               type="button"
-              onClick={() => openModal({ kind: 'new-brand' })}
+              onClick={() => {
+                if (!newBrand) return openModal({ kind: 'new-brand' });
+                closeModal();
+                location.hash = `#/${newBrand}`;
+              }}
               className="focus-ring flex items-center gap-3 border border-dashed border-ink p-2.5 text-left hover:bg-white"
             >
               <span className="grid size-10 shrink-0 place-items-center border-2 border-ink bg-now text-ink">

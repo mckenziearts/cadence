@@ -16,6 +16,14 @@ const GH_AUTH_REQUIRED = 4;
 /** glab has no dedicated exit code: what it prints without a login. */
 const GLAB_AUTH_REQUIRED = /401|unauthori[sz]ed|auth login|not authenticated|no token/i;
 
+/** The brand guide's first step when the source folder holds a copy of a repository. */
+export const REPOSITORY_GUIDE =
+  '**Explore the repository.** The source folder is a copy of its default branch, without history. Framework and ' +
+  'styling (Tailwind config or `@theme` in CSS, CSS variables, token or theme files), fonts (package.json, ' +
+  '`@font-face`, Google Fonts links, font files), logos (public/, resources/, assets/, favicon, SVG components), UI ' +
+  'components (components/ui, resources/js/components, Blade or Livewire components, Vue SFCs), copy (lang files, ' +
+  "landing page, README, package.json description) and the product's language (fr or en).";
+
 /**
  * The repository in what people paste: owner/name (GitHub), https://github.com/owner/name[.git][/...],
  * git@github.com:owner/name.git, and the same on gitlab.com, where projects may sit in nested groups.

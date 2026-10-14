@@ -843,7 +843,7 @@ contract: removing or reshaping one is a major version.
 - `editorRoot`: a folder with the host's own `index.html`, built instead of the core's at every start (the same
   in-memory production build, `server/editor.ts`) and served with the same token, frame-origin metas and guards. Its
   scripts import the core editor through `src/editor/index.ts`, which exports `App`, `Profile`, `api`, `ApiError`,
-  `useStore` and `useT` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
+  `useStore`, `useT` and `openNewBrand` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
   the core's `@profil` page, for a host page that wraps it rather than replacing it.
 - `pages`: `<App pages={{ '@compte': Account }} />` adds the host's screens to the editor's hash router. A page id
   starts with `@`, which no project id can, so a page never shadows a project; `#/@compte` opens it in place of the
@@ -856,6 +856,15 @@ contract: removing or reshaping one is a major version.
   of its pages for now (a sign-in first). It only hides the entry: `#/@profil` still opens, so a host that must keep
   the person out gates the hash itself. The default (`true`) changes nothing. `tests/server/editor-root.test.ts` checks
   it in Chromium.
+- `newBrand`: `<App newBrand="@marque" />` points the "New brand" card of the new project window at a host page: the
+  card closes the window and opens `#/@marque`, which the host provides through `pages`. The id starts with `@` (its
+  type says so), since a hash without it names a project. Building chips in the top bar and the new project window
+  still open the core's progress window. Without the prop, the card opens the core's repository window as before.
+  `tests/server/editor-root.test.ts` checks it in Chromium.
+- `openNewBrand(buildId?)`: a host page opens the core's "New brand" window itself, the repository picker without an
+  argument, the progress of that build with one (a build started with `api.startBrandBuild({ source, ref, name })`,
+  say). The progress of a build that has a `source` offers no "Start over", since its `ref` never reaches the editor;
+  a repository build still does. `tests/server/editor-root.test.ts` checks both in Chromium.
 - CSS: the host stylesheet imports the core's (`@import '<core>/src/editor/styles.css';`) and adds `@source './';` for
   its own files. Tailwind only generates the classes it finds in scanned sources, and the core stylesheet scans
   `src/editor/` only: without its own `@source`, the host's screens come out unstyled.
@@ -882,6 +891,22 @@ contract: removing or reshaping one is a major version.
   must be `https:` (plain `http:` only on `localhost` or `127.0.0.1`), else the client refuses to be built. A key
   function that throws or rejects is a 502 whose message never carries what it threw; the gateway's 401, 402 and 403
   reach the person with its own message, the key masked. `tests/server/elevenlabs.test.ts` checks it.
+- `hostBrandSources`: `startServer({ hostBrandSources: { site } })` adds a host app's ways to start a brand next to
+  GitHub and GitLab (`HostBrandSource` in `server/contracts.ts`). A key is a lowercase slug (`/^[a-z][a-z0-9-]*$/`)
+  other than `github` and `gitlab`: `startServer()` rejects any other. `POST /api/brand-builds` then takes
+  `{ source, ref, name }` (`ref` up to 2048 characters, an unknown `source` is a 404) next to `{ repo, name }`.
+  `describe(ref)` runs before anything is created and gives the label shown as `BrandBuild.repo`; an `HttpError` it
+  throws keeps its status, and no build, brand folder or source folder is left. `fill(ref, dest, signal, progress)`
+  takes the place of the clone: it creates and fills `dest` (`.cadence/brand-sources/<build>/`), its `progress` texts
+  become the build's activity, its signal aborts on cancel, and it resolves to the paragraph the brand guide shows in
+  place of the repository's (English, `{{SOURCE}}` in `server/agent/brand-guide.md`). Symbolic links are removed, the
+  turns, checks and cleanup are the repository's, and `BrandBuild.source` holds the key. The core keeps `ref` in memory
+  and never writes it to the build record or the logs, but an error `describe` or `fill` throws reaches the editor
+  with its message (`fill`'s becomes `BrandBuild.error`, another error than an `HttpError` from `describe` is also
+  logged), so a host keeps `ref` out of its messages and its `progress` texts. Host sources are not Git hosts:
+  `GET /api/brand-sources/:host` and the Profile's Git accounts never list them. Without the option, nothing changes.
+  `tests/server/brand-builds.test.ts` checks a build, a failed `fill` and two cancels, `tests/server/host-api.test.ts`
+  the keys, the route and the refused `ref`.
 - `features`: `startServer({ features: { gitSources: false } })` hides editor sections. `Features` and
   `DEFAULT_FEATURES` (every flag `true`) live in `src/shared/types.ts`; a missing key stays on, and the merged object
   reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the

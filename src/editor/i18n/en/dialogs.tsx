@@ -63,7 +63,7 @@ export default {
     unreadable: (host: string, detail?: string) => `Could not read your ${host} repositories${detail ? `: ${detail}` : '.'}`,
     pasteInstead: 'You can also paste the repository address below: Cadence copies it with the Git access of this computer.',
     progress: {
-      steps: { copy: 'Copying the repository', build: 'Building the kit', check: 'Checking', ready: 'Ready' },
+      steps: { copy: 'Copying the source', build: 'Building the kit', check: 'Checking', ready: 'Ready' },
       stepsLabel: 'Steps',
       ready: (name: string) => `Brand "${name}" is ready`,
       failed: 'The brand could not be built',
