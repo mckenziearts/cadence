@@ -843,7 +843,7 @@ contract: removing or reshaping one is a major version.
 - `editorRoot`: a folder with the host's own `index.html`, built instead of the core's at every start (the same
   in-memory production build, `server/editor.ts`) and served with the same token, frame-origin metas and guards. Its
   scripts import the core editor through `src/editor/index.ts`, which exports `App`, `Profile`, `api`, `ApiError`,
-  `useStore` and `useT` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
+  `useStore`, `useT` and `openNewBrand` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
   the core's `@profil` page, for a host page that wraps it rather than replacing it.
 - `pages`: `<App pages={{ '@compte': Account }} />` adds the host's screens to the editor's hash router. A page id
   starts with `@`, which no project id can, so a page never shadows a project; `#/@compte` opens it in place of the
@@ -856,6 +856,15 @@ contract: removing or reshaping one is a major version.
   of its pages for now (a sign-in first). It only hides the entry: `#/@profil` still opens, so a host that must keep
   the person out gates the hash itself. The default (`true`) changes nothing. `tests/server/editor-root.test.ts` checks
   it in Chromium.
+- `newBrand`: `<App newBrand="@marque" />` points the "New brand" card of the new project window at a host page: the
+  card closes the window and opens `#/@marque`, which the host provides through `pages`. The id starts with `@` (its
+  type says so), since a hash without it names a project. Building chips in the top bar and the new project window
+  still open the core's progress window. Without the prop, the card opens the core's repository window as before.
+  `tests/server/editor-root.test.ts` checks it in Chromium.
+- `openNewBrand(buildId?)`: a host page opens the core's "New brand" window itself, the repository picker without an
+  argument, the progress of that build with one (a build started with `api.startBrandBuild({ source, ref, name })`,
+  say). The progress of a build that has a `source` offers no "Start over", since its `ref` never reaches the editor;
+  a repository build still does. `tests/server/editor-root.test.ts` checks both in Chromium.
 - CSS: the host stylesheet imports the core's (`@import '<core>/src/editor/styles.css';`) and adds `@source './';` for
   its own files. Tailwind only generates the classes it finds in scanned sources, and the core stylesheet scans
   `src/editor/` only: without its own `@source`, the host's screens come out unstyled.

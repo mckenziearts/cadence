@@ -117,6 +117,8 @@ export interface EditorState {
   seenBuilds: string[];
   /** The page the hash names (#/@profil, a host page) in place of the home; App resolves it to a screen. */
   page: string | null;
+  /** The host page the "New brand" card opens instead of the core window (App's `newBrand`). */
+  newBrand: `@${string}` | null;
 }
 
 /** localStorage can throw (private mode, blocked site data): conveniences only. */
@@ -185,6 +187,7 @@ export const useStore = create<EditorState>()(() => ({
   renaming: null,
   seenBuilds: memory.get('seen-builds')?.split(' ') ?? [],
   page: null,
+  newBrand: null,
 }));
 
 /** Stable empty list for selectors (a fresh `[]` per call would re-render forever). */
