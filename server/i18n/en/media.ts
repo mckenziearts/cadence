@@ -144,6 +144,7 @@ export default {
       badRepo: 'Repository not recognized: owner/name, or a github.com or gitlab.com URL (https://... or git@...).',
       noName: 'Give the brand a name.',
       notFound: 'Brand build not found',
+      unknownSource: (source: string) => `Unknown brand source: ${source}`,
       cloning: (repo: string) => `Copying ${repo}`,
       reading: (agent: string | null) => `${agent ?? 'Our AI'} is reading the repository`,
       checking: 'Checking the brand',

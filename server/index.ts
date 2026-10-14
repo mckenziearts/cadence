@@ -32,6 +32,7 @@ import {
 import type {
   AgentProvider,
   BrandSource,
+  HostBrandSource,
   CadenceConfig,
   ElevenLabsApi,
   HostApi,
@@ -73,6 +74,8 @@ export type StartOptions = Partial<CadenceConfig> & {
   provider?: AgentProvider;
   /** Where brand builds get repositories (tests: fakes that never call gh, glab or git). */
   brandSources?: Partial<Record<GitHost, BrandSource>>;
+  /** A host app's ways to start a brand, by key (a lowercase slug, never `github` or `gitlab`). */
+  hostBrandSources?: Record<string, HostBrandSource>;
   /** Where « Publier » sends videos (tests: fakes that never reach a network). */
   networks?: Partial<Record<NetworkId, Network>>;
   /** Who speaks voice-overs (tests: a fake that never runs Piper). */
@@ -129,6 +132,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     editorRoot,
     provider: customProvider,
     brandSources: customSources,
+    hostBrandSources = {},
     networks: customNetworks,
     speech,
     elevenLabs,
@@ -140,6 +144,10 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
   if (dev && editorRoot) throw new Error(m().core.editorRootDev);
   // Scene URLs are /@fs<absolute path>, which a Windows path never matches: no scene would load.
   if (process.platform === 'win32') throw new Error(m().core.windows);
+  for (const key of Object.keys(hostBrandSources)) {
+    if (!/^[a-z][a-z0-9-]*$/.test(key)) throw new Error(m().core.hostBrandSources.name(key));
+    if (key === 'github' || key === 'gitlab') throw new Error(m().core.hostBrandSources.taken(key));
+  }
   // Vite reads NODE_ENV, and sets it when unset, once per process: set before any Vite call, it decides the React build
   // of the editor bundle and of the frames, whatever the order of the two.
   process.env.NODE_ENV = dev ? 'development' : 'production';
@@ -230,6 +238,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       config,
       brands,
       sources: brandSources,
+      hostSources: hostBrandSources,
       provider,
       tokens,
       settings,

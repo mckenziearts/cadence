@@ -145,6 +145,7 @@ export default {
       badRepo: 'Dépôt non reconnu : owner/nom, ou une adresse github.com ou gitlab.com (https://\u2026 ou git@\u2026).',
       noName: 'Donnez un nom à la marque.',
       notFound: 'Construction de marque introuvable',
+      unknownSource: (source: string) => `Source de marque inconnue : ${source}`,
       cloning: (repo: string) => `Copie de ${repo}`,
       reading: (agent: string | null) => `${agent ?? 'Notre IA'} lit le dépôt`,
       checking: 'Vérification de la marque',

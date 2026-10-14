@@ -235,6 +235,17 @@ export interface BrandSource {
   fetch(repo: RepoRef, dest: string, signal: AbortSignal): Promise<void>;
 }
 
+/** A host app's way to start a brand, next to GitHub and GitLab (ARCHITECTURE.md "Embedding Cadence"). */
+export interface HostBrandSource {
+  /** The label shown for `ref` everywhere; an HttpError 400 refuses `ref`. Runs before anything is created. */
+  describe(ref: string): Promise<{ label: string }>;
+  /**
+   * Fill `dest` (which does not exist yet; the builder removes it) with what the brand is built from, reporting what
+   * it does through `progress`, and resolve to the brand guide's paragraph on that folder (English).
+   */
+  fill(ref: string, dest: string, signal: AbortSignal, progress: (activity: string) => void): Promise<string>;
+}
+
 // server/networks/youtube.ts: export class YouTubeNetwork implements Network
 // server/accounts/accounts.ts: export class FileAccountService implements AccountService
 // server/accounts/publish.ts: export class Publisher implements PublishService

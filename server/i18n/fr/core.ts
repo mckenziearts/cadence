@@ -26,6 +26,11 @@ export default {
       `Nom de routes hôte invalide : « ${name} » (lettres minuscules, chiffres et tirets, en commençant par une lettre).`,
     taken: (name: string) => `Le nom de routes hôte « ${name} » est déjà pris par une route de Cadence (/api/${name}).`,
   },
+  hostBrandSources: {
+    name: (key: string) =>
+      `Clé de source de marque hôte invalide : « ${key} » (lettres minuscules, chiffres et tirets, en commençant par une lettre).`,
+    taken: (key: string) => `La clé de source de marque hôte « ${key} » est réservée à un hébergeur Git de Cadence.`,
+  },
   editorRootDev: "editorRoot et dev ne vont pas ensemble : le mode dev sert uniquement l'éditeur de Cadence.",
   windows: 'Cadence tourne sous macOS et Linux. Sous Windows, lancez-le dans WSL 2.',
 };

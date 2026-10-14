@@ -7,7 +7,16 @@ import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 import { BrandBuilder } from '../../server/brands/build';
 import { GitHubSource, GitLabSource, REPOSITORY_GUIDE, parseRepo } from '../../server/brands/source';
-import type { AgentEvent, AgentProvider, AgentTurn, BrandSource, Hub, McpScope, RepoRef } from '../../server/contracts';
+import type {
+  AgentEvent,
+  AgentProvider,
+  AgentTurn,
+  BrandSource,
+  HostBrandSource,
+  Hub,
+  McpScope,
+  RepoRef,
+} from '../../server/contracts';
 import { McpTokens } from '../../server/mcp/tokens';
 import { FileSettingsStore } from '../../server/settings';
 import { BUILDING_MARKER, FileBrandStore } from '../../server/store/brands';
@@ -251,6 +260,7 @@ async function builder(
   agent: (turn: AgentTurn, index: number) => AsyncIterable<AgentEvent>,
   copies: (RepoRef & { via: GitHost })[] = [],
   features: Features = DEFAULT_FEATURES,
+  hostSources: Record<string, HostBrandSource> = {},
 ): Promise<Fixture> {
   await fs.rm(path.join(t.config.brandsDir, 'cadence'), { recursive: true });
   await fs.cp(path.join(ROOT, 'brands', 'cadence'), path.join(t.config.brandsDir, 'cadence'), { recursive: true });
@@ -289,6 +299,7 @@ async function builder(
     config,
     brands,
     sources: { github: source('github'), gitlab: source('gitlab') },
+    hostSources,
     provider,
     tokens,
     settings,
@@ -473,6 +484,117 @@ test('a gitlab.com address is copied by the GitLab source and keeps its host', a
   await fx.builder.wait(started.id);
   assert.deepEqual(copies, [{ via: 'gitlab', host: 'gitlab', fullName: 'acme/design/site', ssh: false }]);
   await rejectsWithStatus(fx.builder.start({ repo: 'https://bitbucket.org/acme/site', name: 'X' }), 400, /Dépôt non reconnu/);
+});
+
+const SITE_GUIDE = '**Explore the pages.** The source folder holds the pages of a site, as HTML and CSS.';
+
+test('a host brand source fills the source folder, reports its progress and writes the guide paragraph', async (ctx) => {
+  // A frozen clock: the progress event comes right after the cloning one, inside the 100 ms throttle.
+  ctx.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const refs: string[] = [];
+  let progressed: string | null = null;
+  let late: ((activity: string) => void) | null = null;
+  const fx = await builder(
+    async function* (turn) {
+      const dir = turn.addDirs[0]!;
+      await assert.rejects(fs.lstat(path.join(dir, 'hosts.svg')), 'symbolic links are gone');
+      assert.deepEqual((await fs.readdir(dir)).sort(), ['index.html', 'styles.css']);
+      const reading = fx.builder.list()[0].activity;
+      late!('Stale text');
+      assert.equal(fx.builder.list()[0].activity, reading, 'a late progress call keeps the current step');
+      yield done('Fini.');
+    },
+    [],
+    DEFAULT_FEATURES,
+    {
+      site: {
+        describe: async () => ({ label: 'Acme pages' }),
+        async fill(ref, dest, _signal, progress) {
+          refs.push(ref);
+          await fs.mkdir(dest);
+          await fs.writeFile(path.join(dest, 'index.html'), '<h1>Acme</h1>');
+          await fs.writeFile(path.join(dest, 'styles.css'), 'h1 { color: red }');
+          await fs.symlink('/etc/hosts', path.join(dest, 'hosts.svg'));
+          progress('Reading the pages');
+          progressed = fx.builder.list()[0].activity;
+          late = progress;
+          return SITE_GUIDE;
+        },
+      },
+    },
+  );
+  const started = await fx.builder.start({ source: 'site', ref: 'private-ref-42', name: 'Acme' });
+  assert.deepEqual([started.source, started.repo, started.brandId], ['site', 'Acme pages', 'acme']);
+  const build = await fx.builder.wait(started.id);
+  assert.equal(build.status, 'done', build.error ?? '');
+  assert.deepEqual(refs, ['private-ref-42']);
+  assert.equal(progressed, 'Reading the pages');
+  const activities = fx.events.map((e) => (e as { build: BrandBuild }).build.activity);
+  assert.ok(activities.includes('Reading the pages'), 'the progress reaches the editor');
+  assert.ok(!activities.includes('Stale text'));
+  const [turn] = fx.turns;
+  assert.ok(turn.systemPrompt.includes(`## Method\n\n${SITE_GUIDE}\n\n1. **brand.json.**`), turn.systemPrompt);
+  assert.ok(!turn.systemPrompt.includes(REPOSITORY_GUIDE));
+  assert.match(turn.prompt, /à partir de la source Acme pages, copiée dans /);
+  assert.ok(!JSON.stringify([build, fx.events]).includes('private-ref-42'), 'the ref stays out of the build record');
+  await assert.rejects(fs.access(path.join(t.config.stateDir, 'brand-sources', build.id)));
+});
+
+test('a host source whose fill rejects ends the build in error and leaves nothing behind', async () => {
+  const fx = await builder(
+    async function* () {
+      yield done('Fini.');
+    },
+    [],
+    DEFAULT_FEATURES,
+    {
+      site: {
+        describe: async () => ({ label: 'Acme pages' }),
+        async fill(_ref, dest) {
+          await fs.mkdir(dest);
+          await fs.writeFile(path.join(dest, 'index.html'), '<h1>Acme</h1>');
+          throw new Error('The site did not answer.');
+        },
+      },
+    },
+  );
+  const started = await fx.builder.start({ source: 'site', ref: 'home', name: 'Acme' });
+  const build = await fx.builder.wait(started.id);
+  assert.deepEqual([build.status, build.error], ['error', 'The site did not answer.']);
+  assert.equal(fx.turns.length, 0);
+  await assert.rejects(fs.access(fx.brands.dir('acme')));
+  await assert.rejects(fs.access(path.join(t.config.stateDir, 'brand-sources', build.id)));
+});
+
+test('cancelling a build during fill aborts its signal and leaves nothing behind', async () => {
+  let filling: AbortSignal | null = null;
+  const fx = await builder(
+    async function* () {
+      yield done('Fini.');
+    },
+    [],
+    DEFAULT_FEATURES,
+    {
+      site: {
+        describe: async () => ({ label: 'Acme pages' }),
+        async fill(_ref, dest, signal) {
+          await fs.mkdir(dest);
+          filling = signal;
+          await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+          throw signal.reason;
+        },
+      },
+    },
+  );
+  const started = await fx.builder.start({ source: 'site', ref: 'home', name: 'Acme' });
+  for (let i = 0; i < 200 && !filling; i++) await new Promise((r) => setTimeout(r, 10));
+  fx.builder.cancel(started.id);
+  const build = await fx.builder.wait(started.id);
+  assert.equal(build.status, 'cancelled');
+  assert.equal((filling as AbortSignal | null)?.aborted, true);
+  assert.equal(fx.turns.length, 0);
+  await assert.rejects(fs.access(fx.brands.dir('acme')));
+  await assert.rejects(fs.access(path.join(t.config.stateDir, 'brand-sources', build.id)));
 });
 
 test('GitHubSource never waits for a password', async () => {

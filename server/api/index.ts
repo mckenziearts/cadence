@@ -108,7 +108,10 @@ const schemas = {
   order: z.object({ ids: z.array(idSchema) }),
   checkSeams: z.object({ sceneId: idSchema.optional(), format: formatSchema.optional() }),
   selectMusic: z.object({ file: z.string().min(1).max(300) }),
-  brandBuild: z.object({ repo: z.string().min(1).max(300), name: z.string().trim().min(1).max(60) }),
+  brandBuild: z.union([
+    z.object({ repo: z.string().min(1).max(300), name: z.string().trim().min(1).max(60) }),
+    z.object({ source: z.string().min(1).max(100), ref: z.string().min(1).max(2048), name: z.string().trim().min(1).max(60) }),
+  ]),
   updateMusic: z.object({
     start: z.number().min(0).optional(),
     volume: z.number().min(0).max(1).optional(),
