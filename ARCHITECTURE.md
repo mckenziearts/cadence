@@ -900,10 +900,13 @@ contract: removing or reshaping one is a major version.
   takes the place of the clone: it creates and fills `dest` (`.cadence/brand-sources/<build>/`), its `progress` texts
   become the build's activity, its signal aborts on cancel, and it resolves to the paragraph the brand guide shows in
   place of the repository's (English, `{{SOURCE}}` in `server/agent/brand-guide.md`). Symbolic links are removed, the
-  turns, checks and cleanup are the repository's, and `BrandBuild.source` holds the key. `ref` stays in memory, never
-  in the build record or the logs. Host sources are not Git hosts: `GET /api/brand-sources/:host` and the Profile's
-  Git accounts never list them. Without the option, nothing changes. `tests/server/brand-builds.test.ts` checks a
-  build, a failed `fill` and a cancel, `tests/server/host-api.test.ts` the keys, the route and the refused `ref`.
+  turns, checks and cleanup are the repository's, and `BrandBuild.source` holds the key. The core keeps `ref` in memory
+  and never writes it to the build record or the logs, but an error `describe` or `fill` throws reaches the editor
+  with its message (`fill`'s becomes `BrandBuild.error`, another error than an `HttpError` from `describe` is also
+  logged), so a host keeps `ref` out of its messages and its `progress` texts. Host sources are not Git hosts:
+  `GET /api/brand-sources/:host` and the Profile's Git accounts never list them. Without the option, nothing changes.
+  `tests/server/brand-builds.test.ts` checks a build, a failed `fill` and two cancels, `tests/server/host-api.test.ts`
+  the keys, the route and the refused `ref`.
 - `features`: `startServer({ features: { gitSources: false } })` hides editor sections. `Features` and
   `DEFAULT_FEATURES` (every flag `true`) live in `src/shared/types.ts`; a missing key stays on, and the merged object
   reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the

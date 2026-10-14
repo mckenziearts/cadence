@@ -540,7 +540,7 @@ export interface BrandBuild {
   costUsd: number | null;
   createdAt: string;
   finishedAt?: string;
-  /** Claude's closing words: what it took from the repository and what it had to approximate. */
+  /** Claude's closing words: what it took from the source and what it had to approximate. */
   summary?: string;
   error?: string;
   /** What the final check still found wrong (status error). */

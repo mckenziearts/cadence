@@ -609,7 +609,7 @@ export type McpScope =
   | { kind: 'project'; projectId: string }
   /** Terminal usage (`claude mcp add ...`): every tool, any project. */
   | { kind: 'open' }
-  /** A brand build: the brand tools only, bound to brands/<brandId>/ and the cloned repository. */
+  /** A brand build: the brand tools only, bound to brands/<brandId>/ and the source folder. */
   | { kind: 'brand'; brandId: string; repoDir: string };
 
 /** Reported by MCP tools so the chat UI can show what the agent looked at. */

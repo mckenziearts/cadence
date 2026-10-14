@@ -1,5 +1,5 @@
-// Tools of a brand build (scope 'brand'). The turn's file tools write brands/<id>/ and read the cloned repository; these
-// copy the product's binary files out of the clone, vendor a Google font, show the kit sheet and check the brand.
+// Tools of a brand build (scope 'brand'). The turn's file tools write brands/<id>/ and read the source folder; these
+// copy the product's binary files out of it, vendor a Google font, show the kit sheet and check the brand.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';

@@ -364,7 +364,7 @@ test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, 
   const statuses = fx.events.map((e) => (e as { build: BrandBuild }).build.status);
   assert.deepEqual([...new Set(statuses)], ['queued', 'cloning', 'building', 'checking', 'done']);
   const activities = fx.events.map((e) => (e as { build: BrandBuild }).build.activity);
-  assert.ok(activities.includes('Claude Code lit le dépôt'), JSON.stringify([...new Set(activities)]));
+  assert.ok(activities.includes('Claude Code lit la source'), JSON.stringify([...new Set(activities)]));
 });
 
 test('with the agent choice hidden, the build steps and errors say "our AI"', async () => {
@@ -379,7 +379,7 @@ test('with the agent choice hidden, the build steps and errors say "our AI"', as
   const build = await fx.builder.wait(started.id);
   assert.deepEqual([build.status, build.error], ['error', 'Notre IA n’a pas pu terminer la marque.']);
   const activities = fx.events.map((e) => (e as { build: BrandBuild }).build.activity);
-  assert.ok(activities.includes('Notre IA lit le dépôt'), JSON.stringify([...new Set(activities)]));
+  assert.ok(activities.includes('Notre IA lit la source'), JSON.stringify([...new Set(activities)]));
 });
 
 test('a brand still incomplete after the fix turn ends in error, and its folder goes', async () => {
@@ -592,6 +592,39 @@ test('cancelling a build during fill aborts its signal and leaves nothing behind
   const build = await fx.builder.wait(started.id);
   assert.equal(build.status, 'cancelled');
   assert.equal((filling as AbortSignal | null)?.aborted, true);
+  assert.equal(fx.turns.length, 0);
+  await assert.rejects(fs.access(fx.brands.dir('acme')));
+  await assert.rejects(fs.access(path.join(t.config.stateDir, 'brand-sources', build.id)));
+});
+
+test('a fill that ignores the cancel and resolves starts no agent turn', async () => {
+  let filling = false;
+  let finish!: () => void;
+  const fx = await builder(
+    async function* () {
+      yield done('Fini.');
+    },
+    [],
+    DEFAULT_FEATURES,
+    {
+      site: {
+        describe: async () => ({ label: 'Acme pages' }),
+        async fill(_ref, dest) {
+          await fs.mkdir(dest);
+          await fs.writeFile(path.join(dest, 'index.html'), '<h1>Acme</h1>');
+          filling = true;
+          await new Promise<void>((resolve) => (finish = resolve));
+          return SITE_GUIDE;
+        },
+      },
+    },
+  );
+  const started = await fx.builder.start({ source: 'site', ref: 'home', name: 'Acme' });
+  for (let i = 0; i < 200 && !filling; i++) await new Promise((r) => setTimeout(r, 10));
+  fx.builder.cancel(started.id);
+  finish();
+  const build = await fx.builder.wait(started.id);
+  assert.equal(build.status, 'cancelled');
   assert.equal(fx.turns.length, 0);
   await assert.rejects(fs.access(fx.brands.dir('acme')));
   await assert.rejects(fs.access(path.join(t.config.stateDir, 'brand-sources', build.id)));

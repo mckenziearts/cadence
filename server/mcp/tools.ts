@@ -199,7 +199,7 @@ function describeSeam(r: SeamResult): string {
 }
 
 function instructions(scope: McpScope): string {
-  if (scope.kind === 'brand') return `Cadence tools for building the brand "${scope.brandId}" from the cloned repository.`;
+  if (scope.kind === 'brand') return `Cadence tools for building the brand "${scope.brandId}" from the source folder.`;
   if (scope.kind === 'scene') {
     return `Cadence tools for scene "${scope.sceneId}" of project "${scope.projectId}": projectId and sceneId default to them.`;
   }
