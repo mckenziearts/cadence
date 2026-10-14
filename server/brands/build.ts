@@ -37,7 +37,7 @@ import { BUILDING_MARKER } from '../store/brands';
 import { NO_TOKENS, addedSince } from '../usage';
 import { HttpError, isInside, nowIso, slugify, writeJsonAtomic } from '../util';
 import { checkBrand } from './check';
-import { parseRepo } from './source';
+import { REPOSITORY_GUIDE, parseRepo } from './source';
 
 const TEMPLATE = 'cadence';
 const MCP_PREFIX = 'mcp__cadence__';
@@ -214,7 +214,7 @@ export class BrandBuilder implements BrandBuildService {
       await this.stream(state, brandDir, repoDir, {
         ...turn,
         prompt:
-          `Construis la marque « ${build.name} » à partir du dépôt ${build.repo}, copié dans ${repoDir}. ` +
+          `Construis la marque « ${build.name} » à partir de la source ${build.repo}, copiée dans ${repoDir}. ` +
           `Le dossier ${brandDir} est une copie du kit neutre de Cadence : adapte chaque fichier au produit en suivant ` +
           'le guide, puis appelle check_brand jusqu’à ce qu’il ne signale plus rien.',
         resume: false,
@@ -229,7 +229,7 @@ export class BrandBuilder implements BrandBuildService {
           ...turn,
           prompt:
             `La vérification finale de Cadence signale encore :\n- ${problems.join('\n- ')}\n\n` +
-            `Corrige ces points, appelle check_brand jusqu’à ce qu’il ne signale plus rien, puis résume en ${language() === 'en' ? 'anglais' : 'français'} ce que tu as repris du dépôt et ce que tu as dû approcher.`,
+            `Corrige ces points, appelle check_brand jusqu’à ce qu’il ne signale plus rien, puis résume en ${language() === 'en' ? 'anglais' : 'français'} ce que tu as repris de la source et ce que tu as dû approcher.`,
           resume: true,
         });
         this.patch(state, { status: 'checking', activity: m().media.brands.build.checkingAgain });
@@ -279,6 +279,7 @@ export class BrandBuilder implements BrandBuildService {
       systemPrompt: buildBrandGuide({
         REPO_DIR: repoDir,
         REPO: state.build.repo,
+        SOURCE: REPOSITORY_GUIDE,
         BRAND_DIR: brandDir,
         BRAND_ID: state.build.brandId,
         BRAND_NAME: state.build.name,

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 import { BrandBuilder } from '../../server/brands/build';
-import { GitHubSource, GitLabSource, parseRepo } from '../../server/brands/source';
+import { GitHubSource, GitLabSource, REPOSITORY_GUIDE, parseRepo } from '../../server/brands/source';
 import type { AgentEvent, AgentProvider, AgentTurn, BrandSource, Hub, McpScope, RepoRef } from '../../server/contracts';
 import { McpTokens } from '../../server/mcp/tokens';
 import { FileSettingsStore } from '../../server/settings';
@@ -342,6 +342,9 @@ test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, 
 
   const [turn] = fx.turns;
   assert.equal(turn.cwd, dir);
+  assert.ok(turn.systemPrompt.includes(`## Method\n\n${REPOSITORY_GUIDE}\n\n1. **brand.json.**`), turn.systemPrompt);
+  assert.doesNotMatch(turn.systemPrompt.replace(REPOSITORY_GUIDE, ''), /repositor|{{/i, 'the rest speaks of the source folder');
+  assert.match(turn.prompt, new RegExp(`à partir de la source acme/site, copiée dans ${turn.addDirs[0]}\\. `));
   const writes = turn.allow.filter((rule) => /^(Write|Edit)\(/.test(rule));
   assert.deepEqual(writes, [`Edit(/${dir}/**)`, `Write(/${dir}/**)`]);
   assert.deepEqual(turn.deny, [`Read(/${t.config.stateDir}/accounts.json)`, `Read(/${t.config.stateDir}/elevenlabs.json)`]);

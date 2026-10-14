@@ -62,7 +62,7 @@ export default {
     unreadable: (host: string, detail?: string) => `Impossible de lire vos dépôts ${host}${detail ? ` : ${detail}` : '.'}`,
     pasteInstead: 'Vous pouvez aussi coller l’adresse du dépôt ci-dessous : Cadence le copie avec l’accès Git de cet ordinateur.',
     progress: {
-      steps: { copy: 'Copie du dépôt', build: 'Construction du kit', check: 'Vérification', ready: 'Prête' },
+      steps: { copy: 'Copie de la source', build: 'Construction du kit', check: 'Vérification', ready: 'Prête' },
       stepsLabel: 'Étapes',
       ready: (name: string) => `Marque « ${name} » prête`,
       failed: 'La marque n’a pas pu être construite',

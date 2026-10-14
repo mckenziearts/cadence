@@ -23,9 +23,9 @@ export function registerBrandTools(tool: ToolRegistrar, scope: Extract<McpScope,
 
   tool(
     'copy_from_repo',
-    'Copy a binary file of the product (logo, image or font: svg, png, jpg, webp, gif, avif, ico, woff2, woff, ttf, otf; 5 MB at most) from the cloned repository into the brand folder. For text files, read them and write what the brand needs instead.',
+    'Copy a binary file of the product (logo, image or font: svg, png, jpg, webp, gif, avif, ico, woff2, woff, ttf, otf; 5 MB at most) from the source folder into the brand folder. For text files, read them and write what the brand needs instead.',
     {
-      from: z.string().describe('Path inside the repository, e.g. public/images/logo.svg'),
+      from: z.string().describe('Path inside the source folder, e.g. public/images/logo.svg'),
       to: z.string().describe('Path inside the brand folder, e.g. assets/logo-mark.svg or fonts/rota-regular.woff2'),
     },
     async ({ from, to }) => {
@@ -34,9 +34,10 @@ export function registerBrandTools(tool: ToolRegistrar, scope: Extract<McpScope,
       if (!COPYABLE.test(source) || !COPYABLE.test(target)) {
         throw new HttpError(400, `Only logos, images and fonts can be copied (${from} to ${to})`);
       }
-      // The clone has no symbolic links left, but a file must still resolve inside it.
+      // The source folder has no symbolic links left, but a file must still resolve inside it.
       const real = await fs.realpath(source).catch(() => null);
-      if (!real || !isInside(await fs.realpath(scope.repoDir), real)) throw new HttpError(404, `Not in the repository: ${from}`);
+      if (!real || !isInside(await fs.realpath(scope.repoDir), real))
+        throw new HttpError(404, `Not in the source folder: ${from}`);
       const stat = await fs.stat(real);
       if (!stat.isFile()) throw new HttpError(400, `Not a file: ${from}`);
       if (stat.size > MAX_COPY_BYTES) throw new HttpError(413, `${from} is over 5 MB`);
