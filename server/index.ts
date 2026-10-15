@@ -148,6 +148,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     if (!/^[a-z][a-z0-9-]*$/.test(key)) throw new Error(m().core.hostBrandSources.name(key));
     if (key === 'github' || key === 'gitlab') throw new Error(m().core.hostBrandSources.taken(key));
   }
+  if (overrides.requestSecret !== undefined && overrides.requestSecret.length < 32) throw new Error(m().core.requestSecret);
   // Vite reads NODE_ENV, and sets it when unset, once per process: set before any Vite call, it decides the React build
   // of the editor bundle and of the frames, whatever the order of the two.
   process.env.NODE_ENV = dev ? 'development' : 'production';

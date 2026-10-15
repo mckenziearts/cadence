@@ -6,6 +6,7 @@ export default {
     badRequest: 'Invalid request',
     crossSite: 'Cross-site request refused',
     token: 'Missing or invalid Cadence token',
+    secret: 'Missing or invalid request secret',
     origin: 'Origin refused',
     mcpToken: 'Missing or invalid MCP token',
     mcpError: (error: string) => `MCP error: ${error}`,
@@ -32,6 +33,7 @@ export default {
       `Invalid host brand source key: "${key}" (lowercase letters, digits and hyphens, starting with a letter).`,
     taken: (key: string) => `The host brand source key "${key}" is reserved for a Cadence Git host.`,
   },
+  requestSecret: 'The request secret must be at least 32 characters long.',
   editorRootDev: 'editorRoot and dev cannot be combined: dev mode only serves the Cadence editor.',
   windows: 'Cadence runs on macOS and Linux. On Windows, run it in WSL 2.',
 } satisfies typeof fr;

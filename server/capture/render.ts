@@ -239,6 +239,7 @@ export class FfmpegRenderService implements RenderService {
             sceneId: null,
             format: job.format,
             scale: pixelRatio,
+            requestSecret: config.requestSecret,
           }),
         ),
       );

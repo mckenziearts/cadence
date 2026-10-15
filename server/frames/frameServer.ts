@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { ViteDevServer } from 'vite';
 import type { BrandFile, ProjectState } from '../../src/shared/types';
 import type { BrandStore, CadenceConfig, ProjectStore } from '../contracts';
+import { hasRequestSecret } from '../http';
 import { language, m } from '../i18n';
 import { assertId, HttpError } from '../util';
 import { diagnoseFile } from './vite';
@@ -55,6 +56,9 @@ export function createFrameHandler(deps: {
     // On every response, not only the pages: scene code could load any other document of this origin (project data, an
     // SVG or HTML asset, an error page) in an iframe and send requests from there.
     res.setHeader('Content-Security-Policy', frameCsp(config));
+    if (config.requestSecret && !hasRequestSecret(req, config.requestSecret)) {
+      return send(res, req, 403, 'text/plain; charset=utf-8', m().core.http.secret);
+    }
     const host = req.headers.host ?? '';
     if (host !== `127.0.0.1:${config.framePort}` && host !== `localhost:${config.framePort}`) {
       return send(res, req, 403, 'text/plain; charset=utf-8', m().core.http.host);

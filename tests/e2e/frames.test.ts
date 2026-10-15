@@ -8,6 +8,8 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { chromium, type Browser, type Page } from 'playwright';
 import { auditFrame, CHROMIUM_ARGS, PlaywrightCapture } from '../../server/capture/capture';
+import type { CadenceConfig } from '../../server/contracts';
+import { createFrameHandler } from '../../server/frames/frameServer';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import type { ProjectFile } from '../../src/shared/types';
 import { near, pixel, startHarness, type Harness } from './helpers/harness';
@@ -189,6 +191,112 @@ describe('frame origin', () => {
     const script = await request('/src/frame/main.tsx', { origin: h.config.editorOrigin });
     assert.equal(script.status, 200);
     assert.equal(script.headers['access-control-allow-origin'], undefined);
+  });
+});
+
+describe('frame origin with a request secret', () => {
+  const SECRET = 'frame-request-secret-0123456789abcdef';
+  let server: http.Server;
+  let config: CadenceConfig;
+
+  before(async () => {
+    server = http.createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const framePort = (server.address() as AddressInfo).port;
+    config = { ...h.config, framePort, frameOrigin: `http://localhost:${framePort}`, requestSecret: SECRET };
+    server.on('request', createFrameHandler({ config, vite: h.vite, store: h.store, brands: h.brands }));
+  });
+
+  after(async () => {
+    server?.closeAllConnections();
+    await new Promise((resolve) => server?.close(resolve));
+  });
+
+  it('lets capture pages through with the secret and never sends it to a reference site', async () => {
+    const seen: http.IncomingHttpHeaders[] = [];
+    const site = http.createServer((req, res) => {
+      seen.push(req.headers);
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<body><h1>Référence</h1><img src="/logo.png"></body>');
+    });
+    await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
+    const capture = new PlaywrightCapture({ config, store: h.store });
+    try {
+      const [shot] = await capture.frames(id, { sceneId: null, times: [0.5], format: '16:9' });
+      assert.deepEqual(shot.errors, []);
+      assert.ok(shot.image.length > 0);
+      const kit = await capture.kitSheet('test');
+      assert.deepEqual([kit.loaded, kit.problems], [true, []]);
+      assert.ok(kit.image.length > 0);
+      await capture.screenshotUrl(`http://127.0.0.1:${(site.address() as AddressInfo).port}/`, { device: 'desktop' });
+      assert.ok(seen.length >= 2, 'the page and its image');
+      for (const headers of seen) assert.equal(headers['x-cadence-secret'], undefined);
+    } finally {
+      await capture.close();
+      site.closeAllConnections();
+      await new Promise((resolve) => site.close(resolve));
+    }
+  });
+
+  it('never sends the secret to a WebSocket or a fetch on another localhost port', async () => {
+    // The capture context routes block other origins' HTTP requests but not WebSockets, and localhost skips the proxy:
+    // only the frame CSP (connect-src 'self') keeps the extra header from reaching such a socket.
+    const events: string[] = [];
+    const site = http.createServer((req, res) => {
+      events.push(`http ${req.url} ${req.headers['x-cadence-secret'] ?? ''}`);
+      res.end();
+    });
+    site.on('upgrade', (req, socket) => {
+      events.push(`websocket ${req.url} ${req.headers['x-cadence-secret'] ?? ''}`);
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
+    const out = `localhost:${(site.address() as AddressInfo).port}`;
+    const projectId = await h.project('frames');
+    const dir = h.store.dir(projectId);
+    const tried = `const tried = (url) => new Promise((resolve) => {
+  try {
+    const socket = new WebSocket(url);
+    socket.onerror = socket.onclose = resolve;
+  } catch {
+    resolve();
+  }
+});\n`;
+    await mkdir(path.join(dir, 'components'), { recursive: true });
+    await writeFile(
+      path.join(dir, 'components', 'sockets.js'),
+      `${tried}fetch('http://${out}/worker-fetch').catch(() => undefined).then(() => tried('ws://${out}/worker')).then(() => postMessage('done'));\n`,
+    );
+    await writeFile(
+      path.join(dir, 'scenes', 'sockets.tsx'),
+      `${tried}// A same-origin worker gets the frame CSP from its own response.
+const worker = new Worker(new URL('../components/sockets.js', import.meta.url));
+await Promise.race([
+  Promise.all([
+    tried('ws://${out}/scene'),
+    fetch('http://${out}/scene-fetch').catch(() => undefined),
+    new Promise((resolve) => (worker.onmessage = resolve)),
+  ]),
+  new Promise((resolve) => setTimeout(resolve, 3000)),
+]);
+export default function Sockets() {
+  return <div style={{ position: 'absolute', inset: 0, background: '#00ff00' }} />;
+}\n`,
+    );
+    const file = path.join(dir, 'project.json');
+    const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
+    project.scenes.push({ id: 'sockets', name: 'sockets', duration: 1 });
+    await writeFile(file, JSON.stringify(project, null, 2));
+    const capture = new PlaywrightCapture({ config, store: h.store });
+    try {
+      const [shot] = await capture.frames(projectId, { sceneId: 'sockets', times: [0.5], format: '16:9' });
+      assert.deepEqual(shot.errors, []);
+      assert.deepEqual(events, [], 'nothing reached the other port');
+    } finally {
+      await capture.close();
+      site.closeAllConnections();
+      await new Promise((resolve) => site.close(resolve));
+    }
   });
 });
 

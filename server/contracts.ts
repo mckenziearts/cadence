@@ -80,6 +80,8 @@ export interface CadenceConfig {
   editorPort: number;
   /** Frame pages + modules, read-only data. Different port = different origin. */
   framePort: number;
+  /** A host app's secret, 32 characters or more: both servers then refuse any request without it in X-Cadence-Secret. */
+  requestSecret?: string;
   editorOrigin: string;
   frameOrigin: string;
   mcpUrl: string;

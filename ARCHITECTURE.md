@@ -120,6 +120,10 @@ another site, so the preview and the kit iframes run in their own process, off t
 opened as `localhost` shares that site again: it works, without that gain.
 
 Guards (editor origin, `server/http.ts`):
+- With a request secret (`startServer({ requestSecret })`, see "Embedding Cadence"), every request without
+  `X-Cadence-Secret: <secret>` gets 403 first, before the Host check and any routing; WebSocket upgrades are plain
+  requests here (no `upgrade` listener) and get the same check. Only `GET /oauth/<network>/callback` (its state) and
+  `/mcp` (its bearer token) are exempt. Without the secret nothing changes.
 - Reject requests whose `Host` is not `127.0.0.1:<editorPort>` or `localhost:<editorPort>` (DNS rebinding).
 - `/api/*` with a mutating method (POST/PUT/PATCH/DELETE) requires header `X-Cadence-Token: <editorToken>`.
   The token is random per server start and injected only into the editor HTML as
@@ -136,7 +140,7 @@ Guards (editor origin, `server/http.ts`):
   navigation, so outside `/api`. It acts only on a state issued by `POST /api/networks/:id/connect` (editor token),
   single use, 10 minutes, bound to its network, and answers a small HTML page (CSP `default-src 'none'`, no referrer).
 
-Frame origin (`server/frames/frameServer.ts`): Host check, GET/HEAD only, never serves `/api`, `/mcp`,
+Frame origin (`server/frames/frameServer.ts`): the request secret when set (no exemption), Host check, GET/HEAD only, never serves `/api`, `/mcp`,
 `/index.html`, `/__open-in-editor`. Every response is sent with a CSP, not only `frame.html` and `kit.html` (scene code
 could load any other document of the origin in an iframe and send requests from there): `default-src 'self'; script-src
 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
@@ -152,7 +156,8 @@ Capture pages (`server/capture/capture.ts`, thumbnails, agent frames, seams, ren
 which WebRTC ignores and which does not stop navigations or popups: every request that is not for the frame origin is
 aborted (`context.route('**')`), other connections go to a dead proxy (`127.0.0.1:9`, frame host bypassed), WebRTC may
 not use UDP (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`), service workers are blocked and popups are
-closed. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first frame)
+closed. With a request secret they send it as `extraHTTPHeaders` (`openIsolatedPage()`), which only the frame origin
+receives since every other request is aborted; reference captures (`screenshotUrl()`) never send it. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first frame)
 and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE` (default `fr-FR`, checked at start);
 the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
 Contact sheets (`sheet.ts`) lay the strip's PNG tiles out as data URLs in a context of their own, JavaScript off and
@@ -936,6 +941,18 @@ contract: removing or reshaping one is a major version.
   `--titlebar-max-width` on `:root` (`none`) to keep the box the window's width less its 24 px sides, so it does not move
   as the window widens. A host whose window buttons sit at the top left places them for the bar it shows.
   `tests/editor/ui.test.ts` checks both in Chromium.
+- `requestSecret`: `startServer({ requestSecret })` (32 characters or more, else `startServer()` throws) makes both
+  servers answer 403 to any request without `X-Cadence-Secret` equal to it, compared in constant time over SHA-256
+  digests (`hasRequestSecret()` in `server/http.ts`), before any other guard. `GET /oauth/<network>/callback` and `/mcp`
+  keep their own guards instead. A plain browser cannot send the header, so a host app sets it on every request of its
+  own window (editor and frame origins); Cadence's capture and render pages add it themselves. Without the option,
+  nothing changes. The editor opens two kinds of editor-origin URL in a new tab, outside that window: a network's
+  connection page (`Profile.tsx`, `window.open`), which ends on `/oauth/<network>/callback`, and the captured
+  references of the Media panel (`/api/projects/:id/assets/file`, `target="_blank"`). A host opens the first wherever it
+  likes, since the callback is exempt; with the secret, the callback page drops its link back to the editor, which that
+  tab could not load, so the person just closes the tab. A host opens the second in a window of its own session: the system
+  browser gets a 403. `tests/server/http.test.ts` checks the editor origin, `tests/server/frame-secret.test.ts` the
+  frame origin, `tests/e2e/frames.test.ts` a capture through it and a reference capture that never carries it.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand

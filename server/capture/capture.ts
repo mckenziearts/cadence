@@ -93,7 +93,7 @@ export interface FramePage {
 async function openIsolatedPage(
   browser: Browser,
   frameOrigin: string,
-  opts: { width: number; height: number; scale: number },
+  opts: { width: number; height: number; scale: number; requestSecret?: string },
 ): Promise<FramePage & { problems: string[] }> {
   const origin = new URL(frameOrigin);
   const context = await browser.newContext({
@@ -103,6 +103,9 @@ async function openIsolatedPage(
     // Service workers' requests would skip the routes below.
     serviceWorkers: 'block',
     proxy: { server: NOWHERE_PROXY, bypass: origin.hostname },
+    // HTTP requests to other origins never leave (routes below). WebSockets skip the routes and localhost skips the proxy:
+    // there, the frame CSP (connect-src 'self') is what keeps the secret on the frame origin.
+    ...(opts.requestSecret ? { extraHTTPHeaders: { 'X-Cadence-Secret': opts.requestSecret } } : {}),
   });
   try {
     // 'aborted' leaves the page where it is: the other codes show an error page, which would end the capture.
@@ -129,10 +132,22 @@ async function openIsolatedPage(
 export async function openFramePage(
   browser: Browser,
   frameOrigin: string,
-  opts: { projectId: string; sceneId: string | null; format: FormatId; scale: number; captions?: boolean },
+  opts: {
+    projectId: string;
+    sceneId: string | null;
+    format: FormatId;
+    scale: number;
+    captions?: boolean;
+    requestSecret?: string;
+  },
 ): Promise<FramePage> {
   const { width, height } = FORMATS[opts.format];
-  const { context, page, problems } = await openIsolatedPage(browser, frameOrigin, { width, height, scale: opts.scale });
+  const { context, page, problems } = await openIsolatedPage(browser, frameOrigin, {
+    width,
+    height,
+    scale: opts.scale,
+    requestSecret: opts.requestSecret,
+  });
   try {
     const params = new URLSearchParams({ project: opts.projectId, format: opts.format, mode: 'capture' });
     if (opts.sceneId) params.set('scene', opts.sceneId);
@@ -306,6 +321,7 @@ export class PlaywrightCapture implements CaptureService {
           format,
           scale,
           captions,
+          requestSecret: this.config.requestSecret,
         });
         slot = { ...opened, uses: 0, generation, generations: 0 };
         this.slots.set(key, slot);
@@ -413,6 +429,7 @@ export class PlaywrightCapture implements CaptureService {
       width: 1920,
       height: 1080,
       scale: opts.scale ?? 0.5,
+      requestSecret: this.config.requestSecret,
     });
     try {
       const params = new URLSearchParams({ brand: brandId, v: String(Date.now()) });

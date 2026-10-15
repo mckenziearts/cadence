@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, it } from 'node:test';
@@ -126,6 +127,55 @@ it(
     for (const left of ['renders', '.cadence']) {
       await stat(path.join(dir, left));
       assert.ok(!watched.some((d) => d === path.join(dir, left) || d.startsWith(path.join(dir, left, path.sep))), left);
+    }
+  },
+);
+
+it(
+  'with a request secret, both servers answer on 127.0.0.1 and ::1 only to requests that carry it',
+  { timeout: 60_000 },
+  async () => {
+    const requestSecret = 'x'.repeat(32);
+    const guarded = await startServer({
+      editorPort: 0,
+      framePort: 0,
+      quiet: true,
+      provider,
+      root: ROOT,
+      stateDir: `${stateDir}-secret`,
+      requestSecret,
+    });
+    try {
+      assert.equal(guarded.config.requestSecret, requestSecret);
+      const status = (address: string, port: number, pathname: string, headers: Record<string, string> = {}) =>
+        new Promise<number>((resolve, reject) => {
+          const req = http.get(
+            { host: address, port, path: pathname, headers: { host: `localhost:${port}`, ...headers } },
+            (res) => {
+              res.resume();
+              resolve(res.statusCode!);
+            },
+          );
+          req.on('error', reject);
+        });
+      const { editorPort, framePort } = guarded.config;
+      for (const address of ['127.0.0.1', '::1']) {
+        for (const [port, pathname] of [
+          [editorPort, '/'],
+          [framePort, '/frame.html'],
+        ] as const) {
+          const where = `[${address}]:${port}${pathname}`;
+          assert.equal(await status(address, port, pathname), 403, where);
+          assert.equal(
+            await status(address, port, pathname, { 'x-cadence-secret': requestSecret }),
+            200,
+            `${where} with the secret`,
+          );
+        }
+      }
+    } finally {
+      await guarded.close();
+      await rm(`${stateDir}-secret`, { recursive: true, force: true });
     }
   },
 );

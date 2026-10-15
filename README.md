@@ -430,7 +430,8 @@ the scene contract.
 ## Security
 
 - **Local access only.** Cadence listens on the loopback only (127.0.0.1 and ::1). The API refuses other hosts and requests from other sites,
-  thanks to a token unique to each start.
+  thanks to a token unique to each start. An app that embeds Cadence can also require a secret on every request, which
+  a browser cannot send.
 - **Isolated scene code.** Scenes run on another origin, with no access to the API. Their security policy forbids any
   network call, and render pages also block every way out (workers, WebRTC, windows). Reference captures refuse
   reserved addresses and Cadence itself.

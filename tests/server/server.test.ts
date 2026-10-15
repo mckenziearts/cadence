@@ -9,18 +9,19 @@ import { makeRoot, type TestRoot } from './helpers';
 let t: TestRoot;
 let server: RunningServer;
 
+const provider = {
+  id: 'fake',
+  label: 'Agent de test',
+  status: async () => ({ ok: true, label: 'Agent de test' }),
+  async *run() {
+    yield { type: 'done' as const, text: '', isError: false, durationMs: 0 };
+  },
+};
+
 before(async () => {
   // Own dependency cache: test files run in parallel and must not disturb a running Cadence.
   process.env.CADENCE_VITE_CACHE_DIR ??= path.resolve(import.meta.dirname, '../../node_modules/.vite-e2e/wiring');
   t = await makeRoot();
-  const provider = {
-    id: 'fake',
-    label: 'Agent de test',
-    status: async () => ({ ok: true, label: 'Agent de test' }),
-    async *run() {
-      yield { type: 'done' as const, text: '', isError: false, durationMs: 0 };
-    },
-  };
   // The repository stays the Vite root; everything the server writes goes to the temp root.
   const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
   server = await startServer({
@@ -133,6 +134,32 @@ test('refuses to start on Windows, where no scene could load, and names WSL 2', 
     );
   } finally {
     Object.defineProperty(process, 'platform', platform);
+  }
+});
+
+test('a request secret of 32 characters reaches both servers: 403 without X-Cadence-Secret, 200 with it', async () => {
+  const requestSecret = 'x'.repeat(32);
+  const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
+  const guarded = await startServer({
+    projectsDir,
+    brandsDir,
+    templatesDir,
+    stateDir,
+    editorPort: 0,
+    framePort: 0,
+    quiet: true,
+    provider,
+    requestSecret,
+  });
+  try {
+    assert.equal(guarded.config.requestSecret, requestSecret);
+    const { editorOrigin, frameOrigin } = guarded.config;
+    for (const url of [`${editorOrigin}/`, `${frameOrigin}/frame.html`]) {
+      assert.equal((await fetch(url)).status, 403, url);
+      assert.equal((await fetch(url, { headers: { 'x-cadence-secret': requestSecret } })).status, 200, `${url} with the secret`);
+    }
+  } finally {
+    await guarded.close();
   }
 });
 
