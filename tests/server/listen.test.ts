@@ -21,9 +21,9 @@ const provider = {
   },
 };
 
-function start(editorPort: number) {
+function start(editorPort: number, framePort = 0) {
   const { projectsDir, brandsDir, templatesDir, stateDir } = t.config;
-  return startServer({ projectsDir, brandsDir, templatesDir, stateDir, editorPort, framePort: 0, quiet: true, provider });
+  return startServer({ projectsDir, brandsDir, templatesDir, stateDir, editorPort, framePort, quiet: true, provider });
 }
 
 /** A GET as Chromium sends it for `localhost`, to one address. */
@@ -64,6 +64,25 @@ test('a fixed port taken on ::1 makes start fail and frees 127.0.0.1', async (ct
       (e: Error) => e.message.includes(`[::1]:${port}`),
     );
     (await occupy(port, '127.0.0.1')).close();
+  } finally {
+    blocker.close();
+  }
+});
+
+test('a frame port taken on ::1 makes start fail and frees the editor on both addresses', { timeout: 10_000 }, async (ctx) => {
+  if (!ipv6) return ctx.skip('no IPv6 loopback on this host');
+  const probe = await occupy(0, '127.0.0.1');
+  const editorPort = (probe.address() as AddressInfo).port;
+  probe.close();
+  const blocker = await occupy(0, '::1');
+  const framePort = (blocker.address() as AddressInfo).port;
+  try {
+    await assert.rejects(
+      start(editorPort, framePort).then((started) => started.close()),
+      (e: Error) => e.message.includes(`[::1]:${framePort}`),
+    );
+    const freed = await Promise.all([occupy(editorPort, '127.0.0.1'), occupy(editorPort, '::1'), occupy(framePort, '127.0.0.1')]);
+    for (const socket of freed) socket.close();
   } finally {
     blocker.close();
   }

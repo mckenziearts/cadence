@@ -320,7 +320,7 @@ const done = (text: string, extra: Partial<Extract<AgentEvent, { type: 'done' }>
   ...extra,
 });
 
-test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, then lists the brand', async () => {
+test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, then lists the brand (read scope: Claude Code only)', async () => {
   const fx = await builder(async function* (turn) {
     const repo = turn.addDirs[0]!;
     await assert.rejects(fs.lstat(path.join(repo, 'public', 'hosts.svg')), 'symbolic links are gone');

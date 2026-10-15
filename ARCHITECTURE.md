@@ -331,7 +331,9 @@ token.
 - **Build** (`build.ts`, `BrandBuilder`, one at a time): reserve `brands/<slug>/` with a `.building` marker holding
   `<pid> <build>` (unlisted by `FileBrandStore.list()`), copy `brands/cadence` into it with the new id and name, then
   run one restricted Claude turn: system prompt `server/agent/brand-guide.md`, cwd = the brand folder, Read on the
-  clone, `brands/` and `src/shared/`, Write and Edit on the brand folder only, MCP scope `brand`. Then
+  clone, its own brand folder and `src/shared/` (no other brand), Write and Edit on the brand folder only, MCP scope
+  `brand`. The read scope (`allow` and `addDirs`) holds for Claude Code only: Codex ignores both fields, so a Codex
+  build turn can read every brand until Codex gets its own permission profile. Then
   `checkBrand()`; problems left get one resumed fix turn, then the build fails. Each turn adds what it used to
   `BrandBuild.costUsd` (the fix turn: its session totals minus the first turn's) and to the usage log. Success
   removes the marker; failure and cancel remove the folder. `sweep()` at start removes folders whose marker names a dead process.

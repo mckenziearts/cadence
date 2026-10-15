@@ -2,6 +2,8 @@
 // Vite and Chromium (installed in CI), fake agent. Data dirs in a temp root holding a copy of the repo's cadence brand.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, test, type TestContext } from 'node:test';
 import { launchChromium } from '../../server/capture/capture';
@@ -89,4 +91,25 @@ test('renders a draft video behind the request secret', async (t) => {
   assert.equal(job.status, 'done', job.error ?? job.status);
   assert.ok(job.framesTotal > 0);
   assert.equal(job.framesDone, job.framesTotal);
+});
+
+test('never sends the request secret to a reference site', async (t) => {
+  if (!needsChromium(t)) return;
+  const seen: http.IncomingHttpHeaders[] = [];
+  const site = http.createServer((req, res) => {
+    seen.push(req.headers);
+    res.setHeader('Content-Type', 'text/html');
+    res.end('<body><h1>Référence</h1><img src="/logo.png"></body>');
+  });
+  await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
+  try {
+    await server.services.capture.screenshotUrl(`http://127.0.0.1:${(site.address() as AddressInfo).port}/`, {
+      device: 'desktop',
+    });
+    assert.ok(seen.length >= 2, 'the page and its image');
+    for (const headers of seen) assert.equal(headers['x-cadence-secret'], undefined);
+  } finally {
+    site.closeAllConnections();
+    await new Promise((resolve) => site.close(resolve));
+  }
 });
