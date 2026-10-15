@@ -654,7 +654,13 @@ describe('editor', () => {
   it('builds a brand from a GitHub repository and offers it for a new project', { timeout: 120_000 }, async () => {
     const page = await open(`${A}/titre`);
     await page.getByRole('button', { name: 'Nouveau projet' }).click();
-    await page.getByRole('button', { name: /Nouvelle marque/ }).click();
+    const newBrand = page.getByRole('button', { name: /Nouvelle marque/ });
+    assert.match(
+      (await newBrand.textContent()) ?? '',
+      /Depuis un dépôt GitHub/,
+      'without a host hint, the card reads as in 0.12.0',
+    );
+    await newBrand.click();
     await page.getByText('Connecté en tant que @e2e').waitFor();
     await page.getByRole('searchbox', { name: 'Rechercher un dépôt' }).fill('site');
     assert.equal(await page.getByRole('button', { name: /acme\/e2e-api/ }).count(), 0);

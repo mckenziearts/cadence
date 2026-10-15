@@ -119,6 +119,8 @@ export interface EditorState {
   page: string | null;
   /** The host page the "New brand" card opens instead of the core window (App's `newBrand`). */
   newBrand: `@${string}` | null;
+  /** The card's line under its title for that page (App's `newBrandHint`). */
+  newBrandHint: string | null;
 }
 
 /** localStorage can throw (private mode, blocked site data): conveniences only. */
@@ -188,6 +190,7 @@ export const useStore = create<EditorState>()(() => ({
   seenBuilds: memory.get('seen-builds')?.split(' ') ?? [],
   page: null,
   newBrand: null,
+  newBrandHint: null,
 }));
 
 /** Stable empty list for selectors (a fresh `[]` per call would re-render forever). */

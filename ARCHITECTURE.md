@@ -860,7 +860,8 @@ contract: removing or reshaping one is a major version.
   card closes the window and opens `#/@marque`, which the host provides through `pages`. The id starts with `@` (its
   type says so), since a hash without it names a project. Building chips in the top bar and the new project window
   still open the core's progress window. Without the prop, the card opens the core's repository window as before.
-  `tests/server/editor-root.test.ts` checks it in Chromium.
+  `newBrandHint` replaces the card's line under its title ("From a GitHub repository") to say what that page builds a
+  brand from; the host passes it in the interface language. `tests/server/editor-root.test.ts` checks both in Chromium.
 - `openNewBrand(buildId?)`: a host page opens the core's "New brand" window itself, the repository picker without an
   argument, the progress of that build with one (a build started with `api.startBrandBuild({ source, ref, name })`,
   say). The progress of a build that has a `source` offers no "Start over", since its `ref` never reaches the editor;

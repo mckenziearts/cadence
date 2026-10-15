@@ -35,9 +35,20 @@ const CORE_PAGES: Pages = { [PROFILE_PAGE]: Profile };
 /**
  * The editor. `pages` adds a host app's screens, opened by `#/@<id>`; a host page replaces a core one of the same id.
  * `profile={false}` takes the Profile entry off the top bar, for a host that keeps the person on one of its pages.
- * `newBrand` points the "New brand" card at one of the host's pages instead of the core window.
+ * `newBrand` points the "New brand" card at one of the host's pages instead of the core window, and `newBrandHint` says
+ * under the card's title what that page builds a brand from.
  */
-export function App({ pages, profile = true, newBrand }: { pages?: Pages; profile?: boolean; newBrand?: `@${string}` }) {
+export function App({
+  pages,
+  profile = true,
+  newBrand,
+  newBrandHint,
+}: {
+  pages?: Pages;
+  profile?: boolean;
+  newBrand?: `@${string}`;
+  newBrandHint?: string;
+}) {
   const t = useT();
   const app = useStore((s) => s.app);
   const appError = useStore((s) => s.appError);
@@ -51,7 +62,7 @@ export function App({ pages, profile = true, newBrand }: { pages?: Pages; profil
   // Pages and the home frame the top bar to their content's width; a project, even loading, keeps the editor's.
   const framed = !project && (Page !== null || (booted && !projectLoading));
 
-  useEffect(() => set({ newBrand: newBrand ?? null }), [newBrand]);
+  useEffect(() => set({ newBrand: newBrand ?? null, newBrandHint: newBrandHint ?? null }), [newBrand, newBrandHint]);
 
   useEffect(() => {
     restoreDrafts();
