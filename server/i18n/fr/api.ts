@@ -197,7 +197,8 @@ Ce document est relu avant chaque modification. Décrivez ici le style commun à
   },
   server: {
     starting: 'Cadence démarre\u2026',
-    portInUse: (port: number) => `Le port ${port} est déjà utilisé : arrêtez l'autre programme ou choisissez un autre port.`,
+    portInUse: (address: string) =>
+      `L'adresse ${address} est déjà utilisée : arrêtez l'autre programme ou choisissez un autre port.`,
     stopChats: (error: string) => `[cadence] arrêt des conversations : ${error}`,
     stopBrandBuilds: (error: string) => `[cadence] arrêt des marques en construction : ${error}`,
     closeChromium: (error: string) => `[cadence] fermeture de Chromium : ${error}`,

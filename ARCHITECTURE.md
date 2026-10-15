@@ -97,14 +97,17 @@ cadence/
 ## Processes, origins and security
 
 One Node process (`npm start` runs `bin/cadence.ts start`, which calls `startServer()`), one Vite dev server in
-middleware mode, two HTTP servers bound to **127.0.0.1 only**. The editor is a production build made at every start, in
-memory (`server/editor.ts`, about 150 ms, so it is never stale); the Vite dev server serves the frame origin (scenes are
-edited live), and the editor too with `npm run dev` (`start --dev`). Vite reads `NODE_ENV` once per process and sets it
-when it is unset: `startServer()` sets it first, `production` (React's production build in the editor and in frames) or
-`development` with `--dev`. Ctrl+C, SIGTERM and a closed terminal (SIGHUP) run `server.close()`, which stops the turns,
-the renders and Chromium: Chromium is launched without Playwright's own signal handlers, which would exit first or, on
-SIGHUP, keep the process alive. `startServer()` refuses Windows (scene URLs are `/@fs<absolute path>`), and points to
-WSL 2.
+middleware mode, two HTTP servers bound to the loopback only, **127.0.0.1 and ::1** on the same port: Chromium tries
+`localhost` on ::1 as well, so no other local user can take `[::1]:<port>` in front of Cadence. With port 0, ::1 takes
+the port IPv4 got, and both start again (5 tries) when it is taken there; with a fixed port, a taken ::1 fails the
+start; a host without IPv6 runs on 127.0.0.1 alone (`server/index.ts`, `listenLoopback()`). The editor is a production
+build made at every start, in memory (`server/editor.ts`, about 150 ms, so it is never stale); the Vite dev server
+serves the frame origin (scenes are edited live), and the editor too with `npm run dev` (`start --dev`). Vite reads
+`NODE_ENV` once per process and sets it when it is unset: `startServer()` sets it first, `production` (React's
+production build in the editor and in frames) or `development` with `--dev`. Ctrl+C, SIGTERM and a closed terminal
+(SIGHUP) run `server.close()`, which stops the turns, the renders and Chromium: Chromium is launched without
+Playwright's own signal handlers, which would exit first or, on SIGHUP, keep the process alive. `startServer()` refuses
+Windows (scene URLs are `/@fs<absolute path>`), and points to WSL 2.
 
 | Origin | Default | Serves |
 | --- | --- | --- |
@@ -112,9 +115,9 @@ WSL 2.
 | Frame | `http://localhost:5311` | `/frame.html`, `/kit.html`, `/frame-api/*` (read-only), Vite modules (scenes, runtime, brands) |
 
 Different ports are different origins: scene code (frame origin) cannot read or call the editor API. The frame origin
-uses the name `localhost` for the same loopback (both servers listen on 127.0.0.1 only): for Chrome it is another site,
-so the preview and the kit iframes run in their own process, off the editor's main thread. An editor opened as
-`localhost` shares that site again: it works, without that gain.
+uses the name `localhost` for the same loopback (both servers listen on 127.0.0.1 and ::1 only): for Chrome it is
+another site, so the preview and the kit iframes run in their own process, off the editor's main thread. An editor
+opened as `localhost` shares that site again: it works, without that gain.
 
 Guards (editor origin, `server/http.ts`):
 - Reject requests whose `Host` is not `127.0.0.1:<editorPort>` or `localhost:<editorPort>` (DNS rebinding).

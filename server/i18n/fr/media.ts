@@ -223,7 +223,7 @@ export default {
     piperMissing: (bin: string) => `Piper introuvable (${bin}) : sans lui, pas de voix off`,
     piperFix: '`pipx install piper-tts` (Python 3.9 ou plus), ou indiquez son chemin dans PIPER_PATH',
     portFree: (port: number, role: string) => `Port ${port} (${role}) libre`,
-    portBusy: (port: number, role: string) => `Port ${port} (${role}) déjà utilisé (Cadence tourne peut-être déjà)`,
+    portBusy: (address: string, role: string) => `${address} (${role}) déjà utilisé (Cadence tourne peut-être déjà)`,
     portFix: (variable: string) =>
       `Arrêtez l'autre programme ou choisissez un autre port (${variable}, ou --port / --frame-port avec \`npm start --\`)`,
   },

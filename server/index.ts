@@ -157,14 +157,14 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
   // Listen first (ports may be 0), then build everything that needs the real origins.
   let editorHandler: Handler = unavailable;
   let frameHandler: Handler = unavailable;
-  const editorServer = http.createServer((req, res) => editorHandler(req, res));
-  const frameServer = http.createServer((req, res) => frameHandler(req, res));
+  const editorServers = loopbackServers((req, res) => editorHandler(req, res));
+  const frameServers = loopbackServers((req, res) => frameHandler(req, res));
   let vite: ViteDevServer | null = null;
   let store: FileProjectStore | null = null;
   let capture: PlaywrightCapture | null = null;
   try {
-    const editorPort = await listen(editorServer, initial.editorPort, initial.host);
-    const framePort = await listen(frameServer, initial.framePort, initial.host);
+    const editorPort = await listenLoopback(editorServers, initial.editorPort, initial.host);
+    const framePort = await listenLoopback(frameServers, initial.framePort, initial.host);
     const config = loadConfig({ ...overrides, editorPort, framePort });
 
     const hub = new SseHub();
@@ -352,11 +352,11 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
         // Claude processes would otherwise outlive the server (and keep writing into projects).
         await chats.stopAll().catch((e: Error) => console.warn(m().api.server.stopChats(e.message)));
         await brandBuilds.close().catch((e: Error) => console.warn(m().api.server.stopBrandBuilds(e.message)));
-        await shutdown(editorServer, frameServer, services.store, services.capture, services.vite);
+        await shutdown([...editorServers, ...frameServers], services.store, services.capture, services.vite);
       })());
     return { config, services, editorToken, close };
   } catch (e) {
-    await shutdown(editorServer, frameServer, store, capture, vite);
+    await shutdown([...editorServers, ...frameServers], store, capture, vite);
     throw e;
   }
 }
@@ -366,27 +366,64 @@ function unavailable(_req: http.IncomingMessage, res: http.ServerResponse): void
   res.end(m().api.server.starting);
 }
 
+type LoopbackServers = [ipv4: http.Server, ipv6: http.Server];
+
+const IPV6_LOOPBACK = '::1';
+// The host has no IPv6: nobody can take ::1 either, IPv4 alone is enough.
+const NO_IPV6 = new Set(['EADDRNOTAVAIL', 'EAFNOSUPPORT']);
+const LISTEN_TRIES = 5;
+
+function loopbackServers(handler: http.RequestListener): LoopbackServers {
+  return [http.createServer(handler), http.createServer(handler)];
+}
+
+/**
+ * Listens on 127.0.0.1 and ::1, same port: Chromium tries `localhost` on ::1 as well, where another local user could
+ * otherwise answer in Cadence's place. Port 0: ::1 takes the port IPv4 got; when it is taken there, both start again.
+ */
+async function listenLoopback([ipv4, ipv6]: LoopbackServers, port: number, host: string): Promise<number> {
+  for (let tries = 1; ; tries++) {
+    const given = await listen(ipv4, port, host).catch((e: NodeJS.ErrnoException) => {
+      throw inUse(e, `${host}:${port}`);
+    });
+    try {
+      await listen(ipv6, given, IPV6_LOOPBACK);
+      return given;
+    } catch (e) {
+      const error = e as NodeJS.ErrnoException;
+      if (error.code && NO_IPV6.has(error.code)) return given;
+      await new Promise((resolve) => {
+        ipv4.close(resolve);
+        ipv4.closeAllConnections();
+      });
+      if (error.code !== 'EADDRINUSE' || port !== 0 || tries === LISTEN_TRIES) throw inUse(error, `[${IPV6_LOOPBACK}]:${given}`);
+    }
+  }
+}
+
 function listen(server: http.Server, port: number, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    const onError = (e: NodeJS.ErrnoException) => reject(e.code === 'EADDRINUSE' ? new Error(m().api.server.portInUse(port)) : e);
-    server.once('error', onError);
+    server.once('error', reject);
     server.listen(port, host, () => {
-      server.off('error', onError);
+      server.off('error', reject);
       resolve((server.address() as AddressInfo).port);
     });
   });
 }
 
+function inUse(e: NodeJS.ErrnoException, address: string): Error {
+  return e.code === 'EADDRINUSE' ? new Error(m().api.server.portInUse(address)) : e;
+}
+
 async function shutdown(
-  editorServer: http.Server,
-  frameServer: http.Server,
+  servers: http.Server[],
   store: FileProjectStore | null,
   capture: PlaywrightCapture | null,
   vite: ViteDevServer | null,
 ): Promise<void> {
   store?.close();
   await Promise.all(
-    [editorServer, frameServer].map(
+    servers.map(
       (server) =>
         new Promise<void>((resolve) => {
           if (!server.listening) return resolve();

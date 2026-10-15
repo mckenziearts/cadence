@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { EventEmitter } from 'node:events';
+import net from 'node:net';
+import type { TestContext } from 'node:test';
 import { loadConfig } from '../../server/config';
 import type { CadenceConfig, Network } from '../../server/contracts';
 import type { NetworkId } from '../../src/shared/types';
@@ -247,4 +249,23 @@ export const padded = (data: Buffer) => Buffer.concat([data, Buffer.alloc((512 -
 export function fileEntry(name: string, content = '', type = '0'): Buffer {
   const data = Buffer.from(content);
   return Buffer.concat([rawHeader({ name, type, size: data.length }), padded(data)]);
+}
+
+/** A socket bound to `port` on `host`, the way another local process would hold it. */
+export function occupy(port: number, host: string): Promise<net.Server> {
+  return new Promise((resolve, reject) => {
+    const blocker = net.createServer();
+    blocker.once('error', reject).listen(port, host, () => resolve(blocker));
+  });
+}
+
+/** Fails the next `times` listens on `host` with `code`, as the OS would; every other listen goes through. */
+export function failListen(ctx: TestContext, host: string, code: string, times = Infinity) {
+  const listen = net.Server.prototype.listen;
+  let left = times;
+  return ctx.mock.method(net.Server.prototype, 'listen', function (this: net.Server, ...args: unknown[]) {
+    if (args[1] !== host || left-- <= 0) return listen.apply(this, args as Parameters<typeof listen>);
+    process.nextTick(() => this.emit('error', Object.assign(new Error(`listen ${code} ${host}:${String(args[0])}`), { code })));
+    return this;
+  });
 }

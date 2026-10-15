@@ -128,14 +128,21 @@ async function checkPiper(bin: string): Promise<Check> {
     : { level: 'warn', label: t.piperMissing(bin), fix: t.piperFix };
 }
 
-async function checkPort(port: number, host: string, role: string, variable: string): Promise<Check> {
-  const free = await new Promise<boolean>((resolve) => {
-    const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.listen(port, host, () => server.close(() => resolve(true)));
-  });
+/** Cadence listens on `host` and on ::1, same port (server/index.ts): either one taken stops it. */
+export async function checkPort(port: number, host: string, role: string, variable: string): Promise<Check> {
+  const [ipv4, ipv6] = await Promise.all([isTaken(port, host), isTaken(port, '::1')]);
+  const taken = ipv4 ? `${host}:${port}` : ipv6 ? `[::1]:${port}` : null;
   const t = m().media.doctor;
-  return free
-    ? { level: 'ok', label: t.portFree(port, role) }
-    : { level: 'warn', label: t.portBusy(port, role), fix: t.portFix(variable) };
+  return taken
+    ? { level: 'warn', label: t.portBusy(taken, role), fix: t.portFix(variable) }
+    : { level: 'ok', label: t.portFree(port, role) };
+}
+
+function isTaken(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    // No IPv6 on the host: Cadence then starts on IPv4 only.
+    server.once('error', (e: NodeJS.ErrnoException) => resolve(e.code !== 'EADDRNOTAVAIL' && e.code !== 'EAFNOSUPPORT'));
+    server.listen(port, host, () => server.close(() => resolve(false)));
+  });
 }

@@ -221,7 +221,7 @@ export default {
     piperMissing: (bin: string) => `Piper not found (${bin}): no voice-over without it`,
     piperFix: '`pipx install piper-tts` (Python 3.9 or later), or give its path in PIPER_PATH',
     portFree: (port: number, role: string) => `Port ${port} (${role}) is free`,
-    portBusy: (port: number, role: string) => `Port ${port} (${role}) is already in use (Cadence may already be running)`,
+    portBusy: (address: string, role: string) => `${address} (${role}) is already in use (Cadence may already be running)`,
     portFix: (variable: string) =>
       `Stop the other program or pick another port (${variable}, or --port / --frame-port with \`npm start --\`)`,
   },

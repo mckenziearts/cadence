@@ -26,7 +26,7 @@ export function loadConfig(overrides: Partial<CadenceConfig> = {}): CadenceConfi
     framePort,
     editorOrigin,
     // The same loopback under another name: another site for Chrome, which then runs the preview in its own process, off
-    // the editor's main thread. Both servers still listen on 127.0.0.1 only.
+    // the editor's main thread. Both servers still listen on the loopback only (127.0.0.1 and ::1).
     frameOrigin: `http://localhost:${framePort}`,
     mcpUrl: `${editorOrigin}/mcp`,
     ffmpegPath: env.FFMPEG_PATH || 'ffmpeg',

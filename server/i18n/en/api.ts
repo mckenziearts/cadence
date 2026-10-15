@@ -190,7 +190,7 @@ This document is reread before every change. Describe here the style all scenes 
   },
   server: {
     starting: 'Cadence is starting...',
-    portInUse: (port: number) => `Port ${port} is already in use: stop the other program or choose another port.`,
+    portInUse: (address: string) => `Address ${address} is already in use: stop the other program or choose another port.`,
     stopChats: (error: string) => `[cadence] stopping the chats: ${error}`,
     stopBrandBuilds: (error: string) => `[cadence] stopping the brand builds: ${error}`,
     closeChromium: (error: string) => `[cadence] closing Chromium: ${error}`,
