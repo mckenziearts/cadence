@@ -59,6 +59,17 @@ export function captureLocale(): string {
   }
 }
 
+/**
+ * Chromium's own sandbox around the pages that run brand and scene code, which Playwright turns off unless asked. On
+ * unless CADENCE_CHROMIUM_SANDBOX=0: a container, or a Linux host without unprivileged user namespaces.
+ */
+export function chromiumSandbox(): boolean {
+  return process.env.CADENCE_CHROMIUM_SANDBOX !== '0';
+}
+
+/** Playwright's launch error when the sandbox cannot start (no unprivileged user namespaces). */
+export const CHROMIUM_SANDBOX_FAILED = /Chromium sandboxing failed/i;
+
 function parsePort(name: string, value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const port = Number(value);

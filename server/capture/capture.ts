@@ -11,7 +11,7 @@ import { chromium, errors as playwrightErrors, type Browser, type BrowserContext
 import { z } from 'zod';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { FORMATS, isFormatId, type FormatId, type ProjectState, type SceneState } from '../../src/shared/types';
-import { captureLocale } from '../config';
+import { captureLocale, CHROMIUM_SANDBOX_FAILED, chromiumSandbox } from '../config';
 import type { CadenceConfig, CapturedFrame, CaptureService, ProjectStore } from '../contracts';
 import { language, m } from '../i18n';
 import { formatSeconds, HttpError, KeyedMutex, roundMs, shortHash, writeFileAtomic } from '../util';
@@ -66,9 +66,18 @@ export async function launchChromium(): Promise<Browser> {
   try {
     // Playwright's own handlers would exit on Ctrl+C before Cadence stops its turns and renders, and its SIGHUP handler
     // keeps the process alive once the terminal is closed: Cadence closes the browser itself (server.close()).
-    return await chromium.launch({ args: CHROMIUM_ARGS, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false });
+    return await chromium.launch({
+      args: CHROMIUM_ARGS,
+      chromiumSandbox: chromiumSandbox(),
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
+    });
   } catch (e) {
-    throw new Error(m().media.capture.chromium((e as Error).message));
+    const message = (e as Error).message;
+    if (CHROMIUM_SANDBOX_FAILED.test(message))
+      throw new Error(m().media.capture.chromiumSandbox(m().media.doctor.chromiumSandboxFix));
+    throw new Error(m().media.capture.chromium(message));
   }
 }
 

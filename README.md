@@ -82,6 +82,10 @@ For `gh` and `glab`: `sudo apt install gh glab` on Ubuntu 24.04, otherwise their
 `gh auth login` and `glab auth login`. On another distribution, install the same tools with its package manager:
 `npm run doctor` tells you what is missing.
 
+Chromium runs scene code inside its own sandbox, which needs unprivileged user namespaces. Ubuntu 23.10 and later
+restrict them: allow them with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (until the next reboot;
+put `kernel.apparmor_restrict_unprivileged_userns=0` in `/etc/sysctl.d/60-userns.conf` to keep it).
+
 ## Installation
 
 ```bash
@@ -450,6 +454,9 @@ Never expose it on a network.
 - **"Claude Code is not logged in"**: run `claude` in a terminal, then `/login`.
 - **A scene shows a red error**: click "Ask Claude to fix it", or restore the previous version.
 - **Port already in use**: `npm start -- --port <p> --frame-port <p+1>`.
+- **"Chromium sandboxing failed" on Linux**: allow user namespaces (see Linux under Requirements). Only where that is
+  impossible, in a container for instance, start Cadence with `CADENCE_CHROMIUM_SANDBOX=0`: Chromium then runs brand and
+  scene code without its sandbox, and `npm run doctor` warns about it.
 - **After an update, the Profile shows no networks, or "gh is not responding"**: Cadence still runs the old code.
   Restart it (Ctrl+C, then `npm start`) and reload the page.
 - **YouTube keeps the video private**: the Google project has not passed the YouTube audit yet.

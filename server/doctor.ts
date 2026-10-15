@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import net from 'node:net';
 import { promisify } from 'node:util';
 import { ClaudeCodeProvider } from './agent/claudeCode';
+import { CHROMIUM_SANDBOX_FAILED, chromiumSandbox } from './config';
 import type { CadenceConfig } from './contracts';
 import { m } from './i18n';
 import { PiperEngine } from './voiceover/piper';
@@ -91,14 +92,17 @@ async function checkFfprobe(bin: string): Promise<Check> {
   }
 }
 
-async function checkChromium(): Promise<Check> {
+export async function checkChromium(): Promise<Check> {
   try {
     // Imported here: Playwright throws at import on a Node.js too old, and checkNode() must still report it.
     const { chromium } = await import('playwright');
-    const browser = await chromium.launch();
+    const sandbox = chromiumSandbox();
+    const browser = await chromium.launch({ chromiumSandbox: sandbox });
     const version = browser.version();
     await browser.close();
-    return { level: 'ok', label: `Chromium ${version} (Playwright)` };
+    return sandbox
+      ? { level: 'ok', label: `Chromium ${version} (Playwright)` }
+      : { level: 'warn', label: m().media.doctor.chromiumNoSandbox(version), fix: m().media.doctor.chromiumSandboxFix };
   } catch (e) {
     const message = (e as Error).message;
     if (/Executable doesn't exist/i.test(message))
@@ -106,7 +110,11 @@ async function checkChromium(): Promise<Check> {
     return {
       level: 'fail',
       label: m().media.doctor.chromiumFailed(message.split('\n')[0]),
-      fix: process.platform === 'linux' ? m().media.doctor.chromiumLibraries : 'npm run setup',
+      fix: CHROMIUM_SANDBOX_FAILED.test(message)
+        ? m().media.doctor.chromiumSandboxFix
+        : process.platform === 'linux'
+          ? m().media.doctor.chromiumLibraries
+          : 'npm run setup',
     };
   }
 }

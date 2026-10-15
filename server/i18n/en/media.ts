@@ -8,6 +8,7 @@ export default {
   ffmpegStart: (bin: string, error: string) => `Could not start ffmpeg (${bin}): ${error}`,
   capture: {
     chromium: (error: string) => `Could not start Chromium (run "npm run setup" once): ${error}`,
+    chromiumSandbox: (fix: string) => `Chromium could not start its sandbox. ${fix}`,
     frameNotStarted: (problems: string[]) => `The frame page did not start${problems.length ? `: ${problems.join('; ')}` : ''}`,
     frameLoadTimeout: 'The frame page took too long to load',
     seekTimeout: (time: string, seconds: number) => `Rendering t = ${time} took over ${seconds} s (infinite loop?)`,
@@ -212,6 +213,9 @@ export default {
     chromiumMissing: 'Chromium (Playwright) is not installed',
     chromiumFailed: (error: string) => `Chromium does not start: ${error}`,
     chromiumLibraries: 'Install its system libraries: `npm run setup -- --with-deps`',
+    chromiumNoSandbox: (version: string) => `Chromium ${version} (Playwright) without its sandbox (CADENCE_CHROMIUM_SANDBOX=0)`,
+    chromiumSandboxFix:
+      'Linux: allow user namespaces (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`); CADENCE_CHROMIUM_SANDBOX=0 only in a container (README, Troubleshooting)',
     claudeMissing: (bin: string) => `Claude Code not found (${bin})`,
     claudeInstall: 'Install Claude Code (https://code.claude.com), run `claude`, then /login, or set CLAUDE_PATH',
     claudeReady: (version: string, login: string | undefined) => `Claude Code ${version}${login ? `: ${login}` : ''}`,

@@ -6,6 +6,7 @@ export default {
   ffmpegStart: (bin: string, error: string) => `Impossible de lancer ffmpeg (${bin}) : ${error}`,
   capture: {
     chromium: (error: string) => `Impossible de démarrer Chromium (lancez « npm run setup » une fois) : ${error}`,
+    chromiumSandbox: (fix: string) => `Chromium n'a pas pu démarrer son bac à sable. ${fix}`,
     frameNotStarted: (problems: string[]) =>
       `La page d’image n’a pas démarré${problems.length ? ` : ${problems.join(' \u00b7 ')}` : ''}`,
     frameLoadTimeout: 'Le chargement de la page d’image a pris trop de temps',
@@ -213,6 +214,9 @@ export default {
     chromiumMissing: "Chromium (Playwright) n'est pas installé",
     chromiumFailed: (error: string) => `Chromium ne démarre pas : ${error}`,
     chromiumLibraries: 'Installez ses bibliothèques système : `npm run setup -- --with-deps`',
+    chromiumNoSandbox: (version: string) => `Chromium ${version} (Playwright) sans son bac à sable (CADENCE_CHROMIUM_SANDBOX=0)`,
+    chromiumSandboxFix:
+      'Linux : autorisez les espaces de noms utilisateur (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`) \u00b7 CADENCE_CHROMIUM_SANDBOX=0 seulement dans un conteneur (README, section Troubleshooting)',
     claudeMissing: (bin: string) => `Claude Code introuvable (${bin})`,
     claudeInstall:
       'Installez Claude Code (https://code.claude.com), lancez `claude` puis /login \u00b7 ou définissez CLAUDE_PATH',
