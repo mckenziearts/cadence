@@ -62,7 +62,8 @@ cadence/
     api/                    Hono routes under /api (index.ts = createApi)
     archive/                tar.ts (ustar reader and writer, no dependency), projects.ts (ProjectArchiver)
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
-    capture/                capture.ts (Playwright), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
+    capture/                capture.ts (Playwright), browser-host.ts + chromium-server.mjs (Chromium in a child
+                            process), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
                             worker (the analysis off the server's thread), synth + soundtracks (the preset
                             soundtracks, composed in code)
@@ -106,8 +107,9 @@ serves the frame origin (scenes are edited live), and the editor too with `npm r
 `NODE_ENV` once per process and sets it when it is unset: `startServer()` sets it first, `production` (React's
 production build in the editor and in frames) or `development` with `--dev`. Ctrl+C, SIGTERM and a closed terminal
 (SIGHUP) run `server.close()`, which stops the turns, the renders and Chromium: Chromium is launched without
-Playwright's own signal handlers, which would exit first or, on SIGHUP, keep the process alive. `startServer()` refuses
-Windows (scene URLs are `/@fs<absolute path>`), and points to WSL 2.
+Playwright's own signal handlers, which would exit first or, on SIGHUP, keep the process alive, and its host process
+(see "Capture pages") ignores SIGINT, SIGTERM and SIGHUP: it ends when the server closes its IPC channel, or dies.
+`startServer()` refuses Windows (scene URLs are `/@fs<absolute path>`), and points to WSL 2.
 
 | Origin | Default | Serves |
 | --- | --- | --- |
@@ -162,11 +164,32 @@ and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE`
 the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
 Contact sheets (`sheet.ts`) lay the strip's PNG tiles out as data URLs in a context of their own, JavaScript off and
 every request aborted: that page loads nothing and is not the frame origin.
-One limit stays: scene code runs in the capture page's main world, next to `window.__cadence`, and Playwright runs in
-the server process, so every console message, page error and value a page returns to `page.evaluate` reaches Node
-whole. A hostile scene can make the server's memory grow (hundreds of MB from a few large messages): a local denial of
-service, with no data leaving the machine. The checks in the page and in Node bound honest code only; running capture
-in a child process would close it (open question, for an ADR).
+Scene code runs in the capture page's main world, next to `window.__cadence`, so what a page logs, throws and returns
+is untrusted in size too. Capture and render browsers therefore run in a child process: `browser-host.ts` forks
+`chromium-server.mjs` (plain JavaScript, `execArgv: []`) with `process.execPath`, or the Node binary
+`CADENCE_NODE_PATH` names. Under Electron (`process.versions.electron`) `CADENCE_NODE_PATH` is required and the launch
+fails without it: Electron runs as Node (`ELECTRON_RUN_AS_NODE=1`) only while its RunAsNode fuse is on, a packaged app
+usually turns it off, and the forked binary would then start the app instead, a failure only the packaged build would
+show. An Electron host names a Node binary it ships, or its own binary when its fuse is on. The child calls
+`chromium.launchServer()` on a Unix socket in a `mkdtemp` folder (0700, removed when the child exits) and sends the
+endpoint over IPC; the server attaches with `chromium.connect('ws+unix:...')`.
+Never a loopback port: Playwright's `/json` hands its endpoint path to any local process, which could then drive the
+capture browser, read local files and reach the pages carrying the request secret. A socket path as `port` is
+Playwright 1.63 behaviour, not documented: the child refuses any other endpoint and `tests/server/browser-host.test.ts`
+checks that no TCP port is open; a socket path past 103 bytes (a long `TMPDIR`) fails the launch before Chromium
+starts. Playwright reads Chromium's CDP pipe and output in that child:
+a message larger than a string can hold (`console.log(big, big)` with 300 MB strings ended the 0.12.0 server with
+`ERR_STRING_TOO_LONG`) ends the child, the pages and captures in flight fail with an error, and the next capture starts
+a new child. Closing the browser (or losing it) disconnects the IPC channel, the child closes Chromium and exits;
+`close()` waits for it (SIGKILL after 10 s). In Node, the problems a page logs and the errors `seek()` returns keep
+20 lines of 2,000 characters at most (`MAX_PROBLEMS`, `PROBLEM_CHARS`); what page code throws through
+`page.evaluate` and the scene id `seek()` answers are cut to 2,000 characters too (`fromPage`). What remains: a message up to 256 MB (the
+limit of Playwright's WebSocket client, past which the connection drops as in a crash) still reaches the server whole
+before it is cut, so a hostile scene can make the server's memory spike for a moment (a local denial of service,
+nothing leaves the machine). The doctor's one-off launch stays in process. Render frames cross the WebSocket in base64
+with Playwright's fixed permessage-deflate (level 3, no option turns it off in 1.63): about +2 ms per frame at JPEG
+quality 95 on photographic frames, up to +33 ms at quality 100 on noisy ones, inflated on the server's thread. Past
+that, the render's screenshots would move into the child, which would write the JPEG files itself.
 
 Reference captures (`screenshotUrl`) check every request by origin: host names are resolved, link-local,
 unspecified and multicast addresses (IPv4-mapped included) are refused, and so are Cadence's own ports; other

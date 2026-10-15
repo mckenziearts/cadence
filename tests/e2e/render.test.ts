@@ -475,6 +475,47 @@ export default function A({ voiceOver }: SceneProps) {
     }
   });
 
+  it('settles a finished render only once its Chromium host has ended and its temporary files are gone', async () => {
+    const restore = await withSounds({ a: "[{ at: 0.1, sound: 'pop' }]" });
+    try {
+      await renderOne({ formats: ['16:9'], quality: 'draft' });
+      const { stdout } = await run('pgrep', ['-P', String(process.pid), '-f', 'chromium-server.mjs']).catch(() => ({
+        stdout: '',
+      }));
+      assert.equal(stdout, '');
+      const partial = (await readdir(path.join(h.store.dir(id), 'renders'))).filter((n) => n.endsWith('.part'));
+      assert.deepEqual(partial, []);
+      assert.deepEqual(await readdir(path.join(h.store.dir(id), '.cadence', 'sounds')), []);
+    } finally {
+      await restore();
+    }
+  });
+
+  it('fails the render whose page logs more than a string can hold, ends its Chromium, then renders again', async () => {
+    const file = h.store.sceneFile(id, 'b');
+    const code = await readFile(file, 'utf8');
+    await writeFile(
+      file,
+      `export default function Loud() {\n  const big = 'x'.repeat(300_000_000);\n  console.log(big, big);\n  return null;\n}\n`,
+    );
+    try {
+      const [queued] = await renders.start(id, { formats: ['16:9'], quality: 'draft' });
+      const job = await renders.wait(queued.id);
+      assert.equal(job.status, 'error');
+      // The Chromium host process ended (Playwright's own message), the render did not wait for a timeout.
+      assert.match(job.error!, /has been closed/);
+      const leftovers = (await readdir(path.join(h.store.dir(id), 'renders'))).filter((n) => n.endsWith('.part'));
+      assert.deepEqual(leftovers, []);
+      const { stdout } = await run('pgrep', ['-P', String(process.pid), '-f', 'chromium-server.mjs']).catch(() => ({
+        stdout: '',
+      }));
+      assert.equal(stdout, '');
+    } finally {
+      await writeFile(file, code);
+    }
+    await renderOne({ formats: ['16:9'], quality: 'draft' });
+  });
+
   it('cancels a running render and removes the partial file', async () => {
     const [queued] = await renders.start(id, { formats: ['16:9'], quality: 'draft', fps: 120 });
     await new Promise<void>((resolve) => {

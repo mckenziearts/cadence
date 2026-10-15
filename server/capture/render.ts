@@ -23,7 +23,7 @@ import type { CadenceConfig, Hub, MusicService, ProjectStore, RenderService, Voi
 import { m } from '../i18n';
 import { soundTrack } from '../sounds/track';
 import { assertId, formatSeconds, HttpError, nowIso, pathExists, resolveInside } from '../util';
-import { launchChromium, openFramePage, RENDER_TIMEOUT_MS, seekFrame, withTimeout, type FramePage } from './capture';
+import { fromPage, launchChromium, openFramePage, RENDER_TIMEOUT_MS, seekFrame, withTimeout, type FramePage } from './capture';
 
 const PRESETS: Record<RenderQuality, { crf: number; preset: string; jpeg: number }> = {
   draft: { crf: 23, preset: 'veryfast', jpeg: 80 },
@@ -184,7 +184,8 @@ export class FfmpegRenderService implements RenderService {
     for (let state = this.queue.shift(); state; state = this.queue.shift()) {
       if (state.abort.signal.aborted) continue;
       try {
-        await this.run(state);
+        // run() returns once its browser is closed and its .part and sounds track are gone: a finished job leaves nothing.
+        this.end(state, await this.run(state));
       } catch (e) {
         if (e instanceof RenderCancelled) this.end(state, { status: 'cancelled' });
         else this.end(state, { status: 'error', error: e instanceof Error ? e.message : String(e) });
@@ -206,7 +207,7 @@ export class FfmpegRenderService implements RenderService {
     state.settle({ ...state.job });
   }
 
-  private async run(state: JobState): Promise<void> {
+  private async run(state: JobState): Promise<Partial<RenderJob>> {
     const { job, abort } = state;
     const { config, store, music, voiceOver } = this.deps;
     const request = job.request;
@@ -351,7 +352,7 @@ export class FfmpegRenderService implements RenderService {
       if (code !== 0) throw new Error(m().media.render.ffmpegFailed(code, lastLine(stderr)));
       const output = path.join(dir, name);
       await fs.rename(partial, output);
-      this.end(state, { status: 'done', progress: 1, framesDone: total, file: name, url: renderUrl(job.projectId, name) });
+      return { status: 'done', progress: 1, framesDone: total, file: name, url: renderUrl(job.projectId, name) };
     } catch (e) {
       // A capture error aborts the others with the same reason: report the first one.
       throw abort.signal.aborted ? abort.signal.reason : e;
@@ -421,7 +422,7 @@ function frameRange(project: ProjectState, request: RenderRequest, fps: number):
 async function shownState(pages: FramePage[], project: ProjectState, store: ProjectStore): Promise<ProjectState> {
   const shows = async (expected: ProjectState) => {
     const seen = await Promise.all(
-      pages.map(({ page }) => page.evaluate(() => [window.__cadence!.duration(), window.__cadence!.generation()])),
+      pages.map(({ page }) => fromPage(page.evaluate(() => [window.__cadence!.duration(), window.__cadence!.generation()]))),
     );
     return seen.every(([duration, generation]) => duration === expected.duration && generation === expected.codeGeneration);
   };
@@ -430,7 +431,7 @@ async function shownState(pages: FramePage[], project: ProjectState, store: Proj
   await Promise.all(
     pages.map(({ page }) =>
       withTimeout(
-        page.evaluate((g) => window.__cadence!.reload(g), generation),
+        fromPage(page.evaluate((g) => window.__cadence!.reload(g), generation)),
         RENDER_TIMEOUT_MS,
         m().media.reloadTimeout,
       ),

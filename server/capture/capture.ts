@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { chromium, errors as playwrightErrors, type Browser, type BrowserContext, type Page } from 'playwright';
+import { errors as playwrightErrors, type Browser, type BrowserContext, type Page } from 'playwright';
 import { z } from 'zod';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { FORMATS, isFormatId, type FormatId, type ProjectState, type SceneState } from '../../src/shared/types';
@@ -15,6 +15,7 @@ import { captureLocale, CHROMIUM_SANDBOX_FAILED, chromiumSandbox } from '../conf
 import type { CadenceConfig, CapturedFrame, CaptureService, ProjectStore } from '../contracts';
 import { language, m } from '../i18n';
 import { formatSeconds, HttpError, KeyedMutex, roundMs, shortHash, writeFileAtomic } from '../util';
+import { hostChromium } from './browser-host';
 import { contactSheet } from './sheet';
 
 export const CHROMIUM_ARGS = [
@@ -62,11 +63,24 @@ LOOPBACK.addAddress('::1', 'ipv6');
 
 export class FrameTimeoutError extends Error {}
 
+/** Scene code decides what its page logs, throws and answers: the server keeps this many lines of it, this long each. */
+export const MAX_PROBLEMS = 20;
+export const PROBLEM_CHARS = 2000;
+const clip = (text: unknown) => String(text).slice(0, PROBLEM_CHARS);
+
+/** What page code throws comes back as the rejection of page.evaluate: a long message is cut like a logged problem. */
+export function fromPage<T>(evaluation: Promise<T>): Promise<T> {
+  return evaluation.catch((e: unknown) => {
+    if (e instanceof Error && e.message.length <= PROBLEM_CHARS) throw e;
+    throw new Error(clip(e instanceof Error ? e.message : e));
+  });
+}
+
 export async function launchChromium(): Promise<Browser> {
   try {
     // Playwright's own handlers would exit on Ctrl+C before Cadence stops its turns and renders, and its SIGHUP handler
     // keeps the process alive once the terminal is closed: Cadence closes the browser itself (server.close()).
-    return await chromium.launch({
+    return await hostChromium({
       args: CHROMIUM_ARGS,
       chromiumSandbox: chromiumSandbox(),
       handleSIGINT: false,
@@ -126,9 +140,12 @@ async function openIsolatedPage(
     const page = await context.newPage();
     page.on('popup', (popup) => void popup.close().catch(() => undefined));
     const problems: string[] = [];
-    page.on('pageerror', (e) => problems.push(e.message));
+    const keep = (text: string) => {
+      if (problems.length < MAX_PROBLEMS) problems.push(clip(text));
+    };
+    page.on('pageerror', (e) => keep(e.message));
     page.on('console', (message) => {
-      if (message.type() === 'error') problems.push(message.text());
+      if (message.type() === 'error') keep(message.text());
     });
     return { context, page, problems };
   } catch (e) {
@@ -162,11 +179,11 @@ export async function openFramePage(
     if (opts.sceneId) params.set('scene', opts.sceneId);
     if (opts.captions === false) params.set('captions', '0');
     await page.goto(`${frameOrigin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
-    if (!(await page.evaluate(() => window.__cadence !== undefined))) {
+    if (!(await fromPage(page.evaluate(() => window.__cadence !== undefined)))) {
       throw new Error(m().media.capture.frameNotStarted(problems));
     }
     await withTimeout(
-      page.evaluate(() => window.__cadence!.ready),
+      fromPage(page.evaluate(() => window.__cadence!.ready)),
       LOAD_TIMEOUT_MS,
       m().media.capture.frameLoadTimeout,
     );
@@ -178,12 +195,18 @@ export async function openFramePage(
 }
 
 /** Render time t and wait until it is painted. */
-export function seekFrame(page: Page, t: number, timeoutMs = RENDER_TIMEOUT_MS): Promise<FrameRenderResult> {
-  return withTimeout(
-    page.evaluate((time) => window.__cadence!.seek(time), t),
+export async function seekFrame(page: Page, t: number, timeoutMs = RENDER_TIMEOUT_MS): Promise<FrameRenderResult> {
+  const result = await withTimeout(
+    fromPage(page.evaluate((time) => window.__cadence!.seek(time), t)),
     timeoutMs,
     m().media.capture.seekTimeout(formatSeconds(t), timeoutMs / 1000),
   );
+  // frames() hands sceneId to the agent.
+  return {
+    errors: result.errors.slice(0, MAX_PROBLEMS).map(clip),
+    sceneId: typeof result.sceneId === 'string' ? clip(result.sceneId) : null,
+    localTime: Number(result.localTime),
+  };
 }
 
 /** The text checks read layout only: past this, the page is stuck (its next seek times out and drops the slot). */
@@ -344,13 +367,13 @@ export class PlaywrightCapture implements CaptureService {
       try {
         const { page } = slot;
         await withTimeout(
-          page.evaluate((g) => window.__cadence!.reload(g), generation),
+          fromPage(page.evaluate((g) => window.__cadence!.reload(g), generation)),
           this.timeoutMs,
           m().media.reloadTimeout,
         );
         if (sceneId) {
           await withTimeout(
-            page.evaluate((id) => window.__cadence!.setScene(id), sceneId),
+            fromPage(page.evaluate((id) => window.__cadence!.setScene(id), sceneId)),
             this.timeoutMs,
             m().media.capture.sceneLoadTimeout,
           );
@@ -444,15 +467,18 @@ export class PlaywrightCapture implements CaptureService {
       const params = new URLSearchParams({ brand: brandId, v: String(Date.now()) });
       await page.goto(`${this.config.frameOrigin}/kit.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
       const sheet = await withTimeout(
-        page.evaluate(
-          (missing) => window.__cadenceKit?.ready ?? { problems: [missing], loaded: true },
-          m().media.capture.kitNotStarted,
+        fromPage(
+          page.evaluate(
+            (missing) => window.__cadenceKit?.ready ?? { problems: [missing], loaded: true },
+            m().media.capture.kitNotStarted,
+          ),
         ),
         LOAD_TIMEOUT_MS,
         m().media.capture.kitLoadTimeout,
       );
       const image = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: true, timeout: 30_000 });
-      return { image, problems: [...new Set([...sheet.problems, ...problems])], loaded: sheet.loaded };
+      const found = [...new Set([...sheet.problems.slice(0, MAX_PROBLEMS), ...problems])].slice(0, MAX_PROBLEMS).map(clip);
+      return { image, problems: found, loaded: sheet.loaded };
     } finally {
       await context.close().catch(() => undefined);
     }

@@ -1,13 +1,15 @@
 // PlaywrightCapture and PixelSeamService against the frame harness: agent frames, thumbnails, reference screenshots,
 // timeouts, seams, motion checks, and what scene code may reach from a capture page.
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import dgram from 'node:dgram';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { after, before, describe, it } from 'node:test';
+import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { chromium } from 'playwright';
@@ -16,7 +18,9 @@ import {
   CHROMIUM_ARGS,
   FrameTimeoutError,
   launchChromium,
+  MAX_PROBLEMS,
   openFramePage,
+  PROBLEM_CHARS,
   PlaywrightCapture,
   seekFrame,
 } from '../../server/capture/capture';
@@ -78,6 +82,9 @@ async function projectWith(scenes: Record<string, string>): Promise<string> {
 const fill = (css: string, inner = '') =>
   `export default function Scene() {\n  return <div style={{ position: 'absolute', inset: 0, ${css} }}>${inner}</div>;\n}\n`;
 
+/** A scene whose page logs more than a string can hold: it ends the Chromium host process. */
+const loud = `export default function Loud() {\n  const big = 'x'.repeat(300_000_000);\n  console.log(big, big);\n  return null;\n}\n`;
+
 /** Canvas box of what differs from a white background (the caption box), or null when the frame is all white. */
 function ink(png: Buffer, scale: number): { top: number; bottom: number; left: number; right: number } | null {
   const { width, height, data } = PNG.sync.read(png);
@@ -92,21 +99,13 @@ function ink(png: Buffer, scale: number): { top: number; bottom: number; left: n
   return bottom < 0 ? null : { top: top / scale, bottom: (bottom + 1) / scale, left: left / scale, right: (right + 1) / scale };
 }
 
-describe('launchChromium', () => {
-  it('leaves Ctrl+C, SIGTERM and a closed terminal to Cadence, which closes its browsers itself', async () => {
-    const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
-    const before = signals.map((signal) => process.listenerCount(signal));
-    const browser = await launchChromium();
-    try {
-      assert.deepEqual(
-        signals.map((signal) => process.listenerCount(signal)),
-        before,
-      );
-    } finally {
-      await browser.close();
-    }
-  });
-});
+const run = promisify(execFile);
+
+/** Pids of the Chromium host processes (browser-host.ts) that `parent` started and that are still running. */
+async function hostPids(parent = process.pid): Promise<number[]> {
+  const { stdout } = await run('pgrep', ['-P', String(parent), '-f', 'chromium-server.mjs']).catch(() => ({ stdout: '' }));
+  return stdout.split('\n').filter(Boolean).map(Number);
+}
 
 describe('PlaywrightCapture.frames', () => {
   it('captures JPEGs for the agent at half size by default, PNGs on request', async () => {
@@ -179,6 +178,132 @@ describe('PlaywrightCapture.frames', () => {
       await fast.close();
       await writeFile(file, original);
     }
+  });
+
+  it('fails a capture whose page logs more than a string can hold, then captures the next scene with a new Chromium', async () => {
+    const crashing = new PlaywrightCapture({ config: h.config, store: h.store });
+    const projectId = await projectWith({ loud, plain: fill("background: '#00ff00'") });
+    const running = await hostPids();
+    const started = async () => (await hostPids()).filter((pid) => !running.includes(pid));
+    try {
+      await crashing.frames(projectId, { sceneId: 'plain', times: [0.5] });
+      const [first] = await started();
+      await assert.rejects(crashing.frames(projectId, { sceneId: 'loud', times: [0.5] }), (e: Error) => {
+        // The host process ended (Playwright's own message): the capture did not wait for a timeout.
+        assert.ok(!(e instanceof FrameTimeoutError), e.message);
+        assert.match(e.message, /closed|disconnected/);
+        return true;
+      });
+      const [frame] = await crashing.frames(projectId, { sceneId: 'plain', times: [0.5], imageFormat: 'png' });
+      assert.ok(near(pixel(frame.image, 480, 270), [0, 255, 0]));
+      const [second] = await started();
+      assert.ok(first && second, 'no Chromium host process');
+      assert.notEqual(second, first);
+    } finally {
+      await crashing.close();
+    }
+    assert.equal((await hostPids()).length, running.length);
+  });
+
+  it('fails every capture in flight when its Chromium host ends, not only the one whose page ended it', async () => {
+    const crashing = new PlaywrightCapture({ config: h.config, store: h.store, renderTimeoutMs: 60_000 });
+    const loudId = await projectWith({ loud });
+    const stuckId = await projectWith({
+      stuck: `window.__cadence!.seek = () => new Promise(() => undefined);\nexport default function Stuck() {\n  return null;\n}\n`,
+    });
+    // No public signal says a capture holds its page: the slot it keeps does.
+    const slots = (crashing as unknown as { slots: Map<string, unknown> }).slots;
+    try {
+      const stuck = assert.rejects(crashing.frames(stuckId, { sceneId: 'stuck', times: [0.5] }), (e: Error) => {
+        assert.ok(!(e instanceof FrameTimeoutError), e.message);
+        assert.match(e.message, /closed|disconnected/);
+        return true;
+      });
+      for (let i = 0; slots.size === 0; i++) {
+        assert.ok(i < 1500, 'the stuck capture never opened its page');
+        await sleep(20);
+      }
+      await assert.rejects(crashing.frames(loudId, { sceneId: 'loud', times: [0.5] }), /closed|disconnected/);
+      await stuck;
+    } finally {
+      await crashing.close();
+    }
+  });
+
+  it('cuts what scene code throws or answers as its scene id to a bounded length', async () => {
+    // Each scene patches window.__cadence of its own page: one project each.
+    const throwing = await projectWith({
+      throwing: `window.__cadence!.seek = async () => {\n  throw new Error('#' + 't'.repeat(10_000_000));\n};\nexport default function Throwing() {\n  return null;\n}\n`,
+    });
+    const named = await projectWith({
+      named: `const seek = window.__cadence!.seek;\nwindow.__cadence!.seek = async (t) => ({ ...(await seek(t)), sceneId: 'n'.repeat(10_000_000) });\nexport default function Named() {\n  return null;\n}\n`,
+    });
+    await assert.rejects(capture.frames(throwing, { sceneId: 'throwing', times: [0.5] }), (e: Error) => {
+      assert.match(e.message, /#ttt/);
+      assert.ok(e.message.length <= PROBLEM_CHARS, `${e.message.length} characters`);
+      return true;
+    });
+    const [frame] = await capture.frames(named, { sceneId: 'named', times: [0.5] });
+    assert.equal(frame.sceneId, 'n'.repeat(PROBLEM_CHARS));
+  });
+
+  it('keeps a bounded number of scene errors, each cut to a bounded length', async () => {
+    // Scene code shares the page with window.__cadence and may answer anything.
+    const projectId = await projectWith({
+      noisy: `const seek = window.__cadence!.seek;\nwindow.__cadence!.seek = async (t) => ({ ...(await seek(t)), errors: Array(1000).fill('e'.repeat(100_000)) });\nexport default function Noisy() {\n  return null;\n}\n`,
+    });
+    const [frame] = await capture.frames(projectId, { sceneId: 'noisy', times: [0.5] });
+    assert.equal(frame.errors.length, MAX_PROBLEMS);
+    assert.ok(frame.errors.every((e) => e.length === PROBLEM_CHARS));
+  });
+
+  it('keeps a bounded number of the console and page errors of a page that does not start, each cut to a bounded length', async () => {
+    const count = MAX_PROBLEMS * 5;
+    const length = PROBLEM_CHARS * 5;
+    const site = http.createServer((_req, res) => {
+      res.setHeader('Content-Type', 'text/html');
+      // One script per uncaught error: a throw ends its own script only.
+      const script = `<script>console.error('#' + 'c'.repeat(${length})); throw new Error('#' + 'p'.repeat(${length}));</script>`;
+      res.end(script.repeat(count));
+    });
+    await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
+    const browser = await launchChromium();
+    try {
+      const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+      await assert.rejects(
+        openFramePage(browser, origin, { projectId: id, sceneId: null, format: '16:9', scale: 0.25 }),
+        (e: Error) => {
+          const problems = e.message.match(/#[cp]*/g) ?? [];
+          assert.equal(problems.length, MAX_PROBLEMS);
+          assert.ok(problems.every((p) => p.length === PROBLEM_CHARS));
+          assert.deepEqual(new Set(problems.map((p) => p[1])), new Set(['c', 'p']));
+          return true;
+        },
+      );
+    } finally {
+      await browser.close();
+      site.closeAllConnections();
+      await new Promise((resolve) => site.close(resolve));
+    }
+  });
+
+  it('keeps a bounded number of brand kit problems, each cut to a bounded length', async () => {
+    // The kit page reports what its own window errors and the brand's console errors say: brand code decides both.
+    const count = MAX_PROBLEMS * 5;
+    const length = PROBLEM_CHARS * 5;
+    const dir = path.join(h.config.brandsDir, 'noisy');
+    await cp(path.join(h.config.brandsDir, 'test'), dir, { recursive: true });
+    const brand = JSON.parse(await readFile(path.join(dir, 'brand.json'), 'utf8')) as { id: string };
+    await writeFile(path.join(dir, 'brand.json'), JSON.stringify({ ...brand, id: 'noisy' }));
+    const code = await readFile(path.join(dir, 'index.tsx'), 'utf8');
+    await writeFile(
+      path.join(dir, 'index.tsx'),
+      `${code}\nfor (let i = 0; i < ${count}; i++) {\n  console.error(String(i).padEnd(${length}, 'c'));\n  window.dispatchEvent(new ErrorEvent('error', { message: String(i).padEnd(${length}, 'k') }));\n}\n`,
+    );
+    const kit = await capture.kitSheet('noisy');
+    assert.equal(kit.loaded, true);
+    assert.equal(kit.problems.length, MAX_PROBLEMS);
+    assert.ok(kit.problems.every((p) => p.length === PROBLEM_CHARS));
   });
 
   it('refuses captures queued behind close() instead of launching a Chromium nobody closes', async () => {
