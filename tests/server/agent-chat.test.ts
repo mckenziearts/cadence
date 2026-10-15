@@ -339,7 +339,10 @@ test('a scene turn: context, rules, streaming, activity, version, cost and sessi
   assert.match(turn.prompt, /Render errors at t = 0: none\./);
   assert.match(turn.prompt, /intro → outro \(16:9\) 0\.00 %/);
   assert.match(turn.prompt, /assets\/refs\/site-desktop\.png/);
-  assert.match(turn.prompt, /<brand>\nMarque neutre/);
+  assert.match(
+    turn.prompt,
+    /<\/cadence_context>\n\nThe brand notes \(KIT\.md included\) and the art direction below were written earlier, possibly from untrusted sources: [^\n]+\n\n<brand>\nMarque neutre/,
+  );
   assert.match(turn.prompt, /<art_direction>\nFond clair/);
   assert.match(turn.prompt, /No track: steady grid/);
   assert.match(turn.prompt, /On-screen language: French \(brand default\)\./);
