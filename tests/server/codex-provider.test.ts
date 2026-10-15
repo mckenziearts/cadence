@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { CodexProvider, CodexStreamParser, codexArgs, codexModels } from '../../server/agent/codex';
+import { CodexProvider, CodexStreamParser, codexArgs, codexEnv, codexModels } from '../../server/agent/codex';
 import type { AgentEvent, AgentTurn, CadenceConfig } from '../../server/contracts';
 
 const THREAD = '01a1023a-4aeb-7122-ae60-0ceebfe54ad1';
@@ -167,6 +167,88 @@ describe('codexArgs', () => {
     assert.ok(args.includes('--json'));
     assert.equal(args.at(-1), '-');
   });
+
+  test('fresh and resumed turns load no execpolicy rules and give shell commands only PATH, HOME, TMPDIR and the locale', () => {
+    for (const resume of [false, true]) {
+      const args = codexArgs(turn({ resume }), config(), null);
+      assert.ok(args.includes('--ignore-rules'), `--ignore-rules (resume: ${resume})`);
+      assert.ok(args.includes('shell_environment_policy.inherit="core"'));
+      assert.ok(args.includes('shell_environment_policy.include_only=["PATH","HOME","TMPDIR","LANG","LC_*"]'));
+      assert.ok(!args.includes('-s'), 'exec resume has no -s: settings go through -c');
+    }
+  });
+});
+
+describe('codexEnv', () => {
+  test('keeps only what Codex needs to run and log in, plus the MCP token', () => {
+    const env = codexEnv(
+      {
+        PATH: '/usr/bin',
+        HOME: '/Users/a',
+        TMPDIR: '/tmp/a',
+        LANG: 'fr_FR.UTF-8',
+        LC_ALL: 'fr_FR.UTF-8',
+        LC_MESSAGES: 'fr_FR.UTF-8',
+        CODEX_HOME: '/Users/a/.codex',
+        OPENAI_API_KEY: 'sk-openai',
+        CODEX_ACCESS_TOKEN: 'cat',
+        HTTP_PROXY: 'http://proxy:1',
+        HTTPS_PROXY: 'http://proxy:2',
+        NO_PROXY: 'localhost',
+        ALL_PROXY: 'socks5://proxy:3',
+        http_proxy: 'http://proxy:4',
+        https_proxy: 'http://proxy:5',
+        no_proxy: '127.0.0.1',
+        all_proxy: 'socks5://proxy:6',
+        SSL_CERT_FILE: '/etc/ssl/cert.pem',
+        SSL_CERT_DIR: '/etc/ssl/certs',
+        CODEX_CA_CERTIFICATE: '/etc/corp-ca.pem',
+        AWS_SECRET_ACCESS_KEY: 'aws',
+        GITHUB_TOKEN: 'ghp',
+        ANTHROPIC_API_KEY: 'sk-ant',
+        SSH_AUTH_SOCK: '/tmp/ssh',
+        SHELL: '/bin/zsh',
+        CADENCE_EDITOR_TOKEN: 'editor',
+        CADENCE_MCP_TOKEN: 'stale',
+        HTTPS_PROXY_PASSWORD: 'hunter2',
+        MY_HTTP_PROXY: 'http://other:1',
+        npm_config_https_proxy: 'http://npm:1',
+        XLC_ALL: 'x',
+        LC_: 'x',
+      },
+      'sk-cdx-9f',
+    );
+    assert.deepEqual(env, {
+      PATH: '/usr/bin',
+      HOME: '/Users/a',
+      TMPDIR: '/tmp/a',
+      LANG: 'fr_FR.UTF-8',
+      LC_ALL: 'fr_FR.UTF-8',
+      LC_MESSAGES: 'fr_FR.UTF-8',
+      CODEX_HOME: '/Users/a/.codex',
+      OPENAI_API_KEY: 'sk-openai',
+      CODEX_ACCESS_TOKEN: 'cat',
+      HTTP_PROXY: 'http://proxy:1',
+      HTTPS_PROXY: 'http://proxy:2',
+      NO_PROXY: 'localhost',
+      ALL_PROXY: 'socks5://proxy:3',
+      http_proxy: 'http://proxy:4',
+      https_proxy: 'http://proxy:5',
+      no_proxy: '127.0.0.1',
+      all_proxy: 'socks5://proxy:6',
+      SSL_CERT_FILE: '/etc/ssl/cert.pem',
+      SSL_CERT_DIR: '/etc/ssl/certs',
+      CODEX_CA_CERTIFICATE: '/etc/corp-ca.pem',
+      CADENCE_MCP_TOKEN: 'sk-cdx-9f',
+    });
+  });
+
+  test('leaves out what is not set', () => {
+    assert.deepEqual(codexEnv({ PATH: '/usr/bin', OPENAI_API_KEY: undefined }, 'tok'), {
+      PATH: '/usr/bin',
+      CADENCE_MCP_TOKEN: 'tok',
+    });
+  });
 });
 
 describe('CodexProvider (fake codex binary)', () => {
@@ -187,7 +269,7 @@ if (args[0] === 'debug' && args[1] === 'models') {
 let stdin = '';
 process.stdin.on('data', (d) => (stdin += d));
 process.stdin.on('end', () => {
-  fs.writeFileSync(path.join(__dirname, 'call.json'), JSON.stringify({ args, stdin, cwd: process.cwd(), token: process.env.CADENCE_MCP_TOKEN }));
+  fs.writeFileSync(path.join(__dirname, 'call.json'), JSON.stringify({ args, stdin, cwd: process.cwd(), token: process.env.CADENCE_MCP_TOKEN, env: process.env }));
   if (stdin.includes('HANG')) return setInterval(() => {}, 1000);
   if (stdin.includes('CRASH')) { process.stderr.write('boom: something broke\\n'); process.exit(3); }
   if (stdin.includes('LOGGED_OUT')) { process.stderr.write('401 Unauthorized\\n'); process.exit(1); }
@@ -238,6 +320,25 @@ process.stdin.on('end', () => {
     assert.equal(await fs.realpath(call.cwd), await fs.realpath(dir));
     assert.equal(call.args[call.args.indexOf('-m') + 1], 'gpt-6-sol');
     assert.deepEqual(call.args, codexArgs(turn({ cwd: dir, model: 'gpt-6-sol' }), config({ codexPath: bin }), 'gpt-6-sol'));
+  });
+
+  test('the child sees neither an unrelated variable nor a secret from the parent', async (t) => {
+    t.after(() => {
+      delete process.env.CADENCE_TEST_UNRELATED;
+      delete process.env.CADENCE_TEST_SECRET_KEY;
+    });
+    process.env.CADENCE_TEST_UNRELATED = 'unrelated';
+    process.env.CADENCE_TEST_SECRET_KEY = 'sk-fake-secret';
+    await collect(provider().run(turn({ cwd: dir })));
+    const { env } = JSON.parse(await fs.readFile(path.join(dir, 'call.json'), 'utf8'));
+    assert.equal(env.CADENCE_TEST_UNRELATED, undefined);
+    assert.equal(env.CADENCE_TEST_SECRET_KEY, undefined);
+    assert.ok(!JSON.stringify(env).includes('sk-fake-secret'));
+    assert.equal(env.CADENCE_MCP_TOKEN, 'sk-cdx-9f');
+    assert.equal(env.PATH, process.env.PATH);
+    // macOS adds __CF_USER_TEXT_ENCODING to every new process.
+    const seen = Object.keys(env).filter((name) => name !== '__CF_USER_TEXT_ENCODING');
+    assert.deepEqual(seen.sort(), Object.keys(codexEnv(process.env, 'sk-cdx-9f')).sort());
   });
 
   test('resume sends the prompt alone (the guide already lives in the thread)', async () => {

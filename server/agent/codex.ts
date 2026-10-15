@@ -14,6 +14,20 @@ type DoneEvent = Extract<AgentEvent, { type: 'done' }>;
 const AUTH_ERROR = /not logged in|please run .*login|unauthorized|invalid api key|401/i;
 /** The child reads its MCP bearer from this variable (never on the command line, so it stays out of `ps`). */
 const TOKEN_ENV = 'CADENCE_MCP_TOKEN';
+/** What `codex` needs to run, log in and reach OpenAI through a proxy; nothing else of Cadence's environment reaches it. */
+const CHILD_ENV = new Set([
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'LANG',
+  'CODEX_HOME',
+  'OPENAI_API_KEY',
+  'CODEX_ACCESS_TOKEN',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'CODEX_CA_CERTIFICATE',
+]);
+const CHILD_ENV_PATTERN = /^(LC_\w+|(https?|all|no)_proxy)$/i;
 
 /**
  * Codex's status as the Profile shows it: is the `codex` CLI installed on this computer, and is it logged in. Mirrors
@@ -80,7 +94,8 @@ async function loadModels(config: CadenceConfig): Promise<ModelSpec[]> {
 /**
  * `codex exec --json` arguments. The sandbox (workspace-write, no network) confines file writes to the project folder,
  * `--ignore-user-config` keeps the user's own config, skills and project docs out of the turn while their login still
- * works, and the Cadence MCP server is injected inline so no `~/.codex/config.toml` entry is needed.
+ * works, `--ignore-rules` keeps their execpolicy prefixes from approving commands, and the Cadence MCP server is injected
+ * inline so no `~/.codex/config.toml` entry is needed. `exec resume` has no `-s`, so every setting goes through `-c`.
  */
 export function codexArgs(turn: AgentTurn, config: CadenceConfig, model: string | null): string[] {
   const server = ((turn.mcpServers as Record<string, Json>)?.cadence ?? {}) as Json;
@@ -96,13 +111,28 @@ export function codexArgs(turn: AgentTurn, config: CadenceConfig, model: string 
     'project_doc_max_bytes=0',
     '-c',
     'tools.web_search=false',
+    // Commands the agent runs see none of Codex's own environment (its login, the MCP token, proxies).
+    '-c',
+    'shell_environment_policy.inherit="core"',
+    '-c',
+    'shell_environment_policy.include_only=["PATH","HOME","TMPDIR","LANG","LC_*"]',
     // Codex supports low/medium/high/xhigh/max/ultra natively, so the effort passes through unchanged.
     ...(turn.effort ? ['-c', `model_reasoning_effort="${turn.effort}"`] : []),
     ...(model ? ['-m', model] : []),
   ];
-  const common = ['--json', '--skip-git-repo-check', '--ignore-user-config', ...overrides];
+  const common = ['--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', ...overrides];
   // '-' reads the prompt from stdin. On resume the cwd and the Cadence guide already live in the thread.
   return turn.resume ? ['exec', 'resume', turn.sessionId, ...common, '-'] : ['exec', ...common, '-'];
+}
+
+/** Environment for the child `codex`: the allowlist above, then the turn's MCP bearer token. */
+export function codexEnv(source: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value !== undefined && (CHILD_ENV.has(name) || CHILD_ENV_PATTERN.test(name))) env[name] = value;
+  }
+  env[TOKEN_ENV] = token;
+  return env;
 }
 
 function bearerToken(mcpServers: Record<string, unknown>): string {
@@ -159,7 +189,7 @@ export class CodexProvider implements AgentProvider {
       const guide = turn.resume ? '' : `${turn.systemPrompt}\n\n`;
       const child = spawn(bin, codexArgs(turn, this.config, model), {
         cwd: turn.cwd,
-        env: { ...process.env, [TOKEN_ENV]: bearerToken(turn.mcpServers) },
+        env: codexEnv(process.env, bearerToken(turn.mcpServers)),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       child.stdin.on('error', () => undefined);
