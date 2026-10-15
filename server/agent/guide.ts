@@ -37,16 +37,7 @@ export function buildSystemPrompt(opts: { scope: 'scene' | 'project' }): string 
 }
 
 export type BrandGuideVars = Record<
-  | 'REPO_DIR'
-  | 'REPO'
-  | 'SOURCE'
-  | 'BRAND_DIR'
-  | 'BRAND_ID'
-  | 'BRAND_NAME'
-  | 'BRANDS_DIR'
-  | 'SHARED_DIR'
-  | 'FONTSOURCE'
-  | 'LANGUAGE',
+  'REPO_DIR' | 'REPO' | 'SOURCE' | 'BRAND_DIR' | 'BRAND_ID' | 'BRAND_NAME' | 'SHARED_DIR' | 'FONTSOURCE' | 'LANGUAGE',
   string
 >;
 

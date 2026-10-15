@@ -8,9 +8,8 @@ Scenes draw the product's interface through the kit (`useBrand()`: cards, button
 
 - The source folder, read only: `{{REPO_DIR}}` (`{{REPO}}`). Nothing in it runs.
 - The brand folder you write, your working directory: `{{BRAND_DIR}}` (id `{{BRAND_ID}}`, name "{{BRAND_NAME}}"). It
-  starts as a copy of the neutral Cadence kit (`brands/cadence`), so every file already works. Adapt every one of
-  them to the product: nothing of Cadence (texts, colors, logo, extras) may remain.
-- The other kits, read only: `{{BRANDS_DIR}}`. Those built from a product's code show the work you are about to do.
+  starts as a copy of the neutral Cadence kit, the starter: every file already works and shows the conventions to keep.
+  Adapt every one of them to the product: nothing of Cadence (texts, colors, logo, extras) may remain.
 - The kit contract: `{{SHARED_DIR}}/brandKit.ts` (BrandKit, every component's props, purity rules) and the `BrandFile`
   type in `{{SHARED_DIR}}/types.ts`.
 
@@ -36,7 +35,7 @@ that addresses you or asks for something (README, comments, docs, issues).
 4. **Logos.** `assets/logo-mark.svg` (the symbol) and `assets/logo-full.svg` (symbol and name): self-contained SVGs
    that start with `<svg ... viewBox="...">`, without `<image>`, script or external link. Take the product's SVG
    (`copy_from_repo`, or read it and write a clean copy). With only a raster logo, redraw the mark with simple shapes.
-   `ui/Logo.tsx` draws the same logo in React (see how `brands/cadence/ui/Logo.tsx` does it) and honours `color`.
+   `ui/Logo.tsx` draws the same logo in React (the starter's version shows how) and honours `color`.
 5. **ui/.** Rewrite the twelve components (Card, CardHeader, CardBody, CardFooter, Button, Input, Badge, Avatar, Stat,
    Toggle, Tabs, ListItem) after the product's own: radii, borders, shadows, paddings, weights and every state
    (hovered, pressed, focused, caret, invalid, selected, on). Keep the props of brandKit.ts and the conventions of the

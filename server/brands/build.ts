@@ -279,7 +279,7 @@ export class BrandBuilder implements BrandBuildService {
     return agentName(state.agent, this.deps.features);
   }
 
-  /** Reads the clone, the brands (examples) and the kit contract; writes the brand folder only. */
+  /** Reads the clone, its own brand folder and the kit contract; writes the brand folder only. */
   private async turn(
     state: State,
     brandDir: string,
@@ -308,7 +308,6 @@ export class BrandBuilder implements BrandBuildService {
         BRAND_DIR: brandDir,
         BRAND_ID: state.build.brandId,
         BRAND_NAME: state.build.name,
-        BRANDS_DIR: config.brandsDir,
         SHARED_DIR: shared,
         FONTSOURCE: fontsource.map((name) => `\`${name}\``).join(', '),
         // The summary shows in the editor, in its language.
@@ -319,7 +318,7 @@ export class BrandBuilder implements BrandBuildService {
       tools: TOOLS,
       allow: [
         rule('Read', `${repoDir}/**`),
-        rule('Read', `${config.brandsDir}/**`),
+        rule('Read', `${brandDir}/**`),
         rule('Read', `${shared}/**`),
         'Glob',
         'Grep',
@@ -328,7 +327,7 @@ export class BrandBuilder implements BrandBuildService {
         ...BRAND_TOOLS.map((tool) => `${MCP_PREFIX}${tool}`),
       ],
       deny: denyRules(config.stateDir),
-      addDirs: [repoDir, config.brandsDir, shared],
+      addDirs: [repoDir, brandDir, shared],
       mcpServers: { cadence: { type: 'http', url: config.mcpUrl, headers: { Authorization: `Bearer ${token}` } } },
       sessionId: randomUUID(),
       signal: state.abort.signal,
