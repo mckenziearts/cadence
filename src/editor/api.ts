@@ -104,7 +104,7 @@ const get = <T>(url: string, options?: Options) => request<T>('GET', url, undefi
 const post = <T>(url: string, body?: unknown, options?: Options) => request<T>('POST', url, body ?? {}, options);
 const put = <T>(url: string, body: unknown, options?: Options) => request<T>('PUT', url, body, options);
 const patch = <T>(url: string, body: unknown, options?: Options) => request<T>('PATCH', url, body, options);
-const del = <T>(url: string) => request<T>('DELETE', url);
+const del = <T>(url: string, body?: unknown) => request<T>('DELETE', url, body);
 
 const p = (id: string) => `/api/projects/${encodeURIComponent(id)}`;
 const q = (params: Record<string, string | number | undefined | null>) => {
@@ -199,6 +199,9 @@ export const api = {
   uploadAsset: (id: string, file: File) => post<AssetInfo>(`${p(id)}/assets`, upload(file)),
   deleteAsset: (id: string, assetPath: string) => del<{ ok: true }>(`${p(id)}/assets${q({ path: assetPath })}`),
   captureRef: (id: string, input: CaptureRefInput) => post<AssetInfo>(`${p(id)}/refs`, input),
+  captureHosts: (id: string) => get<{ hosts: string[] }>(`${p(id)}/capture-hosts`),
+  allowCaptureHost: (id: string, host: string) => post<{ hosts: string[] }>(`${p(id)}/capture-hosts`, { host }),
+  removeCaptureHost: (id: string, host: string) => del<{ hosts: string[] }>(`${p(id)}/capture-hosts`, { host }),
 
   brand: (id: string) => get<BrandFile>(`/api/brands/${encodeURIComponent(id)}`),
   deleteBrand: (id: string) => del<{ ok: true }>(`/api/brands/${encodeURIComponent(id)}`),

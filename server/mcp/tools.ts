@@ -27,7 +27,7 @@ import type {
 } from '../contracts';
 import { barSeconds, projectOverview, sceneTable, speakerLine, voiceOverSummary } from '../agent/prompts';
 import { UnapprovedHost } from '../capture/capture';
-import { approved } from '../capture/policy';
+import { approved, isLocalHost } from '../capture/policy';
 import { diffPercent } from '../capture/seams';
 import { m } from '../i18n';
 import { unknownSpeaker } from '../store/projects';
@@ -834,7 +834,9 @@ export function createToolServer(ctx: ToolContext): McpServer {
           policy,
         );
       } catch (e) {
-        if (e instanceof UnapprovedHost) deps.hub.send({ type: 'capture-host', projectId: p.id, host: e.host });
+        if (e instanceof UnapprovedHost) {
+          deps.hub.send({ type: 'capture-host', projectId: p.id, host: e.host, local: isLocalHost(e.host) });
+        }
         throw e;
       }
       return text(`Saved assets/${info.path} → ${deps.assets.resolve(p.id, info.path)}. Read that file to look at it.`);

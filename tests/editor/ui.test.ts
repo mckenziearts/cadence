@@ -186,6 +186,20 @@ async function open(hash: string, page?: Page): Promise<Page> {
 
 const panel = (page: Page, name: string) => page.getByRole('group', { name: 'Panneau' }).getByRole('button', { name }).click();
 
+/** Once the page has handled every event sent before: the events stream answers in order. */
+async function barrier(page: Page): Promise<void> {
+  const state = page.waitForRequest((r) => r.url().endsWith('/api/state'));
+  server.services.hub.send({ type: 'projects-changed' });
+  await state;
+}
+
+/** Once the button labelled `name` takes clicks: focus() and the keyboard do not wait for it. */
+const armed = (page: Page, name: string) =>
+  page.waitForFunction(
+    (label) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.disabled === false,
+    name,
+  );
+
 /** Answers the page's GET of a project (A by default) through `edit` (music, code generation) without touching the files. */
 async function rewriteProject(page: Page, edit: (project: ProjectState) => ProjectState, id = A): Promise<void> {
   await page.route(`**/api/projects/${id}`, async (route) => {
@@ -1018,6 +1032,232 @@ describe('editor', () => {
       }
     },
   );
+
+  it(
+    'asks the person about a host the agent may not capture, and lists the hosts they allowed',
+    { timeout: 90_000 },
+    async () => {
+      const route = `/api/projects/${A}/capture-hosts`;
+      const hosts = () => api<{ hosts: string[] }>('GET', route);
+      const page = await open(A);
+      try {
+        const ask = (projectId: string, host: string, local: boolean) =>
+          server.services.hub.send({ type: 'capture-host', projectId, host, local });
+        // Whether each Allow button was disabled when it appeared: a click meant for the previous ask must not land on it.
+        await page.evaluate(() => {
+          const seen: boolean[] = [];
+          (window as unknown as { armed: boolean[] }).armed = seen;
+          new MutationObserver((records) => {
+            for (const node of records.flatMap((record) => [...record.addedNodes])) {
+              if (!(node instanceof Element)) continue;
+              for (const button of [node, ...node.querySelectorAll('button')]) {
+                if (button instanceof HTMLButtonElement && button.ariaLabel?.startsWith('Autoriser '))
+                  seen.push(!button.disabled);
+              }
+            }
+          }).observe(document.body, { childList: true, subtree: true });
+        });
+        const allow = page.getByRole('button', { name: 'Autoriser 192.168.1.10:3000' });
+        // The page may not listen yet: asked until it shows.
+        for (let i = 0; i < 100 && !(await allow.count()); i++) {
+          ask(A, '192.168.1.10:3000', true);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        const banner = page.getByRole('status').filter({ has: allow });
+        assert.match(
+          (await banner.textContent()) ?? '',
+          /veut capturer une page de cet hôte.*192\.168\.1\.10:3000.*toutes ses pages et à tous ses ports.*Adresse locale/,
+        );
+
+        // Another ask waits for this one to be answered.
+        ask(A, 'example.com', false);
+        await barrier(page);
+        assert.deepEqual(await page.getByRole('button', { name: /^Autoriser/ }).evaluateAll((b) => b.map((el) => el.ariaLabel)), [
+          'Autoriser 192.168.1.10:3000',
+        ]);
+
+        // The click that brings the window back must not allow it either.
+        await armed(page, 'Autoriser 192.168.1.10:3000');
+        const away = await page.evaluate(async (label) => {
+          const button = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+          document.hasFocus = () => false;
+          window.dispatchEvent(new Event('blur'));
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          const blurred = button.disabled;
+          delete (document as { hasFocus?: unknown }).hasFocus;
+          window.dispatchEvent(new Event('focus'));
+          const back = performance.now();
+          for (let i = 0; i < 100 && button.disabled; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+          return { blurred, armed: !button.disabled, after: performance.now() - back };
+        }, 'Autoriser 192.168.1.10:3000');
+        assert.equal(away.blurred, true, 'disabled while the window is in the background');
+        assert.ok(away.armed && away.after >= 450, `armed ${Math.round(away.after)} ms after the window came back`);
+
+        // A failed approval leaves the ask answerable.
+        await page.route(`**${route}`, (r) =>
+          r.request().method() === 'POST' ? r.fulfill({ status: 500, json: { error: 'Approbation refusée' } }) : r.fallback(),
+        );
+        await armed(page, 'Autoriser 192.168.1.10:3000');
+        await allow.click();
+        await page.getByText('Approbation refusée').waitFor({ timeout: 10_000 });
+        await page.unroute(`**${route}`);
+        await barrier(page);
+        assert.equal(await page.getByRole('button', { name: 'Ignorer' }).isEnabled(), true);
+
+        const posted = page.waitForRequest((r) => r.url().endsWith(route) && r.method() === 'POST');
+        await armed(page, 'Autoriser 192.168.1.10:3000');
+        await allow.focus();
+        await page.keyboard.press('Enter');
+        assert.deepEqual((await posted).postDataJSON(), { host: '192.168.1.10:3000' });
+        await allow.waitFor({ state: 'detached', timeout: 10_000 });
+        assert.deepEqual(await hosts(), { hosts: ['192.168.1.10:3000'] });
+
+        // Another project's ask never shows.
+        ask(B, 'other.test', false);
+        ask(A, 'example.com', false);
+        const dismiss = page.getByRole('button', { name: 'Ignorer' });
+        await dismiss.waitFor({ timeout: 10_000 });
+        const other = (await page.getByRole('status').filter({ has: dismiss }).textContent()) ?? '';
+        assert.match(other, /example\.com.*toutes ses pages, pour ce projet/);
+        assert.doesNotMatch(other, /ports|Adresse locale/);
+        await dismiss.click();
+        await dismiss.waitFor({ state: 'detached', timeout: 10_000 });
+        assert.deepEqual(await hosts(), { hosts: ['192.168.1.10:3000'] }, 'dismissed, not allowed');
+        assert.deepEqual(await page.evaluate(() => (window as unknown as { armed: boolean[] }).armed), [false, false]);
+
+        // A dismissed host is not asked again while the project stays open.
+        ask(A, 'example.com', false);
+        await barrier(page);
+        assert.equal(await dismiss.count(), 0);
+        // That host only: another one is still asked.
+        ask(A, 'next.test', false);
+        await page.getByRole('button', { name: 'Autoriser next.test' }).waitFor({ timeout: 10_000 });
+        await dismiss.click();
+        await dismiss.waitFor({ state: 'detached', timeout: 10_000 });
+
+        await api('POST', route, { host: 'example.com' });
+        await panel(page, 'Médias');
+        const remove = page.getByRole('button', { name: 'Retirer 192.168.1.10:3000' });
+        await remove.waitFor({ timeout: 10_000 });
+        await page.getByRole('button', { name: 'Retirer example.com' }).waitFor();
+        const removed = page.waitForRequest((r) => r.url().endsWith(route) && r.method() === 'DELETE');
+        await remove.click();
+        assert.deepEqual((await removed).postDataJSON(), { host: '192.168.1.10:3000' });
+        await remove.waitFor({ state: 'detached', timeout: 10_000 });
+        assert.deepEqual(await hosts(), { hosts: ['example.com'] });
+        await page.getByRole('button', { name: 'Retirer example.com' }).click();
+        await page.getByText('Aucun hôte autorisé').waitFor({ timeout: 10_000 });
+        assert.deepEqual(await hosts(), { hosts: [] });
+      } finally {
+        await page.context().close();
+        for (const host of ['192.168.1.10:3000', 'example.com']) await api('DELETE', route, { host });
+      }
+    },
+  );
+
+  it('keeps a capture ask with the project it was asked for', { timeout: 90_000 }, async () => {
+    const hosts = (id: string) => api<{ hosts: string[] }>('GET', `/api/projects/${id}/capture-hosts`);
+    const page = await open(A);
+    try {
+      const shown = async (projectId: string, host: string) => {
+        const allow = page.getByRole('button', { name: `Autoriser ${host}` });
+        for (let i = 0; i < 100 && !(await allow.count()); i++) {
+          server.services.hub.send({ type: 'capture-host', projectId, host, local: false });
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        await armed(page, `Autoriser ${host}`);
+        return allow;
+      };
+      // The approval for A answers once B is open.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      await page.route(`**/api/projects/${A}/capture-hosts`, async (route) => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        await held;
+        await route.continue();
+      });
+      await (await shown(A, 'example.com')).click();
+      await page.evaluate((id) => (location.hash = `#/${id}`), B);
+      await page.getByRole('button', { name: 'Éditeur B' }).waitFor({ timeout: 30_000 });
+      assert.equal(await page.getByRole('button', { name: /^Autoriser/ }).count(), 0, "A's ask stays with A");
+
+      const other = await shown(B, 'other.test');
+      const answered = page.waitForResponse((r) => r.url().endsWith(`/api/projects/${A}/capture-hosts`));
+      release();
+      await answered;
+      await barrier(page);
+      assert.equal(await other.isEnabled(), true, "B's ask, still there and clickable");
+      await page.getByRole('button', { name: 'Ignorer' }).click();
+
+      await page.evaluate((id) => (location.hash = `#/${id}`), A);
+      await page.getByRole('button', { name: 'Éditeur A' }).waitFor({ timeout: 30_000 });
+      assert.equal(await page.getByRole('button', { name: /^Autoriser/ }).count(), 0);
+      assert.deepEqual(await hosts(A), { hosts: ['example.com'] }, 'allowed for the project that asked');
+      assert.deepEqual(await hosts(B), { hosts: [] });
+
+      // Dismissed while B was open: asked again once B is opened anew.
+      await page.evaluate((id) => (location.hash = `#/${id}`), B);
+      await page.getByRole('button', { name: 'Éditeur B' }).waitFor({ timeout: 30_000 });
+      await shown(B, 'other.test');
+    } finally {
+      await page.context().close();
+      await api('DELETE', `/api/projects/${A}/capture-hosts`, { host: 'example.com' });
+    }
+  });
+
+  it('lists the allowed hosts right when the server fails or answers out of order', { timeout: 90_000 }, async () => {
+    const route = `/api/projects/${A}/capture-hosts`;
+    for (const host of ['one.test', 'two.test']) await api('POST', route, { host });
+    let page = await open(A);
+    try {
+      await page.route(`**${route}`, (r) =>
+        r.request().method() === 'GET' ? r.fulfill({ status: 500, json: { error: 'Liste illisible' } }) : r.fallback(),
+      );
+      await panel(page, 'Médias');
+      await page.getByText('Liste illisible').waitFor({ timeout: 10_000 });
+      assert.equal(await page.getByText('Aucun hôte autorisé').count(), 0, 'unknown, not empty');
+      await page.context().close();
+
+      page = await open(A);
+      await panel(page, 'Médias');
+      const one = page.getByRole('button', { name: 'Retirer one.test' });
+      await one.waitFor({ timeout: 10_000 });
+      await page.route(`**${route}`, (r) =>
+        r.request().method() === 'DELETE' ? r.fulfill({ status: 500, json: { error: 'Retrait refusé' } }) : r.fallback(),
+      );
+      await one.click();
+      await page.getByText('Retrait refusé').waitFor({ timeout: 10_000 });
+      assert.equal(await one.count(), 1, 'still listed');
+      await page.unroute(`**${route}`);
+
+      // The server removes one.test first, its answer (two.test left) comes last.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let removed!: () => void;
+      const first = new Promise<void>((resolve) => (removed = resolve));
+      await page.route(`**${route}`, async (r) => {
+        if (r.request().method() !== 'DELETE' || r.request().postDataJSON().host !== 'one.test') return r.fallback();
+        const response = await r.fetch();
+        removed();
+        await held;
+        await r.fulfill({ response });
+      });
+      await one.click();
+      await first;
+      const second = page.waitForResponse((r) => r.url().endsWith(route) && r.request().method() === 'DELETE');
+      await page.getByRole('button', { name: 'Retirer two.test' }).click();
+      await second;
+      const last = page.waitForResponse((r) => r.url().endsWith(route) && r.request().method() === 'DELETE');
+      release();
+      await last;
+      await barrier(page);
+      assert.equal(await page.getByRole('button', { name: /^Retirer/ }).count(), 0);
+      await page.getByText('Aucun hôte autorisé').waitFor({ timeout: 10_000 });
+    } finally {
+      await page.context().close();
+      for (const host of ['one.test', 'two.test']) await api('DELETE', route, { host });
+    }
+  });
 
   it("shows the server's refusal of a line beside the lines in Voix, once", { timeout: 90_000 }, async () => {
     const { id, scene, lines } = await dialogue('dr');

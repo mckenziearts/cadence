@@ -1437,12 +1437,17 @@ test("capture hosts: the person approves hosts for one project's agent captures;
   assert.equal((await json('POST', '/api/projects/absente/capture-hosts', { host: 'example.com' })).status, 404);
   assert.deepEqual(await deps.captureHosts.list('absente'), []);
   assert.deepEqual((await json('GET', route)).body, { hosts: ['example.com', 'localhost:5173'] });
+  assert.deepEqual((await json('DELETE', route, { host: 'example.com' })).body, { hosts: ['localhost:5173'] });
+  assert.deepEqual(await json('DELETE', route, { host: 'unknown.test' }), { status: 200, body: { hosts: ['localhost:5173'] } });
+  assert.equal((await json('DELETE', route, {})).status, 400);
+  assert.equal((await json('DELETE', '/api/projects/absente/capture-hosts', { host: 'example.com' })).status, 404);
+  assert.deepEqual((await json('POST', route, { host: 'example.com' })).body, { hosts: ['localhost:5173', 'example.com'] });
   assert.equal(await pathExists(path.join(t.config.stateDir, 'capture-hosts.json')), true, 'outside the project folder');
 
   assert.equal((await json('DELETE', '/api/projects/demo')).status, 409, 'a render is running');
   assert.deepEqual(
     (await json('GET', route)).body,
-    { hosts: ['example.com', 'localhost:5173'] },
+    { hosts: ['localhost:5173', 'example.com'] },
     'a refused deletion keeps them',
   );
   await json('DELETE', '/api/renders/job-1');

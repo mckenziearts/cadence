@@ -87,9 +87,9 @@ LOOPBACK.addSubnet('127.0.0.0', 8);
 LOOPBACK.addAddress('::1', 'ipv6');
 
 /**
- * The agent's capture of `url`, given the hosts the person approved for its project. An approved name reaches public
- * addresses only, on the default ports and its own; an approved `localhost` reaches the loopback, an approved address
- * that address, on any port. That holds for the whole capture, whatever host a later hop names. A host they have not
+ * The agent's capture of `url`, given the hosts the person approved for its project. An approved name or public address
+ * reaches public addresses only, on the default ports and its own; an approved `localhost` reaches the loopback, an
+ * approved local address that address, on any port (isLocalHost: the person is told). That holds for the whole capture, whatever host a later hop names. A host they have not
  * approved stays STRICT, and is refused as a page.
  */
 export function approved(url: URL, hosts: ReadonlySet<string>): Policy {
@@ -97,13 +97,24 @@ export function approved(url: URL, hosts: ReadonlySet<string>): Policy {
   if (url.hostname === 'localhost') return { allowsPort: () => true, allowed: LOOPBACK, hosts };
   const address = url.hostname.replace(/^\[(.*)\]$/, '$1');
   const family = net.isIP(address);
-  if (family !== 0) {
+  if (family !== 0 && addressRefusal([address]) === 'private') {
     const allowed = new net.BlockList();
     allowed.addAddress(address, family === 4 ? 'ipv4' : 'ipv6');
     return { allowsPort: () => true, allowed, hosts };
   }
   const own = portOf(url);
   return { allowsPort: (port) => port === 80 || port === 443 || port === own, hosts };
+}
+
+/**
+ * Whether approving `host` (URL.host) opens the person's machine or networks to the agent: `localhost`, or an address
+ * outside the public internet. A name reaches public addresses only (approved()), whatever it resolves to.
+ */
+export function isLocalHost(host: string): boolean {
+  const hostname = URL.parse(`http://${host}`)?.hostname;
+  if (hostname === 'localhost') return true;
+  const address = hostname?.replace(/^\[(.*)\]$/, '$1') ?? '';
+  return net.isIP(address) !== 0 && addressRefusal([address]) === 'private';
 }
 
 /** Why a host that resolves to `addresses` may not be reached, or null: one forbidden address refuses them all. */

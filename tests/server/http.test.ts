@@ -106,6 +106,7 @@ test('mutating API requests need the editor token', async () => {
   assert.equal((await request('/api/projects', { method: 'POST', headers: { 'x-cadence-token': 'wrong' } })).status, 403);
   assert.equal((await request('/api/import', { method: 'POST' })).status, 403, 'an archive upload too');
   assert.equal((await request('/api/projects/demo/capture-hosts', { method: 'POST' })).status, 403, 'a capture approval too');
+  assert.equal((await request('/api/projects/demo/capture-hosts', { method: 'DELETE' })).status, 403, 'and its removal');
   assert.equal((await request('/api/projects/x', { method: 'DELETE', headers: { 'x-cadence-token': `${TOKEN}x` } })).status, 403);
   assert.equal((await request('/api/projects', { method: 'OPTIONS' })).status, 403, 'preflights are never approved');
   res = await request('/api/projects', {
@@ -118,11 +119,15 @@ test('mutating API requests need the editor token', async () => {
     assert.equal((await request('/api/settings', { method, headers: { 'x-cadence-token': TOKEN } })).status, 200, method);
   }
   // Even with the token, a request from the frame origin (same-site) is refused.
-  for (const route of ['/api/projects', '/api/projects/demo/capture-hosts'])
+  for (const [method, route] of [
+    ['POST', '/api/projects'],
+    ['POST', '/api/projects/demo/capture-hosts'],
+    ['DELETE', '/api/projects/demo/capture-hosts'],
+  ])
     assert.equal(
-      (await request(route, { method: 'POST', headers: { 'x-cadence-token': TOKEN, 'sec-fetch-site': 'same-site' } })).status,
+      (await request(route, { method, headers: { 'x-cadence-token': TOKEN, 'sec-fetch-site': 'same-site' } })).status,
       403,
-      route,
+      `${method} ${route}`,
     );
 });
 

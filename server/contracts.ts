@@ -751,6 +751,8 @@ export interface CaptureHostStore {
   list(projectId: string): Promise<string[]>;
   /** Returns the project's hosts; 400 for a host URL.host would write otherwise. */
   approve(projectId: string, host: string): Promise<string[]>;
+  /** Returns the project's hosts left; a host it does not hold changes nothing. */
+  revoke(projectId: string, host: string): Promise<string[]>;
   /** Forgets the project's hosts, once it is deleted. */
   drop(projectId: string): Promise<void>;
 }

@@ -27,10 +27,17 @@ test('approvals are kept per project in the state folder, once each', async (t) 
   assert.deepEqual(await again.list('autre'), ['[::1]:8080']);
   assert.deepEqual(await again.list('constructor'), ['192.168.1.10:3000']);
 
+  assert.deepEqual(await again.revoke('demo', 'example.com'), ['localhost:5173']);
+  assert.deepEqual(await again.revoke('demo', 'unknown.test'), ['localhost:5173'], 'a host never approved changes nothing');
+  assert.deepEqual(await again.revoke('autre', '[::1]:8080'), []);
+  assert.deepEqual(await again.list('autre'), []);
+  await again.approve('autre', '[::1]:8080');
+  assert.deepEqual(await again.list('demo'), ['localhost:5173']);
+
   await again.drop('demo');
   assert.deepEqual(await again.list('demo'), []);
   assert.deepEqual(await again.list('autre'), ['[::1]:8080']);
-  assert.deepEqual(Object.keys(JSON.parse(await fs.readFile(path.join(stateDir, 'capture-hosts.json'), 'utf8'))), [
+  assert.deepEqual(Object.keys(JSON.parse(await fs.readFile(path.join(stateDir, 'capture-hosts.json'), 'utf8'))).sort(), [
     'autre',
     'constructor',
   ]);

@@ -214,13 +214,13 @@ messages naming the URL asked for or a host, never the network's own words), the
 requests are fetched, with the browser's User-Agent, Accept, Accept-Language, Referer and Origin; a cross-origin answer
 reaches the page only with its own `Access-Control-Allow-Origin` (Playwright 1.63's fulfill would grant one). The
 agent's captures (MCP `capture_reference`) open a page only from a host the person approved for the project
-(`approved()`): `POST /api/projects/:id/capture-hosts` keeps them in `<root>/.cadence/capture-hosts.json`, outside the
+(`approved()`): `POST /api/projects/:id/capture-hosts` (`DELETE` to withdraw one) keeps them in `<root>/.cadence/capture-hosts.json`, outside the
 project folder and its archives, where no agent turn may write, and deleting the project drops them. Any other host is
 refused before a lookup, with a message telling the agent to try again in a later turn, and a `capture-host` event
 lets the editor ask the person. The page's redirects and its main frame's navigations stay on approved hosts; its
 resources do not. The host of the page asked for sets the addresses and ports of the whole capture: a name, public
-addresses only, on ports 80 and 443 or its own; `localhost` the loopback, and an address that address, on any port. The
-person's
+addresses only, on ports 80 and 443 or its own, and so does a public address; `localhost` the loopback, and a local
+address that address, on any port, which the editor tells the person before they allow it. The person's captures
 (`POST /api/projects/:id/refs`) are `LOCAL`: loopback and private networks on any port as well, for local dev sites,
 until a hop of the page is answered from a public address: from there the capture keeps the ports and loses the private
 ranges. Neither reaches Cadence's own ports. HTTPS trusts Node's CAs and the system's, so a local CA that a dev tool
@@ -795,6 +795,7 @@ GET    /api/projects/:id/assets/file               ?path=, answers file
 POST   /api/projects/:id/refs                      CaptureRefInput, answers AssetInfo
 GET    /api/projects/:id/capture-hosts             { hosts }: the hosts approved for the agent's captures
 POST   /api/projects/:id/capture-hosts             { host } as URL.host writes it (400 otherwise), answers { hosts }
+DELETE /api/projects/:id/capture-hosts             { host }, answers { hosts } (a host not approved changes nothing)
 GET    /api/brands/:id                             BrandFile
 GET    /api/brands/:id/logo                        ?variant=mark|full, answers image/svg+xml
 DELETE /api/brands/:id                             to .cadence/trash/brands; 400 for cadence, 409 if projects use it or it builds

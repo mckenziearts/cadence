@@ -547,6 +547,11 @@ export function createApi(deps: ApiDeps) {
     const { host } = await body(c, schemas.captureHost);
     return c.json({ hosts: await deps.captureHosts.approve(id, host) });
   });
+  app.delete('/projects/:id/capture-hosts', async (c) => {
+    const id = await existingProject(c);
+    const { host } = await body(c, schemas.captureHost);
+    return c.json({ hosts: await deps.captureHosts.revoke(id, host) });
+  });
 
   // Brands & settings
   app.get('/brands/:id', async (c) => c.json(await brands.get(c.req.param('id'))));

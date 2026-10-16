@@ -104,6 +104,8 @@ async function loadProject(id: string, sceneId?: string | null): Promise<void> {
       page: null,
       music: { status: project.music ? (project.musicGrid ? 'ready' : 'analyzing') : 'idle', error: null },
       voiceOver: { status: 'idle' },
+      captureAsk: null,
+      captureIgnored: [],
       cost: null,
       focusVersion: null,
       renaming: null,

@@ -966,17 +966,19 @@ describe('MCP endpoint', () => {
         /n’a pas autorisé other\.test pour les captures de ce projet : elle vient de recevoir la demande\. Réessaie à un prochain tour/,
       );
       assert.equal((await call(client, 'capture_reference', { url: 'https://site.test/r' })).isError, true);
+      assert.equal((await call(client, 'capture_reference', { url: 'http://192.168.1.10:3000/' })).isError, true);
       assert.deepEqual(
         calls.event,
         [
-          { type: 'capture-host', projectId: 'demo', host: 'other.test' },
-          { type: 'capture-host', projectId: 'demo', host: 'cdn.test' },
+          { type: 'capture-host', projectId: 'demo', host: 'other.test', local: false },
+          { type: 'capture-host', projectId: 'demo', host: 'cdn.test', local: false },
+          { type: 'capture-host', projectId: 'demo', host: '192.168.1.10:3000', local: true },
         ],
-        'the editor asks the person about the host refused, a redirect target included',
+        'the editor asks the person about the host refused, a redirect target included, and says when it is local',
       );
       const down = await call(client, 'capture_reference', { url: 'https://down.test/' });
       assert.equal(down.isError, true);
-      assert.equal(calls.event.length, 2, 'other failures ask nothing');
+      assert.equal(calls.event.length, 3, 'other failures ask nothing');
 
       assert.match(
         texts(await call(client, 'save_version', { label: 'Avant refonte' }))[0],

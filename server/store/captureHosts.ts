@@ -25,6 +25,10 @@ export class FileCaptureHosts implements CaptureHostStore {
     return this.change(projectId, (hosts) => (hosts.includes(host) ? hosts : [...hosts, host]));
   }
 
+  revoke(projectId: string, host: string): Promise<string[]> {
+    return this.change(projectId, (hosts) => hosts.filter((h) => h !== host));
+  }
+
   async drop(projectId: string): Promise<void> {
     await this.change(projectId, () => []);
   }

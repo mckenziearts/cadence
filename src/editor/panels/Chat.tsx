@@ -11,12 +11,12 @@ import {
   type ChatMessage,
   type Effort,
 } from '../../shared/types';
-import { ignore } from '../api';
+import { api, ignore } from '../api';
 import { BeatPills, Button, ConfirmButton, Select } from '../components/ui';
 import { useT } from '../i18n';
 import { Markdown } from '../lib/markdown';
 import { elapsed, secsLabel, usd } from '../lib/format';
-import { set, useStore, type ChatKind, NONE } from '../store';
+import { set, useStore, type CaptureHostAsk, type ChatKind, NONE } from '../store';
 import { clearChat, draftKey, kindOf, loadChat, modelChoice, sendMessage, setDraft, stopChat } from '../store/chat';
 import { openModal } from '../store/ui';
 import { useAgentName } from '../components/agents';
@@ -66,6 +66,7 @@ export function Chat({ chatKey, header }: { chatKey: ChatKey; header?: ReactNode
           </div>
         </div>
       )}
+      <CaptureAsk />
       <div
         ref={list}
         className="min-h-0 flex-1 overflow-y-auto"
@@ -92,6 +93,86 @@ export function Chat({ chatKey, header }: { chatKey: ChatKey; header?: ReactNode
         </div>
       </div>
       <Composer chatKey={chatKey} kind={kind} busy={busy} queued={Boolean(chat?.queued)} />
+    </div>
+  );
+}
+
+/** The agent's capture of a host the person has not approved: they allow it for the project, or dismiss the ask. */
+function CaptureAsk() {
+  const ask = useStore((s) => s.captureAsk);
+  const projectId = useStore((s) => s.project?.id);
+  return ask && ask.projectId === projectId ? <CapturePrompt key={ask.host} ask={ask} /> : null;
+}
+
+function CapturePrompt({ ask }: { ask: CaptureHostAsk }) {
+  const texts = useT().conversation.captureHosts;
+  const agent = useAgentName();
+  const [busy, setBusy] = useState(false);
+  // A second click meant for the previous ask, or the click that brings the window back, must not allow this one.
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      setArmed(false);
+      if (document.hasFocus()) timer = setTimeout(() => setArmed(true), 500);
+    };
+    arm();
+    window.addEventListener('focus', arm);
+    window.addEventListener('blur', arm);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('focus', arm);
+      window.removeEventListener('blur', arm);
+    };
+  }, []);
+
+  const allow = async () => {
+    setBusy(true);
+    try {
+      await api.allowCaptureHost(ask.projectId, ask.host);
+      // Another project may be open by now, with its own ask.
+      set((s) => (s.captureAsk === ask ? { captureAsk: null } : {}));
+    } catch {
+      // toast shown
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div role="status" className="shrink-0 space-y-2 border-b border-rule bg-wash/60 px-4 py-3 text-[13px] text-ink-2">
+      <p>{texts.asked(agent)}</p>
+      <p dir="ltr" className="font-mono font-medium break-all text-ink">
+        {ask.host}
+      </p>
+      <p className="text-ink-3">{ask.local ? texts.scopeLocal : texts.scope}</p>
+      {ask.local && (
+        <p className="flex gap-2 text-warn-ink">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden />
+          {texts.local}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          aria-label={texts.allowHost(ask.host)}
+          disabled={!armed}
+          loading={busy}
+          onClick={() => void allow()}
+        >
+          {texts.allow}
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={busy}
+          onClick={() => set((s) => ({ captureAsk: null, captureIgnored: [...s.captureIgnored, ask.host] }))}
+        >
+          {texts.dismiss}
+        </Button>
+      </div>
     </div>
   );
 }

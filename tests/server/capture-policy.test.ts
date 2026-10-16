@@ -3,7 +3,16 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { test } from 'node:test';
-import { addressRefusal, approved, LOCAL, type Policy, PRIVATE, STRICT, urlRefusal } from '../../server/capture/policy';
+import {
+  addressRefusal,
+  approved,
+  isLocalHost,
+  LOCAL,
+  type Policy,
+  PRIVATE,
+  STRICT,
+  urlRefusal,
+} from '../../server/capture/policy';
 
 test('a public http or https URL on the default ports is admitted', () => {
   for (const href of [
@@ -193,9 +202,21 @@ test('an approved name reaches public addresses only, on the default ports and i
   for (const address of ['127.0.0.1', '::1', '192.168.1.10', '10.0.0.1']) {
     assert.equal(addressRefusal([address], policy), 'private', address);
   }
+  // A trailing dot keeps a name a name.
+  const dotted = approved(new URL('http://localhost.:5173/'), new Set(['localhost.:5173']));
+  assert.ok(!dotted.allowsPort(8000));
+  assert.equal(addressRefusal(['127.0.0.1'], dotted), 'private');
 });
 
-test('an approved localhost reaches the loopback, an approved address that address, on any port', () => {
+test('an approved public address is reached like a name: public addresses, on the default ports and its own', () => {
+  const policy = approved(new URL('http://93.184.216.34:8080/'), new Set(['93.184.216.34:8080']));
+  for (const port of [80, 443, 8080]) assert.ok(policy.allowsPort(port), String(port));
+  assert.ok(!policy.allowsPort(8081));
+  assert.equal(addressRefusal(['93.184.216.34'], policy), null);
+  assert.equal(addressRefusal(['127.0.0.1'], policy), 'private');
+});
+
+test('an approved localhost reaches the loopback, an approved local address that address, on any port', () => {
   const localhost = approved(new URL('http://localhost:5173/'), new Set(['localhost:5173']));
   assert.ok(localhost.allowsPort(5173) && localhost.allowsPort(8000));
   for (const address of ['127.0.0.1', '127.0.0.2', '::1', '93.184.216.34']) {
@@ -211,6 +232,39 @@ test('an approved localhost reaches the loopback, an approved address that addre
   const v6 = approved(new URL('http://[::1]:8080/'), new Set(['[::1]:8080']));
   assert.equal(addressRefusal(['::1'], v6), null);
   assert.equal(addressRefusal(['127.0.0.1'], v6), 'private');
+});
+
+test("a local host is localhost or an address outside the public internet: approving it opens the person's machine or network", () => {
+  for (const host of [
+    'localhost',
+    'localhost:5173',
+    '127.0.0.1:8080',
+    '[::1]:8080',
+    '192.168.1.10:3000',
+    '10.0.0.1',
+    '100.64.0.1',
+    '169.254.169.254',
+    '[fe80::1]',
+    '[fd00::1]',
+    '[::ffff:7f00:1]',
+    '[64:ff9b::a00:1]',
+    '0.0.0.0:3000',
+    '[::]:3000',
+  ]) {
+    assert.equal(isLocalHost(host), true, host);
+  }
+  // A name reaches public addresses only, whatever it resolves to.
+  for (const host of [
+    'example.com',
+    'example.com:8443',
+    '93.184.216.34',
+    '[2606:4700::1111]',
+    'app.localhost',
+    'router.local',
+    'localhost.:5173',
+  ]) {
+    assert.equal(isLocalHost(host), false, host);
+  }
 });
 
 test('a host the person has not approved gets the strict policy, refused as a page', () => {

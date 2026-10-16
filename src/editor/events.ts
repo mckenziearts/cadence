@@ -190,5 +190,13 @@ function handle(event: ServerEvent): void {
     case 'assets':
       if (event.projectId === current) set((s) => ({ assetsTick: s.assetsTick + 1 }));
       return;
+    case 'capture-host': {
+      // The first ask stays until the person answers: a later one would swap the host under their click. The agent asks
+      // again in a later turn.
+      const { captureAsk, captureIgnored } = get();
+      if (event.projectId !== current || captureAsk || captureIgnored.includes(event.host)) return;
+      set({ captureAsk: { projectId: current, host: event.host, local: event.local } });
+      return;
+    }
   }
 }
