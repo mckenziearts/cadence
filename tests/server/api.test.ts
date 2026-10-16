@@ -35,6 +35,7 @@ import { setLanguage } from '../../server/i18n';
 import { FileSettingsStore } from '../../server/settings';
 import { FileAssetStore } from '../../server/store/assets';
 import { FileBrandStore } from '../../server/store/brands';
+import { FileCaptureHosts } from '../../server/store/captureHosts';
 import { FileProjectStore } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import { FileVersionStore } from '../../server/store/versions';
@@ -265,6 +266,7 @@ beforeEach(async () => {
     settings: new FileSettingsStore(t.config),
     usage,
     hub,
+    captureHosts: new FileCaptureHosts(t.config),
     brandSources: { github: brandSource, gitlab: glab },
     brandBuilds: {
       start: async (input) => (record('brandBuild', input), build),
@@ -1414,6 +1416,39 @@ test('assets and references', async () => {
   );
   assert.deepEqual((await json('DELETE', '/api/projects/demo/assets?path=capture-ecran.png')).body, { ok: true });
   assert.equal((await json('GET', '/api/projects/demo/assets')).body.length, 1);
+});
+
+test("capture hosts: the person approves hosts for one project's agent captures; deleting the project drops them", async () => {
+  const route = '/api/projects/demo/capture-hosts';
+  assert.deepEqual(await json('GET', route), { status: 200, body: { hosts: [] } });
+  assert.deepEqual((await json('POST', route, { host: 'example.com' })).body, { hosts: ['example.com'] });
+  assert.deepEqual((await json('POST', route, { host: 'localhost:5173' })).body, { hosts: ['example.com', 'localhost:5173'] });
+  assert.deepEqual((await json('POST', route, { host: 'example.com' })).body, { hosts: ['example.com', 'localhost:5173'] });
+  assert.deepEqual(await json('POST', route, { host: 'Example.com' }), {
+    status: 400,
+    body: { error: 'Hôte invalide : Example.com' },
+  });
+  assert.equal((await json('POST', route, {})).status, 400);
+  assert.equal((await json('POST', route, { host: `${'a'.repeat(250)}.test:8080` })).status, 400);
+  assert.deepEqual(await json('GET', '/api/projects/absente/capture-hosts'), {
+    status: 404,
+    body: { error: 'Projet introuvable : absente' },
+  });
+  assert.equal((await json('POST', '/api/projects/absente/capture-hosts', { host: 'example.com' })).status, 404);
+  assert.deepEqual(await deps.captureHosts.list('absente'), []);
+  assert.deepEqual((await json('GET', route)).body, { hosts: ['example.com', 'localhost:5173'] });
+  assert.equal(await pathExists(path.join(t.config.stateDir, 'capture-hosts.json')), true, 'outside the project folder');
+
+  assert.equal((await json('DELETE', '/api/projects/demo')).status, 409, 'a render is running');
+  assert.deepEqual(
+    (await json('GET', route)).body,
+    { hosts: ['example.com', 'localhost:5173'] },
+    'a refused deletion keeps them',
+  );
+  await json('DELETE', '/api/renders/job-1');
+  assert.deepEqual((await json('DELETE', '/api/projects/demo')).body, { ok: true });
+  await store.create({ name: 'Démo', brand: null, formats: ['16:9'], fps: 60 });
+  assert.deepEqual((await json('GET', route)).body, { hosts: [] }, 'a new project under the same id starts with none');
 });
 
 test('brands, logos, settings', async () => {

@@ -388,9 +388,9 @@ export interface AssetStore {
   remove(projectId: string, assetPath: string): Promise<void>;
   /**
    * Screenshot a web page into assets/refs/<name>-<device>.png (reference material for the agent). `policy` is what the
-   * capture may reach: STRICT (public addresses) unless the person asked for it.
+   * capture may reach: approved() for the agent's, LOCAL for the person's. No default, so no caller widens it by omission.
    */
-  captureReference(projectId: string, input: CaptureRefInput, policy?: Policy): Promise<AssetInfo>;
+  captureReference(projectId: string, input: CaptureRefInput, policy: Policy): Promise<AssetInfo>;
   /** Absolute path of an asset, after checking it stays inside assets/. */
   resolve(projectId: string, assetPath: string): string;
 }
@@ -456,9 +456,9 @@ export interface CaptureService {
   thumbnail(projectId: string, sceneId: string, opts?: { t?: number; format?: FormatId }): Promise<Buffer>;
   /**
    * Screenshot an external http(s) page (reference capture). Every request of the page goes through the pinned fetch
-   * under `policy` (STRICT by default), and never to Cadence's own ports.
+   * under `policy`, and never to Cadence's own ports.
    */
-  screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean; policy?: Policy }): Promise<Buffer>;
+  screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean; policy: Policy }): Promise<Buffer>;
   /** JPEG of a brand's kit sheet (kit.html, sandboxed), with what failed to render or load there. */
   kitSheet(brandId: string, opts?: { scale?: number }): Promise<{ image: Buffer; problems: string[]; loaded: boolean }>;
   /** One JPEG of PNG tiles of one size in reading order, `columns` per row, `gap` px apart (render_frames strips). */
@@ -744,6 +744,17 @@ export interface SettingsStore {
   update(patch: Partial<Settings>): Promise<Settings>;
 }
 
+// server/store/captureHosts.ts: export class FileCaptureHosts implements CaptureHostStore  (constructor(config))
+
+/** The hosts (as URL.host writes them) the person approved for the agent's captures, per project. */
+export interface CaptureHostStore {
+  list(projectId: string): Promise<string[]>;
+  /** Returns the project's hosts; 400 for a host URL.host would write otherwise. */
+  approve(projectId: string, host: string): Promise<string[]>;
+  /** Forgets the project's hosts, once it is deleted. */
+  drop(projectId: string): Promise<void>;
+}
+
 // server/api/index.ts: export function createApi(deps: ApiDeps): Hono   (routes under /api, see ARCHITECTURE.md)
 
 /** A host app's route groups, each mounted under /api/<name> behind the editor guards (ARCHITECTURE.md "Embedding Cadence"). */
@@ -765,6 +776,7 @@ export interface ApiDeps {
   settings: SettingsStore;
   usage: UsageLog;
   hub: Hub;
+  captureHosts: CaptureHostStore;
   brandSources: Record<GitHost, BrandSource>;
   brandBuilds: BrandBuildService;
   accounts: AccountService;

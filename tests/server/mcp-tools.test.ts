@@ -13,7 +13,9 @@ import type {
   AssetStore,
   BrandStore,
   CadenceConfig,
+  CaptureHostStore,
   CaptureService,
+  Hub,
   McpActivity,
   MusicService,
   ProjectStore,
@@ -22,6 +24,8 @@ import type {
   VersionStore,
   VoiceOverService,
 } from '../../server/contracts';
+import { UnapprovedHost } from '../../server/capture/capture';
+import { type Policy, urlRefusal } from '../../server/capture/policy';
 import { BRAND_TOOLS } from '../../server/mcp/brandTools';
 import { createMcpHandler } from '../../server/mcp/server';
 import { McpTokens } from '../../server/mcp/tokens';
@@ -31,7 +35,15 @@ import { FileProjectStore } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import { HttpError } from '../../server/util';
 import type { AuditFinding } from '../../src/shared/frameProtocol';
-import type { CreateSceneInput, ProjectState, SceneState, ScriptLine, Speaker, VoiceOverSettings } from '../../src/shared/types';
+import type {
+  CreateSceneInput,
+  ProjectState,
+  SceneState,
+  ScriptLine,
+  ServerEvent,
+  Speaker,
+  VoiceOverSettings,
+} from '../../src/shared/types';
 import { makeRoot, type TestRoot } from './helpers';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
@@ -232,7 +244,16 @@ describe('MCP endpoint', () => {
         snapCuts: async (id: string, grid: string, opts: unknown) => (record('snapCuts', [id, grid, opts]), project),
       } as unknown as MusicService,
       assets: {
-        captureReference: async (...args: unknown[]) => (record('captureReference', args), { path: 'refs/site-desktop.png' }),
+        captureReference: async (...args: unknown[]) => {
+          record('captureReference', args);
+          const [, input, policy] = args as [string, { url: string }, Policy];
+          // As screenshotUrl does, before any lookup.
+          if (urlRefusal(input.url, policy, true) === 'host') throw new UnapprovedHost(new URL(input.url).host);
+          // A redirect to a host the person has not approved.
+          if (input.url === 'https://site.test/r') throw new UnapprovedHost('cdn.test');
+          if (new URL(input.url).host === 'down.test') throw new HttpError(502, 'Le site ne répond pas.');
+          return { path: 'refs/site-desktop.png' };
+        },
         resolve: (_id: string, rel: string) => `/projets/demo/assets/${rel}`,
       } as unknown as AssetStore,
       voiceOver: {
@@ -283,6 +304,10 @@ describe('MCP endpoint', () => {
           };
         },
       } as unknown as VoiceOverService,
+      captureHosts: {
+        list: async (id: string) => (record('captureHosts', id), ['site.test', 'down.test']),
+      } as unknown as CaptureHostStore,
+      hub: { send: (event: ServerEvent) => void record('event', event) } as unknown as Hub,
       diagnose: async () => null,
     };
     const handler = createMcpHandler(deps);
@@ -920,12 +945,38 @@ describe('MCP endpoint', () => {
       const badUrl = await call(client, 'capture_reference', { url: 'file:///etc/passwd' });
       assert.equal(badUrl.isError, true);
       assert.match(texts(badUrl)[0], /seules les adresses http\(s\)/);
-      await call(client, 'capture_reference', { url: 'https://site.test/' });
-      // No policy: the agent's captures stay strict.
-      assert.deepEqual(calls.captureReference.at(-1), [
-        'demo',
-        { url: 'https://site.test/', device: 'desktop', fullPage: undefined, name: undefined },
-      ]);
+      assert.match(
+        texts(await call(client, 'capture_reference', { url: 'https://site.test/' }))[0],
+        /^Saved assets\/refs\/site-desktop\.png/,
+      );
+      const [id, input, policy] = calls.captureReference.at(-1) as [string, unknown, Policy];
+      assert.deepEqual(
+        [id, input],
+        ['demo', { url: 'https://site.test/', device: 'desktop', fullPage: undefined, name: undefined }],
+      );
+      assert.deepEqual(calls.captureHosts.at(-1), 'demo');
+      // The hosts the person approved for this project, public addresses on the default ports.
+      assert.deepEqual([...policy.hosts!], ['site.test', 'down.test']);
+      assert.deepEqual([policy.allowsPort(443), policy.allowsPort(8080)], [true, false]);
+
+      const unapproved = await call(client, 'capture_reference', { url: 'https://other.test/page' });
+      assert.equal(unapproved.isError, true);
+      assert.match(
+        texts(unapproved)[0],
+        /n’a pas autorisé other\.test pour les captures de ce projet : elle vient de recevoir la demande\. Réessaie à un prochain tour/,
+      );
+      assert.equal((await call(client, 'capture_reference', { url: 'https://site.test/r' })).isError, true);
+      assert.deepEqual(
+        calls.event,
+        [
+          { type: 'capture-host', projectId: 'demo', host: 'other.test' },
+          { type: 'capture-host', projectId: 'demo', host: 'cdn.test' },
+        ],
+        'the editor asks the person about the host refused, a redirect target included',
+      );
+      const down = await call(client, 'capture_reference', { url: 'https://down.test/' });
+      assert.equal(down.isError, true);
+      assert.equal(calls.event.length, 2, 'other failures ask nothing');
 
       assert.match(
         texts(await call(client, 'save_version', { label: 'Avant refonte' }))[0],

@@ -1001,4 +1001,6 @@ export type ServerEvent =
   | { type: 'music'; projectId: string; status: 'analyzing' | 'ready' | 'error'; error?: string }
   | { type: 'voice-over'; projectId: string; status: 'speaking' | 'ready' | 'error'; error?: string }
   | { type: 'versions'; projectId: string }
-  | { type: 'assets'; projectId: string };
+  | { type: 'assets'; projectId: string }
+  /** The agent asked to capture a host the person has not approved for the project. */
+  | { type: 'capture-host'; projectId: string; host: string };

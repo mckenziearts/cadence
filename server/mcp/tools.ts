@@ -12,8 +12,10 @@ import type {
   AssetStore,
   BrandStore,
   CadenceConfig,
+  CaptureHostStore,
   CaptureService,
   CapturedFrame,
+  Hub,
   McpScope,
   McpTokenIssuer,
   MusicService,
@@ -24,6 +26,8 @@ import type {
   VoiceOverService,
 } from '../contracts';
 import { barSeconds, projectOverview, sceneTable, speakerLine, voiceOverSummary } from '../agent/prompts';
+import { UnapprovedHost } from '../capture/capture';
+import { approved } from '../capture/policy';
 import { diffPercent } from '../capture/seams';
 import { m } from '../i18n';
 import { unknownSpeaker } from '../store/projects';
@@ -42,6 +46,8 @@ export interface McpDeps {
   voiceOver: VoiceOverService;
   assets: AssetStore;
   tokens: McpTokenIssuer;
+  captureHosts: CaptureHostStore;
+  hub: Hub;
   /** Compile a file through Vite and return the error text, or null. */
   diagnose: (file: string) => Promise<string | null>;
 }
@@ -798,8 +804,9 @@ export function createToolServer(ctx: ToolContext): McpServer {
 
   tool(
     'capture_reference',
-    'Screenshot a public web page (http or https, default ports) into assets/refs/ as reference material. Local and private ' +
-      'addresses are refused: the person captures those from the editor. Read the saved file to look at it.',
+    'Screenshot a web page into assets/refs/ as reference material. Only hosts the person approved for this project are ' +
+      'opened; for any other host the person is asked, and you try again in a later turn once they have answered. ' +
+      'Read the saved file to look at it.',
     {
       projectId,
       url: z.string(),
@@ -818,12 +825,18 @@ export function createToolServer(ctx: ToolContext): McpServer {
       if (protocol !== 'http:' && protocol !== 'https:') {
         throw new HttpError(400, m().agent.mcpTools.badUrl(args.url));
       }
-      const info = await deps.assets.captureReference(p.id, {
-        url: args.url,
-        device: args.device ?? 'desktop',
-        fullPage: args.fullPage,
-        name: args.name,
-      });
+      const policy = approved(new URL(args.url), new Set(await deps.captureHosts.list(p.id)));
+      let info;
+      try {
+        info = await deps.assets.captureReference(
+          p.id,
+          { url: args.url, device: args.device ?? 'desktop', fullPage: args.fullPage, name: args.name },
+          policy,
+        );
+      } catch (e) {
+        if (e instanceof UnapprovedHost) deps.hub.send({ type: 'capture-host', projectId: p.id, host: e.host });
+        throw e;
+      }
       return text(`Saved assets/${info.path} → ${deps.assets.resolve(p.id, info.path)}. Read that file to look at it.`);
     },
   );

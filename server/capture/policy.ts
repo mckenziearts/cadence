@@ -1,9 +1,10 @@
 // The network policy of a capture: which URLs it may request and which resolved addresses it may reach. STRICT is public
-// addresses on the default ports, LOCAL adds the person's own networks on any port; a caller may widen a policy with its
-// own ports and allowed ranges. Pure: the caller resolves and connects.
+// addresses on the default ports, LOCAL adds the person's own networks on any port, approved() is the agent's: the hosts
+// the person approved for the project. A caller may widen a policy with its own ports and allowed ranges. Pure: the
+// caller resolves and connects.
 import net from 'node:net';
 
-export type UrlRefusal = 'invalid' | 'protocol' | 'port' | 'credentials';
+export type UrlRefusal = 'invalid' | 'protocol' | 'host' | 'port' | 'credentials';
 export type AddressRefusal = 'unresolved' | 'private';
 
 export interface Policy {
@@ -11,6 +12,8 @@ export interface Policy {
   allowsPort: (port: number) => boolean;
   /** Ranges of PRIVATE this policy reaches anyway. */
   allowed?: net.BlockList;
+  /** The hosts (URL.host) the page and its main frame may be opened from; its resources are not limited. */
+  hosts?: ReadonlySet<string>;
 }
 
 export const STRICT: Policy = { allowsPort: (port) => port === 80 || port === 443 };
@@ -20,11 +23,13 @@ export function portOf(url: URL): number {
   return Number(url.port) || (url.protocol === 'https:' ? 443 : 80);
 }
 
-/** Why a capture may not request `href`, or null. */
-export function urlRefusal(href: string, policy: Policy = STRICT): UrlRefusal | null {
+/** Why a capture may not request `href`, or null. `page`: the page itself, or a navigation of its main frame. */
+export function urlRefusal(href: string, policy: Policy = STRICT, page = false): UrlRefusal | null {
   const url = URL.parse(href);
   if (!url) return 'invalid';
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'protocol';
+  // Before the port: the person is asked about any host they have not approved.
+  if (page && policy.hosts && !policy.hosts.has(url.host)) return 'host';
   if (!policy.allowsPort(portOf(url))) return 'port';
   if (url.username || url.password) return 'credentials';
   return null;
@@ -76,6 +81,30 @@ LAN.addSubnet('198.18.0.0', 15);
 LAN.addAddress('::1', 'ipv6');
 LAN.addSubnet('fc00::', 7, 'ipv6');
 export const LOCAL: Policy = { allowsPort: () => true, allowed: LAN };
+
+const LOOPBACK = new net.BlockList();
+LOOPBACK.addSubnet('127.0.0.0', 8);
+LOOPBACK.addAddress('::1', 'ipv6');
+
+/**
+ * The agent's capture of `url`, given the hosts the person approved for its project. An approved name reaches public
+ * addresses only, on the default ports and its own; an approved `localhost` reaches the loopback, an approved address
+ * that address, on any port. That holds for the whole capture, whatever host a later hop names. A host they have not
+ * approved stays STRICT, and is refused as a page.
+ */
+export function approved(url: URL, hosts: ReadonlySet<string>): Policy {
+  if (!hosts.has(url.host)) return { ...STRICT, hosts };
+  if (url.hostname === 'localhost') return { allowsPort: () => true, allowed: LOOPBACK, hosts };
+  const address = url.hostname.replace(/^\[(.*)\]$/, '$1');
+  const family = net.isIP(address);
+  if (family !== 0) {
+    const allowed = new net.BlockList();
+    allowed.addAddress(address, family === 4 ? 'ipv4' : 'ipv6');
+    return { allowsPort: () => true, allowed, hosts };
+  }
+  const own = portOf(url);
+  return { allowsPort: (port) => port === 80 || port === 443 || port === own, hosts };
+}
 
 /** Why a host that resolves to `addresses` may not be reached, or null: one forbidden address refuses them all. */
 export function addressRefusal(addresses: readonly string[], policy: Policy = STRICT): AddressRefusal | null {

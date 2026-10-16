@@ -31,6 +31,7 @@ export default {
     noMusic: "Ce projet n'a pas de musique",
     imageName: (name: string) => `Nom d'image invalide : ${name}`,
     gitHost: (host: string) => `Hébergeur Git inconnu : ${host}`,
+    captureHost: (host: string) => `Hôte invalide : ${host}`,
     logoVariant: (variant: string) => `Variante de logo inconnue : ${variant}`,
     defaultBrand: "La marque neutre Cadence ne se supprime pas : les nouvelles marques partent d'elle.",
     brandInUse: (projects: string[]) => {

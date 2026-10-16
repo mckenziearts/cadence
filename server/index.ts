@@ -58,6 +58,7 @@ import { LocalMusicService } from './music/service';
 import { FileSettingsStore } from './settings';
 import { FileAssetStore } from './store/assets';
 import { FileBrandStore } from './store/brands';
+import { FileCaptureHosts } from './store/captureHosts';
 import { FileProjectStore } from './store/projects';
 import { FileTemplateStore } from './store/templates';
 import { FileVersionStore } from './store/versions';
@@ -181,6 +182,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const templates = new FileTemplateStore(config);
     store = new FileProjectStore(config, { templates, brands });
     const settings = new FileSettingsStore(config);
+    const captureHosts = new FileCaptureHosts(config);
     const usage = new FileUsageLog(config);
     // CADENCE_LANGUAGE (tests, the CLI) wins; else the setting; else whatever the process already speaks.
     const forced = process.env.CADENCE_LANGUAGE;
@@ -296,6 +298,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       settings,
       usage,
       hub,
+      captureHosts,
       brandSources,
       brandBuilds,
       accounts,
@@ -322,6 +325,8 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       voiceOver,
       assets,
       tokens,
+      captureHosts,
+      hub,
       diagnose,
     });
     const editorToken = randomToken();

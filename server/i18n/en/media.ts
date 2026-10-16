@@ -31,6 +31,8 @@ export default {
     slow: 'the site takes too long to answer',
     unreachable: 'connection failed',
     itself: 'Cadence cannot capture itself',
+    notApproved: (host: string) =>
+      `The person has not approved ${host} for this project's captures: they were just asked. Try again in a later turn, once they have answered.`,
   },
   render: {
     notFound: 'Render not found',

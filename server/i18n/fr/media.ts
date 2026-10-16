@@ -30,6 +30,8 @@ export default {
     slow: 'le site met trop de temps à répondre',
     unreachable: 'connexion impossible',
     itself: 'Cadence ne peut pas se capturer elle-même',
+    notApproved: (host: string) =>
+      `La personne n’a pas autorisé ${host} pour les captures de ce projet : elle vient de recevoir la demande. Réessaie à un prochain tour, une fois qu’elle a répondu.`,
   },
   render: {
     notFound: 'Rendu introuvable',

@@ -86,7 +86,7 @@ export class FileAssetStore implements AssetStore {
     await this.trash(projectId, file);
   }
 
-  async captureReference(projectId: string, input: CaptureRefInput, policy?: Policy): Promise<AssetInfo> {
+  async captureReference(projectId: string, input: CaptureRefInput, policy: Policy): Promise<AssetInfo> {
     await this.requireProject(projectId);
     let url: URL;
     try {

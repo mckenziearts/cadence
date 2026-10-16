@@ -76,11 +76,11 @@ export class Budget {
   }
 
   /**
-   * Drops the private ranges the policy allowed and keeps its ports: once a page is served from a public address, its
-   * redirects and resources may not reach the person's networks either.
+   * Drops the private ranges the policy allowed and keeps its ports and hosts: once a page is served from a public address,
+   * its redirects and resources may not reach the person's networks either.
    */
   narrow(): void {
-    this.policy = { allowsPort: this.policy.allowsPort };
+    this.policy = { allowsPort: this.policy.allowsPort, hosts: this.policy.hosts };
   }
 
   /** Waits for one of the CONNECTIONS slots; the caller runs the returned release once done. */
@@ -211,7 +211,10 @@ export interface FetchOptions {
    * another origin's answer as its own.
    */
   sameOrigin?: boolean;
-  /** The page itself: a hop answered from a public address narrows the budget (see Budget.narrow). */
+  /**
+   * The page itself, or a navigation of its main frame: each hop must be on the policy's hosts, and one answered from a
+   * public address narrows the budget (see Budget.narrow).
+   */
   navigation?: boolean;
 }
 
@@ -242,7 +245,7 @@ async function hop(
   headers: Record<string, string>,
   navigation: boolean,
 ): Promise<Pinned> {
-  const refusal = urlRefusal(href, budget.policy);
+  const refusal = urlRefusal(href, budget.policy, navigation);
   if (refusal) throw new Refused(refusal, href);
   budget.signal.throwIfAborted();
   if (budget.requests >= CAPTURE_REQUESTS || budget.bytes >= CAPTURE_BYTES) throw new Refused('budget', href);

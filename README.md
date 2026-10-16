@@ -438,7 +438,8 @@ the scene contract.
   a browser cannot send.
 - **Isolated scene code.** Scenes run on another origin, with no access to the API. Their security policy forbids any
   network call, and render pages also block every way out (workers, WebRTC, windows). Reference captures fetch every
-  request themselves: the agent's reach public sites only, yours your local sites too, and none reaches Cadence itself.
+  request themselves: the agent's open only the sites you approved for the project, yours your local sites too, and none
+  reaches Cadence itself.
 - **Restricted agent.** Claude has no shell and no web access. In a scene chat, it can only edit that scene's file. Its
   MCP tools go through a token valid for a single exchange.
 - **Network accounts.** App keys and connections stay in `.cadence/accounts.json`, readable by your user account only:

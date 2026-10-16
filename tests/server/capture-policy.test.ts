@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { test } from 'node:test';
-import { addressRefusal, LOCAL, type Policy, PRIVATE, STRICT, urlRefusal } from '../../server/capture/policy';
+import { addressRefusal, approved, LOCAL, type Policy, PRIVATE, STRICT, urlRefusal } from '../../server/capture/policy';
 
 test('a public http or https URL on the default ports is admitted', () => {
   for (const href of [
@@ -166,4 +166,56 @@ test("the person's policy reaches loopback and private networks on any port, nev
   ]) {
     assert.equal(addressRefusal([address], LOCAL), 'private', address);
   }
+});
+
+test("the agent's page stays on the hosts the person approved, before its port is even looked at", () => {
+  const policy = approved(new URL('https://example.com/'), new Set(['example.com', 'localhost:5173']));
+  assert.equal(urlRefusal('https://example.com/about', policy, true), null);
+  assert.equal(urlRefusal('http://example.com/', policy, true), null, 'the scheme is not part of the host');
+  for (const href of [
+    'https://www.example.com/',
+    'https://example.com:8443/',
+    'http://localhost:8080/',
+    'http://user@cdn.test/',
+  ]) {
+    assert.equal(urlRefusal(href, policy, true), 'host', href);
+  }
+  // Its resources are not limited to those hosts.
+  assert.equal(urlRefusal('https://cdn.test/pic.png', policy), null);
+  assert.equal(urlRefusal('https://cdn.test/pic.png', STRICT, true), null, 'no hosts: no limit');
+});
+
+test('an approved name reaches public addresses only, on the default ports and its own', () => {
+  const policy = approved(new URL('https://example.com:8443/'), new Set(['example.com:8443']));
+  for (const port of [80, 443, 8443]) assert.ok(policy.allowsPort(port), String(port));
+  assert.ok(!policy.allowsPort(8080));
+  assert.equal(addressRefusal(['93.184.216.34'], policy), null);
+  for (const address of ['127.0.0.1', '::1', '192.168.1.10', '10.0.0.1']) {
+    assert.equal(addressRefusal([address], policy), 'private', address);
+  }
+});
+
+test('an approved localhost reaches the loopback, an approved address that address, on any port', () => {
+  const localhost = approved(new URL('http://localhost:5173/'), new Set(['localhost:5173']));
+  assert.ok(localhost.allowsPort(5173) && localhost.allowsPort(8000));
+  for (const address of ['127.0.0.1', '127.0.0.2', '::1', '93.184.216.34']) {
+    assert.equal(addressRefusal([address], localhost), null, address);
+  }
+  for (const address of ['192.168.1.10', '10.0.0.1', '169.254.169.254']) {
+    assert.equal(addressRefusal([address], localhost), 'private', address);
+  }
+  const lan = approved(new URL('http://192.168.1.10:3000/'), new Set(['192.168.1.10:3000']));
+  assert.ok(lan.allowsPort(3001));
+  assert.equal(addressRefusal(['192.168.1.10'], lan), null);
+  for (const address of ['192.168.1.11', '127.0.0.1', '::1']) assert.equal(addressRefusal([address], lan), 'private', address);
+  const v6 = approved(new URL('http://[::1]:8080/'), new Set(['[::1]:8080']));
+  assert.equal(addressRefusal(['::1'], v6), null);
+  assert.equal(addressRefusal(['127.0.0.1'], v6), 'private');
+});
+
+test('a host the person has not approved gets the strict policy, refused as a page', () => {
+  const policy = approved(new URL('http://localhost:5173/'), new Set(['localhost:3000']));
+  assert.equal(urlRefusal('http://localhost:5173/', policy, true), 'host');
+  assert.equal(addressRefusal(['127.0.0.1'], policy), 'private');
+  assert.ok(!policy.allowsPort(5173));
 });

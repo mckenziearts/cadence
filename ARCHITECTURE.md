@@ -54,7 +54,8 @@ cadence/
     doctor.ts               environment checks
     util.ts                 shared helpers (atomic writes, mutex, safe paths, ids)
     contracts.ts            service interfaces
-    store/                  projects.ts, brands.ts, templates.ts, versions.ts, assets.ts
+    store/                  projects.ts, brands.ts, templates.ts, versions.ts, assets.ts, captureHosts.ts
+                            (FileCaptureHosts, <root>/.cadence/capture-hosts.json)
     brands/                 check.ts (brand checks), source.ts (GitHub via gh, GitLab via glab, else git),
                             fonts.ts (Google Fonts), build.ts (BrandBuilder)
     accounts/               accounts.ts (FileAccountService, <root>/.cadence/accounts.json), publish.ts (Publisher)
@@ -212,7 +213,14 @@ resource's redirects stay on its origin. The page is fetched first, so its refus
 messages naming the URL asked for or a host, never the network's own words), then opened at its final URL. Only GET
 requests are fetched, with the browser's User-Agent, Accept, Accept-Language, Referer and Origin; a cross-origin answer
 reaches the page only with its own `Access-Control-Allow-Origin` (Playwright 1.63's fulfill would grant one). The
-agent's captures (MCP `capture_reference`) are `STRICT`: public addresses on ports 80 and 443. The person's
+agent's captures (MCP `capture_reference`) open a page only from a host the person approved for the project
+(`approved()`): `POST /api/projects/:id/capture-hosts` keeps them in `<root>/.cadence/capture-hosts.json`, outside the
+project folder and its archives, where no agent turn may write, and deleting the project drops them. Any other host is
+refused before a lookup, with a message telling the agent to try again in a later turn, and a `capture-host` event
+lets the editor ask the person. The page's redirects and its main frame's navigations stay on approved hosts; its
+resources do not. The host of the page asked for sets the addresses and ports of the whole capture: a name, public
+addresses only, on ports 80 and 443 or its own; `localhost` the loopback, and an address that address, on any port. The
+person's
 (`POST /api/projects/:id/refs`) are `LOCAL`: loopback and private networks on any port as well, for local dev sites,
 until a hop of the page is answered from a public address: from there the capture keeps the ports and loses the private
 ranges. Neither reaches Cadence's own ports. HTTPS trusts Node's CAs and the system's, so a local CA that a dev tool
@@ -574,7 +582,7 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `set_speakers` | no | yes | replaces the project speakers through `ProjectStore.update` (its checks: voice per engine, at most 10, no removing a speaker a line uses) |
 | `create_scene`, `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene` | no | yes | `create_scene` takes a template id or TSX code |
 | `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns |
-| `capture_reference` | no | yes | screenshot a public http(s) page into assets/refs/ |
+| `capture_reference` | no | yes | screenshot an http(s) page into assets/refs/, from a host the person approved for the project only |
 | `save_version` | yes | yes | named snapshot |
 
 Project-only tools are not even registered for scene tokens. `render_frames` saves the JPEGs it returns (the frames,
@@ -785,6 +793,8 @@ POST   /api/projects/:id/assets                    multipart "file", answers Ass
 DELETE /api/projects/:id/assets                    ?path= 
 GET    /api/projects/:id/assets/file               ?path=, answers file
 POST   /api/projects/:id/refs                      CaptureRefInput, answers AssetInfo
+GET    /api/projects/:id/capture-hosts             { hosts }: the hosts approved for the agent's captures
+POST   /api/projects/:id/capture-hosts             { host } as URL.host writes it (400 otherwise), answers { hosts }
 GET    /api/brands/:id                             BrandFile
 GET    /api/brands/:id/logo                        ?variant=mark|full, answers image/svg+xml
 DELETE /api/brands/:id                             to .cadence/trash/brands; 400 for cadence, 409 if projects use it or it builds

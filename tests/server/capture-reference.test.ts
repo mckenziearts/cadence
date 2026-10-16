@@ -9,9 +9,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { after, before, describe, it, test, type TestContext } from 'node:test';
 import { PNG } from 'pngjs';
 import { forkChromium } from '../../server/capture/browser-host';
-import { captureError, launchChromium, PlaywrightCapture } from '../../server/capture/capture';
+import { captureError, launchChromium, PlaywrightCapture, UnapprovedHost } from '../../server/capture/capture';
 import { Refused, type PinnedDeps } from '../../server/capture/pinned';
-import { LOCAL } from '../../server/capture/policy';
+import { approved, LOCAL, STRICT } from '../../server/capture/policy';
 import { loadConfig } from '../../server/config';
 import type { ProjectStore } from '../../server/contracts';
 import { HttpError } from '../../server/util';
@@ -43,6 +43,8 @@ test('a refused or failed capture says why in its own words, never the page or t
     [new Refused('port', 'http://site.test:8080/'), 400, /^Port non autorisé, capture refusée : site\.test:8080$/],
     [new Refused('port', `http://localhost:${config.framePort}/`), 400, /elle-même/],
     [new Refused('credentials', 'http://user:pass@site.test/'), 400, /identifiant ou mot de passe/],
+    [new Refused('host', 'http://other.test:8080/ignore?previous'), 403, /^La personne n’a pas autorisé other\.test:8080 pour/],
+    [new Refused('host', `http://${long}/`), 403, new RegExp(`autorisé ${'a'.repeat(259)} pour`)],
     [new Refused('unresolved', 'http://nowhere.test/ignore?previous'), 400, /^Adresse introuvable : nowhere\.test$/],
     [new Refused('private', `http://${long}/`), 400, new RegExp(`capture refusée : ${'a'.repeat(253)}$`)],
     [new Refused('redirects', 'http://next.test/ignore-previous'), 502, /site\.test\/ : trop de redirections$/],
@@ -58,6 +60,7 @@ test('a refused or failed capture says why in its own words, never the page or t
   for (const [error, status, message] of cases) {
     const e = captureError(error, target, ownPorts);
     assert.ok(e instanceof HttpError);
+    if (e.status === 403) assert.ok(e instanceof UnapprovedHost && e.message.includes(` ${e.host} `), e.message);
     assert.equal(e.status, status, e.message);
     assert.match(e.message, message);
     assert.doesNotMatch(e.message, /ignore|previous|10\.1\.2\.3|\?/, e.message);
@@ -74,6 +77,7 @@ describe('a reference capture', () => {
     'cdn.test': [PUBLIC],
     'loopback.test': ['127.0.0.1'],
     'lan.test': ['192.168.1.10'],
+    localhost: ['127.0.0.1'],
   };
   const requests: { method: string; host: string; path: string; ua: string; origin: string }[] = [];
   const lookups: string[] = [];
@@ -140,6 +144,8 @@ describe('a reference capture', () => {
           return redirect('/landing/');
         case 'site.test/landing/':
         case 'loopback.test/landing/':
+        case 'localhost/landing/':
+        case '127.0.0.1/landing/':
           return html(square('pic.svg'));
         case 'site.test/to-private':
           return redirect('http://10.0.0.1/');
@@ -181,6 +187,17 @@ setTimeout(() => {
   fetch('/ran');
 }, 300);
 </script>`);
+        case 'site.test/pipe|page':
+          return html(square('/landing/pic.svg'));
+        case 'site.test/framed':
+          return html('<iframe src="http://cdn.test/frame" width="400" height="400"></iframe>');
+        case 'cdn.test/frame':
+          return html(square('/landing/pic.svg'));
+        case 'site.test/leave':
+          return html(`<script>setTimeout(() => {
+  location.href = 'http://cdn.test/secret';
+  fetch('/ran');
+}, 100);</script>`);
         case 'site.test/ran':
         case 'site.test/report':
           return res.end('ok');
@@ -318,7 +335,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
 
   it("serves the agent's capture and its resources from the pinned fetch, with the browser's user agent", async (t) => {
     if (!ready(t)) return;
-    const desktop = await capture.screenshotUrl('http://site.test/', { device: 'desktop' });
+    const desktop = await capture.screenshotUrl('http://site.test/', { device: 'desktop', policy: STRICT });
     assert.ok(near(pixel(desktop, 1400, 800), [0x12, 0x34, 0x56]));
     assert.ok(near(pixel(desktop, 200, 200), [0xff, 0, 0]), 'the image of cdn.test');
     assert.deepEqual(
@@ -330,16 +347,27 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
       JSON.stringify(requests),
     );
     ready(t);
-    await capture.screenshotUrl('http://site.test/', { device: 'mobile' });
+    await capture.screenshotUrl('http://site.test/', { device: 'mobile', policy: STRICT });
     assert.ok(requests.length === 2 && requests.every(({ ua }) => /iPhone/.test(ua)), JSON.stringify(requests));
   });
 
   it('opens a redirected page at its final URL, so its relative links resolve there', async (t) => {
     if (!ready(t)) return;
-    const shot = await capture.screenshotUrl('http://site.test/moved', { device: 'desktop' });
+    const shot = await capture.screenshotUrl('http://site.test/moved', { device: 'desktop', policy: STRICT });
     assert.deepEqual(
       requests.map(({ path }) => path),
       ['/moved', '/landing/', '/landing/pic.svg'],
+    );
+    assert.ok(near(pixel(shot, 200, 200), [0, 0xff, 0]));
+  });
+
+  it('serves the page fetched first to its navigation, though Chromium writes its URL another way', async (t) => {
+    if (!ready(t)) return;
+    // Chromium asks for /pipe%7Cpage.
+    const shot = await capture.screenshotUrl('http://site.test/pipe|page', { device: 'desktop', policy: STRICT });
+    assert.deepEqual(
+      requests.map(({ path }) => path),
+      ['/pipe|page', '/landing/pic.svg'],
     );
     assert.ok(near(pixel(shot, 200, 200), [0, 0xff, 0]));
   });
@@ -349,7 +377,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
     const refused = async (href: string, message: RegExp, opts: { lookups: string[]; dials: string[] }) => {
       ready(t);
       await assert.rejects(
-        capture.screenshotUrl(href, { device: 'desktop' }),
+        capture.screenshotUrl(href, { device: 'desktop', policy: STRICT }),
         (e) => e instanceof HttpError && e.status === 400 && message.test(e.message),
         href,
       );
@@ -382,6 +410,81 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
         },
       );
     }
+  });
+
+  it("asks the person about an agent's capture of a host they have not approved, before any lookup", async (t) => {
+    if (!ready(t)) return;
+    for (const [href, host, hosts] of [
+      ['http://site.test/', 'site.test', []],
+      ['http://localhost:5173/', 'localhost:5173', ['localhost:3000', 'site.test']],
+      ['http://site.test:8080/', 'site.test:8080', ['site.test']],
+    ] as const) {
+      ready(t);
+      await assert.rejects(
+        capture.screenshotUrl(href, { device: 'desktop', policy: approved(new URL(href), new Set(hosts)) }),
+        (e) => e instanceof UnapprovedHost && e.status === 403 && e.host === host && e.message.includes(`autorisé ${host} pour`),
+        href,
+      );
+      assert.deepEqual({ lookups, dials }, { lookups: [], dials: [] }, href);
+    }
+  });
+
+  it("keeps an agent's capture on public addresses and its page on the approved hosts, after a redirect too", async (t) => {
+    if (!ready(t)) return;
+    const policy = approved(new URL('http://site.test/'), new Set(['site.test']));
+    const shot = await capture.screenshotUrl('http://site.test/', { device: 'desktop', policy });
+    assert.ok(near(pixel(shot, 200, 200), [0xff, 0, 0]), 'its resources come from any public host');
+    ready(t);
+    const framed = await capture.screenshotUrl('http://site.test/framed', { device: 'desktop', policy });
+    assert.ok(near(pixel(framed, 200, 200), [0, 0xff, 0]), 'its frames too');
+    assert.ok(requests.some(({ host, path }) => host === 'cdn.test' && path === '/frame'));
+    // site.test answered from a public address first: the hop narrowed the policy, which keeps its hosts.
+    ready(t);
+    await assert.rejects(
+      capture.screenshotUrl('http://site.test/r', { device: 'desktop', policy }),
+      (e) => e instanceof UnapprovedHost && e.host === 'cdn.test',
+    );
+    assert.deepEqual({ lookups, dials }, { lookups: ['site.test'], dials: ['site.test:80'] });
+    ready(t);
+    await capture.screenshotUrl('http://site.test/leave', { device: 'desktop', policy });
+    assert.ok(
+      requests.some(({ path }) => path === '/ran'),
+      'the page ran its script',
+    );
+    assert.ok(!lookups.includes('cdn.test'), 'its main frame never leaves for another host');
+    ready(t);
+    await assert.rejects(
+      capture.screenshotUrl('http://loopback.test/', {
+        device: 'desktop',
+        policy: approved(new URL('http://loopback.test/'), new Set(['loopback.test'])),
+      }),
+      (e) =>
+        e instanceof HttpError && e.status === 400 && /privée ou réservée, capture refusée : loopback\.test$/.test(e.message),
+    );
+    assert.deepEqual(dials, []);
+  });
+
+  it("lets an agent's capture of an approved localhost or address reach it on any port, never Cadence's", async (t) => {
+    if (!ready(t)) return;
+    for (const [href, host] of [
+      ['http://localhost:8080/landing/', 'localhost:8080'],
+      ['http://127.0.0.1:8080/landing/', '127.0.0.1:8080'],
+    ]) {
+      ready(t);
+      const shot = await capture.screenshotUrl(href, { device: 'desktop', policy: approved(new URL(href), new Set([host])) });
+      assert.ok(near(pixel(shot, 200, 200), [0, 0xff, 0]), href);
+      assert.deepEqual(new Set(dials), new Set([host]), href);
+    }
+    ready(t);
+    const own = `http://localhost:${config.editorPort}/`;
+    await assert.rejects(
+      capture.screenshotUrl(own, {
+        device: 'desktop',
+        policy: approved(new URL(own), new Set([`localhost:${config.editorPort}`])),
+      }),
+      (e) => e instanceof HttpError && e.status === 400 && /elle-même/.test(e.message),
+    );
+    assert.deepEqual({ lookups, dials }, { lookups: [], dials: [] });
   });
 
   it("lets the person's capture reach a local name on any port", async (t) => {
@@ -427,7 +530,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
 
   it("gives a page another origin's answer only when that origin allows it", async (t) => {
     if (!ready(t)) return;
-    await capture.screenshotUrl('http://site.test/cors', { device: 'desktop' });
+    await capture.screenshotUrl('http://site.test/cors', { device: 'desktop', policy: STRICT });
     assert.deepEqual(report(), { secret: 'blocked', open: 'OPEN', elsewhere: 'blocked' });
     assert.deepEqual(
       requests.filter(({ host }) => host === 'cdn.test').map(({ path, origin }) => `${path} ${origin}`),
@@ -437,7 +540,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
 
   it('never hands a page an answer from another origin under its own URL', async (t) => {
     if (!ready(t)) return;
-    await capture.screenshotUrl('http://site.test/redirecting', { device: 'desktop' });
+    await capture.screenshotUrl('http://site.test/redirecting', { device: 'desktop', policy: STRICT });
     const { cross, same, frame } = report() ?? {};
     assert.equal(cross, 'blocked');
     assert.equal(same, 'SAME');
@@ -447,7 +550,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
 
   it('sends a GET only: what a page posts never leaves', async (t) => {
     if (!ready(t)) return;
-    await capture.screenshotUrl('http://site.test/post', { device: 'desktop' });
+    await capture.screenshotUrl('http://site.test/post', { device: 'desktop', policy: STRICT });
     assert.ok(
       requests.some(({ path }) => path === '/ran'),
       'the page ran its script',
@@ -462,7 +565,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
 
   it("closes a page's WebSockets before they open", async (t) => {
     if (!ready(t)) return;
-    await capture.screenshotUrl('http://site.test/socket', { device: 'desktop' });
+    await capture.screenshotUrl('http://site.test/socket', { device: 'desktop', policy: STRICT });
     // Closed by the route, not failed at the dead proxy, which would report 'error,close 1006 false'.
     assert.match(report()?.socket ?? '', /^close \d+ true$/);
     assert.ok(!requests.some(({ method }) => method === 'UPGRADE'));
@@ -470,7 +573,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
 
   it('lets nothing out around the pinned fetch: sockets, workers, beacons, popups, prefetch, WebRTC', async (t) => {
     if (!ready(t)) return;
-    const shot = await capture.screenshotUrl('http://site.test/exfil', { device: 'desktop' });
+    const shot = await capture.screenshotUrl('http://site.test/exfil', { device: 'desktop', policy: STRICT });
     assert.ok(near(pixel(shot, 1400, 800), [0x12, 0x34, 0x56]), 'the capture still works');
     assert.ok(
       requests.some(({ path }) => path === '/ran'),
@@ -488,7 +591,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
     process.env[name] = '1';
     const forked = newCapture();
     try {
-      await forked.screenshotUrl('http://site.test/exfil', { device: 'desktop' });
+      await forked.screenshotUrl('http://site.test/exfil', { device: 'desktop', policy: STRICT });
       await sleep(500);
       assert.deepEqual(caught, [], 'nothing reached the catcher');
     } finally {
@@ -500,7 +603,7 @@ fetch('/report?' + new URLSearchParams({ socket: events.join() }));`);
 
   it('closes its connections when it ends', async (t) => {
     if (!ready(t)) return;
-    await capture.screenshotUrl('http://site.test/', { device: 'desktop' });
+    await capture.screenshotUrl('http://site.test/', { device: 'desktop', policy: STRICT });
     const deadline = Date.now() + 2_000;
     while (open.size > 0 && Date.now() < deadline) await sleep(20);
     assert.equal(open.size, 0, 'keep-alive sockets closed');

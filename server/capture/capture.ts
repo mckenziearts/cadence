@@ -15,7 +15,7 @@ import { language, m } from '../i18n';
 import { formatSeconds, HttpError, KeyedMutex, roundMs, shortHash, writeFileAtomic } from '../util';
 import { hostChromium } from './browser-host';
 import { Budget, fetchPinned, network, type Pinned, type PinnedDeps, Refused } from './pinned';
-import { type Policy, portOf, STRICT, urlRefusal } from './policy';
+import { type Policy, portOf, urlRefusal } from './policy';
 import { contactSheet } from './sheet';
 
 export const CHROMIUM_ARGS = [
@@ -497,11 +497,10 @@ export class PlaywrightCapture implements CaptureService {
     return contactSheet(await this.browser(), tiles, layout);
   }
 
-  async screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean; policy?: Policy }): Promise<Buffer> {
+  async screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean; policy: Policy }): Promise<Buffer> {
     const ownPorts = [this.config.editorPort, this.config.framePort];
-    const given = opts.policy ?? STRICT;
-    const policy: Policy = { ...given, allowsPort: (port) => !ownPorts.includes(port) && given.allowsPort(port) };
-    const refusal = urlRefusal(url, policy);
+    const policy: Policy = { ...opts.policy, allowsPort: (port) => !ownPorts.includes(port) && opts.policy.allowsPort(port) };
+    const refusal = urlRefusal(url, policy, true);
     if (refusal) throw captureError(new Refused(refusal, url), url, ownPorts);
     const done = new AbortController();
     const budget = new Budget(AbortSignal.any([AbortSignal.timeout(REFERENCE_MS), done.signal]), policy);
@@ -522,14 +521,15 @@ export class PlaywrightCapture implements CaptureService {
         (ws) => ws.close(),
       );
       // The page itself is fetched before Chromium opens it, so its refusals and errors are the capture's.
-      let landing: { url: string; response: Fulfilled } | null = null;
+      let landing: Fulfilled | null = null;
       await context.route('**', async (route) => {
         const request = route.request();
         const response = await (async () => {
           // ponytail: GET only, a page that posts its data (forms, GraphQL) renders without it.
           if (request.method() !== 'GET') return null;
-          if (landing?.url === request.url()) {
-            const { response } = landing;
+          const top = request.isNavigationRequest() && request.frame().parentFrame() === null;
+          if (top && landing) {
+            const response = landing;
             landing = null;
             return response;
           }
@@ -537,6 +537,7 @@ export class PlaywrightCapture implements CaptureService {
           const pinned = await fetchPinned(request.url(), budget, this.pinned, {
             headers: pick(headers, FORWARDED),
             sameOrigin: true,
+            navigation: top,
           });
           // Playwright 1.63's fulfill grants the page's origin a cross-origin answer that does not name one: the site's
           // own CORS headers decide, as they would in a browser.
@@ -558,7 +559,7 @@ export class PlaywrightCapture implements CaptureService {
       // Opened at its final URL, so a redirected page's relative links resolve there.
       const final = new URL(first.url);
       final.hash = '';
-      landing = { url: final.href, response: fulfilled(first) };
+      landing = fulfilled(first);
       try {
         await page.goto(final.href, { waitUntil: 'networkidle', timeout: 30_000 });
       } catch (e) {
@@ -593,6 +594,13 @@ function fulfilled({ status, headers, body }: Pinned): Fulfilled {
   return { status, headers: Object.fromEntries(flat), body };
 }
 
+/** The agent's capture of a host the person has not approved for its project: they get asked (a capture-host event). */
+export class UnapprovedHost extends HttpError {
+  constructor(readonly host: string) {
+    super(403, m().media.capture.notApproved(host));
+  }
+}
+
 /**
  * What a reference capture tells the person, and the agent: never the page's or the network's own words. A redirect's
  * target shows as its host only, at most a DNS name long.
@@ -609,6 +617,8 @@ export function captureError(e: unknown, target: string, ownPorts: number[]): Ht
           : new HttpError(502, capture.openFailed(target, capture.badRedirect));
       case 'protocol':
         return new HttpError(400, capture.httpOnly);
+      case 'host':
+        return new UnapprovedHost((url?.host ?? '').slice(0, 259));
       case 'port':
         return new HttpError(
           400,
