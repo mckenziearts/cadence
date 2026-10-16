@@ -2,6 +2,8 @@
 // brings its own key and gateway. Raw 24 kHz PCM, wrapped into the same 16-bit mono WAV Piper writes, so the cache, the
 // track and the render stay as they are, with the words and mouth levels of each sentence in a JSON file beside it.
 import type { ElevenLabsModel, ElevenLabsVoice } from '../../src/shared/types';
+import { Budget, fetchPinned, network, type Pinned, type PinnedDeps, Refused } from '../capture/pinned';
+import { type Policy, STRICT } from '../capture/policy';
 import type { ElevenLabsApi, Fetch } from '../contracts';
 import { m } from '../i18n';
 import { HttpError, writeFileAtomic } from '../util';
@@ -22,6 +24,8 @@ const SPEAK_TIMEOUT_MS = 120_000;
 const RETRY_AFTER_MAX_S = 30;
 const MESSAGE_MAX = 300;
 const LOOPBACK = ['localhost', '127.0.0.1'];
+/** A voice's sample: public addresses as for a capture, port 443 only, so no redirect leads to plain http on port 80. */
+const SAMPLES: Policy = { ...STRICT, allowsPort: (port) => port === 443 };
 
 export interface ElevenLabsOptions {
   http?: Fetch;
@@ -29,6 +33,8 @@ export interface ElevenLabsOptions {
   baseUrl?: string;
   /** A host app's own key (or a function giving it at each request): the client is hosted and ignores the key it is passed. */
   key?: string | (() => string | null | undefined | Promise<string | null | undefined>);
+  /** How a voice's sample is resolved and dialed: the real network by default. */
+  pinned?: PinnedDeps;
 }
 
 /** Where the words and mouth levels of a spoken sentence are kept: its WAV with `.json`. */
@@ -41,6 +47,7 @@ export class ElevenLabsClient implements ElevenLabsApi {
   private readonly http: Fetch;
   private readonly baseUrl: string;
   private readonly key: ElevenLabsOptions['key'];
+  private readonly pinned: PinnedDeps;
 
   constructor(options: ElevenLabsOptions = {}) {
     this.http = options.http ?? ((input, init) => fetch(input, init));
@@ -51,6 +58,7 @@ export class ElevenLabsClient implements ElevenLabsApi {
       throw new Error(m().media.voiceOver.elevenLabsInsecureUrl);
     }
     this.key = options.key;
+    this.pinned = options.pinned ?? network;
     this.hosted = options.key !== undefined;
   }
 
@@ -76,6 +84,29 @@ export class ElevenLabsClient implements ElevenLabsApi {
   async models(key: string | null): Promise<ElevenLabsModel[]> {
     const data = (await this.json(key, '/v1/models')) as { model_id: string; name: string; can_do_text_to_speech: boolean }[];
     return data.filter((model) => model.can_do_text_to_speech).map((model) => ({ id: model.model_id, name: model.name }));
+  }
+
+  async preview(url: string): Promise<Buffer> {
+    // ElevenLabs' storage, not its API: the key stays out. Through the captures' address policy, each redirect checked,
+    // so a listed URL never reaches this machine or its network.
+    const { voiceOver } = m().media;
+    if (URL.parse(url)?.protocol !== 'https:') throw new HttpError(404, voiceOver.elevenLabsNoPreview);
+    const done = new AbortController();
+    let sample: Pinned;
+    try {
+      const budget = new Budget(AbortSignal.any([AbortSignal.timeout(LIST_TIMEOUT_MS), done.signal]), SAMPLES);
+      sample = await fetchPinned(url, budget, this.pinned);
+    } catch (e) {
+      if (e instanceof Refused) throw new HttpError(404, voiceOver.elevenLabsNoPreview);
+      throw new HttpError(502, voiceOver.elevenLabsDown);
+    } finally {
+      // The budget's keep-alive connections only close once its signal aborts.
+      done.abort();
+    }
+    if (sample.status !== 200) {
+      throw new HttpError(502, voiceOver.elevenLabsSaid(voiceOver.elevenLabsHttpStatus(sample.status)));
+    }
+    return sample.body;
   }
 
   async speak(input: {

@@ -380,6 +380,9 @@ export function createApi(deps: ApiDeps) {
   app.get('/voices', async (c) => c.json(await deps.voiceOver.voices()));
   app.post('/voices/:voice/download', async (c) => c.json(await deps.voiceOver.download(c.req.param('voice'))));
   app.get('/voices/elevenlabs', async (c) => c.json(await deps.voiceOver.elevenLabs()));
+  app.get('/voices/elevenlabs/:voice/preview', async (c) =>
+    sendImage(c, await deps.voiceOver.elevenLabsPreview(c.req.param('voice')), 'audio/mpeg'),
+  );
   app.put('/voices/elevenlabs/key', async (c) => {
     await deps.voiceOver.setElevenLabsKey((await body(c, schemas.elevenLabsKey)).key);
     return c.json({ configured: true });

@@ -145,6 +145,16 @@ export class LocalVoiceOverService implements VoiceOverService {
     return { voices, models };
   }
 
+  async elevenLabsPreview(voice: string): Promise<Buffer> {
+    const { elevenLabs } = this.deps;
+    if (!elevenLabs.preview) throw new HttpError(404, m().media.voiceOver.elevenLabsNoPreview);
+    // ponytail: the voices list again for each sample, a few clicks at most.
+    const voices = await elevenLabs.voices(await this.elevenLabsKey());
+    const url = voices.find((v) => v.id === voice)?.previewUrl;
+    if (!url) throw new HttpError(404, m().media.voiceOver.elevenLabsNoPreview);
+    return elevenLabs.preview(url);
+  }
+
   async setElevenLabsKey(key: string | null): Promise<void> {
     // The check runs in turn too: a removal sent during a slow check is not undone by the key it was checking.
     if (this.deps.elevenLabs.hosted) throw new HttpError(409, m().media.voiceOver.elevenLabsKeyHosted);

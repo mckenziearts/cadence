@@ -532,6 +532,13 @@ export interface ElevenLabsApi {
   /** The models that speak text. */
   models(key: string | null): Promise<ElevenLabsModel[]>;
   /**
+   * A voice's sample (its `previewUrl`), fetched without the key from its https URL through the captures' address policy
+   * on port 443 only: public addresses, each redirect checked, 8 MB at most. A refused URL or address is a 404, a storage
+   * that fails or answers another status a 502. Optional, so a host's own client keeps compiling: without it every sample
+   * is a 404.
+   */
+  preview?(url: string): Promise<Buffer>;
+  /**
    * Speaks each sentence (audio tags kept), one request at a time, into the 24 kHz WAV file at the same index of `files`,
    * its words and mouth levels written first beside it (`sidecarFile`).
    */
@@ -564,6 +571,8 @@ export interface VoiceOverService {
   download(id: string): Promise<VoiceInfo>;
   /** The voices and models of the saved ElevenLabs key's account; 409 when no key is saved. */
   elevenLabs(): Promise<{ voices: ElevenLabsVoice[]; models: ElevenLabsModel[] }>;
+  /** The MP3 sample of a voice of that account, served from the editor origin its CSP allows; 404 when it has none. */
+  elevenLabsPreview(voice: string): Promise<Buffer>;
   /**
    * Save the ElevenLabs key once ElevenLabs accepts it (its refusal passes through), or remove it with null; a 500 when
    * the secret store fails, a 409 when a host app's client brings its own key.

@@ -167,7 +167,12 @@ test('editor HTML carries the token and the frame origin; frame.html and kit.htm
   assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
   assert.equal(res.headers['cache-control'], 'no-store');
   // The previews may only show the frame origin: scene code cannot send its own frame to another site.
-  assert.equal(res.headers['content-security-policy'], "frame-src http://127.0.0.1:5300; frame-ancestors 'none'");
+  assert.equal(
+    res.headers['content-security-policy'],
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+      "font-src 'self' data: http://127.0.0.1:5300; media-src 'self' blob:; connect-src 'self'; object-src 'none'; " +
+      "base-uri 'none'; form-action 'self'; frame-src http://127.0.0.1:5300; frame-ancestors 'none'",
+  );
   assert.match(res.body, new RegExp(`<head>\\s*<meta name="cadence-token" content="${TOKEN}" />`));
   assert.match(res.body, /<meta name="cadence-frame-origin" content="http:\/\/127\.0\.0\.1:5300" \/>/);
   assert.match(res.body, /@vite\/client/, 'transformed by Vite');
@@ -179,6 +184,15 @@ test('editor HTML carries the token and the frame origin; frame.html and kit.htm
   // Vite's open-in-editor would let any website launch the user's code editor with a plain GET.
   assert.equal((await request('/__open-in-editor?file=package.json')).status, 404);
   assert.deepEqual((await request('/src/editor/main.tsx')).body, 'vite:/src/editor/main.tsx');
+});
+
+test('what Vite serves besides the page is sandboxed: an SVG an agent wrote runs no script next to the token', async () => {
+  for (const path of ['/src/editor/main.tsx', '/@fs/projects/demo/logo.svg']) {
+    const res = await request(path);
+    assert.equal(res.body, `vite:${path}`);
+    assert.equal(res.headers['content-security-policy'], "default-src 'none'; sandbox", path);
+    assert.equal(res.headers['x-content-type-options'], 'nosniff', path);
+  }
 });
 
 test('/oauth/<network>/callback: the cross-site way back from a network, as a page; the state decides', async () => {

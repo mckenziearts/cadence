@@ -171,6 +171,7 @@ export const api = {
   syncVoiceOver: (id: string) => post<ProjectState>(`${p(id)}/voice-over/sync`),
   /** Quiet: the Voice panel and the Profile show the failure under their fields. */
   elevenLabs: () => get<{ voices: ElevenLabsVoice[]; models: ElevenLabsModel[] }>('/api/voices/elevenlabs', { quiet: true }),
+  elevenLabsPreviewUrl: (voice: string) => `/api/voices/elevenlabs/${encodeURIComponent(voice)}/preview`,
   saveElevenLabsKey: (key: string) => put<{ configured: true }>('/api/voices/elevenlabs/key', { key }, { quiet: true }),
   removeElevenLabsKey: () => del<{ configured: false }>('/api/voices/elevenlabs/key'),
   subtitles: (id: string, format: 'srt' | 'vtt') => get<string>(`${p(id)}/subtitles${q({ format })}`, { text: true }),

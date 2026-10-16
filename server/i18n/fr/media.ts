@@ -88,6 +88,7 @@ export default {
     elevenLabsHttpStatus: (status: number) => `erreur ${status}`,
     elevenLabsNoKey: 'Aucune clé API ElevenLabs enregistrée : ajoutez la vôtre dans le Profil',
     elevenLabsKeyUnreadable: (file: string) => `${file} illisible : enregistrez à nouveau votre clé ElevenLabs dans le Profil`,
+    elevenLabsNoPreview: 'Cette voix n’a pas d’extrait',
     elevenLabsNoSound: 'ElevenLabs a répondu sans son lisible : réessayez',
     elevenLabsDown: 'ElevenLabs ne répond pas : vérifiez la connexion à Internet, puis réessayez',
     elevenLabsKeyNotSaved: 'Clé ElevenLabs non enregistrée : réessayez',

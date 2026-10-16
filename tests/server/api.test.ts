@@ -199,6 +199,7 @@ beforeEach(async () => {
   const voiceOver = {
     voices: async () => ({ piper: { ok: true }, voices: [], elevenLabs: { configured: false } }),
     elevenLabs: async () => ({ voices: [], models: [] }),
+    elevenLabsPreview: async () => Buffer.alloc(0),
     setElevenLabsKey: async (key: string | null) => {
       record('elevenLabsKey', key);
     },
@@ -635,6 +636,7 @@ test('voice-overs: the ElevenLabs key is checked, kept in a file only this machi
       return (asked.push(['models', key]), [{ id: 'eleven_multilingual_v2', name: 'Multilingual v2' }]);
     },
     speak: async () => undefined,
+    preview: async () => Buffer.alloc(0),
   };
   const voiceOver = new LocalVoiceOverService({
     config: t.config,
@@ -709,6 +711,78 @@ test('voice-overs: the ElevenLabs key is checked, kept in a file only this machi
   assert.deepEqual(await configured(), { configured: false });
 });
 
+test("voice-overs: a voice's sample comes through the editor origin, without the key", async () => {
+  const fetched: string[] = [];
+  const voiceOver = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: {
+      voices: async (key) => {
+        if (key === null) throw new HttpError(409, 'Aucune clé API ElevenLabs enregistrée');
+        return [
+          { id: 'voiceAlice1', name: 'Alice', category: 'premade', previewUrl: 'https://cdn.test/alice.mp3', languages: [] },
+          { id: 'voiceBob2', name: 'Bob', category: 'cloned', previewUrl: null, languages: [] },
+        ];
+      },
+      models: async () => [],
+      speak: async () => undefined,
+      preview: async (url) => (fetched.push(url), Buffer.from('ID3 alice')),
+    },
+  });
+  app = createApi({ ...deps, voiceOver });
+
+  assert.equal((await json('GET', '/api/voices/elevenlabs/voiceAlice1/preview')).status, 409);
+  assert.equal((await json('PUT', '/api/voices/elevenlabs/key', { key: 'sk_good' })).status, 200);
+  const res = await call('GET', '/api/voices/elevenlabs/voiceAlice1/preview');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'audio/mpeg');
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), Buffer.from('ID3 alice'));
+  assert.deepEqual(fetched, ['https://cdn.test/alice.mp3']);
+  for (const voice of ['voiceUnknown3', 'voiceBob2']) {
+    const missing = await json('GET', `/api/voices/elevenlabs/${voice}/preview`);
+    assert.equal(missing.status, 404, voice);
+    assert.match(missing.body.error, /extrait/);
+  }
+  assert.equal(fetched.length, 1);
+
+  let listed = 0;
+  const withoutPreview = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: { voices: async () => (listed++, []), models: async () => [], speak: async () => undefined },
+  });
+  app = createApi({ ...deps, voiceOver: withoutPreview });
+  assert.equal((await json('GET', '/api/voices/elevenlabs/voiceAlice1/preview')).status, 404, 'a host client without samples');
+  assert.equal(listed, 0);
+
+  const revoked = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: {
+      voices: async () => {
+        throw new HttpError(401, 'Clé révoquée');
+      },
+      models: async () => [],
+      speak: async () => undefined,
+      preview: async (url) => (fetched.push(url), Buffer.alloc(0)),
+    },
+  });
+  app = createApi({ ...deps, voiceOver: revoked });
+  const refusedKey = await json('GET', '/api/voices/elevenlabs/voiceAlice1/preview');
+  assert.equal(refusedKey.status, 401, 'a revoked key');
+  assert.equal(refusedKey.body.error, 'Clé révoquée');
+  assert.equal(fetched.length, 1, 'no sample fetched');
+});
+
 test('voice-overs: a removal sent during a slow ElevenLabs check is not undone by the key it was checking', async () => {
   let checking!: () => void;
   let answer!: () => void;
@@ -724,6 +798,7 @@ test('voice-overs: a removal sent during a slow ElevenLabs check is not undone b
       voices: async () => (checking(), await answered, []),
       models: async () => [],
       speak: async () => undefined,
+      preview: async () => Buffer.alloc(0),
     },
   });
   app = createApi({ ...deps, voiceOver });
@@ -758,6 +833,7 @@ test("voice-overs: with a host app's secret store, the key is checked before it 
           await fs.writeFile(files[i], writeWav({ sampleRate: 24000, samples: new Int16Array(24000) }));
         }
       },
+      preview: async () => Buffer.alloc(0),
     },
     secrets: {
       get: async (name) => saved.get(name) ?? null,
@@ -823,7 +899,13 @@ test("voice-overs: with a host app's ElevenLabs client, the key routes answer 40
     brands: deps.brands,
     hub,
     engine: { check: async () => ({ ok: true }), speak: async () => undefined },
-    elevenLabs: { hosted: true, voices: async () => [], models: async () => [], speak: async () => undefined },
+    elevenLabs: {
+      hosted: true,
+      voices: async () => [],
+      models: async () => [],
+      speak: async () => undefined,
+      preview: async () => Buffer.alloc(0),
+    },
   });
   app = createApi({ ...deps, voiceOver });
   const voice = { engine: 'elevenlabs', voice: 'JBFqnCBsd6RMkjVDRZzb', model: 'eleven_multilingual_v2' };

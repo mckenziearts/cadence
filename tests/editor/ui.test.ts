@@ -110,6 +110,20 @@ const speech: SpeechEngine = {
   },
 };
 
+/** A finished brand build, for the top bar and its window. */
+const BUILD: BrandBuild = {
+  id: 'e2e-build',
+  brandId: 'orbit',
+  name: 'Orbit',
+  repo: 'acme/e2e-site',
+  status: 'done',
+  activity: null,
+  files: [],
+  costUsd: 0.42,
+  createdAt: '2026-10-01T10:00:00.000Z',
+  finishedAt: '2026-10-01T10:05:00.000Z',
+};
+
 /** ElevenLabs as the Voice panel and Profile tests need it: one accepted key, two voices, never the network. */
 const ELEVENLABS_KEY = `sk_e2e_${process.pid}`;
 const elevenLabsSpoken: string[][] = [];
@@ -138,6 +152,7 @@ const elevenLabs: ElevenLabsApi = {
     await elevenLabsHold;
     for (const file of files) await writeFile(file, writeWav({ sampleRate: 24000, samples: new Int16Array(24000).fill(800) }));
   },
+  preview: async () => Buffer.from('ID3'),
 };
 
 let server: RunningServer;
@@ -2485,19 +2500,6 @@ describe('features', () => {
     },
   };
   /** A finished brand build that cost 0,42 $, added to the state the editor reads. */
-  const BUILD: BrandBuild = {
-    id: 'e2e-build',
-    brandId: 'orbit',
-    name: 'Orbit',
-    repo: 'acme/e2e-site',
-    status: 'done',
-    activity: null,
-    files: [],
-    costUsd: 0.42,
-    createdAt: '2026-10-01T10:00:00.000Z',
-    finishedAt: '2026-10-01T10:05:00.000Z',
-  };
-
   // The same lookups with every feature on, then off: a lookup that finds nothing when its section is on would make the
   // second run prove nothing.
   async function sectionCounts(features: Features): Promise<{
@@ -3042,4 +3044,167 @@ describe('archives', () => {
       await page.context().close();
     },
   );
+});
+
+describe('content security policy', () => {
+  /**
+   * The editor of `on` through a whole session (home, a project, the brand kit, a scene played, every modal) with no
+   * CSP violation, then an injected inline script, which raises one.
+   */
+  async function exercise(on: RunningServer): Promise<void> {
+    const renders = path.join(on.config.projectsDir, A, 'renders');
+    await mkdir(renders, { recursive: true });
+    await writeFile(path.join(renders, `${A}-16x9-e2e.mp4`), Buffer.alloc(2048, 1));
+    const page = await newPage();
+    try {
+      // Kept on this side: a reload would wipe a list kept in the page. The editor's own, not the frames'.
+      const violations: string[] = [];
+      await page.exposeBinding('cadenceViolation', ({ frame }, violation: string) => {
+        if (frame === page.mainFrame()) violations.push(violation);
+      });
+      await page.addInitScript(() => {
+        const w = window as unknown as { cadenceViolation: (violation: string) => Promise<void> };
+        document.addEventListener(
+          'securitypolicyviolation',
+          (e) => void w.cadenceViolation(`${e.effectiveDirective} ${e.blockedURI}`),
+        );
+      });
+      // A past turn that rendered a frame, so the chat offers the lightbox.
+      await page.route(`**/api/projects/${A}/chats/scene:titre`, (route) => {
+        if (route.request().method() !== 'GET') return route.fallback();
+        const chat: ChatState = {
+          key: 'scene:titre',
+          running: false,
+          queued: false,
+          totalCostUsd: 0,
+          messages: [
+            {
+              id: 'e2e-frames',
+              role: 'assistant',
+              text: 'Réponse factice.',
+              createdAt: '2026-10-01T10:00:00.000Z',
+              status: 'done',
+              activity: [
+                { id: 'e2e-tool', tool: 'render_frames', label: 'Rendu de 1 image', status: 'ok', images: ['/e2e.png'] },
+              ],
+            },
+          ],
+        };
+        return route.fulfill({ json: chat });
+      });
+      // A finished brand build in the top bar, so its window opens too.
+      await page.route('**/api/state', async (route) => {
+        const response = await route.fetch();
+        return route.fulfill({ response, json: { ...((await response.json()) as AppState), brandBuilds: [BUILD] } });
+      });
+      /** Opens the dialog named `name` from `opener`, then closes it with Escape. */
+      const dialog = async (opener: Locator, name: string) => {
+        await opener.click({ timeout: 30_000 });
+        await page.getByRole('dialog', { name, exact: true }).waitFor({ timeout: 30_000 });
+        await page.keyboard.press('Escape');
+        await page.getByRole('dialog').waitFor({ state: 'detached' });
+      };
+
+      await page.goto(`${on.config.editorOrigin}/`);
+      await page.getByRole('heading', { name: 'Projets' }).waitFor({ timeout: 60_000 });
+      await dialog(page.getByRole('button', { name: 'Nouveau projet' }), 'Nouveau projet');
+      await page.getByRole('button', { name: 'Nouveau projet' }).click();
+      await dialog(
+        page.getByRole('dialog', { name: 'Nouveau projet' }).getByRole('button', { name: /Nouvelle marque/ }),
+        'Nouvelle marque',
+      );
+
+      await page.goto(`${on.config.editorOrigin}/#/${A}/titre`);
+      await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
+      await page.frameLocator('iframe[src*="/frame.html"]').locator('#root').waitFor({ state: 'attached', timeout: 30_000 });
+      await dialog(page.getByRole('button', { name: 'Réglages', exact: true }), 'Réglages');
+      await dialog(page.getByRole('button', { name: 'Direction artistique', exact: true }), 'Direction artistique');
+      await dialog(page.getByRole('button', { name: 'Ajouter une scène' }), 'Ajouter une scène');
+      await dialog(page.getByRole('button', { name: /Titre \u2192 Deuxième/ }).first(), 'Raccord Titre \u2192 Deuxième');
+      await dialog(page.getByRole('button', { name: 'Agrandir l’image rendue par Claude Code' }), 'Image rendue par Claude Code');
+      await dialog(page.getByRole('button', { name: 'Présenter', exact: true }), 'Présentation');
+      await dialog(page.getByRole('button', { name: 'Éditeur A' }), 'Projets');
+      await dialog(page.getByRole('button', { name: 'Raccourcis clavier (?)' }), 'Raccourcis clavier');
+      await dialog(page.getByRole('button', { name: 'Marque « Orbit » : Prête' }), 'Marque « Orbit » prête');
+      await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+      await page.waitForTimeout(1000);
+      await page.getByRole('button', { name: 'Pause', exact: true }).click();
+      // The brand fonts come from the frame origin.
+      await page.getByRole('button', { name: 'Cadence', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Marque Cadence', exact: true }).waitFor();
+      await page.waitForFunction(() =>
+        [...document.fonts].some(
+          (f) => f.family.replace(/["']/g, '') === 'Cadence brand cadence display' && f.status === 'loaded',
+        ),
+      );
+      await page.keyboard.press('Escape');
+      await page.getByRole('dialog').waitFor({ state: 'detached' });
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      await dialog(page.getByRole('button', { name: 'Publier', exact: true }).first(), 'Publier');
+      // An ElevenLabs voice's sample plays from the editor origin.
+      await api('PUT', '/api/voices/elevenlabs/key', { key: ELEVENLABS_KEY }, on);
+      await page.goto(`${on.config.editorOrigin}/#/@profil`);
+      const card = page.getByRole('listitem', { name: 'ElevenLabs' });
+      await card.getByRole('combobox', { name: 'Voix des nouveaux projets' }).selectOption('voiceAlice1', { timeout: 60_000 });
+      const sample = page.waitForResponse((r) => r.url().endsWith('/api/voices/elevenlabs/voiceAlice1/preview'));
+      await card.getByRole('button', { name: 'Écouter un extrait de la voix Alice' }).click();
+      assert.equal((await sample).status(), 200);
+      const youtube = page.getByRole('listitem', { name: 'YouTube' });
+      await dialog(youtube.getByRole('button', { name: /^(Configurer|Clés)$/ }), 'Clés de l’app YouTube');
+      const grok = page.getByRole('listitem', { name: 'Grok' });
+      await dialog(grok.getByRole('button', { name: 'Comment connecter' }), 'Connecter Grok');
+      // A copy: asserting on the list itself would narrow its type to never[] for the check below.
+      assert.deepEqual([...violations], []);
+
+      const ran = await page.evaluate(() => {
+        const script = document.createElement('script');
+        script.textContent = 'window.inlineRan = true';
+        document.head.append(script);
+        return (window as unknown as { inlineRan?: boolean }).inlineRan ?? false;
+      });
+      assert.equal(ran, false);
+      const deadline = Date.now() + 10_000;
+      while (!violations.some((v) => v.startsWith('script-src-elem inline'))) {
+        assert.ok(Date.now() < deadline, `no violation for the inline script: ${violations.join(', ')}`);
+        await page.waitForTimeout(50);
+      }
+    } finally {
+      await page.context().close();
+      await api('DELETE', '/api/voices/elevenlabs/key', undefined, on);
+    }
+  }
+
+  it('lets the built editor run with no violation, and blocks an inline script', { timeout: 180_000 }, async () => {
+    await exercise(server);
+  });
+
+  it('lets the dev editor run with no violation, and blocks an inline script', { timeout: 180_000 }, async () => {
+    const cacheDir = process.env.CADENCE_VITE_CACHE_DIR;
+    // Its own optimizer: the dev editor bundles other entries than the built one's frames.
+    process.env.CADENCE_VITE_CACHE_DIR = path.join(ROOT, 'node_modules/.vite-e2e/editor-dev');
+    const devState = path.join(os.tmpdir(), `cadence-e2e-dev-state-${process.pid}`);
+    let dev: RunningServer | undefined;
+    try {
+      dev = await startServer({
+        editorPort: 0,
+        framePort: 0,
+        quiet: true,
+        provider,
+        brandSources: { github: brandSource, gitlab: glabMissing },
+        networks: { youtube: fakeNetwork() },
+        elevenLabs,
+        root: ROOT,
+        stateDir: devState,
+        dev: true,
+      });
+      assert.match(await (await fetch(`${dev.config.editorOrigin}/`)).text(), /\/@vite\/client/);
+      await exercise(dev);
+    } finally {
+      await dev?.close();
+      // startServer() set it for its own React build; the other server and the cleanup keep theirs.
+      process.env.NODE_ENV = 'production';
+      process.env.CADENCE_VITE_CACHE_DIR = cacheDir;
+      await rm(devState, { recursive: true, force: true });
+    }
+  });
 });

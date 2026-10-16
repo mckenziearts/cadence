@@ -89,6 +89,7 @@ beforeEach(async () => {
         await fs.writeFile(files[i], writeWav({ sampleRate: 24000, samples }));
       }
     },
+    preview: async () => Buffer.alloc(0),
   };
   deps = { config: t.config, store, brands: new FileBrandStore(t.config), hub, engine, elevenLabs };
   voiceOver = new LocalVoiceOverService(deps);
@@ -558,6 +559,7 @@ test("a host app's ElevenLabs client gets a null key when none is saved, and lis
         keys.push(input.key);
         await deps.elevenLabs.speak({ ...input, key: 'host' });
       },
+      preview: async () => Buffer.alloc(0),
     },
   });
   store.setVoiceOverProvider(hosted.provider);
@@ -686,6 +688,7 @@ test("with a host app's ElevenLabs client, the key is the host's: configured, ho
       voices: async (key) => (keys.push(key), []),
       models: async (key) => (keys.push(key), []),
       speak: async () => undefined,
+      preview: async () => Buffer.alloc(0),
     },
   });
   assert.deepEqual((await service.voices()).elevenLabs, { configured: true, hosted: true });
@@ -1136,7 +1139,12 @@ test('downloads check the md5, share one transfer, and refuse a voice Cadence do
       brands: new FileBrandStore(t.config),
       hub: { send: () => undefined, handleSse: () => undefined },
       engine: { check: async () => ({ ok: true }), speak: async () => undefined },
-      elevenLabs: { voices: async () => [], models: async () => [], speak: async () => undefined },
+      elevenLabs: {
+        voices: async () => [],
+        models: async () => [],
+        speak: async () => undefined,
+        preview: async () => Buffer.alloc(0),
+      },
       fetch: async (url) => {
         fetched.push(String(url));
         const data = String(url).endsWith('.json') ? files['.onnx.json'] : files['.onnx'];

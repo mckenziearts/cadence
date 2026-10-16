@@ -213,6 +213,7 @@ export class FixtureVoiceOverService implements VoiceOverService {
   voices = unused;
   download = unused;
   elevenLabs = unused;
+  elevenLabsPreview = unused;
   setElevenLabsKey = unused;
 }
 

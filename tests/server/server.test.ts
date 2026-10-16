@@ -1,8 +1,11 @@
-// startServer() wiring: real Vite, stores and handlers on free ports; data dirs in a temp root, fake agent, no Chromium.
+// startServer() wiring: real Vite, stores and handlers on free ports; data dirs in a temp root, fake agent and ElevenLabs.
+// Chromium only for the CSP session, which CI does not let skip.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { chromium } from 'playwright';
+import type { ElevenLabsApi } from '../../server/contracts';
 import { startServer, type RunningServer } from '../../server/index';
 import { makeRoot, type TestRoot } from './helpers';
 
@@ -16,6 +19,16 @@ const provider = {
   async *run() {
     yield { type: 'done' as const, text: '', isError: false, durationMs: 0 };
   },
+};
+
+const ELEVENLABS_KEY = `sk_wiring_${process.pid}`;
+const elevenLabs: ElevenLabsApi = {
+  voices: async () => [
+    { id: 'voiceAlice1', name: 'Alice', category: 'premade', previewUrl: 'https://example.invalid/a.mp3', languages: ['fr'] },
+  ],
+  models: async () => [{ id: 'eleven_multilingual_v2', name: 'Multilingual v2' }],
+  speak: async () => undefined,
+  preview: async () => Buffer.from('ID3'),
 };
 
 before(async () => {
@@ -33,6 +46,7 @@ before(async () => {
     framePort: 0,
     quiet: true,
     provider,
+    elevenLabs,
   });
 });
 
@@ -40,6 +54,16 @@ after(async () => {
   await server?.close();
   await t.cleanup();
 });
+
+/** The editor page's CSP, as server/http.ts writes it for `frameOrigin`. */
+const editorCsp = (frameOrigin: string) =>
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+  `font-src 'self' data: ${frameOrigin}; media-src 'self' blob:; connect-src 'self'; object-src 'none'; ` +
+  `base-uri 'none'; form-action 'self'; frame-src ${frameOrigin}; frame-ancestors 'none'`;
+/** A script tag without `src`: inline code, which the editor's CSP would block. */
+const INLINE_SCRIPT = /<script(?![^>]*\bsrc=)[^>]*>/;
+/** What the editor origin serves besides its page: a document there runs nothing and loads nothing. */
+const SANDBOX_CSP = "default-src 'none'; sandbox";
 
 test('both origins listen on 127.0.0.1 with the real ports', () => {
   const { editorPort, framePort, editorOrigin, frameOrigin, mcpUrl } = server.config;
@@ -91,14 +115,19 @@ test('editor HTML, API, SSE and frame data are wired together', async () => {
 });
 
 test('serves the editor from a production build: no Vite module, React production, cached assets, byte ranges', async () => {
-  const { editorOrigin } = server.config;
-  const html = await (await fetch(`${editorOrigin}/`)).text();
+  const { editorOrigin, frameOrigin } = server.config;
+  const page = await fetch(`${editorOrigin}/`);
+  assert.equal(page.headers.get('content-security-policy'), editorCsp(frameOrigin));
+  const html = await page.text();
+  assert.doesNotMatch(html, INLINE_SCRIPT);
   assert.doesNotMatch(html, /@vite\/client|\/src\/editor/);
   const script = /<script type="module" crossorigin src="(\/assets\/index-[\w-]+\.js)">/.exec(html)?.[1];
   assert.ok(script, html);
   const res = await fetch(`${editorOrigin}${script}`);
   assert.equal(res.headers.get('content-type'), 'text/javascript; charset=utf-8');
   assert.equal(res.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  assert.equal(res.headers.get('content-security-policy'), SANDBOX_CSP);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
   const js = await res.text();
   assert.match(js, /Minified React error/, "React's production build");
   const wav = /\/assets\/pop-[\w-]+\.wav/.exec(js)?.[0];
@@ -116,6 +145,70 @@ test('serves the editor from a production build: no Vite module, React productio
   assert.equal(tail.headers.get('content-range'), `bytes ${size - 5}-${size - 1}/${size}`);
   assert.equal((await fetch(`${editorOrigin}${script}`, { headers: { range: `bytes=${size}-` } })).status, 416);
 });
+
+test(
+  'the built editor runs a session with no CSP violation and blocks an injected inline script',
+  { timeout: 120_000 },
+  async (c) => {
+    const browser = await chromium.launch().catch(() => null);
+    if (!browser) {
+      assert.ok(!process.env.CI, 'Chromium missing in CI');
+      return c.skip('Chromium missing (npm run setup)');
+    }
+    const { editorOrigin } = server.config;
+    const headers = { 'content-type': 'application/json', 'x-cadence-token': server.editorToken };
+    const body = JSON.stringify({ name: 'Politique', brand: 'orbit', formats: ['16:9'], fps: 30 });
+    assert.equal((await fetch(`${editorOrigin}/api/projects`, { method: 'POST', body, headers })).status, 200);
+    const key = JSON.stringify({ key: ELEVENLABS_KEY });
+    assert.equal((await fetch(`${editorOrigin}/api/voices/elevenlabs/key`, { method: 'PUT', body: key, headers })).ok, true);
+    try {
+      const page = await browser.newPage({ locale: 'fr-FR' });
+      await page.route('**/thumbnail?**', (route) => route.abort());
+      // Kept on this side: a reload would wipe a list kept in the page. The editor's own, not the frames'.
+      const violations: string[] = [];
+      await page.exposeBinding('cadenceViolation', ({ frame }, violation: string) => {
+        if (frame === page.mainFrame()) violations.push(violation);
+      });
+      await page.addInitScript(() => {
+        const w = window as unknown as { cadenceViolation: (violation: string) => Promise<void> };
+        document.addEventListener(
+          'securitypolicyviolation',
+          (e) => void w.cadenceViolation(`${e.effectiveDirective} ${e.blockedURI}`),
+        );
+      });
+      await page.goto(`${editorOrigin}/`);
+      await page.getByRole('heading', { name: 'Projets' }).waitFor({ timeout: 60_000 });
+      await page.goto(`${editorOrigin}/#/politique/titre`);
+      await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
+      await page.frameLocator('iframe[src*="/frame.html"]').locator('#root').waitFor({ state: 'attached', timeout: 30_000 });
+      // The voice sample plays from the editor origin (media-src 'self').
+      await page.goto(`${editorOrigin}/#/@profil`);
+      const card = page.getByRole('listitem', { name: 'ElevenLabs' });
+      await card.getByRole('combobox', { name: 'Voix des nouveaux projets' }).selectOption('voiceAlice1', { timeout: 60_000 });
+      const sample = page.waitForResponse((r) => r.url().endsWith('/api/voices/elevenlabs/voiceAlice1/preview'));
+      await card.getByRole('button', { name: 'Écouter un extrait de la voix Alice' }).click();
+      assert.equal((await sample).status(), 200);
+      // A copy: asserting on the list itself would narrow its type to never[] for the check below.
+      assert.deepEqual([...violations], []);
+
+      const ran = await page.evaluate(() => {
+        const script = document.createElement('script');
+        script.textContent = 'window.inlineRan = true';
+        document.head.append(script);
+        return (window as unknown as { inlineRan?: boolean }).inlineRan ?? false;
+      });
+      assert.equal(ran, false);
+      const deadline = Date.now() + 10_000;
+      while (!violations.some((v) => v.startsWith('script-src-elem inline'))) {
+        assert.ok(Date.now() < deadline, `no violation for the inline script: ${violations.join(', ')}`);
+        await page.waitForTimeout(50);
+      }
+    } finally {
+      await browser.close();
+      await fetch(`${editorOrigin}/api/voices/elevenlabs/key`, { method: 'DELETE', headers });
+    }
+  },
+);
 
 test('close() stops both servers', async () => {
   const { editorOrigin } = server.config;
@@ -176,9 +269,23 @@ test('npm run dev serves the editor through Vite, with React in development', as
     dev: true,
   });
   try {
-    const { editorOrigin } = dev.config;
-    assert.match(await (await fetch(`${editorOrigin}/`)).text(), /\/@vite\/client[\s\S]*\/src\/editor\/main\.tsx/);
+    const { editorOrigin, frameOrigin } = dev.config;
+    const page = await fetch(`${editorOrigin}/`);
+    assert.equal(page.headers.get('content-security-policy'), editorCsp(frameOrigin));
+    const html = await page.text();
+    assert.match(html, /\/@vite\/client[\s\S]*\/src\/editor\/main\.tsx/);
+    assert.doesNotMatch(html, INLINE_SCRIPT);
+    assert.doesNotMatch(html, /\/@react-refresh/, 'no React preamble');
     assert.equal((await fetch(`${editorOrigin}/src/editor/main.tsx`)).status, 200);
+    // A file an agent wrote, opened by the person: it must not run next to the editor token.
+    const svg = path.join(projectsDir, 'agent-files', 'logo.svg');
+    await fs.mkdir(path.dirname(svg), { recursive: true });
+    await fs.writeFile(svg, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    const file = await fetch(`${editorOrigin}/@fs${svg}`);
+    assert.equal(file.status, 200);
+    assert.match(file.headers.get('content-type') ?? '', /svg/);
+    assert.equal(file.headers.get('content-security-policy'), SANDBOX_CSP);
+    assert.equal(file.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(process.env.NODE_ENV, 'development');
   } finally {
     await dev.close();

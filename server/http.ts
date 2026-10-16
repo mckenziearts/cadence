@@ -112,8 +112,12 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
           res.writeHead(200, {
             'Content-Type': 'text/html; charset=utf-8',
             'Cache-Control': 'no-store',
-            // The previews show the frame origin only: scene code cannot send its own frame to another site.
-            'Content-Security-Policy': `frame-src ${config.frameOrigin}; frame-ancestors 'none'`,
+            // No inline script, no other site: an injected tag cannot reach the token. The brand fonts come from the frame
+            // origin; the previews show that origin only, so scene code cannot send its own frame to another site.
+            'Content-Security-Policy':
+              "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+              `font-src 'self' data: ${config.frameOrigin}; media-src 'self' blob:; connect-src 'self'; object-src 'none'; ` +
+              `base-uri 'none'; form-action 'self'; frame-src ${config.frameOrigin}; frame-ancestors 'none'`,
             'X-Content-Type-Options': 'nosniff',
           });
           res.end(html);
@@ -122,6 +126,10 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
       );
       return;
     }
+    // Vite also serves project and brand files here (an SVG an agent wrote, under /@fs): opened as a page, they would run
+    // next to the token. Module scripts, stylesheets and fonts ignore their own response's CSP; the editor starts no worker.
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     editor.serve(req, res);
   };
 

@@ -136,8 +136,16 @@ Guards (editor origin, `server/http.ts`):
 - `/mcp` requires `Authorization: Bearer <mcpToken>`; the token resolves to a scope (see MCP). Requests with an
   `Origin` header are rejected (browsers never call MCP).
 - `/frame.html` and `/kit.html` return 404 on the editor origin: scene and brand code never run next to the token.
-- The editor HTML is sent with the CSP `frame-src <frame origin>; frame-ancestors 'none'`: the previews show the frame
-  origin only (scene code cannot send its own frame to another site), and no other site may embed the editor.
+- The editor HTML is sent with the CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob:; font-src 'self' data: <frame origin>; media-src 'self' blob:; connect-src 'self';
+  object-src 'none'; base-uri 'none'; form-action 'self'; frame-src <frame origin>; frame-ancestors 'none'`. The editor
+  has no inline script (the dev mode has no React preamble, HMR is off), so an injected tag cannot run next to the
+  token. `font-src` takes the frame origin for the brand fonts, `img-src` takes `data:` for the favicon, and an
+  ElevenLabs voice's sample comes through `/api/voices/elevenlabs/:voice/preview` so `media-src` stays `'self'`. The previews
+  show the frame origin only (scene code cannot send its own frame to another site), and no other site may embed the
+  editor. What the editor origin serves besides its page, the API, MCP and the network callbacks (the built assets, or in
+  dev mode whatever Vite serves, project and brand files under `/@fs` included) is sent with the CSP
+  `default-src 'none'; sandbox` and `nosniff`, so an SVG an agent wrote, opened as a page, runs no script next to the token.
 - `GET /oauth/<network>/callback` is where a network sends the person back after the consent page: a cross-site
   navigation, so outside `/api`. It acts only on a state issued by `POST /api/networks/:id/connect` (editor token),
   single use, 10 minutes, bound to its network, and answers a small HTML page (CSP `default-src 'none'`, no referrer).
@@ -725,6 +733,11 @@ GET    /api/voices                                 VoicesState (Piper's state, t
                                                    elevenLabs.configured; never the key)
 POST   /api/voices/:voice/download                 answers VoiceInfo once both files are in place, md5 checked
 GET    /api/voices/elevenlabs                      { voices, models } from the saved key's account; 409 without a key
+GET    /api/voices/elevenlabs/:voice/preview       the voice's MP3 sample, fetched without the key from its https URL,
+                                                   public addresses on port 443 only through the captures' address
+                                                   policy, each redirect checked, 8 MB at most; 409 without a key, 404
+                                                   when the voice has no sample or its URL is refused, 502 when the
+                                                   storage fails
 PUT    /api/voices/elevenlabs/key                  { key }, checked against ElevenLabs before it is saved, answers
                                                    { configured: true }; 400 when ElevenLabs refuses it
 DELETE /api/voices/elevenlabs/key                  answers { configured: false }; drops Settings.defaultVoice too

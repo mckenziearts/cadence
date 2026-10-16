@@ -87,6 +87,7 @@ export default {
     elevenLabsHttpStatus: (status: number) => `error ${status}`,
     elevenLabsNoKey: 'No ElevenLabs API key saved: add yours in the Profile',
     elevenLabsKeyUnreadable: (file: string) => `Could not read ${file}: save your ElevenLabs key again in the Profile`,
+    elevenLabsNoPreview: 'This voice has no sample',
     elevenLabsNoSound: 'ElevenLabs answered without a readable sound: try again',
     elevenLabsDown: 'ElevenLabs does not answer: check the Internet connection, then try again',
     elevenLabsKeyNotSaved: 'ElevenLabs key not saved: try again',

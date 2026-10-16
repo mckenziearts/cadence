@@ -178,7 +178,12 @@ test("a host app's secret store passed to startServer is where the ElevenLabs ke
   const server = await startServer({
     ...options,
     speech: { check: async () => ({ ok: true }), speak: async () => undefined },
-    elevenLabs: { voices: async () => [], models: async () => [], speak: async () => undefined },
+    elevenLabs: {
+      voices: async () => [],
+      models: async () => [],
+      speak: async () => undefined,
+      preview: async () => Buffer.alloc(0),
+    },
     secrets: { get: async (name) => (asked.push(name), 'sk_from_store'), set: async () => undefined },
   });
   try {
