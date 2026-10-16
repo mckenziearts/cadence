@@ -9,6 +9,9 @@ import { chromium } from 'playwright';
 
 /** Launches Chromium with the core's launch options, as received, on a private Unix socket. */
 export async function serveChromium(options) {
+  // Playwright reads it at each new context: set, Chromium would dial the loopback itself instead of the dead proxy that
+  // reference captures send everything to.
+  delete process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK;
   // A loopback port would let any local process drive this browser (Playwright's /json hands out the endpoint path), so
   // the server listens on a Unix socket in a folder only this user can open (mkdtemp makes it 0700). launchServer takes
   // a socket path as `port` (Playwright 1.63, not documented): tests/server/browser-host.test.ts checks it on every update.

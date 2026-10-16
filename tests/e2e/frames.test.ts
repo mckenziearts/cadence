@@ -8,6 +8,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { chromium, type Browser, type Page } from 'playwright';
 import { auditFrame, CHROMIUM_ARGS, PlaywrightCapture } from '../../server/capture/capture';
+import { LOCAL } from '../../server/capture/policy';
 import type { CadenceConfig } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
@@ -228,7 +229,10 @@ describe('frame origin with a request secret', () => {
       const kit = await capture.kitSheet('test');
       assert.deepEqual([kit.loaded, kit.problems], [true, []]);
       assert.ok(kit.image.length > 0);
-      await capture.screenshotUrl(`http://127.0.0.1:${(site.address() as AddressInfo).port}/`, { device: 'desktop' });
+      await capture.screenshotUrl(`http://127.0.0.1:${(site.address() as AddressInfo).port}/`, {
+        device: 'desktop',
+        policy: LOCAL,
+      });
       assert.ok(seen.length >= 2, 'the page and its image');
       for (const headers of seen) assert.equal(headers['x-cadence-secret'], undefined);
     } finally {

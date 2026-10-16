@@ -22,8 +22,14 @@ export default {
     httpOnly: 'Only http(s) URLs can be captured',
     openFailed: (url: string, error: string) => `Could not open ${url}: ${error}`,
     hostNotFound: (host: string) => `Host not found: ${host}`,
-    reserved: (host: string, address: string | null) =>
-      `Reserved address, capture refused: ${host}${address ? ` (${address})` : ''}`,
+    reserved: (host: string) => `Private or reserved address, capture refused: ${host}`,
+    port: (host: string) => `Port not allowed, capture refused: ${host}`,
+    credentials: 'A URL with a user name or password cannot be captured',
+    redirects: 'too many redirects',
+    badRedirect: 'redirect to an invalid URL',
+    tooLarge: 'the page is too large to capture',
+    slow: 'the site takes too long to answer',
+    unreachable: 'connection failed',
     itself: 'Cadence cannot capture itself',
   },
   render: {

@@ -8,6 +8,7 @@ import type { HttpBindings } from '@hono/node-server';
 import type { Hono } from 'hono';
 import type { LaunchOptions } from 'playwright';
 import type { AuditFinding } from '../src/shared/frameProtocol';
+import type { Policy } from './capture/policy';
 import type {
   AssetInfo,
   BrandBuild,
@@ -385,8 +386,11 @@ export interface AssetStore {
   /** Save an uploaded file under assets/ (images, SVG, fonts; 50 MB max). Name is sanitized. */
   upload(projectId: string, file: { name: string; data: Buffer }): Promise<AssetInfo>;
   remove(projectId: string, assetPath: string): Promise<void>;
-  /** Screenshot a web page into assets/refs/<name>-<device>.png (reference material for the agent). */
-  captureReference(projectId: string, input: CaptureRefInput): Promise<AssetInfo>;
+  /**
+   * Screenshot a web page into assets/refs/<name>-<device>.png (reference material for the agent). `policy` is what the
+   * capture may reach: STRICT (public addresses) unless the person asked for it.
+   */
+  captureReference(projectId: string, input: CaptureRefInput, policy?: Policy): Promise<AssetInfo>;
   /** Absolute path of an asset, after checking it stays inside assets/. */
   resolve(projectId: string, assetPath: string): string;
 }
@@ -450,8 +454,11 @@ export interface CaptureService {
   ): Promise<CapturedFrame[]>;
   /** Small JPEG of a scene (cached per code generation + scene + format + t). */
   thumbnail(projectId: string, sceneId: string, opts?: { t?: number; format?: FormatId }): Promise<Buffer>;
-  /** Screenshot an external http(s) page (reference capture). */
-  screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean }): Promise<Buffer>;
+  /**
+   * Screenshot an external http(s) page (reference capture). Every request of the page goes through the pinned fetch
+   * under `policy` (STRICT by default), and never to Cadence's own ports.
+   */
+  screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean; policy?: Policy }): Promise<Buffer>;
   /** JPEG of a brand's kit sheet (kit.html, sandboxed), with what failed to render or load there. */
   kitSheet(brandId: string, opts?: { scale?: number }): Promise<{ image: Buffer; problems: string[]; loaded: boolean }>;
   /** One JPEG of PNG tiles of one size in reading order, `columns` per row, `gap` px apart (render_frames strips). */

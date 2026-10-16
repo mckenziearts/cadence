@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { test } from 'node:test';
-import { addressRefusal, type Policy, PRIVATE, STRICT, urlRefusal } from '../../server/capture/policy';
+import { addressRefusal, LOCAL, type Policy, PRIVATE, STRICT, urlRefusal } from '../../server/capture/policy';
 
 test('a public http or https URL on the default ports is admitted', () => {
   for (const href of [
@@ -146,4 +146,24 @@ test('allowed ranges open part of PRIVATE, in every IPv6 form of their IPv4 addr
   assert.equal(addressRefusal(['127.0.0.1', '8.8.8.8'], loopback), null);
   assert.equal(addressRefusal([], loopback), 'unresolved');
   assert.equal(addressRefusal(['example.com'], loopback), 'private');
+});
+
+test("the person's policy reaches loopback and private networks on any port, never link-local or multicast", () => {
+  for (const href of ['http://localhost:5173/', 'https://site.test/', 'http://192.168.1.20:8080/', 'https://example.com/']) {
+    assert.equal(urlRefusal(href, LOCAL), null, href);
+  }
+  assert.equal(urlRefusal('http://user@localhost:5173/', LOCAL), 'credentials');
+  for (const address of [
+    ...['127.0.0.1', '::1', '::ffff:127.0.0.1', '10.1.2.3', '172.16.0.1', '192.168.1.20', '::ffff:192.168.1.20'],
+    // CGNAT and tailnets, fake-IP proxies, IPv6 unique local, public.
+    ...['100.100.1.1', '198.18.0.5', 'fd12:3456::1', '8.8.8.8'],
+  ]) {
+    assert.equal(addressRefusal([address], LOCAL), null, address);
+  }
+  for (const address of [
+    ...['169.254.169.254', '::ffff:169.254.169.254', 'fe80::1', '0.0.0.0', '::', '224.0.0.1', 'ff02::1'],
+    ...['192.0.0.1', '192.0.2.1', '2001:db8::1', 'fec0::1'],
+  ]) {
+    assert.equal(addressRefusal([address], LOCAL), 'private', address);
+  }
 });

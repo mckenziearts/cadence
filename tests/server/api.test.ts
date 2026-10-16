@@ -15,6 +15,7 @@ import { Publisher } from '../../server/accounts/publish';
 import { createApi } from '../../server/api';
 import { ProjectArchiver } from '../../server/archive/projects';
 import { readTar } from '../../server/archive/tar';
+import { LOCAL } from '../../server/capture/policy';
 import type {
   BrandBuildService,
   BrandSource,
@@ -154,7 +155,7 @@ beforeEach(async () => {
   const capture = {
     frames: async () => [],
     thumbnail: async (id: string, sceneId: string, opts: unknown) => (record('thumbnail', { id, sceneId, opts }), JPEG),
-    screenshotUrl: async () => PNG,
+    screenshotUrl: async (url: string, opts: unknown) => (record('screenshotUrl', { url, opts }), PNG),
     kitSheet: async () => ({ image: JPEG, problems: [], loaded: true }),
     contactSheet: async () => JPEG,
     close: async () => undefined,
@@ -1405,6 +1406,7 @@ test('assets and references', async () => {
 
   res = await json('POST', '/api/projects/demo/refs', { url: 'http://localhost:5173/', device: 'mobile' });
   assert.equal(res.body.path, 'refs/localhost-5173-mobile.png');
+  assert.equal((calls.screenshotUrl.at(-1) as { opts: { policy: unknown } }).opts.policy, LOCAL, "the person's capture");
   assert.equal((await json('POST', '/api/projects/demo/refs', { url: 'file:///etc/hosts', device: 'desktop' })).status, 400);
   assert.deepEqual(
     (await json('GET', '/api/projects/demo/assets')).body.map((a: { path: string }) => a.path),

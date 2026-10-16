@@ -24,6 +24,7 @@ import {
   PlaywrightCapture,
   seekFrame,
 } from '../../server/capture/capture';
+import { LOCAL } from '../../server/capture/policy';
 import { diffPercent, PixelSeamService } from '../../server/capture/seams';
 import { captureLocale } from '../../server/config';
 import type { CaptureService } from '../../server/contracts';
@@ -371,7 +372,7 @@ describe('PlaywrightCapture.thumbnail', () => {
 });
 
 describe('PlaywrightCapture.screenshotUrl', () => {
-  it('screenshots http pages as desktop or mobile, and refuses anything else', async () => {
+  it("screenshots the person's local pages as desktop or mobile, and refuses anything else", async () => {
     const site = http.createServer((_req, res) => {
       res.setHeader('Content-Type', 'text/html');
       res.end('<body style="margin:0;background:#123456"><h1>Référence</h1></body>');
@@ -379,11 +380,11 @@ describe('PlaywrightCapture.screenshotUrl', () => {
     await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
     const url = `http://127.0.0.1:${(site.address() as AddressInfo).port}/`;
     try {
-      const desktop = await capture.screenshotUrl(url, { device: 'desktop' });
+      const desktop = await capture.screenshotUrl(url, { device: 'desktop', policy: LOCAL });
       assert.deepEqual(size(desktop, 'image/png'), { width: 1440, height: 900 });
       assert.ok(near(pixel(desktop, 1400, 800), [0x12, 0x34, 0x56]));
       // 390 × 844 at 3×; a page without a viewport meta is zoomed out like on a phone, hence ± 1 px.
-      const mobile = size(await capture.screenshotUrl(url, { device: 'mobile' }), 'image/png');
+      const mobile = size(await capture.screenshotUrl(url, { device: 'mobile', policy: LOCAL }), 'image/png');
       assert.equal(mobile.width, 1170);
       assert.ok(Math.abs(mobile.height - 2532) <= 1, String(mobile.height));
     } finally {
@@ -391,16 +392,16 @@ describe('PlaywrightCapture.screenshotUrl', () => {
     }
     for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'pas une url', `${h.config.frameOrigin}/frame.html`]) {
       await assert.rejects(
-        capture.screenshotUrl(bad, { device: 'desktop' }),
+        capture.screenshotUrl(bad, { device: 'desktop', policy: LOCAL }),
         (e) => e instanceof HttpError && e.status === 400,
         bad,
       );
     }
   });
 
-  it('checks every hop: reserved addresses and Cadence itself are refused, even behind a redirect', async () => {
+  it("the person's capture refuses link-local addresses and Cadence itself, even behind a redirect", async () => {
     // Link-local (cloud metadata), unspecified and multicast addresses, however they are written, and Cadence's ports
-    // by name: refused before any request.
+    // under any name.
     for (const bad of [
       'http://169.254.169.254/latest/meta-data/',
       'http://[::ffff:169.254.169.254]/',
@@ -408,10 +409,11 @@ describe('PlaywrightCapture.screenshotUrl', () => {
       'http://0.0.0.0/',
       'http://224.0.0.1/',
       `http://localhost:${h.config.editorPort}/`,
+      `http://192.168.1.1:${h.config.framePort}/`,
     ]) {
       await assert.rejects(
-        capture.screenshotUrl(bad, { device: 'desktop' }),
-        (e) => e instanceof HttpError && e.status === 400 && /réservée|elle-même/.test(e.message),
+        capture.screenshotUrl(bad, { device: 'desktop', policy: LOCAL }),
+        (e) => e instanceof HttpError && e.status === 400 && /privée ou réservée|elle-même/.test(e.message),
         bad,
       );
     }
@@ -428,11 +430,11 @@ describe('PlaywrightCapture.screenshotUrl', () => {
     const url = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
     try {
       await assert.rejects(
-        capture.screenshotUrl(`${url}/to-frame`, { device: 'desktop' }),
+        capture.screenshotUrl(`${url}/to-frame`, { device: 'desktop', policy: LOCAL }),
         (e) => e instanceof HttpError && e.status === 400 && /Cadence ne peut pas se capturer elle-même/.test(e.message),
       );
       // A page of an allowed site cannot pull pixels from Cadence either: the image is blocked, the capture goes on.
-      const shot = await capture.screenshotUrl(`${url}/`, { device: 'desktop' });
+      const shot = await capture.screenshotUrl(`${url}/`, { device: 'desktop', policy: LOCAL });
       assert.ok(near(pixel(shot, 200, 200), [0x12, 0x34, 0x56]), 'no image from the frame origin');
     } finally {
       site.close();

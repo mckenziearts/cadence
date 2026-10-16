@@ -34,7 +34,11 @@ const READABLE = (name: string) => name === 'content-type' || name === 'content-
 export type PinnedRefusal = UrlRefusal | AddressRefusal | 'redirects' | 'too-large' | 'budget' | 'slow';
 
 export class Refused extends Error {
-  constructor(readonly reason: PinnedRefusal) {
+  /** `href` is the URL refused: a redirect's target, or a resource of the page. */
+  constructor(
+    readonly reason: PinnedRefusal,
+    readonly href: string,
+  ) {
     super(reason);
     this.name = 'Refused';
   }
@@ -44,6 +48,11 @@ export class Refused extends Error {
 export class Budget {
   requests = 0;
   bytes = 0;
+  /**
+   * Each host's answers, resolved once per capture: every hop and fetch to it dials what was checked then, and a page
+   * with hundreds of resources to a few hosts does not queue as many lookups.
+   */
+  readonly lookups = new Map<string, Promise<dns.LookupAddress[]>>();
   /** Keep-alive per host for the capture. A socket is only ever dialed by its hop's pinned createConnection. */
   readonly agents = {
     'http:': dialedByRequest(new http.Agent({ keepAlive: true, maxSockets: CONNECTIONS })),
@@ -55,7 +64,7 @@ export class Budget {
 
   constructor(
     readonly signal: AbortSignal,
-    readonly policy: Policy = STRICT,
+    public policy: Policy = STRICT,
     readonly idle = IDLE_MS,
   ) {
     const end = () => {
@@ -64,6 +73,14 @@ export class Budget {
       this.agents['https:'].destroy();
     };
     signal.addEventListener('abort', end, { once: true });
+  }
+
+  /**
+   * Drops the private ranges the policy allowed and keeps its ports: once a page is served from a public address, its
+   * redirects and resources may not reach the person's networks either.
+   */
+  narrow(): void {
+    this.policy = { allowsPort: this.policy.allowsPort };
   }
 
   /** Waits for one of the CONNECTIONS slots; the caller runs the returned release once done. */
@@ -160,8 +177,22 @@ export const network: PinnedDeps = {
       else resolving--;
     }
   },
-  createConnection: (options) => (options.protocol === 'https:' ? tls.connect(options) : net.createConnection(options)),
+  createConnection: (options) =>
+    options.protocol === 'https:' ? tls.connect({ ...options, secureContext: trusted() }) : net.createConnection(options),
 };
+
+let context: tls.SecureContext | undefined;
+/**
+ * Node's own list and the system's, like a browser: a local dev site's certificate comes from a local CA that its tool
+ * added to the system store (mkcert, Valet). Built once: parsing a few hundred certificates per connection would cost
+ * more than the request.
+ */
+function trusted(): tls.SecureContext {
+  context ??= tls.createSecureContext({
+    ca: [...new Set([...tls.getCACertificates('default'), ...tls.getCACertificates('system')])],
+  });
+  return context;
+}
 
 export interface Pinned {
   /** The final URL, after redirects. */
@@ -172,41 +203,69 @@ export interface Pinned {
   body: Buffer;
 }
 
-export async function fetchPinned(href: string, budget: Budget, deps: PinnedDeps = network): Promise<Pinned> {
+export interface FetchOptions {
+  /** Sent with each hop, except Accept-Encoding: the body is always asked for unencoded. */
+  headers?: Record<string, string>;
+  /**
+   * Refuses a redirect to another origin. The browser files the body under the URL it asked for, so a page would read
+   * another origin's answer as its own.
+   */
+  sameOrigin?: boolean;
+  /** The page itself: a hop answered from a public address narrows the budget (see Budget.narrow). */
+  navigation?: boolean;
+}
+
+export async function fetchPinned(
+  href: string,
+  budget: Budget,
+  deps: PinnedDeps = network,
+  { headers = {}, sameOrigin = false, navigation = false }: FetchOptions = {},
+): Promise<Pinned> {
+  const origin = URL.parse(href)?.origin;
   for (let redirects = 0; ; redirects++) {
-    const response = await hop(href, budget, deps);
+    const response = await hop(href, budget, deps, headers, navigation);
     const location = REDIRECT_STATUSES.has(response.status) ? response.headers.location : undefined;
     if (location === undefined) {
       return { ...response, headers: Object.fromEntries(Object.entries(response.headers).filter(([name]) => READABLE(name))) };
     }
-    if (redirects === REDIRECTS) throw new Refused('redirects');
     const next = URL.parse(location, href);
-    if (!next) throw new Refused('invalid');
+    if (!next) throw new Refused('invalid', location);
+    if (redirects === REDIRECTS || (sameOrigin && next.origin !== origin)) throw new Refused('redirects', next.href);
     href = next.href;
   }
 }
 
-async function hop(href: string, budget: Budget, deps: PinnedDeps): Promise<Pinned> {
+async function hop(
+  href: string,
+  budget: Budget,
+  deps: PinnedDeps,
+  headers: Record<string, string>,
+  navigation: boolean,
+): Promise<Pinned> {
   const refusal = urlRefusal(href, budget.policy);
-  if (refusal) throw new Refused(refusal);
+  if (refusal) throw new Refused(refusal, href);
   budget.signal.throwIfAborted();
-  if (budget.requests >= CAPTURE_REQUESTS || budget.bytes >= CAPTURE_BYTES) throw new Refused('budget');
+  if (budget.requests >= CAPTURE_REQUESTS || budget.bytes >= CAPTURE_BYTES) throw new Refused('budget', href);
   budget.requests++;
   const url = new URL(href);
   const host = url.hostname.replace(/^\[(.*)\]$/, '$1');
   // The slot is taken before the lookup, so a page cannot start more resolutions than it may open connections.
   const release = await budget.connection();
   try {
-    const answers = await beforeDeadline(
-      deps.lookup(host, budget.signal).catch((): dns.LookupAddress[] => []),
-      budget.signal,
-    );
-    const refused = addressRefusal(
-      answers.map(({ address }) => address),
-      budget.policy,
-    );
-    if (refused) throw new Refused(refused);
-    return await get(url, host, answers, budget, deps);
+    let lookup = budget.lookups.get(host);
+    if (!lookup) {
+      lookup = deps.lookup(host, budget.signal).catch((): dns.LookupAddress[] => []);
+      budget.lookups.set(host, lookup);
+    }
+    const answers = await beforeDeadline(lookup, budget.signal);
+    // An abort before beforeDeadline listened (inside the lookup) never fires its listener.
+    budget.signal.throwIfAborted();
+    const addresses = answers.map(({ address }) => address);
+    const refused = addressRefusal(addresses, budget.policy);
+    if (refused) throw new Refused(refused, href);
+    // Any public answer counts: the server could have dialed that one.
+    if (navigation && addresses.some((address) => addressRefusal([address], STRICT) === null)) budget.narrow();
+    return await get(url, host, answers, budget, deps, headers);
   } finally {
     release();
   }
@@ -222,7 +281,14 @@ function beforeDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promise<T>
   return Promise.race([promise, aborted]).finally(() => signal.removeEventListener('abort', stop));
 }
 
-function get(url: URL, host: string, answers: dns.LookupAddress[], budget: Budget, deps: PinnedDeps): Promise<Pinned> {
+function get(
+  url: URL,
+  host: string,
+  answers: dns.LookupAddress[],
+  budget: Budget,
+  deps: PinnedDeps,
+  headers: Record<string, string>,
+): Promise<Pinned> {
   const protocol = url.protocol === 'https:' ? 'https:' : 'http:';
   const lookup: net.LookupFunction = (_hostname, options, callback) =>
     options.all ? callback(null, answers) : callback(null, answers[0].address, answers[0].family);
@@ -240,7 +306,7 @@ function get(url: URL, host: string, answers: dns.LookupAddress[], budget: Budge
         host,
         port: connect.port,
         path: url.pathname + url.search,
-        headers: { 'accept-encoding': 'identity' },
+        headers: { ...headers, 'accept-encoding': 'identity' },
         signal: budget.signal,
         timeout: budget.idle,
         agent: budget.agents[protocol],
@@ -248,7 +314,8 @@ function get(url: URL, host: string, answers: dns.LookupAddress[], budget: Budge
           const socket = budget.dial(() => deps.createConnection(connect));
           // Prepended: tls.connect already listens to 'connect' to send its ClientHello, which must not leave first.
           socket.prependOnceListener('connect', () => {
-            if (!answers.some(({ address }) => address === socket.remoteAddress)) socket.destroy(new Refused('private'));
+            if (!answers.some(({ address }) => address === socket.remoteAddress))
+              socket.destroy(new Refused('private', url.href));
           });
           return socket;
         },
@@ -259,7 +326,7 @@ function get(url: URL, host: string, answers: dns.LookupAddress[], budget: Budge
         response.on('data', (chunk: Buffer) => {
           size += chunk.length;
           budget.bytes += chunk.length;
-          if (size > RESOURCE_BYTES || budget.bytes > CAPTURE_BYTES) response.destroy(new Refused('too-large'));
+          if (size > RESOURCE_BYTES || budget.bytes > CAPTURE_BYTES) response.destroy(new Refused('too-large', url.href));
           else chunks.push(chunk);
         });
         response.on('error', reject);
@@ -268,7 +335,7 @@ function get(url: URL, host: string, answers: dns.LookupAddress[], budget: Budge
         });
       },
     );
-    request.on('timeout', () => request.destroy(new Refused('slow')));
+    request.on('timeout', () => request.destroy(new Refused('slow', url.href)));
     request.on('error', reject);
     request.end();
   });

@@ -2,9 +2,7 @@
 // reference screenshots of web pages. MP4 renders open their own pages with the same helpers (render.ts).
 // Adapted from saeedvaziry/caleb-video-editor (MIT)
 import { randomBytes } from 'node:crypto';
-import dns from 'node:dns/promises';
 import fs from 'node:fs/promises';
-import net from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { errors as playwrightErrors, type Browser, type BrowserContext, type Page } from 'playwright';
@@ -16,6 +14,8 @@ import type { BrowserServer, CadenceConfig, CapturedFrame, CaptureService, Chrom
 import { language, m } from '../i18n';
 import { formatSeconds, HttpError, KeyedMutex, roundMs, shortHash, writeFileAtomic } from '../util';
 import { hostChromium } from './browser-host';
+import { Budget, fetchPinned, network, type Pinned, type PinnedDeps, Refused } from './pinned';
+import { type Policy, portOf, STRICT, urlRefusal } from './policy';
 import { contactSheet } from './sheet';
 
 export const CHROMIUM_ARGS = [
@@ -46,20 +46,15 @@ const SLOT_MAX_GENERATIONS = 30;
 const SLOT_IDLE_MS = 3 * 60_000;
 const MOBILE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
-/** The discard port: nothing listens there, so capture pages reach nothing but their own origin (bypassed). */
+/**
+ * The discard port: nothing listens there. Frame pages reach nothing but their own origin (bypassed); reference captures
+ * bypass nothing, so whatever their routes do not answer (worker sockets, preconnects) goes nowhere, unresolved.
+ */
 const NOWHERE_PROXY = 'http://127.0.0.1:9';
-
-/** Never captured, whatever the entry point: link-local (cloud metadata), unspecified, multicast and broadcast. */
-const RESERVED = new net.BlockList();
-RESERVED.addSubnet('169.254.0.0', 16);
-RESERVED.addSubnet('0.0.0.0', 8);
-RESERVED.addSubnet('224.0.0.0', 3);
-RESERVED.addSubnet('fe80::', 10, 'ipv6');
-RESERVED.addAddress('::', 'ipv6');
-RESERVED.addSubnet('ff00::', 8, 'ipv6');
-const LOOPBACK = new net.BlockList();
-LOOPBACK.addSubnet('127.0.0.0', 8);
-LOOPBACK.addAddress('::1', 'ipv6');
+/** A reference capture's whole run: the page, its resources and the screenshot. */
+const REFERENCE_MS = 60_000;
+/** Request headers a reference capture forwards, so a site serves what it would serve this browser. */
+const FORWARDED = ['user-agent', 'accept', 'accept-language', 'referer', 'origin'];
 
 export class FrameTimeoutError extends Error {}
 
@@ -285,6 +280,7 @@ export class PlaywrightCapture implements CaptureService {
   private readonly store: ProjectStore;
   private readonly timeoutMs: number;
   private readonly browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
+  private readonly pinned: PinnedDeps;
   private browserPromise: Promise<Browser> | null = null;
   /** Captures queued behind a slot lock must not launch a new Chromium once the service is closed. */
   private closed = false;
@@ -298,11 +294,14 @@ export class PlaywrightCapture implements CaptureService {
     store: ProjectStore;
     renderTimeoutMs?: number;
     browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
+    /** How reference captures resolve and dial: the network unless a test stands in. */
+    pinned?: PinnedDeps;
   }) {
     this.config = deps.config;
     this.store = deps.store;
     this.timeoutMs = deps.renderTimeoutMs ?? RENDER_TIMEOUT_MS;
     this.browserServer = deps.browserServer;
+    this.pinned = deps.pinned ?? network;
   }
 
   private browser(): Promise<Browser> {
@@ -498,72 +497,78 @@ export class PlaywrightCapture implements CaptureService {
     return contactSheet(await this.browser(), tiles, layout);
   }
 
-  async screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean }): Promise<Buffer> {
-    let target: URL;
-    try {
-      target = new URL(url);
-    } catch {
-      throw new HttpError(400, m().media.capture.invalidUrl(url));
-    }
-    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-      throw new HttpError(400, m().media.capture.httpOnly);
-    }
-    // Every request is checked, per origin: local dev sites are fine, Cadence itself and reserved addresses are not.
+  async screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean; policy?: Policy }): Promise<Buffer> {
     const ownPorts = [this.config.editorPort, this.config.framePort];
-    const checked = new Map<string, Promise<string | null>>();
-    const check = (href: string): Promise<string | null> => {
-      const url = new URL(href);
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') return Promise.resolve(null);
-      let reason = checked.get(url.origin);
-      if (!reason) checked.set(url.origin, (reason = refusal(url, ownPorts)));
-      return reason;
-    };
-    const first = await check(target.href);
-    if (first) throw new HttpError(400, first);
+    const given = opts.policy ?? STRICT;
+    const policy: Policy = { ...given, allowsPort: (port) => !ownPorts.includes(port) && given.allowsPort(port) };
+    const refusal = urlRefusal(url, policy);
+    if (refusal) throw captureError(new Refused(refusal, url), url, ownPorts);
+    const done = new AbortController();
+    const budget = new Budget(AbortSignal.any([AbortSignal.timeout(REFERENCE_MS), done.signal]), policy);
     const browser = await this.browser();
     const context = await browser.newContext({
       ...(opts.device === 'mobile'
         ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: MOBILE_UA }
         : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }),
-      // Service workers' requests would skip the route below.
+      // Service workers' requests would skip the routes below.
       serviceWorkers: 'block',
+      // Chromium itself reaches nothing: every request is answered by the routes, from the pinned fetch.
+      proxy: { server: NOWHERE_PROXY },
     });
-    let refused = null as string | null;
-    const pending: Promise<void>[] = [];
     try {
+      // A socket closed before it opens: Vite's client only reloads once a socket that had opened closes.
+      await context.routeWebSocket(
+        () => true,
+        (ws) => ws.close(),
+      );
+      // The page itself is fetched before Chromium opens it, so its refusals and errors are the capture's.
+      let landing: { url: string; response: Fulfilled } | null = null;
       await context.route('**', async (route) => {
-        const reason = await check(route.request().url());
-        await (reason ? route.abort('aborted') : route.continue()).catch(() => undefined);
-      });
-      // Routes never see redirect hops (Playwright follows them itself), so each hop is checked as it starts and a
-      // refused one voids the capture. That hop still gets its request; a checking forward proxy would stop it.
-      context.on('request', (request) => {
-        if (!request.redirectedFrom()) return;
-        const hop = check(request.url()).then((reason) => {
-          if (!reason || refused) return;
-          refused = reason;
-          void context.close().catch(() => undefined);
-        });
-        pending.push(hop);
+        const request = route.request();
+        const response = await (async () => {
+          // ponytail: GET only, a page that posts its data (forms, GraphQL) renders without it.
+          if (request.method() !== 'GET') return null;
+          if (landing?.url === request.url()) {
+            const { response } = landing;
+            landing = null;
+            return response;
+          }
+          const headers = request.headers();
+          const pinned = await fetchPinned(request.url(), budget, this.pinned, {
+            headers: pick(headers, FORWARDED),
+            sameOrigin: true,
+          });
+          // Playwright 1.63's fulfill grants the page's origin a cross-origin answer that does not name one: the site's
+          // own CORS headers decide, as they would in a browser.
+          const crossOrigin = headers.origin !== undefined && headers.origin !== new URL(request.url()).origin;
+          if (crossOrigin && pinned.headers['access-control-allow-origin'] === undefined) return null;
+          return fulfilled(pinned);
+        })().catch(() => null);
+        await (response ? route.fulfill(response) : route.abort('aborted')).catch(() => undefined);
       });
       const page = await context.newPage();
-      const shot = await (async () => {
-        try {
-          await page.goto(target.href, { waitUntil: 'networkidle', timeout: 30_000 });
-        } catch (e) {
-          // Pages that keep polling never go idle: take what has loaded after 30 s.
-          if (!(e instanceof playwrightErrors.TimeoutError)) {
-            throw new HttpError(502, m().media.capture.openFailed(target.href, (e as Error).message.split('\n')[0]));
-          }
-        }
-        await sleep(500);
-        return page.screenshot({ type: 'png', fullPage: Boolean(opts.fullPage), timeout: 30_000 });
-      })().catch((e: unknown) => (e instanceof Error ? e : new Error(String(e))));
-      await Promise.all(pending);
-      if (refused) throw new HttpError(400, refused);
-      if (shot instanceof Error) throw shot;
-      return shot;
+      context.on('page', (popup) => void popup.close().catch(() => undefined));
+      const userAgent = await page.evaluate(() => navigator.userAgent);
+      const first = await fetchPinned(url, budget, this.pinned, {
+        headers: { 'user-agent': userAgent },
+        navigation: true,
+      }).catch((e: unknown) => {
+        throw captureError(e, url, ownPorts);
+      });
+      // Opened at its final URL, so a redirected page's relative links resolve there.
+      const final = new URL(first.url);
+      final.hash = '';
+      landing = { url: final.href, response: fulfilled(first) };
+      try {
+        await page.goto(final.href, { waitUntil: 'networkidle', timeout: 30_000 });
+      } catch (e) {
+        // Pages that keep polling never go idle: take what has loaded after 30 s.
+        if (!(e instanceof playwrightErrors.TimeoutError)) throw captureError(e, url, ownPorts);
+      }
+      await sleep(500);
+      return await page.screenshot({ type: 'png', fullPage: Boolean(opts.fullPage), timeout: 30_000 });
     } finally {
+      done.abort();
       await context.close().catch(() => undefined);
     }
   }
@@ -577,22 +582,55 @@ export class PlaywrightCapture implements CaptureService {
   }
 }
 
+function pick(headers: Record<string, string>, names: string[]): Record<string, string> {
+  return Object.fromEntries(names.filter((name) => headers[name] !== undefined).map((name) => [name, headers[name]]));
+}
+
+type Fulfilled = { status: number; headers: Record<string, string>; body: Buffer };
+
+function fulfilled({ status, headers, body }: Pinned): Fulfilled {
+  const flat = Object.entries(headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(', ') : (value ?? '')]);
+  return { status, headers: Object.fromEntries(flat), body };
+}
+
 /**
- * Why a reference capture may not load `url`, or null. Host names are resolved: a public name may point at a reserved
- * address. Local dev servers stay allowed (a documented use), except Cadence's own ports.
- * Chromium resolves the name again: a DNS answer that changes in between (rebinding) is not caught.
+ * What a reference capture tells the person, and the agent: never the page's or the network's own words. A redirect's
+ * target shows as its host only, at most a DNS name long.
  */
-async function refusal(url: URL, ownPorts: number[]): Promise<string | null> {
-  const host = url.hostname.replace(/^\[(.*)\]$/, '$1');
-  const addresses = await dns.lookup(host, { all: true }).catch(() => []);
-  if (addresses.length === 0) return m().media.capture.hostNotFound(url.hostname);
-  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-  for (const { address, family } of addresses) {
-    const type = family === 6 ? 'ipv6' : 'ipv4';
-    if (RESERVED.check(address, type)) {
-      return m().media.capture.reserved(url.hostname, address === host ? null : address);
+export function captureError(e: unknown, target: string, ownPorts: number[]): HttpError {
+  const capture = m().media.capture;
+  if (e instanceof Refused) {
+    const url = URL.parse(e.href);
+    const host = (url?.hostname ?? '').slice(0, 253);
+    switch (e.reason) {
+      case 'invalid':
+        return e.href === target
+          ? new HttpError(400, capture.invalidUrl(target))
+          : new HttpError(502, capture.openFailed(target, capture.badRedirect));
+      case 'protocol':
+        return new HttpError(400, capture.httpOnly);
+      case 'port':
+        return new HttpError(
+          400,
+          url && ownPorts.includes(portOf(url)) ? capture.itself : capture.port((url?.host ?? '').slice(0, 259)),
+        );
+      case 'credentials':
+        return new HttpError(400, capture.credentials);
+      case 'unresolved':
+        return new HttpError(400, capture.hostNotFound(host));
+      case 'private':
+        return new HttpError(400, capture.reserved(host));
+      case 'redirects':
+        return new HttpError(502, capture.openFailed(target, capture.redirects));
+      case 'too-large':
+      case 'budget':
+        return new HttpError(502, capture.openFailed(target, capture.tooLarge));
+      case 'slow':
+        return new HttpError(502, capture.openFailed(target, capture.slow));
     }
-    if (LOOPBACK.check(address, type) && ownPorts.includes(port)) return m().media.capture.itself;
   }
-  return null;
+  const { name, code } = e as { name?: string; code?: unknown };
+  if (name === 'AbortError' || name === 'TimeoutError') return new HttpError(502, capture.openFailed(target, capture.slow));
+  const detail = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : capture.unreachable;
+  return new HttpError(502, capture.openFailed(target, detail));
 }

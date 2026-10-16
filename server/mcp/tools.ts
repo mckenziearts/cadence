@@ -798,7 +798,8 @@ export function createToolServer(ctx: ToolContext): McpServer {
 
   tool(
     'capture_reference',
-    'Screenshot a web page (http or https) into assets/refs/ as reference material. Read the saved file to look at it.',
+    'Screenshot a public web page (http or https, default ports) into assets/refs/ as reference material. Local and private ' +
+      'addresses are refused: the person captures those from the editor. Read the saved file to look at it.',
     {
       projectId,
       url: z.string(),

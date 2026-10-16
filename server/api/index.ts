@@ -27,6 +27,7 @@ import {
   type FormatId,
   type NetworkId,
 } from '../../src/shared/types';
+import { LOCAL } from '../capture/policy';
 import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
@@ -533,8 +534,9 @@ export function createApi(deps: ApiDeps) {
     return c.json({ ok: true });
   });
   app.get('/projects/:id/assets/file', async (c) => sendFile(c, assets.resolve(c.req.param('id'), requiredQuery(c, 'path'))));
+  // The person asks for this capture: their dev servers and LAN are fine. The agent's go through MCP, strict.
   app.post('/projects/:id/refs', async (c) =>
-    c.json(await assets.captureReference(c.req.param('id'), await body(c, schemas.captureRef))),
+    c.json(await assets.captureReference(c.req.param('id'), await body(c, schemas.captureRef), LOCAL)),
   );
 
   // Brands & settings

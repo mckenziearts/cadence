@@ -1,6 +1,6 @@
 // The network policy of a capture: which URLs it may request and which resolved addresses it may reach. STRICT is public
-// addresses on the default ports; a caller widens it with its own ports and allowed ranges. Pure: the caller resolves
-// and connects.
+// addresses on the default ports, LOCAL adds the person's own networks on any port; a caller may widen a policy with its
+// own ports and allowed ranges. Pure: the caller resolves and connects.
 import net from 'node:net';
 
 export type UrlRefusal = 'invalid' | 'protocol' | 'port' | 'credentials';
@@ -60,6 +60,22 @@ PRIVATE.addSubnet('fc00::', 7, 'ipv6');
 PRIVATE.addSubnet('fe80::', 10, 'ipv6');
 PRIVATE.addSubnet('fec0::', 10, 'ipv6');
 PRIVATE.addSubnet('ff00::', 8, 'ipv6');
+
+/**
+ * The person's own captures: their dev servers and LAN, any port. 100.64.0.0/10 holds tailnets (and CGNAT), 198.18.0.0/15
+ * the answers of fake-IP proxies, which would otherwise refuse every name. Link-local (cloud metadata), unspecified,
+ * multicast and the documentation and transition ranges stay refused.
+ */
+const LAN = new net.BlockList();
+LAN.addSubnet('10.0.0.0', 8);
+LAN.addSubnet('100.64.0.0', 10);
+LAN.addSubnet('127.0.0.0', 8);
+LAN.addSubnet('172.16.0.0', 12);
+LAN.addSubnet('192.168.0.0', 16);
+LAN.addSubnet('198.18.0.0', 15);
+LAN.addAddress('::1', 'ipv6');
+LAN.addSubnet('fc00::', 7, 'ipv6');
+export const LOCAL: Policy = { allowsPort: () => true, allowed: LAN };
 
 /** Why a host that resolves to `addresses` may not be reached, or null: one forbidden address refuses them all. */
 export function addressRefusal(addresses: readonly string[], policy: Policy = STRICT): AddressRefusal | null {

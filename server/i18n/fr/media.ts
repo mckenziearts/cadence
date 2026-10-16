@@ -21,8 +21,14 @@ export default {
     httpOnly: 'Seules les adresses http(s) peuvent être capturées',
     openFailed: (url: string, error: string) => `Impossible d’ouvrir ${url} : ${error}`,
     hostNotFound: (host: string) => `Adresse introuvable : ${host}`,
-    reserved: (host: string, address: string | null) =>
-      `Adresse réservée, capture refusée : ${host}${address ? ` (${address})` : ''}`,
+    reserved: (host: string) => `Adresse privée ou réservée, capture refusée : ${host}`,
+    port: (host: string) => `Port non autorisé, capture refusée : ${host}`,
+    credentials: 'Une adresse avec identifiant ou mot de passe ne peut pas être capturée',
+    redirects: 'trop de redirections',
+    badRedirect: 'redirection vers une adresse invalide',
+    tooLarge: 'page trop lourde pour une capture',
+    slow: 'le site met trop de temps à répondre',
+    unreachable: 'connexion impossible',
     itself: 'Cadence ne peut pas se capturer elle-même',
   },
   render: {

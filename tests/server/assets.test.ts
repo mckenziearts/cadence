@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
+import { LOCAL } from '../../server/capture/policy';
 import type { CaptureService } from '../../server/contracts';
 import { FileAssetStore } from '../../server/store/assets';
 import { FileProjectStore } from '../../server/store/projects';
@@ -12,7 +13,7 @@ const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 let t: TestRoot;
 let assets: FileAssetStore;
 let dir: string;
-let shots: { url: string; opts: unknown }[];
+let shots: { url: string; opts: Record<string, unknown> }[];
 let captureError: Error | null;
 
 beforeEach(async () => {
@@ -22,7 +23,7 @@ beforeEach(async () => {
   shots = [];
   captureError = null;
   const capture = {
-    async screenshotUrl(url: string, opts: unknown) {
+    async screenshotUrl(url: string, opts: Record<string, unknown>) {
       if (captureError) throw captureError;
       shots.push({ url, opts });
       return PNG;
@@ -78,11 +79,18 @@ test('list, resolve, remove (to the project trash)', async () => {
   assert.match(trash[0], /^\d+-photo\.jpg$/);
 });
 
-test('captureReference: http(s) only (localhost allowed), named refs/<name>-<device>.png', async () => {
-  const local = await assets.captureReference('medias', { url: 'http://localhost:3000/tableau-de-bord', device: 'desktop' });
+test('captureReference: http(s) only, named refs/<name>-<device>.png, under the policy it is given', async () => {
+  const local = await assets.captureReference(
+    'medias',
+    { url: 'http://localhost:3000/tableau-de-bord', device: 'desktop' },
+    LOCAL,
+  );
   assert.equal(local.path, 'refs/localhost-3000-tableau-de-bord-desktop.png');
   assert.equal(local.isReference, true);
-  assert.deepEqual(shots[0], { url: 'http://localhost:3000/tableau-de-bord', opts: { device: 'desktop', fullPage: undefined } });
+  assert.deepEqual(shots[0], {
+    url: 'http://localhost:3000/tableau-de-bord',
+    opts: { device: 'desktop', fullPage: undefined, policy: LOCAL },
+  });
   const named = await assets.captureReference('medias', {
     url: 'https://orbit.example',
     device: 'mobile',
@@ -90,6 +98,7 @@ test('captureReference: http(s) only (localhost allowed), named refs/<name>-<dev
     name: 'Accueil Orbit',
   });
   assert.equal(named.path, 'refs/accueil-orbit-mobile.png');
+  assert.deepEqual(shots[1].opts, { device: 'mobile', fullPage: true, policy: undefined }, 'strict unless given');
   assert.deepEqual(await fs.readFile(path.join(dir, 'assets', 'refs', 'accueil-orbit-mobile.png')), PNG);
   for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,hi', 'ftp://example.com', 'pas une url']) {
     await rejectsWithStatus(assets.captureReference('medias', { url, device: 'desktop' }), 400);

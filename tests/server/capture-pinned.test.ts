@@ -59,6 +59,10 @@ const server = http.createServer((req, res) => {
       return void res.writeHead(302, { location: '/small?from=redirect&x=a%20b' }).end();
     case '/to-same-host':
       return void res.writeHead(307, { location: '/' }).end();
+    case '/to-cdn':
+      return void res.writeHead(302, { location: 'http://cdn.test/small' }).end();
+    case '/to-https':
+      return void res.writeHead(302, { location: 'https://site.test/small' }).end();
     case '/to-port':
       return void res.writeHead(302, { location: 'http://site.test:8080/' }).end();
     case '/to-ftp':
@@ -82,6 +86,9 @@ const server = http.createServer((req, res) => {
         'alt-svc': 'h3=":443"',
       });
       return void res.end(`accept-encoding: ${req.headers['accept-encoding']}`);
+    case '/echo':
+      res.setHeader('content-type', 'application/json');
+      return void res.end(JSON.stringify(req.headers));
     case '/located':
       return void res.writeHead(200, { location: '/small' }).end('here');
     case '/large': {
@@ -155,6 +162,10 @@ function deps(names: Record<string, string[] | (() => string[])>) {
 
 const budget = (ms = 2_000) => new Budget(AbortSignal.timeout(ms));
 
+/** A refusal for `reason` that names the URL it refused. */
+const refusedAt = (reason: string, href: string) => (e: unknown) =>
+  e instanceof Refused && e.reason === reason && e.href === href;
+
 async function until(done: () => boolean, what: () => string, ms = 2_000) {
   const deadline = Date.now() + ms;
   while (!done()) {
@@ -195,7 +206,7 @@ test('only the headers a page reads its body with come back, and the body is ask
 test('a refused URL or address opens no socket', async () => {
   const d = deps({ 'site.test': [PUBLIC], 'lan.test': ['192.168.1.10'], 'mixed.test': [PUBLIC, '10.0.0.1'] });
   const refused = async (href: string, reason: string) =>
-    assert.rejects(fetchPinned(href, budget(), d.pinned), (e: unknown) => e instanceof Refused && e.reason === reason);
+    assert.rejects(fetchPinned(href, budget(), d.pinned), refusedAt(reason, href));
   await refused('http://127.0.0.1/', 'private');
   await refused('http://[::1]/', 'private');
   await refused('http://lan.test/', 'private');
@@ -211,7 +222,7 @@ test('a redirect to 127.0.0.1 is refused before its socket', async () => {
   const d = deps({ 'site.test': [PUBLIC] });
   await assert.rejects(
     fetchPinned('http://site.test/to-loopback', budget(), d.pinned),
-    (e: unknown) => e instanceof Refused && e.reason === 'private',
+    refusedAt('private', 'http://127.0.0.1/'),
   );
   assert.equal(d.connections.length, 1);
 });
@@ -220,23 +231,20 @@ test('a Location to 169.254.169.254 is refused before its socket', async () => {
   const d = deps({ 'site.test': [PUBLIC] });
   await assert.rejects(
     fetchPinned('http://site.test/to-metadata', budget(), d.pinned),
-    (e: unknown) => e instanceof Refused && e.reason === 'private',
+    refusedAt('private', 'http://169.254.169.254/latest/meta-data/'),
   );
   assert.equal(d.connections.length, 1);
 });
 
 test('each redirect target goes through the URL policy again', async () => {
-  for (const [path, reason] of [
-    ['/to-port', 'port'],
-    ['/to-ftp', 'protocol'],
-    ['/to-credentials', 'credentials'],
+  for (const [path, reason, location] of [
+    ['/to-port', 'port', 'http://site.test:8080/'],
+    ['/to-ftp', 'protocol', 'ftp://site.test/'],
+    ['/to-credentials', 'credentials', 'http://user:pass@site.test/'],
   ]) {
     const d = deps({ 'site.test': [PUBLIC] });
     const before = seen.length;
-    await assert.rejects(
-      fetchPinned(`http://site.test${path}`, budget(), d.pinned),
-      (e: unknown) => e instanceof Refused && e.reason === reason,
-    );
+    await assert.rejects(fetchPinned(`http://site.test${path}`, budget(), d.pinned), refusedAt(reason, location));
     assert.equal(d.connections.length, 1, path);
     assert.deepEqual(seen.slice(before), [`site.test${path}`]);
   }
@@ -268,12 +276,61 @@ test("the budget's policy decides every hop: a widened one reaches loopback on a
   assert.equal(d.dials.length, 2);
 });
 
+test("a resource's redirects stay on its origin: one to another origin or scheme is refused before its socket", async () => {
+  const d = deps({ 'site.test': [PUBLIC], 'cdn.test': [PUBLIC] });
+  const same = await fetchPinned('http://site.test/see-other', budget(), d.pinned, { sameOrigin: true });
+  assert.equal(same.url, 'http://site.test/small');
+  for (const [path, location] of [
+    ['/to-cdn', 'http://cdn.test/small'],
+    ['/to-https', 'https://site.test/small'],
+  ]) {
+    const before = seen.length;
+    await assert.rejects(
+      fetchPinned(`http://site.test${path}`, budget(), d.pinned, { sameOrigin: true }),
+      refusedAt('redirects', location),
+    );
+    assert.deepEqual(seen.slice(before), [`site.test${path}`]);
+  }
+  assert.ok(!d.lookups.includes('cdn.test'), d.lookups.join());
+  const page = await fetchPinned('http://site.test/to-cdn', budget(), d.pinned);
+  assert.equal(page.url, 'http://cdn.test/small');
+});
+
+test('a page answered from a public address takes the private ranges away from its capture, from that hop on', async () => {
+  const allowed = new net.BlockList();
+  allowed.addSubnet('127.0.0.0', 8);
+  allowed.addSubnet('192.168.0.0', 16);
+  const local = () => new Budget(AbortSignal.timeout(2_000), { allowsPort: () => true, allowed });
+  const d = deps({
+    'site.test': [PUBLIC],
+    'mixed.test': ['192.168.1.20', PUBLIC],
+    'dev.test': ['127.0.0.1'],
+    'lan.test': ['192.168.1.10'],
+  });
+  // A local page keeps the person's networks, through its redirects and for its resources.
+  const dev = local();
+  assert.equal((await fetchPinned('http://dev.test/to-loopback', dev, d.pinned, { navigation: true })).url, 'http://127.0.0.1/');
+  assert.equal((await fetchPinned('http://lan.test/small', dev, d.pinned)).body.length, 100);
+  // A public page, even one with a private answer among its public ones, neither redirects nor reaches there; its ports
+  // stay the policy's.
+  for (const host of ['site.test', 'mixed.test']) {
+    const page = local();
+    await assert.rejects(
+      fetchPinned(`http://${host}/to-loopback`, page, d.pinned, { navigation: true }),
+      refusedAt('private', 'http://127.0.0.1/'),
+    );
+    await assert.rejects(fetchPinned('http://lan.test/small', page, d.pinned), refusedAt('private', 'http://lan.test/small'));
+    assert.equal((await fetchPinned('http://site.test:8080/small', page, d.pinned)).body.length, 100, host);
+  }
+  // A public resource is not the page: it changes nothing.
+  const resources = local();
+  await fetchPinned('http://site.test/small', resources, d.pinned);
+  assert.equal((await fetchPinned('http://lan.test/small', resources, d.pinned)).body.length, 100);
+});
+
 test('a redirect whose Location is not a URL is refused before its socket', async () => {
   const d = deps({ 'site.test': [PUBLIC] });
-  await assert.rejects(
-    fetchPinned('http://site.test/to-nowhere', budget(), d.pinned),
-    (e: unknown) => e instanceof Refused && e.reason === 'invalid',
-  );
+  await assert.rejects(fetchPinned('http://site.test/to-nowhere', budget(), d.pinned), refusedAt('invalid', 'http://[oops/'));
   assert.equal(d.connections.length, 1);
 });
 
@@ -294,17 +351,20 @@ test('303 and 308 are followed; a Location on another status is not', async () =
   assert.equal(d.connections.length, 1);
 });
 
-test('rebinding: a hop dials its checked answer only, the next hop to the same host resolves and checks again', async () => {
+test('rebinding: a capture resolves a host once and dials that checked answer for every hop and fetch after it', async () => {
   let calls = 0;
   const d = deps({ 'rebind.test': () => (calls++ === 0 ? [PUBLIC] : ['10.0.0.1']) });
+  const b = budget();
   const before = seen.length;
-  await assert.rejects(
-    fetchPinned('http://rebind.test/to-same-host', budget(), d.pinned),
-    (e: unknown) => e instanceof Refused && e.reason === 'private',
+  const page = await fetchPinned('http://rebind.test/to-same-host', b, d.pinned);
+  assert.equal(page.body.toString(), '<h1>home</h1>');
+  await fetchPinned('http://rebind.test/small', b, d.pinned);
+  assert.deepEqual(seen.slice(before), ['rebind.test/to-same-host', 'rebind.test/', 'rebind.test/small']);
+  assert.deepEqual(d.lookups, ['rebind.test']);
+  assert.ok(
+    d.connections.every(({ all, first }) => all.join() === PUBLIC && first === PUBLIC),
+    JSON.stringify(d.connections),
   );
-  assert.deepEqual(seen.slice(before), ['rebind.test/to-same-host']);
-  assert.deepEqual(d.lookups, ['rebind.test', 'rebind.test']);
-  assert.deepEqual(d.connections, [{ host: 'rebind.test', all: [PUBLIC], first: PUBLIC }]);
 });
 
 test('the pinned lookup gives the whole checked list when asked for all, the first address otherwise', async () => {
@@ -375,6 +435,64 @@ test('the query string is sent, the fragment is not', async () => {
   assert.equal(redirected.url, 'http://site.test/small?from=redirect&x=a%20b');
 });
 
+test('the request headers a capture passes are sent; the body is still asked for unencoded', async () => {
+  const page = await fetchPinned('http://site.test/echo', budget(), deps({ 'site.test': [PUBLIC] }).pinned, {
+    headers: {
+      'user-agent': 'Capture/1.0',
+      accept: 'text/html',
+      'accept-language': 'fr-FR',
+      'accept-encoding': 'gzip, br',
+    },
+  });
+  const sent = JSON.parse(page.body.toString());
+  assert.deepEqual(
+    [sent['user-agent'], sent.accept, sent['accept-language'], sent['accept-encoding']],
+    ['Capture/1.0', 'text/html', 'fr-FR', 'identity'],
+  );
+});
+
+test('a capture that ends while its lookup answers dials nothing, even an IP literal', async () => {
+  for (const host of ['site.test', PUBLIC]) {
+    const d = deps({ 'site.test': [PUBLIC] });
+    const controller = new AbortController();
+    const ending: PinnedDeps = {
+      ...d.pinned,
+      lookup: async (hostname, signal) => {
+        controller.abort();
+        return d.pinned.lookup(hostname, signal);
+      },
+    };
+    await assert.rejects(
+      fetchPinned(`http://${host}/`, new Budget(controller.signal), ending),
+      (e: unknown) => (e as Error).name === 'AbortError',
+      host,
+    );
+    assert.deepEqual(d.connections, [], host);
+  }
+});
+
+test('the production createConnection trusts the certificates the system trusts too, through one shared context', async () => {
+  // In a process of its own: the context is built once per process, maybe already by an https test above.
+  const script = `
+import net from 'node:net';
+import tls from 'node:tls';
+const built = [];
+const create = tls.createSecureContext;
+tls.createSecureContext = (options) => (built.push(options?.ca ?? []), create(options));
+const connects = [];
+tls.connect = (options) => (connects.push(options), new net.Socket());
+const { network } = await import(${JSON.stringify(new URL('../../server/capture/pinned.ts', import.meta.url).href)});
+for (let i = 0; i < 3; i++) network.createConnection({ protocol: 'https:', host: 'site.test', port: 443, servername: 'site.test', lookup: () => {} });
+const trusted = new Set(built[0]);
+console.log(JSON.stringify({
+  built: built.length,
+  shared: connects.every((options) => options.secureContext !== undefined && options.secureContext === connects[0].secureContext),
+  system: [...tls.getCACertificates('default'), ...tls.getCACertificates('system')].every((cert) => trusted.has(cert)),
+}));`;
+  const { stdout } = await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script]);
+  assert.deepEqual(JSON.parse(stdout), { built: 1, shared: true, system: true });
+});
+
 test('a lookup that fails gives unresolved and opens no socket', async () => {
   const d = deps({});
   const failing: PinnedDeps = {
@@ -406,15 +524,15 @@ test('five redirects are followed, the sixth is refused before its socket', asyn
   const page = await fetchPinned('http://site.test/hops/5', budget(), d.pinned);
   assert.equal(page.url, 'http://site.test/hops/0');
   assert.equal(page.body.toString(), 'arrived');
-  assert.equal(d.lookups.length, 6);
+  assert.equal(d.lookups.length, 1);
 
   const e = deps({ 'site.test': [PUBLIC] });
   const before = seen.length;
   await assert.rejects(
     fetchPinned('http://site.test/hops/6', budget(), e.pinned),
-    (err: unknown) => err instanceof Refused && err.reason === 'redirects',
+    refusedAt('redirects', 'http://site.test/hops/0'),
   );
-  assert.equal(e.lookups.length, 6);
+  assert.equal(e.lookups.length, 1);
   assert.equal(e.connections.length, 1);
   assert.deepEqual(
     seen.slice(before),
@@ -556,10 +674,7 @@ test('over https, the production createConnection speaks TLS, sends the name as 
 test('a 9 MB body is aborted at 8 MB', async () => {
   const d = deps({ 'site.test': [PUBLIC] });
   const b = budget();
-  await assert.rejects(
-    fetchPinned('http://site.test/large', b, d.pinned),
-    (e: unknown) => e instanceof Refused && e.reason === 'too-large',
-  );
+  await assert.rejects(fetchPinned('http://site.test/large', b, d.pinned), refusedAt('too-large', 'http://site.test/large'));
   assert.ok(b.bytes > RESOURCE_BYTES && b.bytes < 9 * 1024 * 1024, `${b.bytes} bytes read`);
 });
 
@@ -662,6 +777,20 @@ test('the 8 connections are shared by every host of the budget', async (t) => {
   assert.equal((await Promise.all(pages)).length, CONNECTIONS * 3);
 });
 
+test('one capture resolves each host once, whatever number of fetches and hops ask for it', async () => {
+  const d = deps({ 'site.test': [PUBLIC], 'cdn.test': [PUBLIC] });
+  const b = budget();
+  await Promise.all([
+    fetchPinned('http://site.test/small', b, d.pinned),
+    fetchPinned('http://site.test/see-other', b, d.pinned),
+    fetchPinned('http://cdn.test/small', b, d.pinned),
+  ]);
+  await fetchPinned('http://site.test/to-cdn', b, d.pinned);
+  assert.deepEqual(d.lookups.toSorted(), ['cdn.test', 'site.test']);
+  await fetchPinned('http://site.test/small', budget(), d.pinned);
+  assert.equal(d.lookups.length, 3, 'another capture resolves again');
+});
+
 test('a fetch waiting for a connection resolves its host only once it holds one', async (t) => {
   const d = deps({ 'site.test': [PUBLIC], 'later.test': [PUBLIC] });
   const b = budget(5_000);
@@ -679,7 +808,10 @@ test('a fetch waiting for a connection resolves its host only once it holds one'
   );
   release();
   await Promise.all([...holders, ...waiting]);
-  assert.equal(d.lookups.filter((host) => host === 'later.test').length, 4);
+  assert.deepEqual(
+    d.lookups.filter((host) => host === 'later.test'),
+    ['later.test'],
+  );
 });
 
 test('the production lookup runs at most 2 resolutions at once across captures, a failed one frees its turn', async (t) => {

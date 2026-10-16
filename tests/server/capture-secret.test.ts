@@ -7,6 +7,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, test, type TestContext } from 'node:test';
 import { launchChromium } from '../../server/capture/capture';
+import { LOCAL } from '../../server/capture/policy';
 import { startServer, type RunningServer } from '../../server/index';
 import { makeRoot, type TestRoot } from './helpers';
 
@@ -105,6 +106,7 @@ test('never sends the request secret to a reference site', async (t) => {
   try {
     await server.services.capture.screenshotUrl(`http://127.0.0.1:${(site.address() as AddressInfo).port}/`, {
       device: 'desktop',
+      policy: LOCAL,
     });
     assert.ok(seen.length >= 2, 'the page and its image');
     for (const headers of seen) assert.equal(headers['x-cadence-secret'], undefined);

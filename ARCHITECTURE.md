@@ -64,7 +64,8 @@ cadence/
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
     capture/                capture.ts (Playwright), browser-host.ts + chromium-server.mjs (Chromium in a child
                             process), serve-chromium.mjs (the Chromium server that process runs, exported for a
-                            host app), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
+                            host app), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg),
+                            policy.ts (what a capture may reach), pinned.ts (the captures' own fetch)
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
                             worker (the analysis off the server's thread), synth + soundtracks (the preset
                             soundtracks, composed in code)
@@ -202,10 +203,20 @@ with Playwright's fixed permessage-deflate (level 3, no option turns it off in 1
 quality 95 on photographic frames, up to +33 ms at quality 100 on noisy ones, inflated on the server's thread. Past
 that, the render's screenshots would move into the child, which would write the JPEG files itself.
 
-Reference captures (`screenshotUrl`) check every request by origin: host names are resolved, link-local,
-unspecified and multicast addresses (IPv4-mapped included) are refused, and so are Cadence's own ports; other
-loopback and private hosts stay allowed (local dev sites). Redirect hops are checked as they start and a refused hop
-voids the capture (that one GET has still left; a checking forward proxy would stop it, and DNS rebinding too).
+Reference captures (`screenshotUrl`) never let Chromium reach the network: their context goes through the dead proxy
+with nothing bypassed (the Chromium server drops `PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK`, so the loopback
+too), page WebSockets are closed before they open, and a route answers every request from `fetchPinned()`
+(`server/capture/pinned.ts`) under the capture's `Policy` (`server/capture/policy.ts`). It resolves each host once per
+capture, refuses a forbidden address before dialing, dials only the checked answer and follows redirects itself; a
+resource's redirects stay on its origin. The page is fetched first, so its refusals and errors are the capture's (fixed
+messages naming the URL asked for or a host, never the network's own words), then opened at its final URL. Only GET
+requests are fetched, with the browser's User-Agent, Accept, Accept-Language, Referer and Origin; a cross-origin answer
+reaches the page only with its own `Access-Control-Allow-Origin` (Playwright 1.63's fulfill would grant one). The
+agent's captures (MCP `capture_reference`) are `STRICT`: public addresses on ports 80 and 443. The person's
+(`POST /api/projects/:id/refs`) are `LOCAL`: loopback and private networks on any port as well, for local dev sites,
+until a hop of the page is answered from a public address: from there the capture keeps the ports and loses the private
+ranges. Neither reaches Cadence's own ports. HTTPS trusts Node's CAs and the system's, so a local CA that a dev tool
+installed works; one in neither store needs `NODE_EXTRA_CA_CERTS`. A redirected resource keeps its first URL as its base.
 
 Vite (`server/frames/vite.ts`): `root = <root>`, `appType: 'custom'`, `server.middlewareMode`, `server.hmr: false`,
 `server.ws: false` (no HMR websocket, so several Cadence servers can run side by side),
@@ -563,7 +574,7 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `set_speakers` | no | yes | replaces the project speakers through `ProjectStore.update` (its checks: voice per engine, at most 10, no removing a speaker a line uses) |
 | `create_scene`, `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene` | no | yes | `create_scene` takes a template id or TSX code |
 | `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns |
-| `capture_reference` | no | yes | screenshot an http(s) URL into assets/refs/ |
+| `capture_reference` | no | yes | screenshot a public http(s) page into assets/refs/ |
 | `save_version` | yes | yes | named snapshot |
 
 Project-only tools are not even registered for scene tokens. `render_frames` saves the JPEGs it returns (the frames,

@@ -231,7 +231,10 @@ describe('MCP endpoint', () => {
           sceneId ? `Grille de ${sceneId}` : 'Tempo 120\nCuts: intro → outro at 3.334 s: 0.334 s (0.67 beat) after bar 2',
         snapCuts: async (id: string, grid: string, opts: unknown) => (record('snapCuts', [id, grid, opts]), project),
       } as unknown as MusicService,
-      assets: {} as AssetStore,
+      assets: {
+        captureReference: async (...args: unknown[]) => (record('captureReference', args), { path: 'refs/site-desktop.png' }),
+        resolve: (_id: string, rel: string) => `/projets/demo/assets/${rel}`,
+      } as unknown as AssetStore,
       voiceOver: {
         sync: async (id: string) => {
           record('syncVoiceOver', id);
@@ -917,6 +920,12 @@ describe('MCP endpoint', () => {
       const badUrl = await call(client, 'capture_reference', { url: 'file:///etc/passwd' });
       assert.equal(badUrl.isError, true);
       assert.match(texts(badUrl)[0], /seules les adresses http\(s\)/);
+      await call(client, 'capture_reference', { url: 'https://site.test/' });
+      // No policy: the agent's captures stay strict.
+      assert.deepEqual(calls.captureReference.at(-1), [
+        'demo',
+        { url: 'https://site.test/', device: 'desktop', fullPage: undefined, name: undefined },
+      ]);
 
       assert.match(
         texts(await call(client, 'save_version', { label: 'Avant refonte' }))[0],
