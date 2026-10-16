@@ -197,6 +197,8 @@ Ce document est relu avant chaque modification. Décrivez ici le style commun à
   },
   frames: {
     method: 'Méthode non autorisée',
+    forbidden: 'Un cadre ne lit que son propre projet ou sa marque, et les modèles',
+    notServed: (file: string) => `${file} est hors de ce projet, de sa marque et des modèles : le cadre ne le charge pas`,
   },
   server: {
     starting: 'Cadence démarre\u2026',

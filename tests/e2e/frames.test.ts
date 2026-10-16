@@ -1,7 +1,7 @@
 // Frame origin + frame page in a real Chromium: guards, rendering at exact times, brand/fonts/assets, errors,
 // reloads (scene, component, Tailwind class), text checks, CSP and the postMessage bridge.
 import assert from 'node:assert/strict';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -95,6 +95,7 @@ function request(
       },
     );
     req.on('error', reject);
+    req.setTimeout(10_000, () => req.destroy(new Error(`${pathname}: no answer in 10 s`)));
     req.end();
   });
 }
@@ -173,8 +174,8 @@ describe('frame origin', () => {
     assert.equal(data.brandId, 'test');
     assert.equal(data.brand.id, 'test');
     assert.equal(data.brandUrl, `/@fs${h.brands.dir('test')}/`);
-    assert.equal((await request('/frame-api/projects/Nope!')).status, 400);
-    assert.equal((await request('/frame-api/projects/e2e-missing')).status, 404);
+    assert.equal((await request('/frame-api/projects/Nope!')).status, 403);
+    assert.equal((await request('/frame-api/projects/e2e-missing')).status, 403);
     const ok = await request(`/frame-api/projects/${id}/scenes/green/diagnostics`);
     assert.deepEqual(JSON.parse(ok.body), { error: null });
   });
@@ -227,6 +228,286 @@ describe('frame origin', () => {
     const script = await request('/src/frame/main.tsx', { host: brand, origin: h.config.editorOrigin });
     assert.equal(script.status, 200);
     assert.equal(script.headers['access-control-allow-origin'], undefined);
+  });
+});
+
+describe('frame origins keep to their own project or brand', () => {
+  /** Project B, a second brand, and the hosts of every origin involved. */
+  let other: string;
+  let projectHost: string;
+  let otherHost: string;
+  let brandHost: string;
+  let otherBrandHost: string;
+  const hostOf = async (kind: 'project' | 'brand', of: string) =>
+    new URL(await frameOriginOf(h.config.frameOrigin, kind, of)).host;
+  const fromRoot = (file: string) => `/${path.relative(h.config.root, file)}`;
+
+  before(async () => {
+    other = await h.project('frames');
+    await cp(h.brands.dir('test'), h.brands.dir('other'), { recursive: true });
+    projectHost = new URL(projectOrigin).host;
+    otherHost = await hostOf('project', other);
+    brandHost = new URL(brandOrigin).host;
+    otherBrandHost = await hostOf('brand', 'other');
+  });
+
+  after(async () => {
+    await rm(h.store.dir(other), { recursive: true, force: true });
+    await rm(h.brands.dir('other'), { recursive: true, force: true });
+  });
+
+  it('answers /frame-api only for the project or the brand of the origin', async () => {
+    const status = async (url: string, host: string) => (await request(url, { host })).status;
+    assert.equal(await status(`/frame-api/projects/${id}`, projectHost), 200);
+    assert.equal(await status(`/frame-api/projects/${id}/scenes/blue/diagnostics`, projectHost), 200);
+    assert.equal(await status('/frame-api/brands/test', brandHost), 200);
+    assert.equal(await status('/frame-api/brands/other', otherBrandHost), 200);
+    for (const [url, host] of [
+      [`/frame-api/projects/${other}`, projectHost],
+      [`/frame-api/projects/${other}/scenes/blue/diagnostics`, projectHost],
+      ['/frame-api/brands/test', projectHost],
+      [`/frame-api/projects/${id}`, otherHost],
+      [`/frame-api/projects/${id}`, brandHost],
+      [`/frame-api/projects/${id}/scenes/blue/diagnostics`, brandHost],
+      ['/frame-api/brands/other', brandHost],
+    ]) {
+      assert.equal(await status(url, host), 403, `${url} from ${host}`);
+    }
+  });
+
+  it('serves frame.html and kit.html only on the origin of the project or brand they name', async () => {
+    const status = async (url: string, host: string) => (await request(url, { host })).status;
+    assert.equal(await status(`/frame.html?project=${other}`, otherHost), 200);
+    for (const [url, host] of [
+      [`/frame.html?project=${id}`, otherHost],
+      [`/frame.html?project=${id}&project=${other}`, otherHost],
+      ['/frame.html', projectHost],
+      [`/frame.html?project=${id}`, brandHost],
+      ['/kit.html?brand=test', otherBrandHost],
+      ['/kit.html?brand=test', projectHost],
+    ]) {
+      assert.equal(await status(url, host), 403, `${url} from ${host}`);
+    }
+  });
+
+  it("serves a project origin its own files, its brand, the templates and the app, and nothing of another project's or brand's", async () => {
+    for (const url of [
+      `/@fs${h.store.sceneFile(id, 'blue')}`,
+      `/@fs${h.store.dir(id)}/assets/square.svg`,
+      `/@fs${h.brands.dir('test')}/index.tsx`,
+      `${fromRoot(h.brands.dir('test'))}/brand.json?import`,
+      `/@fs${h.config.templatesDir}/scenes/title-reveal/scene.tsx`,
+      '/src/frame/main.tsx',
+      '/node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2',
+    ]) {
+      assert.equal((await request(url)).status, 200, url);
+    }
+    const scene = h.store.sceneFile(other, 'blue');
+    const own = h.store.dir(id);
+    for (const url of [
+      `/@fs${scene}`,
+      `/@fs${scene}?import`,
+      `/@fs${scene}?raw`,
+      `/@fs${scene}?url`,
+      `/@fs${scene}.map`,
+      fromRoot(scene),
+      `${fromRoot(scene)}?raw`,
+      scene,
+      scene.replace(/\.tsx$/, ''),
+      `/@id/${scene}`,
+      `/@fs${h.store.dir(other)}/project.json`,
+      `/@fs${h.store.dir(other)}/assets/square.svg`,
+      `/@fs${h.brands.dir('other')}/index.tsx`,
+      `/@fs${h.brands.dir('other')}/brand.json?import`,
+      `/@fs${h.brands.dir('other')}/theme.css?inline`,
+      `${fromRoot(h.brands.dir('other'))}/index.tsx`,
+      '/@id/@brands/other/index.tsx',
+      `/@fs${own}/../${other}/scenes/blue.tsx`,
+      `/@fs${own}/%2e%2e/${other}/scenes/blue.tsx`,
+      `/@fs${own}/..%5c${other}/scenes/blue.tsx`,
+      `/@fs${own}/..\\${other}/scenes/blue.tsx`,
+    ]) {
+      assert.equal((await request(url)).status, 403, url);
+    }
+  });
+
+  it('serves a brand origin its own folder and the app, and no project or other brand', async () => {
+    for (const url of [
+      `/@fs${h.brands.dir('test')}/index.tsx`,
+      `/@fs${h.brands.dir('test')}/theme.css?inline`,
+      '/src/frame/kit.tsx',
+    ]) {
+      assert.equal((await request(url, { host: brandHost })).status, 200, url);
+    }
+    for (const url of [
+      `/@fs${h.store.sceneFile(id, 'blue')}`,
+      fromRoot(h.store.sceneFile(id, 'blue')),
+      `/@fs${h.brands.dir('other')}/index.tsx`,
+    ]) {
+      assert.equal((await request(url, { host: brandHost })).status, 403, url);
+    }
+  });
+
+  it("refuses a scene's import of another brand, and diagnostics say why", async () => {
+    const scene = h.store.sceneFile(id, 'brands');
+    await writeFile(
+      scene,
+      "import otherKit from '@brands/other';\nimport ownKit from '@brands/test';\nexport default () => String(Boolean(otherKit && ownKit));\n",
+    );
+    try {
+      const code = (await request(`/@fs${scene}?import`)).body;
+      const imports = [...code.matchAll(/from "([^"]+)"/g)].map(([, url]) => url);
+      const otherUrl = imports.find((url) => url.includes('/brands/other/'));
+      const ownUrl = imports.find((url) => url.includes('/brands/test/'));
+      assert.ok(otherUrl && ownUrl, code);
+      assert.equal((await request(otherUrl)).status, 403, otherUrl);
+      assert.equal((await request(ownUrl)).status, 200, ownUrl);
+      const { error } = JSON.parse((await request(`/frame-api/projects/${id}/scenes/brands/diagnostics`)).body) as {
+        error: string | null;
+      };
+      assert.match(error ?? '', /brands\/other\/index\.tsx/);
+    } finally {
+      await rm(scene);
+    }
+  });
+
+  it('refuses a link that leads out of the project folder', async () => {
+    const linked = await h.project('frames');
+    try {
+      await symlink(h.store.dir(other), path.join(h.store.dir(linked), 'linked'));
+      await symlink(h.store.sceneFile(other, 'blue'), h.store.sceneFile(linked, 'linked'));
+      const host = await hostOf('project', linked);
+      assert.equal((await request(`/@fs${h.store.sceneFile(linked, 'blue')}`, { host })).status, 200);
+      for (const url of [
+        `/@fs${h.store.dir(linked)}/linked/scenes/blue.tsx`,
+        `/@fs${h.store.sceneFile(linked, 'linked')}`,
+        fromRoot(h.store.sceneFile(linked, 'linked')),
+      ]) {
+        assert.equal((await request(url, { host })).status, 403, url);
+      }
+    } finally {
+      await rm(h.store.dir(linked), { recursive: true, force: true });
+    }
+  });
+
+  it('turns DNS prefetching off on every response', async () => {
+    for (const [url, host] of [
+      [`/frame.html?project=${id}`, projectHost],
+      ['/src/frame/main.tsx', projectHost],
+      [`/frame-api/projects/${id}`, projectHost],
+      [`/frame-api/projects/${other}`, projectHost],
+      ['/api/state', projectHost],
+      ['/kit.html?brand=test', brandHost],
+      [`/frame.html?project=${id}`, `evil.test:${h.config.framePort}`],
+    ]) {
+      assert.equal((await request(url, { host })).headers['x-dns-prefetch-control'], 'off', `${url} from ${host}`);
+    }
+  });
+
+  it("keeps a page on another project's or brand's origin from loading that project or brand", async () => {
+    const context = await browser.newContext();
+    try {
+      const page = await context.newPage();
+      const requested: string[] = [];
+      page.on('request', (r) => {
+        if (!r.url().endsWith('/favicon.ico')) requested.push(r.url());
+      });
+      const otherOrigin = `http://${otherHost}`;
+      const crossed = [
+        `${otherOrigin}/frame.html?project=${id}&format=16:9&mode=capture`,
+        `http://${otherBrandHost}/kit.html?brand=test`,
+      ];
+      for (const url of crossed) {
+        assert.equal((await page.goto(url))?.status(), 403, url);
+      }
+      assert.deepEqual(requested, crossed);
+
+      // B's own page, reaching for A from script.
+      await page.goto(`${otherOrigin}/frame.html?project=${other}&format=16:9&mode=capture`);
+      await page.evaluate(() => window.__cadence!.ready);
+      const statuses = await page.evaluate(
+        (urls) => Promise.all(urls.map((url) => fetch(url).then((res) => res.status))),
+        [`/frame-api/projects/${id}`, `/@fs${h.store.sceneFile(id, 'blue')}`, `/@fs${h.brands.dir('other')}/index.tsx`],
+      );
+      assert.deepEqual(statuses, [403, 403, 403]);
+      const imported = await page.evaluate(
+        (url) =>
+          import(url).then(
+            () => 'loaded',
+            () => 'refused',
+          ),
+        `/@fs${h.store.sceneFile(id, 'blue')}?import`,
+      );
+      assert.equal(imported, 'refused');
+    } finally {
+      await context.close();
+    }
+  });
+
+  describe('stylesheets', () => {
+    const SECRET = 'cross-project-secret';
+    const SVG = `<svg xmlns="http://www.w3.org/2000/svg"><text>${SECRET}</text></svg>`;
+    /** The secret as it may land in compiled CSS: plain, or a whole file in base64. */
+    const leaked = (body: string) =>
+      [SECRET, Buffer.from(SECRET).toString('base64'), Buffer.from(SVG).toString('base64').replace(/=+$/, '')].some((s) =>
+        body.includes(s),
+      );
+
+    before(async () => {
+      await mkdir(path.join(h.store.dir(other), 'components'), { recursive: true });
+      await mkdir(path.join(h.store.dir(id), 'components'), { recursive: true });
+      await writeFile(path.join(h.store.dir(other), 'components/secret.css'), `.secret { --secret: '${SECRET}'; }\n`);
+      await writeFile(path.join(h.store.dir(other), 'secret.txt'), SECRET);
+      await writeFile(path.join(h.store.dir(other), 'assets/secret.svg'), SVG);
+      await writeFile(path.join(h.brands.dir('other'), 'secret.svg'), SVG);
+    });
+
+    /** Compiles `css` as a stylesheet of project A, from A's origin. */
+    async function compile(name: string, css: string): Promise<{ status: number; body: string }> {
+      const file = path.join(h.store.dir(id), 'components', `${name}.css`);
+      await writeFile(file, css);
+      try {
+        return await request(`/@fs${file}?inline`);
+      } finally {
+        await rm(file);
+      }
+    }
+
+    it("compiles a project's stylesheet that imports and links its own files", async () => {
+      const own = path.join(h.store.dir(id), 'components/own.css');
+      await writeFile(own, `.own { --own: 'own-marker'; }\n`);
+      try {
+        const res = await compile('importsOwn', `@import './own.css';\n.a { background: url(../assets/square.svg); }\n`);
+        assert.equal(res.status, 200, res.body);
+        assert.match(res.body, /own-marker/);
+      } finally {
+        await rm(own);
+      }
+    });
+
+    it("keeps a project's stylesheet from importing or linking another project's or brand's files", async () => {
+      const toB = `../../${other}`;
+      const forms: Record<string, string> = {
+        importQuoted: `@import "${toB}/components/secret.css";`,
+        importUrlQuoted: `@import url("${toB}/components/secret.css");`,
+        importUrlBare: `@import url(${toB}/components/secret.css);`,
+        importUrlTxt: `@import url("${toB}/secret.txt");`,
+        importComment: `@import/**/"${toB}/components/secret.css";`,
+        urlInline: `.a { background: url("${toB}/secret.txt?inline"); }`,
+        urlSvg: `.a { background: url(${toB}/assets/secret.svg); }`,
+        imageSet: `.a { background: image-set("${toB}/assets/secret.svg" 1x); }`,
+        twUrlSvg: `@import 'tailwindcss' source(none);\n.a { background: url(${toB}/assets/secret.svg); }`,
+        alias: '.a { background: url(@brands/other/secret.svg); }',
+        rootAbsolute: `.a { background: url(${fromRoot(path.join(h.store.dir(other), 'assets/secret.svg'))}); }`,
+        // A package name resolves under root/node_modules, from where dot segments climb back to the projects.
+        bareDots: `.a { background: url(react/${path.relative(path.join(h.config.root, 'node_modules/react'), path.join(h.store.dir(other), 'assets/secret.svg'))}); }`,
+      };
+      for (const [name, css] of Object.entries(forms)) {
+        const res = await compile(name, css);
+        assert.notEqual(res.status, 200, name);
+        assert.ok(!leaked(res.body), `${name}: ${res.body.slice(0, 300)}`);
+      }
+    });
   });
 });
 

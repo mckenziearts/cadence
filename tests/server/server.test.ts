@@ -6,6 +6,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
 import type { ElevenLabsApi } from '../../server/contracts';
+import { m } from '../../server/i18n';
 import { startServer, type RunningServer } from '../../server/index';
 import { frameGet, makeRoot, type TestRoot } from './helpers';
 
@@ -114,6 +115,41 @@ test('editor HTML, API, SSE and frame data are wired together', async () => {
   await sse;
   assert.match(events.join(''), /data: \{"type":"projects-changed"\}/);
   assert.match(await fs.readFile(path.join(t.config.projectsDir, 'CLAUDE.md'), 'utf8'), /\S/, 'terminal guide written');
+});
+
+test("a scene importing another project's file gets the diagnostic that names it, never the file", async () => {
+  const { editorOrigin } = server.config;
+  const headers = { 'content-type': 'application/json', 'x-cadence-token': server.editorToken };
+  const body = JSON.stringify({ name: 'Diagnostics', brand: 'orbit', formats: ['16:9'], fps: 30 });
+  const project = await (await fetch(`${editorOrigin}/api/projects`, { method: 'POST', body, headers })).json();
+  const other = path.join(t.config.projectsDir, 'other', 'scenes', 'secret.tsx');
+  await fs.mkdir(path.dirname(other), { recursive: true });
+  await fs.writeFile(other, 'export const secret = 1;\n');
+  const scene = project.scenes[0].id;
+  await fs.writeFile(
+    path.join(t.config.projectsDir, project.id, 'scenes', `${scene}.tsx`),
+    "import { secret } from '../../other/scenes/secret';\nexport default () => secret;\n",
+  );
+  const res = await fetch(`${editorOrigin}/api/projects/${project.id}/scenes/${scene}/diagnostics`, { headers });
+  assert.deepEqual(await res.json(), { error: m().api.frames.notServed(await fs.realpath(other)) });
+});
+
+test('a scene importing its own component that fails to compile gets the compile error', async () => {
+  const { editorOrigin } = server.config;
+  const headers = { 'content-type': 'application/json', 'x-cadence-token': server.editorToken };
+  const body = JSON.stringify({ name: 'Broken component', brand: 'orbit', formats: ['16:9'], fps: 30 });
+  const project = await (await fetch(`${editorOrigin}/api/projects`, { method: 'POST', body, headers })).json();
+  const component = path.join(t.config.projectsDir, project.id, 'components', 'broken.tsx');
+  await fs.mkdir(path.dirname(component), { recursive: true });
+  await fs.writeFile(component, 'export const broken = ;\n');
+  const scene = project.scenes[0].id;
+  await fs.writeFile(
+    path.join(t.config.projectsDir, project.id, 'scenes', `${scene}.tsx`),
+    "import { broken } from '../components/broken';\nexport default () => broken;\n",
+  );
+  const res = await fetch(`${editorOrigin}/api/projects/${project.id}/scenes/${scene}/diagnostics`, { headers });
+  const { error } = (await res.json()) as { error: string };
+  assert.match(error, /PARSE_ERROR[\s\S]*broken\.tsx/);
 });
 
 test('serves the editor from a production build: no Vite module, React production, cached assets, byte ranges', async () => {
@@ -253,8 +289,8 @@ test('a request secret of 32 characters reaches both servers: 403 without X-Cade
     assert.equal((await fetch(`${editorOrigin}/`)).status, 403);
     assert.equal((await fetch(`${editorOrigin}/`, { headers: secret })).status, 200, 'the editor with the secret');
     const kit = { kind: 'brand', id: 'cadence' } as const;
-    assert.equal((await frameGet(frameOrigin, kit, '/kit.html')).status, 403);
-    assert.equal((await frameGet(frameOrigin, kit, '/kit.html', secret)).status, 200, 'a kit with the secret');
+    assert.equal((await frameGet(frameOrigin, kit, '/kit.html?brand=cadence')).status, 403);
+    assert.equal((await frameGet(frameOrigin, kit, '/kit.html?brand=cadence', secret)).status, 200, 'a kit with the secret');
   } finally {
     await guarded.close();
   }

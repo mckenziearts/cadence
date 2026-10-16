@@ -10,6 +10,7 @@ import { after, before, it } from 'node:test';
 import { promisify } from 'node:util';
 import type { AgentProvider } from '../../server/contracts';
 import { startServer, type RunningServer } from '../../server/index';
+import { frameOriginOf } from '../../src/shared/frameOrigin';
 import type { ProjectState, RenderFile, RenderJob } from '../../src/shared/types';
 import { ROOT } from './helpers/harness';
 
@@ -159,15 +160,16 @@ it(
           req.on('error', reject);
         });
       const { editorPort, framePort } = guarded.config;
+      const kitHost = new URL(await frameOriginOf(guarded.config.frameOrigin, 'brand', 'cadence')).host;
       for (const address of ['127.0.0.1', '::1']) {
-        for (const [port, pathname] of [
-          [editorPort, '/'],
-          [framePort, '/frame.html'],
+        for (const [port, pathname, host] of [
+          [editorPort, '/', `localhost:${editorPort}`],
+          [framePort, '/kit.html?brand=cadence', kitHost],
         ] as const) {
           const where = `[${address}]:${port}${pathname}`;
-          assert.equal(await status(address, port, pathname), 403, where);
+          assert.equal(await status(address, port, pathname, { host }), 403, where);
           assert.equal(
-            await status(address, port, pathname, { 'x-cadence-secret': requestSecret }),
+            await status(address, port, pathname, { host, 'x-cadence-secret': requestSecret }),
             200,
             `${where} with the secret`,
           );

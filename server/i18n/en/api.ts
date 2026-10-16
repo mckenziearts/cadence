@@ -189,6 +189,8 @@ This document is reread before every change. Describe here the style all scenes 
   },
   frames: {
     method: 'Method not allowed',
+    forbidden: 'A frame reads only its own project or brand and the templates',
+    notServed: (file: string) => `${file} is outside this project, its brand and the templates: the frame does not load it`,
   },
   server: {
     starting: 'Cadence is starting...',

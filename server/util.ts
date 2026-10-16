@@ -297,6 +297,21 @@ export function isInside(dir: string, file: string): boolean {
   return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+/**
+ * The real path of `file`, or of its closest existing folder followed by the rest. A request URL or a stylesheet can
+ * name thousands of missing folders, one lookup each: past 32 this throws.
+ */
+export async function realPath(file: string): Promise<string> {
+  const rest: string[] = [];
+  for (let dir = file; ; dir = path.dirname(dir)) {
+    const real = await fs.realpath(dir).catch(() => null);
+    if (real) return path.join(real, ...rest);
+    if (path.dirname(dir) === dir) return path.join(dir, ...rest);
+    if (rest.length === 32) throw new Error(`${file}: too many missing folders`);
+    rest.unshift(path.basename(dir));
+  }
+}
+
 // Tailwind loads and runs a JS/TS module in this process when it compiles a CSS file that carries `@plugin` or
 // `@config`. Scenes, components, brands and templates are written by the agent and never need either, so Cadence
 // refuses both before Tailwind sees the CSS.

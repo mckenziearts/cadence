@@ -167,7 +167,18 @@ Host must be the frame origin of a project or brand that exists. `frameSite()` r
 maps the label back to the id (a label it does not know rescans `projects/` or `brands/`, for a project or brand created
 since) and checks it still exists; anything else gets 403 (`127.0.0.1`, plain `localhost`, another port, a deleted
 project), which also stops DNS rebinding. Then GET/HEAD only, never `/api`, `/mcp`, `/index.html`,
-`/__open-in-editor`. Every response is sent with a CSP, not only `frame.html` and `kit.html` (scene code could load any
+`/__open-in-editor`. Each origin then reads only its own project or brand. A scene can navigate its own iframe to
+another frame origin (the sandbox allows it, and `frame-ancestors` lets the editor embed any of them), so `frame.html`
+answers only `?project=<id>` on that project's origin, `kit.html` only `?brand=<id>` on that brand's, and `/frame-api`
+only the origin's own id: 403 otherwise. Every other request goes through `frameReach()` (`server/frames/vite.ts`)
+before Vite: the file its path names and the file Vite resolves the URL to (the module graph's id, else `resolveId`,
+which a plugin may point elsewhere; a `.map` counts as its module) must both be, by real path, in the origin's home (`homeOf()`: the project's folder and its brand's, or the brand's folder) or,
+outside `projects/` and `brands/`, under `server.fs.allow` (app sources, packages, templates), and neither may be a
+folder (Vite would answer with a file it picks inside) nor sit under more than 32 missing folders (`realPath()` stops
+there). `/@vite/client` and `/@vite/env` pass; a backslash, a NUL,
+`__x00__` (Vite's NUL) or a dot segment gets 403. `fs.allow` stays as a second layer. Diagnostics, on the frame
+origin and through the API, MCP and brand checks, compile only what the frame of that scene or brand could load: a code
+frame would show the file. Every response carries `X-DNS-Prefetch-Control: off`, and a CSP, not only `frame.html` and `kit.html` (scene code could load any
 other document of the origin in an iframe and send requests from there): `default-src 'self'; script-src
 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
 media-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors <editor origins>`
@@ -242,12 +253,36 @@ installed works; one in neither store needs `NODE_EXTRA_CA_CERTS`. A redirected 
 
 Vite (`server/frames/vite.ts`): `root = <root>`, `appType: 'custom'`, `server.middlewareMode`, `server.hmr: false`,
 `server.ws: false` (no HMR websocket, so several Cadence servers can run side by side),
-`server.fs.allow` = `src/`, `projects/`, `brands/`, `templates/`, `node_modules/` (+ `CADENCE_VITE_CACHE_DIR`), so the
+`server.fs.allow` = `src/`, `projects/`, `brands/`, `templates/` (each also by its real path, the one Vite names a module
+by), `node_modules/` (+ `CADENCE_VITE_CACHE_DIR`), so the
 server code and root files are never served; `server.fs.deny` adds `**/.cadence/**`, `**/.git/**`, `.env*`. `CADENCE_VITE_CACHE_DIR`
 gives a server its own dependency cache.
 Aliases: `cadence` for `src/runtime/index.ts`, `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
 `@tailwindcss/vite`, and a Cadence plugin whose `hotUpdate` returns `[]` for files under projects/, brands/,
-templates/ (Cadence reloads frames itself). `optimizeDeps.entries = ['index.html', 'frame.html']`; `include` adds React,
+templates/ (Cadence reloads frames itself). Its `transform` also refuses a stylesheet under those dirs that imports or
+links (`@import`, `@reference`, `url()`, `image-set()`) a file outside its home and the templates
+(`assertCssStaysHome()`): Tailwind inlines what an `@import` names and Vite what a `url()` names with `?inline`,
+wherever the file is. Each reference is checked as written, decoded, and without its query or fragment, relative to the
+stylesheet and to the entry Tailwind rebases on; a package name passes without dot segments, an imported stylesheet is
+read in turn. These checks take a module under those dirs by its configured path or by the real path Vite gives a module
+an import resolved. `css.modules` is off (postcss-modules would inline what `composes` and `@value` name, wherever it
+is): a `.module.css` compiles as plain CSS. The plugin's `load` hook, ordered last, reads a file under those dirs that no
+other plugin loads and returns it without a map: Vite's own read would fill the map a `sourceMappingURL` comment names
+with the content of every file its `sources` list. `tsconfig` is the core's `tsconfig.json`: otherwise each file
+compiles with the one found above it, and a project's may `extend` any JSON file, whose compiler options would show in
+the code and the errors Vite gives back. Its `resolveId` resolves a bare or `#` import of a file under those dirs as
+`src/runtime/index.ts` would, and refuses one the core lacks: Vite looks a package up from the importer's folder, and its
+dependency optimizer bundles what a package imports with none of these checks. A plugin of `optimizeDeps.rolldownOptions`
+refuses to read a file under those dirs, which an alias (`@brands/../`) or a link could still lead the optimizer to.
+
+What the frame checks leave open: they compare paths before Vite reads, so a process an agent turn leaves running can
+swap a checked file for a link in between (the `@plugin` scan has the same gap), and a hard link is the file itself to
+every path check; an `@source` lets Tailwind read the class names of the files it names into the stylesheet that holds
+it, a brand theme's (`@source '../../projects'`) or one a project writes (also as `@import 'tailwindcss' source(...)`),
+which may name another project; `import.meta.glob` lists the file names its pattern matches; a scene's diagnostics tell whether a file
+it imports exists; a project's origin reads the brand its `project.json` names, so editing that file changes the brand
+it reads; a scene whose import leads the optimizer to a file under those dirs fails its run, and with it the packages
+other frames were waiting for, which load at their next import. `optimizeDeps.entries = ['index.html', 'frame.html']`; `include` adds React,
 lucide-react and clsx, and the Heroicons and Tabler sets that the brands present at start import (bundling all of them
 made a cold start 0.9 s and 983 MB instead of 0.2 s and 509 MB). A brand built later gets its set bundled at its first
 import, which pages already open take in their stride: they keep a single React.
@@ -831,7 +866,7 @@ Frame origin read-only data: `GET /frame-api/projects/:id` answers `{ project: P
 brandId: string, brandUrl: string }` (brand = the project's brand, or `cadence`; `brandUrl` = `/@fs<brandsDir>/<id>/`,
 from which the frame imports `theme.css?inline&g=<gen>` and `index.tsx?g=<gen>`),
 `GET /frame-api/projects/:id/scenes/:sid/diagnostics`, `GET /frame-api/brands/:id` (kit.html), which
-answers `{ brand, brandId, brandUrl }`.
+answers `{ brand, brandId, brandUrl }`. Each answers only the id of the origin it is asked on, 403 otherwise.
 
 ## Rendering
 
@@ -1140,9 +1175,9 @@ contract: removing or reshaping one is a major version.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origins never serve `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand
-  kits there import the core's `dependencies` (its `package.json`, read at start) and nothing else: the frames Vite
-  server lists them in `resolve.dedupe`, so they resolve from the core's `node_modules` and never from the importer's
-  folder. Vite's watcher gets them too, so edits made outside the editor still reload. `tests/server/outside-root.test.ts`
+  kits there import the core's packages and nothing else: the Cadence plugin of the frames Vite server resolves them as
+  the runtime would, never from the importer's folder, and `resolve.dedupe` lists the core's `dependencies` (its
+  `package.json`, read at start) so a package's own imports of them load the same copy. Vite's watcher gets them too, so edits made outside the editor still reload. `tests/server/outside-root.test.ts`
   checks both, and that the `CLAUDE.md` written there names no core path.
 
 ## Tests

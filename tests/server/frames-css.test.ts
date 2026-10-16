@@ -398,10 +398,26 @@ test('a stylesheet compiles, a file of another kind requested as CSS through the
   }
 });
 
-test('the frame origin answers 404 to a query that would make Tailwind compile a file as CSS', async () => {
+test('the frame origin answers 404 to a query Tailwind would compile as CSS, 403 to a URL Vite resolves elsewhere', async () => {
   const { config, cleanup } = await makeRoot();
   const reached: string[] = [];
   const vite = {
+    config: { server: { fs: { allow: [config.root] } } },
+    environments: {
+      client: {
+        // A module already loaded keeps the id it was resolved to, which may be a file of another brand.
+        moduleGraph: {
+          getModuleByUrl: async (url: string) =>
+            url.endsWith('/graph.css') ? { id: `${config.brandsDir}/orbit/theme.css` } : undefined,
+        },
+        // A plugin may resolve a URL of this brand to a file of another one.
+        pluginContainer: {
+          resolveId: async (url: string) => ({
+            id: url.endsWith('/elsewhere.css') ? `${config.brandsDir}/orbit/theme.css` : url.slice('/@fs'.length),
+          }),
+        },
+      },
+    },
     middlewares: (req: http.IncomingMessage, res: http.ServerResponse) => {
       reached.push(req.url!);
       res.end('vite');
@@ -419,8 +435,13 @@ test('the frame origin answers 404 to a query that would make Tailwind compile a
     for (const query of ['?x&lang.css', '?html-proxy&index=0.css', '?x%26lang%2Ecss', '?index=%30.css', '?%E0']) {
       assert.equal(await status(`/@fs/p/notes.md${query}`), 404, query);
     }
-    assert.equal(await status('/@fs/p/theme.css?g=3'), 200);
-    assert.deepEqual(reached, ['/@fs/p/theme.css?g=3']);
+    const theme = `/@fs${config.brandsDir}/cadence/theme.css?g=3`;
+    assert.equal(await status(theme), 200);
+    assert.equal(await status(`/@fs${config.brandsDir}/cadence/elsewhere.css`), 403);
+    assert.equal(await status(`/@fs${config.brandsDir}/cadence/elsewhere.css.map`), 403);
+    assert.equal(await status(`/@fs${config.brandsDir}/cadence/graph.css`), 403);
+    assert.equal(await status('/@vite/client'), 200);
+    assert.deepEqual(reached, [theme, '/@vite/client']);
   } finally {
     server.close();
     await cleanup();

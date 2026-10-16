@@ -10,7 +10,7 @@ import type { BrandStore, CadenceConfig, ProjectStore } from '../contracts';
 import { hasRequestSecret } from '../http';
 import { language, m } from '../i18n';
 import { assertId, HttpError } from '../util';
-import { diagnoseFile } from './vite';
+import { diagnoseFile, frameReach } from './vite';
 
 /** GET /frame-api/brands/:id (kit.html) */
 export interface FrameBrandData {
@@ -30,6 +30,13 @@ export interface FrameProjectData {
 }
 
 const FONT_FILE = /\.(woff2?|ttf|otf)$/i;
+/** What Vite serves on its own (no file under the managed dirs): its client, which frame.html and kit.html import. */
+const VITE_CLIENT = new Set(['/@vite/client', '/@vite/env']);
+
+interface Site {
+  kind: FrameKind;
+  id: string;
+}
 
 export function createFrameHandler(deps: {
   config: CadenceConfig;
@@ -47,7 +54,7 @@ export function createFrameHandler(deps: {
   }
 
   /** The existing project or brand whose origin the Host names, else null. */
-  async function siteOf(host: string): Promise<{ kind: FrameKind; id: string } | null> {
+  async function siteOf(host: string): Promise<Site | null> {
     const site = frameSite(config.frameOrigin, host);
     if (!site) return null;
     const key = `${site.kind} ${site.label}`;
@@ -71,10 +78,44 @@ export function createFrameHandler(deps: {
     return { project, brand, brandId, brandUrl: `/@fs${brands.dir(brandId)}/` };
   }
 
+  /** What the frame of `site` may load (see frameReach). */
+  function reach(site: Site): Promise<(file: string) => Promise<boolean>> {
+    return frameReach(vite, config, path.join(site.kind === 'project' ? config.projectsDir : config.brandsDir, site.id));
+  }
+
+  /**
+   * Whether Vite may answer `url` on the origin of `site`. Vite serves a plain file at its path, and a module from the
+   * file it resolves the URL to, where a plugin may point it: both must be readable. A `.map` is the source map of the
+   * module without it.
+   */
+  async function servable(site: Site, url: string): Promise<boolean> {
+    let decoded: string;
+    try {
+      decoded = decodeURI(url);
+    } catch {
+      return false;
+    }
+    const pathname = decoded.replace(/[?#].*$/, '');
+    if (VITE_CLIENT.has(pathname)) return true;
+    // Vite, its file server and the browser each normalize these their own way (and `__x00__` is Vite's NUL).
+    if (/[\\\0]|__x00__/.test(decoded) || pathname.split('/').some((s) => s === '.' || s === '..')) return false;
+    const file = pathname.startsWith('/@fs/') ? pathname.slice('/@fs'.length) : path.join(config.root, pathname);
+    const readable = await reach(site);
+    if (!(await readable(file))) return false;
+    const moduleUrl = decoded.replace(/\.map($|\?)/, '$1');
+    const env = vite.environments.client;
+    const id =
+      (await env.moduleGraph.getModuleByUrl(moduleUrl))?.id ?? (await env.pluginContainer.resolveId(moduleUrl))?.id ?? moduleUrl;
+    // A virtual module comes from a plugin, not from a file.
+    return id.startsWith('\0') || readable(id.replace(/[?#].*$/, ''));
+  }
+
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // On every response, not only the pages: scene code could load any other document of this origin (project data, an
     // SVG or HTML asset, an error page) in an iframe and send requests from there.
     res.setHeader('Content-Security-Policy', frameCsp(config));
+    // Scene code must not reach another host through a DNS lookup of a link it renders.
+    res.setHeader('X-DNS-Prefetch-Control', 'off');
     if (config.requestSecret && !hasRequestSecret(req, config.requestSecret)) {
       return send(res, req, 403, 'text/plain; charset=utf-8', m().core.http.secret);
     }
@@ -89,28 +130,27 @@ export function createFrameHandler(deps: {
     const url = req.url ?? '/';
     const { pathname, search } = new URL(url, 'http://frame');
     if (pathname === '/frame.html' || pathname === '/kit.html') {
+      // A scene can navigate its own iframe to another frame origin: the page there loads that origin's project or brand
+      // only, never the one the scene names.
+      const kind = pathname === '/kit.html' ? 'brand' : 'project';
+      if (site.kind !== kind || new URLSearchParams(search).get(kind) !== site.id) {
+        return send(res, req, 403, 'text/plain; charset=utf-8', m().api.frames.forbidden);
+      }
       res.setHeader('Cache-Control', 'no-store');
-      return send(
-        res,
-        req,
-        200,
-        'text/html; charset=utf-8',
-        await frameHtml(url, pathname === '/kit.html' ? 'kit.html' : 'frame.html'),
-      );
+      return send(res, req, 200, 'text/html; charset=utf-8', await frameHtml(url, kind === 'brand' ? 'kit.html' : 'frame.html'));
     }
-    // Ids are [a-z0-9-]: anything percent-encoded fails assertId.
     let match = /^\/frame-api\/projects\/([^/]+)$/.exec(pathname);
-    if (match) return json(res, req, 200, await projectData(match[1]));
+    if (match) return json(res, req, 200, await projectData(own(site, 'project', match[1])));
     match = /^\/frame-api\/brands\/([^/]+)$/.exec(pathname);
     if (match) {
-      const brandId = assertId(match[1], m().api.ids.brand);
+      const brandId = own(site, 'brand', match[1]);
       const data: FrameBrandData = { brand: await brands.get(brandId), brandId, brandUrl: `/@fs${brands.dir(brandId)}/` };
       return json(res, req, 200, data);
     }
     match = /^\/frame-api\/projects\/([^/]+)\/scenes\/([^/]+)\/diagnostics$/.exec(pathname);
     if (match) {
-      const file = store.sceneFile(assertId(match[1], m().api.ids.project), assertId(match[2], m().api.ids.scene));
-      return json(res, req, 200, { error: await diagnoseFile(vite, file) });
+      const file = store.sceneFile(own(site, 'project', match[1]), assertId(match[2], m().api.ids.scene));
+      return json(res, req, 200, { error: await diagnoseFile(vite, file, await reach(site)) });
     }
     // Vite's /__open-in-editor would let any page (or scene) launch the user's code editor.
     // Tailwind would compile the file as CSS whatever its extension (see COMPILED_AS_CSS in vite.ts).
@@ -122,6 +162,8 @@ export function createFrameHandler(deps: {
     ) {
       return send(res, req, 404, 'text/plain; charset=utf-8', m().core.http.notFound);
     }
+    // fs.allow covers every project and brand: a frame reads only its own, whatever path or module leads to another.
+    if (!(await servable(site, url))) return send(res, req, 403, 'text/plain; charset=utf-8', m().api.frames.forbidden);
     // The editor's brand panel loads the brand fonts from the brand's origin: kit.html tells it the files, never the kit's CSS.
     const origin = req.headers.origin;
     if (site.kind === 'brand' && origin && FONT_FILE.test(pathname) && editorOrigins(config).includes(origin)) {
@@ -139,6 +181,12 @@ export function createFrameHandler(deps: {
       json(res, req, status, { error: message });
     });
   };
+}
+
+/** `id` when it is the project or brand of this origin's site, else 403: a frame reads no other's data. */
+function own(site: Site, kind: FrameKind, id: string): string {
+  if (site.kind !== kind || id !== site.id) throw new HttpError(403, m().api.frames.forbidden);
+  return id;
 }
 
 /** Vite decodes the URL before Tailwind sees it; a query that does not decode is refused too. */

@@ -7,6 +7,7 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import {
   createServer,
+  isFileLoadingAllowed,
   mergeConfig,
   type DevEnvironment,
   type EnvironmentModuleNode,
@@ -14,8 +15,11 @@ import {
   type Plugin,
   type ViteDevServer,
 } from 'vite';
+import { ID_PATTERN } from '../../src/shared/types';
 import type { CadenceConfig } from '../contracts';
-import { CssCodeScan, foldName, isInside, isResolverInput } from '../util';
+import { m } from '../i18n';
+import { DEFAULT_BRAND } from '../store/brands';
+import { CssCodeScan, foldName, isInside, isResolverInput, readFileNoFollow, realPath } from '../util';
 
 export async function createVite({
   config,
@@ -49,7 +53,9 @@ export async function createVite({
         // scene code runs on the frame origin and must not read server/, bin/, tests/ or the root config files.
         allow: [
           path.join(config.root, 'src'),
-          ...managed,
+          // Vite names a module by the real path its import resolved to, so a dir reached through a link (`/var` on
+          // macOS) is allowed under both names.
+          ...new Set([...managed, ...(await Promise.all(managed.map(realPath)))]),
           path.join(config.root, 'node_modules'),
           ...(cacheDir ? [cacheDir] : []),
         ],
@@ -88,7 +94,13 @@ export async function createVite({
         ...(await brandIconSets(config.brandsDir)),
       ],
     },
-    plugins: [cadencePlugin(managed, config.brandsDir), react(), tailwindcss()],
+    // Else each file compiles with the tsconfig.json found above it, and a project's may extend any JSON file: its
+    // compiler options would reach the frame and the diagnostics in the code and the errors Vite gives back.
+    tsconfig: path.join(config.root, 'tsconfig.json'),
+    // postcss-modules inlines what `composes: ... from` and `@value ... from` name, wherever that file is, out of reach
+    // of assertCssStaysHome: a `.module.css` compiles as plain CSS.
+    css: { modules: false },
+    plugins: [cadencePlugin(managed, config), react(), tailwindcss()],
   };
   const server = await createServer(mergeConfig(base, overrides) as InlineConfig);
   // Vite watches its root only: managed dirs a host app keeps elsewhere are added, so an edit made from a terminal
@@ -233,6 +245,161 @@ async function importsOtherThanCss(
   return false;
 }
 
+const CSS_AT_IMPORT = /@(?:import|reference)\s*(?:url\(\s*)?("[^"]*"|'[^']*'|[^\s'";)]+)/gi;
+const CSS_URL = /url\(\s*("[^"]*"|'[^']*'|(?:\\.|[^'")\\])+)\s*\)/gi;
+const CSS_IMAGE_SET = /image-set\(([^;}]*)/gi;
+const CSS_STRING = /"[^"]*"|'[^']*'/g;
+
+/**
+ * Refuse a stylesheet of a project, a brand or the templates that imports or links a file outside its home: its own
+ * folder, its project's brand, the templates, and packages by name. Tailwind inlines what @import and @reference name,
+ * and Vite what url() names with `?inline`, wherever that file is: a project's stylesheet would otherwise carry another
+ * project's or brand's files into its frame. Compared by real path; an imported stylesheet is read in turn.
+ */
+export async function assertCssStaysHome(entry: string, config: CadenceConfig): Promise<void> {
+  const home = await cssHome(entry, config);
+  if (!home) return;
+  const dirs = [path.dirname(await realPath(entry))];
+  const seen = new Set<string>();
+  const read = async (file: string): Promise<void> => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    for (const [ref, imported] of cssReferences(await fs.readFile(file, 'utf8'))) {
+      // Tailwind rebases the url() of what it inlines on the entry's folder.
+      const files = await referencedFiles(ref, imported, [path.dirname(file), ...dirs], config);
+      if (!files) throw new Error(`${file}: ${ref} cannot be followed here`);
+      for (const candidate of files) {
+        const real = await realPath(candidate).catch(() => null);
+        const stat = real ? await fs.stat(real).catch(() => null) : null;
+        if (!real || !home.some((dir) => isInside(dir, real)) || stat?.isDirectory() || (imported && !stat?.isFile())) {
+          throw new Error(`${file}: ${ref} is outside this stylesheet's project, brand and the templates`);
+        }
+        if (imported) await read(real);
+      }
+    }
+  };
+  await read(await realPath(entry));
+}
+
+/** The folders a stylesheet may import and link from: its home and the templates; null outside them. */
+async function cssHome(file: string, config: CadenceConfig): Promise<string[] | null> {
+  const templates = await realDir(config.templatesDir);
+  if (isInside(config.templatesDir, file) || isInside(templates, file)) return [templates];
+  const home = await homeOf(file, config);
+  return home && [...home, templates];
+}
+
+const realDirs = new Map<string, Promise<string>>();
+/** The real path of a configured folder: they stay put while the server runs, and every frame request needs them. */
+function realDir(dir: string): Promise<string> {
+  if (!realDirs.has(dir)) realDirs.set(dir, realPath(dir));
+  return realDirs.get(dir)!;
+}
+
+/**
+ * The real folders of the project or brand that holds `file`, a project's brand folder too; null outside the projects
+ * and brands. By where `file` is named, not where a link on its way leads.
+ */
+export async function homeOf(file: string, config: CadenceConfig): Promise<string[] | null> {
+  const [projects, brands] = await Promise.all([config.projectsDir, config.brandsDir].map(realDir));
+  const top = (dir: string, real: string) => {
+    const from = isInside(dir, file) ? dir : isInside(real, file) ? real : null;
+    return from && path.join(real, path.relative(from, file).split(path.sep)[0]);
+  };
+  const brand = top(config.brandsDir, brands);
+  if (brand) return [brand];
+  const project = top(config.projectsDir, projects);
+  if (!project) return null;
+  const brandId = await brandOf(project);
+  return [project, ...(typeof brandId === 'string' && ID_PATTERN.test(brandId) ? [path.join(brands, brandId)] : [])];
+}
+
+const projectBrands = new Map<string, { stamp: string; brand: Promise<unknown> }>();
+/**
+ * The `brand` of a project's project.json, read again only once the file changed: every module of a frame asks, and
+ * the file grows with the project's voice-over.
+ */
+async function brandOf(project: string): Promise<unknown> {
+  const file = path.join(project, 'project.json');
+  const stat = await fs.lstat(file).catch(() => null);
+  const stamp = stat ? `${stat.ino} ${stat.size} ${stat.mtimeMs} ${stat.ctimeMs}` : '';
+  let cached = projectBrands.get(project);
+  if (cached?.stamp !== stamp) {
+    const brand = readFileNoFollow(project, file, 'utf8')
+      .then((text) => (JSON.parse(text) as { brand?: unknown }).brand ?? DEFAULT_BRAND)
+      .catch(() => null);
+    projectBrands.set(project, (cached = { stamp, brand }));
+  }
+  return cached.brand;
+}
+
+/**
+ * What a frame of the project or brand that holds `entry` may load: what is in its home (homeOf) and, outside the
+ * projects and brands, what Vite serves at all (app, packages, templates). Through links, as Vite reads it. A folder
+ * never: Vite would answer with a file it picks inside (an index, a package.json entry).
+ */
+export async function frameReach(
+  vite: ViteDevServer,
+  config: CadenceConfig,
+  entry: string,
+): Promise<(file: string) => Promise<boolean>> {
+  const home = (await homeOf(entry, config)) ?? [];
+  const [projects, brands, ...served] = await Promise.all(
+    [config.projectsDir, config.brandsDir, ...vite.config.server.fs.allow].map(realDir),
+  );
+  return async (file) => {
+    const real = await realPath(file).catch(() => null);
+    if (!real || (await fs.stat(real).catch(() => null))?.isDirectory()) return false;
+    const within = (dir: string) => dir === real || isInside(dir, real);
+    return home.some((dir) => isInside(dir, real)) || (!within(projects) && !within(brands) && served.some(within));
+  };
+}
+
+/** Each file reference of a stylesheet, and whether it is imported (@import, @reference) rather than linked. */
+function* cssReferences(text: string): Generator<[ref: string, imported: boolean]> {
+  const unquote = (s: string) => (/^(["']).*\1$/s.test(s) ? s.slice(1, -1) : s.trim());
+  for (const css of new Set([text, text.replace(/\/\*[\s\S]*?\*\//g, '')])) {
+    for (const [, ref] of css.matchAll(CSS_AT_IMPORT)) yield [unquote(ref), true];
+    for (const [, ref] of css.matchAll(CSS_URL)) yield [unquote(ref.trim()), false];
+    for (const [, set] of css.matchAll(CSS_IMAGE_SET)) for (const [ref] of set.matchAll(CSS_STRING)) yield [unquote(ref), false];
+  }
+}
+
+/**
+ * The files `ref` may name from a stylesheet resolved against `dirs`: with and without its query or fragment, as is and
+ * decoded, as Vite and Tailwind may each read it. Empty for what names no file (an external URL, a fragment); null for
+ * what no path check can follow (another scheme, a backslash, a package name with dot segments).
+ */
+async function referencedFiles(ref: string, imported: boolean, dirs: string[], config: CadenceConfig): Promise<string[] | null> {
+  if (!ref || ref.startsWith('#')) return imported ? null : [];
+  if (/^(?:data|https?):|^\/\//i.test(ref)) return [];
+  let decoded: string[];
+  try {
+    decoded = [ref, decodeURI(ref), decodeURIComponent(ref)];
+  } catch {
+    return null;
+  }
+  const files: string[] = [];
+  for (const variant of new Set(decoded.flatMap((s) => [s, s.replace(/#.*$/s, ''), s.replace(/[?#].*$/s, '')]))) {
+    if (!variant || /^[a-z][a-z0-9+.-]*:|[\\\0]/i.test(variant)) return null;
+    if (variant === '@brands' || variant.startsWith('@brands/')) {
+      files.push(path.join(config.brandsDir, variant.slice('@brands'.length)));
+    } else if (variant.startsWith('/')) {
+      files.push(path.join(config.root, variant), variant);
+    } else {
+      // A package name resolves from the app's node_modules, where dot segments would climb back to the managed dirs.
+      const bare = !variant.startsWith('.');
+      if (bare && !PACKAGE.test(variant.replace(/[?#].*$/s, ''))) return null;
+      for (const dir of dirs) {
+        const file = path.resolve(dir, variant);
+        // Relative first, as CSS reads it; a package name that names nothing here is the package.
+        if (!bare || (await fs.lstat(file).catch(() => null))) files.push(file);
+      }
+    }
+  }
+  return files;
+}
+
 /** `file` under the first `from` folder that holds it, moved under its `to`. */
 function relocate(file: string, moves: [from: string, to: string][]): string {
   const move = moves.find(([from]) => isInside(from, file));
@@ -248,11 +415,43 @@ const GENERATION_PARAM = /([?&])g=[^&]*&?/;
  * module per file anyway: a new `?g=` URL resolves to the plain id and re-transforms it. One module per generation
  * would keep one Tailwind compiler per brand theme per generation alive (about 1 MB each).
  */
-function cadencePlugin(managedDirs: string[], brandsDir: string): Plugin {
+function cadencePlugin(managedDirs: string[], config: CadenceConfig): Plugin {
+  // Vite names a module by the URL's path, or by its real path once an import resolved it.
+  const isManaged = async (file: string) =>
+    [...managedDirs, ...(await Promise.all(managedDirs.map(realDir)))].some((dir) => isInside(dir, file));
   return {
     name: 'cadence',
     enforce: 'pre',
+    config: () => ({
+      optimizeDeps: {
+        rolldownOptions: {
+          plugins: [
+            {
+              name: 'cadence:deps',
+              // The dependency optimizer bundles a package with what it imports, read with none of the frame's checks,
+              // and an alias or a link can still lead it to a managed file.
+              async load(id) {
+                if (await isManaged(id.replace(/[?#].*$/, ''))) {
+                  throw new Error(`The dependency optimizer reads no project, brand or template file: ${id}`);
+                }
+                return null;
+              },
+            },
+          ],
+        },
+      },
+    }),
     async resolveId(source, importer, options) {
+      // Vite looks a package up from the importer's folder, and its dependency optimizer bundles what that package
+      // imports with none of the frame's checks: a managed file gets the packages the runtime gets.
+      if (importer && /^[\w@#]/.test(source) && (await isManaged(importer.replace(/[?#].*$/, '')))) {
+        const resolved = await this.resolve(source, path.join(config.root, 'src/runtime/index.ts'), {
+          ...options,
+          skipSelf: true,
+        });
+        // Else the plugins after this one would look it up from the importer's folder.
+        return resolved ?? this.error(`Failed to resolve import "${source}": not a package of the app`);
+      }
       if (!GENERATION_PARAM.test(source)) return null;
       const resolved = await this.resolve(source.replace(GENERATION_PARAM, '$1').replace(/[?&]$/, ''), importer, {
         ...options,
@@ -263,6 +462,18 @@ function cadencePlugin(managedDirs: string[], brandsDir: string): Plugin {
       const mod = resolved && graph?.getModuleById(resolved.id);
       if (mod) graph.invalidateModule(mod);
       return resolved;
+    },
+    load: {
+      // Last, so only for a file no other plugin loads. Vite would read it itself, then fill the map a `sourceMappingURL`
+      // comment names with every file its `sources` list, wherever they are, and serve that with the module.
+      order: 'post',
+      async handler(id) {
+        const file = id.replace(/[?#].*$/, '');
+        if (id.startsWith('\0') || !(await isManaged(file))) return null;
+        if (!isFileLoadingAllowed(this.environment.getTopLevelConfig(), file)) return null;
+        const code = await fs.readFile(file, 'utf8').catch(() => null);
+        return code === null ? null : { code, map: null };
+      },
     },
     hotUpdate({ file }) {
       if (managedDirs.some((dir) => isInside(dir, file))) return [];
@@ -275,9 +486,10 @@ function cadencePlugin(managedDirs: string[], brandsDir: string): Plugin {
       // compiles any CSS that would run code. Tailwind inlines @import itself, so a check on this one file would miss
       // a two-hop @import to @plugin: scan the whole managed set instead.
       const file = id.replace(/[?#].*$/, '');
-      if (!COMPILED_AS_CSS.test(id) || !managedDirs.some((dir) => isInside(dir, file))) return;
+      if (!COMPILED_AS_CSS.test(id) || !(await isManaged(file))) return;
       if (!file.endsWith('.css')) throw new Error(`Only a .css file is compiled as CSS here: ${file}`);
-      await assertNoCssCodeExec(managedDirs, brandsDir);
+      await assertNoCssCodeExec(managedDirs, config.brandsDir);
+      await assertCssStaysHome(file, config);
     },
   };
 }
@@ -308,14 +520,20 @@ export function invalidateDirs(vite: ViteDevServer, dirs: string[]): void {
 
 /**
  * Compile a file and the local files it imports through Vite's pipeline; returns the first error (message + code
- * frame, no ANSI colors) or null. The browser only says "Failed to fetch dynamically imported module".
+ * frame, no ANSI colors) or null. The browser only says "Failed to fetch dynamically imported module". A file the frame
+ * may not load (`readable`) is reported, not compiled.
  */
-export async function diagnoseFile(vite: ViteDevServer, file: string): Promise<string | null> {
+export async function diagnoseFile(
+  vite: ViteDevServer,
+  file: string,
+  readable: (file: string) => Promise<boolean>,
+): Promise<string | null> {
   const env = vite.environments.client;
   const seen = new Set<string>();
-  const visit = async (url: string): Promise<string | null> => {
+  const visit = async (url: string, file: string): Promise<string | null> => {
     if (seen.has(url)) return null;
     seen.add(url);
+    if (!(await readable(file))) return m().api.frames.notServed(file);
     try {
       await env.transformRequest(url);
     } catch (e) {
@@ -329,10 +547,10 @@ export async function diagnoseFile(vite: ViteDevServer, file: string): Promise<s
     const mod = await env.moduleGraph.getModuleByUrl(url);
     for (const dep of mod?.importedModules ?? []) {
       if (dep.type !== 'js' || !dep.file || dep.file.includes('/node_modules/')) continue;
-      const error = await visit(dep.url);
+      const error = await visit(dep.url, dep.file);
       if (error) return error;
     }
     return null;
   };
-  return visit(`/@fs${file}`);
+  return visit(`/@fs${file}`, file);
 }

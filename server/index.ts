@@ -44,7 +44,7 @@ import type {
 } from './contracts';
 import { builtEditor, devEditor } from './editor';
 import { createFrameHandler } from './frames/frameServer';
-import { createVite, diagnoseFile, invalidateDirs } from './frames/vite';
+import { createVite, diagnoseFile, frameReach, invalidateDirs } from './frames/vite';
 import { createEditorHandler } from './http';
 import { isLanguage, m, setLanguage } from './i18n';
 import { SseHub } from './hub';
@@ -243,7 +243,8 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     });
 
     const viteServer = vite;
-    const diagnose = (file: string) => diagnoseFile(viteServer, file);
+    // What a scene or a brand imports is diagnosed only where its frame could load it: an error's code frame would show it.
+    const diagnose = async (file: string) => diagnoseFile(viteServer, file, await frameReach(viteServer, config, file));
     const brandSources = { github: new GitHubSource(), gitlab: new GitLabSource(), ...customSources };
     const brandBuilds = new BrandBuilder({
       config,
