@@ -19,7 +19,16 @@ import {
   type RenderRequest,
 } from '../../src/shared/types';
 import { DUCK_RAMP_S, voiceSpans } from '../../src/shared/voiceOver';
-import type { CadenceConfig, Hub, MusicService, ProjectStore, RenderService, VoiceOverService } from '../contracts';
+import type {
+  BrowserServer,
+  CadenceConfig,
+  ChromiumOptions,
+  Hub,
+  MusicService,
+  ProjectStore,
+  RenderService,
+  VoiceOverService,
+} from '../contracts';
 import { m } from '../i18n';
 import { soundTrack } from '../sounds/track';
 import { assertId, formatSeconds, HttpError, nowIso, pathExists, resolveInside } from '../util';
@@ -65,6 +74,7 @@ export class FfmpegRenderService implements RenderService {
       music: MusicService;
       voiceOver: VoiceOverService;
       hub: Hub;
+      browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
     },
   ) {}
 
@@ -227,7 +237,7 @@ export class FfmpegRenderService implements RenderService {
     const partial = path.join(dir, `${name}.part`);
     abort.signal.throwIfAborted();
 
-    const browser = await launchChromium();
+    const browser = await launchChromium(this.deps.browserServer);
     let kill = () => {};
     let sounds: string | null = null;
     try {

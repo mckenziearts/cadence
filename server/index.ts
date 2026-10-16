@@ -32,8 +32,10 @@ import {
 import type {
   AgentProvider,
   BrandSource,
+  BrowserServer,
   HostBrandSource,
   CadenceConfig,
+  ChromiumOptions,
   ElevenLabsApi,
   HostApi,
   Network,
@@ -88,6 +90,11 @@ export type StartOptions = Partial<CadenceConfig> & {
   api?: HostApi;
   /** Editor sections a host app hides; a missing key stays on. UI only, see ARCHITECTURE.md "Embedding Cadence". */
   features?: Partial<Features>;
+  /**
+   * A host app's way to start Chromium, in a process of its own, at every launch (captures and their relaunches, each
+   * render): it runs `serveChromium(options)` (server/capture/serve-chromium.mjs) there. Without it, the core forks one.
+   */
+  browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
 };
 
 export interface Services {
@@ -139,6 +146,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     secrets,
     api: hostApi,
     features,
+    browserServer,
     ...overrides
   } = options;
   if (dev && editorRoot) throw new Error(m().core.editorRootDev);
@@ -181,7 +189,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const built = dev ? null : await builtEditor(editorRoot ?? config.root);
     vite = await createVite({ config });
     const editor = built ?? devEditor(vite, config.root);
-    capture = new PlaywrightCapture({ config, store });
+    capture = new PlaywrightCapture({ config, store, browserServer });
     const seams = new PixelSeamService({ store, capture, hub });
     const music = new LocalMusicService({ config, store, hub });
     const engine = speech ?? new PiperEngine(config.piperPath);
@@ -194,7 +202,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       elevenLabs: elevenLabs ?? new ElevenLabsClient(),
       secrets,
     });
-    const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub });
+    const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub, browserServer });
     const versions = new FileVersionStore(store, brands);
     const assets = new FileAssetStore(store, capture);
     const tokens = new McpTokens(config);

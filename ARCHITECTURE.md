@@ -63,7 +63,8 @@ cadence/
     archive/                tar.ts (ustar reader and writer, no dependency), projects.ts (ProjectArchiver)
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
     capture/                capture.ts (Playwright), browser-host.ts + chromium-server.mjs (Chromium in a child
-                            process), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
+                            process), serve-chromium.mjs (the Chromium server that process runs, exported for a
+                            host app), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
                             worker (the analysis off the server's thread), synth + soundtracks (the preset
                             soundtracks, composed in code)
@@ -176,21 +177,23 @@ Scene code runs in the capture page's main world, next to `window.__cadence`, so
 is untrusted in size too. Capture and render browsers therefore run in a child process: `browser-host.ts` forks
 `chromium-server.mjs` (plain JavaScript, `execArgv: []`) with `process.execPath`, or the Node binary
 `CADENCE_NODE_PATH` names. Under Electron (`process.versions.electron`) `CADENCE_NODE_PATH` is required and the launch
-fails without it: Electron runs as Node (`ELECTRON_RUN_AS_NODE=1`) only while its RunAsNode fuse is on, a packaged app
-usually turns it off, and the forked binary would then start the app instead, a failure only the packaged build would
-show. An Electron host names a Node binary it ships, or its own binary when its fuse is on. The child calls
-`chromium.launchServer()` on a Unix socket in a `mkdtemp` folder (0700, removed when the child exits) and sends the
-endpoint over IPC; the server attaches with `chromium.connect('ws+unix:...')`.
+fails without it: Electron's binary runs as Node only while its RunAsNode fuse is on, a packaged app usually turns it
+off, and the forked binary would then start the app instead, a failure only the packaged build would show. An
+Electron host names a Node binary it ships, or starts the process itself with `browserServer` (see "Embedding
+Cadence"). The child runs `serveChromium()` (`serve-chromium.mjs`, plain JavaScript and exported, the same entry a
+host's own process runs): `chromium.launchServer()` on a Unix socket in a `mkdtemp` folder (0700, removed when the
+child exits), and the child sends the endpoint over IPC; the server attaches with `chromium.connect('ws+unix:...')`.
 Never a loopback port: Playwright's `/json` hands its endpoint path to any local process, which could then drive the
 capture browser, read local files and reach the pages carrying the request secret. A socket path as `port` is
-Playwright 1.63 behaviour, not documented: the child refuses any other endpoint and `tests/server/browser-host.test.ts`
-checks that no TCP port is open; a socket path past 103 bytes (a long `TMPDIR`) fails the launch before Chromium
-starts. Playwright reads Chromium's CDP pipe and output in that child:
+Playwright 1.63 behaviour, not documented: `serveChromium()` refuses any other endpoint and
+`tests/server/browser-host.test.ts` checks that no TCP port is open; a socket path past 103 bytes (a long `TMPDIR`)
+fails the launch before Chromium starts. Playwright reads Chromium's CDP pipe and output in that child:
 a message larger than a string can hold (`console.log(big, big)` with 300 MB strings ended the 0.12.0 server with
 `ERR_STRING_TOO_LONG`) ends the child, the pages and captures in flight fail with an error, and the next capture starts
 a new child. Closing the browser (or losing it) disconnects the IPC channel, the child closes Chromium and exits;
-`close()` waits for it (SIGKILL after 10 s). In Node, the problems a page logs and the errors `seek()` returns keep
-20 lines of 2,000 characters at most (`MAX_PROBLEMS`, `PROBLEM_CHARS`); what page code throws through
+`close()` waits for it (SIGKILL after 10 s). With `browserServer` the host's process takes the child's place: the same
+300 MB page ends it, and its `exited` and `close()` do what the child's exit and the IPC channel do here. In Node, the
+problems a page logs and the errors `seek()` returns keep 20 lines of 2,000 characters at most (`MAX_PROBLEMS`, `PROBLEM_CHARS`); what page code throws through
 `page.evaluate` and the scene id `seek()` answers are cut to 2,000 characters too (`fromPage`). What remains: a message up to 256 MB (the
 limit of Playwright's WebSocket client, past which the connection drops as in a crash) still reaches the server whole
 before it is cut, so a hostile scene can make the server's memory spike for a moment (a local denial of service,
@@ -1075,6 +1078,28 @@ contract: removing or reshaping one is a major version.
   tab could not load, so the person just closes the tab. A host opens the second in a window of its own session: the system
   browser gets a 403. `tests/server/http.test.ts` checks the editor origin, `tests/server/frame-secret.test.ts` the
   frame origin, `tests/e2e/frames.test.ts` a capture through it and a reference capture that never carries it.
+- `browserServer`: `startServer({ browserServer })` (`BrowserServer` and `ChromiumOptions` in `server/contracts.ts`)
+  lets a host app start the Chromium process itself, for a host whose binary cannot run as Node (an Electron app with
+  its RunAsNode fuse off, where forking would start a second app). The core calls it at every launch: the captures'
+  browser and each relaunch after it is lost, each render, and `launchChromium(hook)` (`server/capture/capture.ts`) for
+  a host's own pages. It receives the core's launch options (arguments, sandbox, signal handling: JSON) and forwards
+  them as is to `serveChromium(options)` from `server/capture/serve-chromium.mjs` (typed by `serve-chromium.d.mts`),
+  run in a process of the host's own. That process ignores SIGINT, SIGTERM and SIGHUP, so Cadence closes Chromium
+  itself; since no signal ends it, the host ends it when the process that called `startServer()` ends, as the core's
+  fork follows its IPC channel. The hook must settle (it may reject: the person then reads
+  "Chromium does not start" with the host's message); the core does not time it out, since a launch it gave up on
+  would leave a process nobody closes. It resolves to `{ wsEndpoint, exited, close() }`: `wsEndpoint` is the one
+  `serveChromium()` returned, a Unix socket in a 0700 folder (`ws+unix:`); the core refuses any other endpoint, and
+  calls `close()`, since a loopback TCP endpoint would let any local process drive the browser. `exited` settles
+  (resolves or rejects) once that process has ended, and the captures in flight then fail and the next capture calls
+  the hook again. `close()` ends the process and removes the socket folder (`dir` of `serveChromium()`), even after a
+  fatal end, since the process may die without running its exit handlers (a page logging 300 MB); it settles within
+  10 s, killing the process if it must. The core calls it once, when the browser is closed or lost, when a launch
+  fails after the hook resolved, and when the server closes; it waits 11 s at most, and past that the process and its
+  folder are the host's to end. Without the option, the core forks `chromium-server.mjs`.
+  `tests/server/browser-host.test.ts` checks the calls, `exited` (resolved and rejected), `close()`, the refused
+  endpoint, a failed connection, the server's close, a refused launch, a render and the 300 MB page through a host's
+  process.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
 - The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand

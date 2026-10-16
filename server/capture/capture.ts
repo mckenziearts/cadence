@@ -12,7 +12,7 @@ import { z } from 'zod';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { FORMATS, isFormatId, type FormatId, type ProjectState, type SceneState } from '../../src/shared/types';
 import { captureLocale, CHROMIUM_SANDBOX_FAILED, chromiumSandbox } from '../config';
-import type { CadenceConfig, CapturedFrame, CaptureService, ProjectStore } from '../contracts';
+import type { BrowserServer, CadenceConfig, CapturedFrame, CaptureService, ChromiumOptions, ProjectStore } from '../contracts';
 import { language, m } from '../i18n';
 import { formatSeconds, HttpError, KeyedMutex, roundMs, shortHash, writeFileAtomic } from '../util';
 import { hostChromium } from './browser-host';
@@ -76,22 +76,25 @@ export function fromPage<T>(evaluation: Promise<T>): Promise<T> {
   });
 }
 
-export async function launchChromium(): Promise<Browser> {
+/** Chromium for capture and render pages, in a child process, or in the host app's when it passes its browserServer. */
+export async function launchChromium(browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>): Promise<Browser> {
   try {
     // Playwright's own handlers would exit on Ctrl+C before Cadence stops its turns and renders, and its SIGHUP handler
     // keeps the process alive once the terminal is closed: Cadence closes the browser itself (server.close()).
-    return await hostChromium({
+    const options: ChromiumOptions = {
       args: CHROMIUM_ARGS,
       chromiumSandbox: chromiumSandbox(),
       handleSIGINT: false,
       handleSIGTERM: false,
       handleSIGHUP: false,
-    });
+    };
+    return await hostChromium(options, browserServer);
   } catch (e) {
     const message = (e as Error).message;
     if (CHROMIUM_SANDBOX_FAILED.test(message))
       throw new Error(m().media.capture.chromiumSandbox(m().media.doctor.chromiumSandboxFix));
-    throw new Error(m().media.capture.chromium(message));
+    // `npm run setup` installs the core's Chromium: a host app's process brings its own.
+    throw new Error(browserServer ? m().media.doctor.chromiumFailed(message) : m().media.capture.chromium(message));
   }
 }
 
@@ -281,6 +284,7 @@ export class PlaywrightCapture implements CaptureService {
   private readonly config: CadenceConfig;
   private readonly store: ProjectStore;
   private readonly timeoutMs: number;
+  private readonly browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
   private browserPromise: Promise<Browser> | null = null;
   /** Captures queued behind a slot lock must not launch a new Chromium once the service is closed. */
   private closed = false;
@@ -289,16 +293,22 @@ export class PlaywrightCapture implements CaptureService {
   /** Code generations restart at 0 in every process: cached thumbnails of an earlier run must never match. */
   private readonly run = randomBytes(4).toString('hex');
 
-  constructor(deps: { config: CadenceConfig; store: ProjectStore; renderTimeoutMs?: number }) {
+  constructor(deps: {
+    config: CadenceConfig;
+    store: ProjectStore;
+    renderTimeoutMs?: number;
+    browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
+  }) {
     this.config = deps.config;
     this.store = deps.store;
     this.timeoutMs = deps.renderTimeoutMs ?? RENDER_TIMEOUT_MS;
+    this.browserServer = deps.browserServer;
   }
 
   private browser(): Promise<Browser> {
     if (this.closed) return Promise.reject(new HttpError(503, m().media.capture.stopping));
     if (!this.browserPromise) {
-      const launching = launchChromium();
+      const launching = launchChromium(this.browserServer);
       this.browserPromise = launching;
       launching.then(
         (browser) =>

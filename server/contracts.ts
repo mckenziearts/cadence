@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Readable } from 'node:stream';
 import type { HttpBindings } from '@hono/node-server';
 import type { Hono } from 'hono';
+import type { LaunchOptions } from 'playwright';
 import type { AuditFinding } from '../src/shared/frameProtocol';
 import type {
   AssetInfo,
@@ -391,7 +392,30 @@ export interface AssetStore {
 }
 
 // server/capture/capture.ts: export class PlaywrightCapture implements CaptureService
-//   constructor(deps: { config: CadenceConfig; store: ProjectStore })
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore;
+//     browserServer?: (options: ChromiumOptions) => Promise<BrowserServer> })
+
+/** How the core launches Chromium, JSON-serializable: a host app forwards it as is to `serveChromium()`. */
+export type ChromiumOptions = Pick<LaunchOptions, 'args' | 'chromiumSandbox' | 'handleSIGINT' | 'handleSIGTERM' | 'handleSIGHUP'>;
+
+/**
+ * A Chromium server a host app started for the core (`StartOptions.browserServer`, ARCHITECTURE.md "Embedding
+ * Cadence"), in a process other than the Cadence server's. That process ignores SIGINT, SIGTERM and SIGHUP, so it must
+ * end when the process that called startServer() ends: the host ties it to the server's lifetime, as the core's fork
+ * follows its IPC channel. The hook must settle (it may reject): the core does not time it out.
+ */
+export interface BrowserServer {
+  /** The `wsEndpoint` `serveChromium()` returned (`ws+unix:`): the core refuses any other, a loopback TCP port above all. */
+  wsEndpoint: string;
+  /** Settles (resolved or rejected) once that process has ended: the core then drops the browser. */
+  exited: Promise<unknown>;
+  /**
+   * Ends that process and removes the socket folder (`dir`), even after the process died without its exit handlers.
+   * Settles within 10 s, killing the process if it must: the core waits 11 s at most, then the process and its folder
+   * are the host's to end.
+   */
+  close(): Promise<void>;
+}
 
 export interface CapturedFrame {
   /** Requested time (scene-local with sceneId, video time without). */
@@ -456,7 +480,8 @@ export interface SeamService {
 }
 
 // server/capture/render.ts: export class FfmpegRenderService implements RenderService
-//   constructor(deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; voiceOver: VoiceOverService; hub: Hub })
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; voiceOver: VoiceOverService; hub: Hub;
+//     browserServer?: (options: ChromiumOptions) => Promise<BrowserServer> })
 
 export interface RenderService {
   /** One job per format; jobs run one at a time, frames captured by up to 4 parallel pages. */
