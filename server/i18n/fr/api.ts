@@ -70,6 +70,8 @@ export default {
     unreadableManifest: (version: string) => `Version ${version} illisible (manifeste manquant ou corrompu)`,
     invalidHash: (hash: string) => `Empreinte invalide dans l'historique : ${hash}`,
     missingObject: (hash: string) => `Contenu manquant dans l'historique : ${hash}`,
+    linkedFolder: (file: string) =>
+      `Restauration refusée : « ${file} » passe par un lien symbolique. Supprimez le lien, puis réessayez.`,
   },
   projects: {
     skipped: (error: string) => `[cadence] projet ignoré : ${error}`,

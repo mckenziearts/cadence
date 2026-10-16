@@ -37,7 +37,7 @@ import { language, m } from '../i18n';
 import { BRAND_TOOLS } from '../mcp/brandTools';
 import { BUILDING_MARKER } from '../store/brands';
 import { NO_TOKENS, addedSince } from '../usage';
-import { HttpError, isInside, nowIso, slugify, writeJsonAtomic } from '../util';
+import { HttpError, isInside, nowIso, removeTreeInside, slugify, writeJsonAtomic } from '../util';
 import { checkBrand } from './check';
 import { REPOSITORY_GUIDE, parseRepo } from './source';
 
@@ -157,7 +157,8 @@ export class BrandBuilder implements BrandBuildService {
       if (marker === null) continue;
       const [pid, buildId] = marker.trim().split(' ');
       if (alive(Number(pid))) continue;
-      await fs.rm(path.join(brandsDir, entry.name), { recursive: true, force: true });
+      // A process the dead build's turn left behind may still be swapping folders in there.
+      await removeTreeInside(path.join(brandsDir, entry.name));
       if (/^[\w-]+$/.test(buildId ?? ''))
         await fs.rm(path.join(stateDir, 'brand-sources', buildId), { recursive: true, force: true });
     }
@@ -263,7 +264,7 @@ export class BrandBuilder implements BrandBuildService {
       await fs.rm(path.join(brandDir, BUILDING_MARKER), { force: true });
       outcome = { status: 'done' };
     } catch (e) {
-      await fs.rm(brandDir, { recursive: true, force: true });
+      await removeTreeInside(brandDir);
       if (abort.signal.aborted || e instanceof BuildCancelled) outcome = { status: 'cancelled' };
       else if (e instanceof BrandIncomplete) outcome = { status: 'error', error: e.message, problems: e.problems };
       else outcome = { status: 'error', error: e instanceof Error ? e.message : String(e) };

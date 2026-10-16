@@ -69,6 +69,7 @@ export default {
     unreadableManifest: (version: string) => `Could not read version ${version} (manifest missing or corrupted)`,
     invalidHash: (hash: string) => `Invalid hash in the history: ${hash}`,
     missingObject: (hash: string) => `Missing content in the history: ${hash}`,
+    linkedFolder: (file: string) => `Restore refused: "${file}" goes through a symbolic link. Remove the link, then try again.`,
   },
   projects: {
     skipped: (error: string) => `[cadence] project skipped: ${error}`,

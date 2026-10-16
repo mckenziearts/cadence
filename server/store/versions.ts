@@ -18,9 +18,12 @@ import {
   isResolverInput,
   nowIso,
   pathExists,
+  readFileNoFollow,
+  removeFileInside,
   resolveInside,
   sha256,
   writeFileAtomic,
+  writeFileInside,
   writeJsonAtomic,
 } from '../util';
 
@@ -85,8 +88,9 @@ export class FileVersionStore implements VersionStore {
             patch.voiceOver = voiceOver;
           }
 
+          await refuseLinkedFolders(dir, rel);
           await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
-          await writeFileAtomic(path.join(dir, rel), await this.readObject(projectId, manifest[rel]));
+          await writeFileInside(dir, path.join(dir, rel), await this.readObject(projectId, manifest[rel]));
           if (Object.keys(patch).length) await this.store.updateScene(projectId, sceneId, patch);
           return this.record(
             projectId,
@@ -99,15 +103,19 @@ export class FileVersionStore implements VersionStore {
         const brand = brandOf(manifest['project.json'] ? await this.readObject(projectId, manifest['project.json']) : null);
         if (brand !== null && !(await this.brands.exists(brand))) throw new HttpError(400, m().api.projects.unknownBrand(brand));
 
-        await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
         const current = await readTracked(dir);
-        for (const [rel, hash] of Object.entries(manifest)) {
-          if (!restorable(rel)) continue;
-          if (current.get(rel) && sha256(current.get(rel)!) === hash) continue;
-          await writeFileAtomic(resolveInside(dir, rel), await this.readObject(projectId, hash));
-        }
-        // Files created after that version; their content is in the snapshot just taken.
-        for (const rel of current.keys()) if (!(rel in manifest)) await fs.rm(resolveInside(dir, rel), { force: true });
+        const writes = Object.entries(manifest).filter(
+          ([rel, hash]) => restorable(rel) && !(current.get(rel) && sha256(current.get(rel)!) === hash),
+        );
+        // Files created after that version; their content goes into the snapshot below.
+        const removals = [...current.keys()].filter((rel) => !(rel in manifest));
+        // All checked before the snapshot and the first write: a refused restore leaves the project and its history as
+        // they were. The helpers below are the race-free guard; this check only makes the refusal clean.
+        for (const rel of [...writes.map(([rel]) => rel), ...removals]) await refuseLinkedFolders(dir, rel);
+        await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
+        for (const [rel, hash] of writes)
+          await writeFileInside(dir, resolveInside(dir, rel), await this.readObject(projectId, hash));
+        for (const rel of removals) await removeFileInside(dir, resolveInside(dir, rel));
         return this.record(projectId, { label: m().api.versions.restored(versionId), source: 'restore' }, true);
       }),
     );
@@ -236,6 +244,8 @@ async function readTracked(dir: string): Promise<Map<string, Buffer>> {
   const out = new Map<string, Buffer>();
   const candidates = ['project.json', 'art-direction.md'];
   for (const sub of ['scenes', 'components']) {
+    // An agent turn can put a link where the folder should be: listing through it would version whatever it points to.
+    if (!(await fs.lstat(path.join(dir, sub)).catch(() => null))?.isDirectory()) continue;
     const entries = await fs.readdir(path.join(dir, sub), { recursive: true, withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       if (entry.isFile() && !entry.name.endsWith('.tmp'))
@@ -244,9 +254,9 @@ async function readTracked(dir: string): Promise<Map<string, Buffer>> {
   }
   for (const rel of candidates) {
     const file = path.join(dir, rel);
-    const stat = await fs.stat(file).catch(() => null);
+    const stat = await fs.lstat(file).catch(() => null);
     if (!stat?.isFile() || stat.size >= MAX_TRACKED_BYTES) continue;
-    const data = await fs.readFile(file);
+    const data = await readFileNoFollow(dir, file);
     // Binary files (NUL bytes) are not versioned.
     if (!data.includes(0)) out.set(rel.split(path.sep).join('/'), data);
   }
@@ -261,6 +271,24 @@ function restorable(rel: string): boolean {
   const [top, ...rest] = rel.split('/');
   if (!rest.length) return rel === 'project.json' || rel === 'art-direction.md';
   return (top === 'scenes' || top === 'components') && !rest.some((s) => s === '' || s.startsWith('.') || isResolverInput(s));
+}
+
+/**
+ * A restore writes where a version says, through folders an agent turn can replace with a link to any folder the server
+ * can write: a missing folder is fine (the write creates a real one), a link is refused.
+ */
+async function refuseLinkedFolders(dir: string, rel: string): Promise<void> {
+  let folder = dir;
+  for (const name of path.posix.dirname(rel).split('/')) {
+    if (name === '.') return;
+    folder = path.join(folder, name);
+    const found = await fs.lstat(folder).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return null;
+      throw e;
+    });
+    if (!found) return;
+    if (!found.isDirectory()) throw new HttpError(409, m().api.versions.linkedFolder(rel));
+  }
 }
 
 type SceneFields = { duration?: unknown; voiceOver?: unknown };

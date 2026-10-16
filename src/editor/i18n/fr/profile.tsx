@@ -32,6 +32,8 @@ export default {
     inUse: 'Utilisé',
     setup: 'Comment connecter',
     soon: 'Bientôt',
+    unconfined: (name: string) =>
+      `Cette version de ${name} ne sait pas limiter ses accès aux dossiers du projet : mettez-la à jour pour l’utiliser.`,
     help: {
       title: (name: string) => `Connecter ${name}`,
       installIntro: (name: string) => `${name} passe par sa CLI. Installez-la, puis connectez-vous.`,

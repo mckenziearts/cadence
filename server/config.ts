@@ -31,8 +31,8 @@ export function loadConfig(overrides: Partial<CadenceConfig> = {}): CadenceConfi
     mcpUrl: `${editorOrigin}/mcp`,
     ffmpegPath: env.FFMPEG_PATH || 'ffmpeg',
     ffprobePath: env.FFPROBE_PATH || 'ffprobe',
-    claudePath: env.CLAUDE_PATH || 'claude',
-    codexPath: env.CODEX_PATH || 'codex',
+    claudePath: binPath(env.CLAUDE_PATH, 'claude'),
+    codexPath: binPath(env.CODEX_PATH, 'codex'),
     grokPath: env.GROK_PATH || 'grok',
     geminiPath: env.GEMINI_PATH || 'gemini',
     piperPath: env.PIPER_PATH || 'piper',
@@ -69,6 +69,15 @@ export function chromiumSandbox(): boolean {
 
 /** Playwright's launch error when the sandbox cannot start (no unprivileged user namespaces). */
 export const CHROMIUM_SANDBOX_FAILED = /Chromium sandboxing failed/i;
+
+/**
+ * A relative path to an agent CLI, resolved now: spawn would resolve it against the turn's folder, which the agent can
+ * write. A bare name stays a PATH lookup.
+ */
+function binPath(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  return value.includes('/') || value.includes(path.sep) ? path.resolve(value) : value;
+}
 
 function parsePort(name: string, value: string | undefined, fallback: number): number {
   if (!value) return fallback;

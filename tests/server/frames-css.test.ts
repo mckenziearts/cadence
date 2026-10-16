@@ -9,10 +9,11 @@ import { test } from 'node:test';
 import type { ViteDevServer } from 'vite';
 import { brandProblems } from '../../server/brands/check';
 import { loadConfig } from '../../server/config';
+import { m } from '../../server/i18n';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import { assertNoCssCodeExec, createVite } from '../../server/frames/vite';
 import { CssCodeScan } from '../../server/util';
-import { makeRoot } from './helpers';
+import { makeRoot, writeCompleteBrand } from './helpers';
 
 const managed = (root: string) =>
   [['projects', 'brands', 'templates'].map((d) => path.join(root, d)), path.join(root, 'brands')] as const;
@@ -436,6 +437,45 @@ test('brandProblems flags @plugin inside the brand folder, also split by a comme
         `expected a @plugin problem for ${file}, got: ${problems.join(' | ')}`,
       );
     }
+  } finally {
+    await cleanup();
+  }
+});
+
+test('brandProblems reads nothing through a link the build turn could plant: a stylesheet counts as code, brand.json as missing', async () => {
+  const { root, cleanup } = await makeRoot();
+  try {
+    const dir = path.join(root, 'brands/cadence');
+    await write(root, 'outside/clean.css', ':root { --x: 1px; }\n');
+    await fs.symlink(path.join(root, 'outside/clean.css'), path.join(dir, 'linked.css'));
+    const problems = await brandProblems(dir, root);
+    assert.ok(
+      problems.some((p) => p.includes('@plugin') && p.includes('linked.css')),
+      `expected linked.css refused, got: ${problems.join(' | ')}`,
+    );
+
+    await fs.rename(path.join(dir, 'brand.json'), path.join(root, 'outside/brand.json'));
+    await fs.symlink(path.join(root, 'outside/brand.json'), path.join(dir, 'brand.json'));
+    assert.deepEqual(await brandProblems(dir, root), [m().media.brands.check.missing('brand.json')]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('brandProblems counts a linked logo as missing and a linked font file as a theme problem', async () => {
+  const { root, cleanup } = await makeRoot();
+  try {
+    await writeCompleteBrand(root, 'orbit');
+    const dir = path.join(root, 'brands/orbit');
+    assert.deepEqual(await brandProblems(dir, root), []);
+    for (const rel of ['assets/logo-mark.svg', 'fonts/orbit.woff2']) {
+      await fs.rename(path.join(dir, rel), path.join(root, path.basename(rel)));
+      await fs.symlink(path.join(root, path.basename(rel)), path.join(dir, rel));
+    }
+    const t = m().media.brands.check;
+    const problems = await brandProblems(dir, root);
+    assert.ok(problems.includes(t.logoMissing('mark', 'assets/logo-mark.svg')), problems.join(' | '));
+    assert.ok(problems.includes(t.themeFile('./fonts/orbit.woff2')), problems.join(' | '));
   } finally {
     await cleanup();
   }

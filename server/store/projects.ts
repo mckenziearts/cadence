@@ -42,12 +42,15 @@ import {
   isInside,
   nowIso,
   pathExists,
+  readFileNoFollow,
+  removeFileInside,
   roundMs,
   sha256,
   shortHash,
   slugify,
   uniqueId,
   writeFileAtomic,
+  writeFileInside,
   writeJsonAtomic,
 } from '../util';
 import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
@@ -345,7 +348,7 @@ export class FileProjectStore implements ProjectStore {
     const scenes: SceneState[] = [];
     for (const [index, scene] of data.scenes.entries()) {
       const file = this.sceneFile(id, scene.id);
-      const code = await fs.readFile(file).catch(() => null);
+      const code = await readFileNoFollow(dir, file).catch(() => null);
       scenes.push({
         ...scene,
         index,
@@ -380,7 +383,7 @@ export class FileProjectStore implements ProjectStore {
 
   async readArtDirection(id: string): Promise<string> {
     await this.read(id);
-    return fs.readFile(path.join(this.dir(id), 'art-direction.md'), 'utf8').catch(() => '');
+    return readFileNoFollow(this.dir(id), path.join(this.dir(id), 'art-direction.md'), 'utf8').catch(() => '');
   }
 
   // Projects
@@ -437,9 +440,8 @@ export class FileProjectStore implements ProjectStore {
     }
     await fs.mkdir(path.join(dir, 'components'), { recursive: true });
     await fs.mkdir(path.join(dir, 'assets', 'refs'), { recursive: true });
-    const brandArt = await fs
-      .readFile(path.join(this.brands.dir(brand ?? DEFAULT_BRAND), 'art-direction.md'), 'utf8')
-      .catch(() => '');
+    const brandDir = this.brands.dir(brand ?? DEFAULT_BRAND);
+    const brandArt = await readFileNoFollow(brandDir, path.join(brandDir, 'art-direction.md'), 'utf8').catch(() => '');
     const artDirection = [brandArt.trim() || m().api.projects.artDirection.trim(), template?.artDirection?.trim()]
       .filter(Boolean)
       .join('\n\n');
@@ -599,7 +601,7 @@ export class FileProjectStore implements ProjectStore {
 
   async duplicateScene(id: string, sceneId: string): Promise<SceneState> {
     const scene = requireScene(await this.read(id), sceneId);
-    const code = await fs.readFile(this.sceneFile(id, sceneId), 'utf8').catch(() => {
+    const code = await readFileNoFollow(this.dir(id), this.sceneFile(id, sceneId), 'utf8').catch(() => {
       throw new HttpError(404, m().api.projects.sceneFileNotFound(`scenes/${sceneId}.tsx`));
     });
     return this.createScene(id, {
@@ -616,13 +618,18 @@ export class FileProjectStore implements ProjectStore {
       if (data.scenes.length === 1) throw new HttpError(400, m().api.projects.lastScene);
       data.scenes = data.scenes.filter((s) => s.id !== sceneId);
     });
-    // After project.json no longer lists it: a failed move leaves an unused file, never a missing one.
-    const file = this.sceneFile(id, sceneId);
-    if (await pathExists(file)) {
-      const trash = path.join(this.dir(id), '.cadence', 'trash');
-      await fs.mkdir(trash, { recursive: true });
-      await fs.rename(file, path.join(trash, `${sceneId}-${Date.now()}.tsx`));
-    }
+    // After project.json no longer lists it: a failed move leaves an unused file, never a missing one, and the scene
+    // stays deleted. Copied then removed: a rename by path would follow a scenes/ folder swapped for a link, and move
+    // another project's scene. Under the lock, unless a restore listed the scene again in between.
+    await this.withLock(id, async () => {
+      if ((await this.read(id)).scenes.some((s) => s.id === sceneId)) return;
+      const file = this.sceneFile(id, sceneId);
+      const code = await readFileNoFollow(this.dir(id), file).catch(() => null);
+      if (code === null) return;
+      await writeFileAtomic(path.join(this.dir(id), '.cadence', 'trash', `${sceneId}-${Date.now()}.tsx`), code)
+        .then(() => removeFileInside(this.dir(id), file))
+        .catch(() => undefined);
+    });
     await this.syncCode(id);
     return this.get(id);
   }
@@ -753,16 +760,19 @@ export class FileProjectStore implements ProjectStore {
     const folder = await this.ownFolder(id, 'components');
     for (const { name, code } of components) {
       const file = path.join(folder, name);
-      if (!(await fs.lstat(file).catch(() => null))) await writeFileAtomic(file, code);
+      if (!(await fs.lstat(file).catch(() => null))) await writeFileInside(this.dir(id), file, code);
     }
   }
 
   private async writeScene(id: string, sceneId: string, code: string): Promise<void> {
     await this.ownFolder(id, 'scenes');
-    await writeFileAtomic(this.sceneFile(id, sceneId), code);
+    await writeFileInside(this.dir(id), this.sceneFile(id, sceneId), code);
   }
 
-  /** An agent turn can swap a project folder for a symlink: a write through it would land anywhere on the disk. */
+  /**
+   * An agent turn can swap a project folder for a symlink: a write through it would land anywhere on the disk. This
+   * check gives that case its 409; the write itself refuses a link that replaces the folder after it.
+   */
   private async ownFolder(id: string, sub: 'scenes' | 'components'): Promise<string> {
     const folder = path.join(this.dir(id), sub);
     const real = await fs
@@ -832,18 +842,20 @@ export class FileProjectStore implements ProjectStore {
   private async codeHash(id: string, brand: string | null): Promise<string> {
     const brandId = brand ?? DEFAULT_BRAND;
     const dir = this.dir(id);
-    const roots: [string, string][] = [
-      ['scenes', path.join(dir, 'scenes')],
-      ['components', path.join(dir, 'components')],
-      [`brand:${brandId}`, this.brands.dir(brandId)],
+    const brandDir = this.brands.dir(brandId);
+    // Links are refused below the last folder: a turn can swap scenes/ itself, not the project or brand folder.
+    const roots: [string, string, string][] = [
+      ['scenes', path.join(dir, 'scenes'), dir],
+      ['components', path.join(dir, 'components'), dir],
+      [`brand:${brandId}`, brandDir, brandDir],
     ];
     const lines: string[] = [];
-    for (const [label, base] of roots) {
+    for (const [label, base, root] of roots) {
       const entries = await fs.readdir(base, { recursive: true, withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
         if (!entry.isFile() || isScratchFile(entry.name)) continue;
         const file = path.join(entry.parentPath, entry.name);
-        const content = await fs.readFile(file).catch(() => null);
+        const content = await readFileNoFollow(root, file).catch(() => null);
         if (content) lines.push(`${label}/${path.relative(base, file)}\0${sha256(content)}`);
       }
     }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeEach, test } from 'node:test';
+import { afterEach, beforeEach, test, type TestContext } from 'node:test';
 import { FileBrandStore } from '../../server/store/brands';
 import { FileProjectStore } from '../../server/store/projects';
 import { FileVersionStore } from '../../server/store/versions';
@@ -390,4 +390,170 @@ test('an unreadable index is an error, never an empty history', async () => {
   await fs.writeFile(path.join(dir, '.cadence', 'versions', 'index.json'), '{ broken');
   await rejectsWithStatus(versions.snapshot(id, { label: 'x', source: 'manual' }), 500, /illisible/);
   assert.equal(await fs.readFile(path.join(dir, '.cadence', 'versions', 'index.json'), 'utf8'), '{ broken');
+});
+
+test('a snapshot never follows an art-direction.md an agent swapped for a symlink', async () => {
+  const secret = path.join(t.root, '.cadence', 'accounts.json');
+  await fs.mkdir(path.dirname(secret), { recursive: true });
+  await fs.writeFile(secret, 'TOPSECRET');
+  await fs.rm(path.join(dir, 'art-direction.md'));
+  await fs.symlink(secret, path.join(dir, 'art-direction.md'));
+  await baseline();
+  const objects = path.join(dir, '.cadence', 'versions', 'objects');
+  for (const name of await fs.readdir(objects))
+    assert.ok(!(await fs.readFile(path.join(objects, name), 'utf8')).includes('TOPSECRET'), name);
+});
+
+test('a snapshot never lists a components folder an agent swapped for a symlink', async () => {
+  const state = path.join(t.root, '.cadence');
+  await fs.mkdir(state, { recursive: true });
+  await fs.writeFile(path.join(state, 'accounts.json'), 'TOPSECRET');
+  await fs.rm(path.join(dir, 'components'), { recursive: true, force: true });
+  await fs.symlink(state, path.join(dir, 'components'));
+  const v1 = await baseline();
+  assert.ok(v1);
+  assert.ok(!v1.files.some((file) => file.startsWith('components/')), v1.files.join(', '));
+  const objects = path.join(dir, '.cadence', 'versions', 'objects');
+  for (const name of await fs.readdir(objects))
+    assert.ok(!(await fs.readFile(path.join(objects, name), 'utf8')).includes('TOPSECRET'), name);
+});
+
+test('a snapshot never versions a file reached through a components folder swapped for a symlink after the listing', async (ctx) => {
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside, { recursive: true });
+  await fs.writeFile(path.join(outside, 'x.ts'), 'TOPSECRET');
+  await write('components/a/x.ts', 'export const X = 1;\n');
+  // The race an agent turn can win: components/a is listed as a folder, then becomes a link out before the read.
+  const readdir = fs.readdir;
+  ctx.mock.method(fs, 'readdir', async (...args: Parameters<typeof fs.readdir>) => {
+    const entries = await readdir(...args);
+    if (args[0] === path.join(dir, 'components')) {
+      await fs.rm(path.join(dir, 'components', 'a'), { recursive: true });
+      await fs.symlink(outside, path.join(dir, 'components', 'a'));
+    }
+    return entries;
+  });
+  await assert.rejects(baseline(), /ELOOP|outside/);
+  const objects = path.join(dir, '.cadence', 'versions', 'objects');
+  for (const name of await fs.readdir(objects).catch(() => []))
+    assert.ok(!(await fs.readFile(path.join(objects, name), 'utf8')).includes('TOPSECRET'), name);
+});
+
+test('a restore never writes through a folder an agent swapped for a link out of the project', async () => {
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside, { recursive: true });
+  await write('components/sub/x.ts', 'export const X = 1;\n');
+  const v1 = await baseline();
+  assert.ok(v1);
+  await write('art-direction.md', 'changed\n');
+  await fs.rm(path.join(dir, 'components', 'sub'), { recursive: true });
+  await fs.symlink(outside, path.join(dir, 'components', 'sub'));
+  await rejectsWithStatus(versions.restore(id, v1.id), 409, /components\/sub\/x\.ts.*lien symbolique/);
+  assert.deepEqual(await fs.readdir(outside), []);
+  assert.equal(await read('art-direction.md'), 'changed\n', 'nothing restored before the refusal');
+});
+
+test('a scene restore never writes through a scenes folder an agent swapped for a link out of the project', async () => {
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside, { recursive: true });
+  const v1 = await baseline();
+  assert.ok(v1);
+  await fs.rename(path.join(dir, 'scenes'), path.join(t.root, 'held'));
+  await fs.symlink(outside, path.join(dir, 'scenes'));
+  await rejectsWithStatus(versions.restore(id, v1.id, { sceneId: 'deux' }), 409, /lien symbolique/);
+  assert.deepEqual(await fs.readdir(outside), []);
+});
+
+test('a whole restore brings back a components subfolder deleted since that version', async () => {
+  await write('components/sub/deep/x.ts', 'export const X = 1;\n');
+  const v1 = await baseline();
+  assert.ok(v1);
+  await fs.rm(path.join(dir, 'components', 'sub'), { recursive: true });
+  await versions.restore(id, v1.id);
+  assert.equal(await read('components/sub/deep/x.ts'), 'export const X = 1;\n');
+});
+
+test('a refused restore adds no version to the history', async () => {
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside, { recursive: true });
+  await write('components/sub/x.ts', 'export const X = 1;\n');
+  const v1 = await baseline();
+  assert.ok(v1);
+  await write('art-direction.md', 'changed\n');
+  await fs.rm(path.join(dir, 'components', 'sub'), { recursive: true });
+  await fs.symlink(outside, path.join(dir, 'components', 'sub'));
+  await rejectsWithStatus(versions.restore(id, v1.id), 409, /lien symbolique/);
+  await fs.rename(path.join(dir, 'scenes'), path.join(t.root, 'held'));
+  await fs.symlink(outside, path.join(dir, 'scenes'));
+  await rejectsWithStatus(versions.restore(id, v1.id, { sceneId: 'deux' }), 409, /lien symbolique/);
+  assert.deepEqual(
+    (await versions.list(id)).map((v) => v.id),
+    [v1.id],
+  );
+});
+
+test('a whole restore whose removal goes through a subfolder swapped for a link deletes nothing outside', async (ctx) => {
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside, { recursive: true });
+  await fs.writeFile(path.join(outside, 'extra.ts'), 'TOPSECRET');
+  const v1 = await baseline();
+  assert.ok(v1);
+  await write('components/sub/extra.ts', 'export const EXTRA = 1;\n');
+  // components/sub becomes a link out once the restore has checked it, before the removal.
+  const sub = path.join(dir, 'components', 'sub');
+  const lstat = fs.lstat;
+  let swapped = false;
+  ctx.mock.method(fs, 'lstat', async (...args: Parameters<typeof fs.lstat>) => {
+    const found = await lstat(...args);
+    if (!swapped && args[0] === sub) {
+      swapped = true;
+      await fs.rename(sub, path.join(t.root, 'held'));
+      await fs.symlink(outside, sub);
+    }
+    return found;
+  });
+  await assert.rejects(versions.restore(id, v1.id), /ELOOP|outside/);
+  assert.ok(swapped, 'the folder became a link after its check');
+  assert.equal(await fs.readFile(path.join(outside, 'extra.ts'), 'utf8'), 'TOPSECRET');
+});
+
+/** `folder` becomes a link to `outside` once the restore has checked it, before any write. */
+function swapAfterCheck(ctx: TestContext, folder: string, outside: string) {
+  const lstat = fs.lstat;
+  const state = { swapped: false };
+  ctx.mock.method(fs, 'lstat', async (...args: Parameters<typeof fs.lstat>) => {
+    const found = await lstat(...args);
+    if (!state.swapped && args[0] === folder) {
+      state.swapped = true;
+      await fs.rename(folder, path.join(t.root, 'held'));
+      await fs.symlink(outside, folder);
+    }
+    return found;
+  });
+  return state;
+}
+
+test('a whole restore whose write goes through a subfolder swapped for a link after its check writes nothing outside', async (ctx) => {
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside, { recursive: true });
+  await write('components/sub/x.ts', 'export const X = 1;\n');
+  const v1 = await baseline();
+  assert.ok(v1);
+  await write('components/sub/x.ts', 'export const X = 2;\n');
+  const state = swapAfterCheck(ctx, path.join(dir, 'components', 'sub'), outside);
+  await assert.rejects(versions.restore(id, v1.id), /ELOOP|outside/);
+  assert.ok(state.swapped, 'the folder became a link after its check');
+  assert.deepEqual(await fs.readdir(outside), []);
+});
+
+test('a scene restore whose scenes folder becomes a link after its check writes nothing outside', async (ctx) => {
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside, { recursive: true });
+  const v1 = await baseline();
+  assert.ok(v1);
+  await write('scenes/deux.tsx', 'export default () => "deux v2";\n');
+  const state = swapAfterCheck(ctx, path.join(dir, 'scenes'), outside);
+  await assert.rejects(versions.restore(id, v1.id, { sceneId: 'deux' }), /ELOOP|outside/);
+  assert.ok(state.swapped, 'the folder became a link after its check');
+  assert.deepEqual(await fs.readdir(outside), []);
 });

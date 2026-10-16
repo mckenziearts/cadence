@@ -635,6 +635,34 @@ test('a lost session is restarted once, with the full context', async (t) => {
   assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).sessionId, env.turns[1].sessionId);
 });
 
+test('a resumed turn that ends as session_lost restarts the session whatever its text says', async (t) => {
+  const env = await setup(async function* (turn) {
+    if (turn.resume) {
+      const text = 'Notre IA s’est arrêtée de façon inattendue (code 1).';
+      yield { type: 'done', text, isError: true, durationMs: 1, subtype: 'session_lost' };
+      return;
+    }
+    yield { type: 'init', sessionId: turn.sessionId };
+    yield { type: 'done', text: 'OK', isError: false, durationMs: 1, sessionId: turn.sessionId };
+  });
+  t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+  const file = path.join(env.projectDir, '.cadence', 'chats', 'project.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify({ key: 'project', sessionId: OLD_SESSION, briefHash: 'x', messages: [] }));
+
+  await env.manager.send('demo', 'project', { text: 'Bonjour' });
+  await env.idle('project');
+  assert.deepEqual(
+    env.turns.map((turn) => [turn.resume, turn.sessionId === OLD_SESSION]),
+    [
+      [true, true],
+      [false, false],
+    ],
+  );
+  assert.equal((await env.manager.get('demo', 'project')).messages[1].status, 'done');
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).sessionId, env.turns[1].sessionId);
+});
+
 test('an imported chat whose session id is not a UUID starts a new session instead of passing it to the CLI', async (t) => {
   for (const sessionId of ['--x', `--x ${OLD_SESSION}`, `${OLD_SESSION} --x`, `${OLD_SESSION}\n`, 42]) {
     const env = await setup(async function* (turn) {

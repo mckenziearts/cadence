@@ -355,8 +355,7 @@ token.
   `<pid> <build>` (unlisted by `FileBrandStore.list()`), copy `brands/cadence` into it with the new id and name, then
   run one restricted Claude turn: system prompt `server/agent/brand-guide.md`, cwd = the brand folder, Read on the
   clone, its own brand folder and `src/shared/` (no other brand), Write and Edit on the brand folder only, MCP scope
-  `brand`. The read scope (`allow` and `addDirs`) holds for Claude Code only: Codex ignores both fields, so a Codex
-  build turn can read every brand until Codex gets its own permission profile. Then
+  `brand`. The same scope binds a Codex build turn through its permission profile (see "Codex"). Then
   `checkBrand()`; problems left get one resumed fix turn, then the build fails. Each turn adds what it used to
   `BrandBuild.costUsd` (the fix turn: its session totals minus the first turn's) and to the usage log. Success
   removes the marker; failure and cancel remove the folder. `sweep()` at start removes folders whose marker names a dead process.
@@ -450,6 +449,88 @@ music, seams, craft rules, scope rules. Per-turn context (prepended to the user 
 (`BrandStore.describe`), art direction, formats, fps, tempo, scene list with start/duration/bars, the scene file
 path, playhead, music context, last seam results and render errors for the scene, and the on-screen language
 (project setting or brand default).
+
+### Codex
+
+`CodexProvider.run(turn)` spawns the local `codex` (`codexArgs`, cwd = the turn's cwd, prompt on stdin, the MCP bearer
+in `CADENCE_MCP_TOKEN`, the environment cut to what Codex needs by `codexEnv`, `PATH` kept to its absolute entries):
+
+```
+codex exec [resume <thread>] --json --skip-git-repo-check --ignore-user-config --ignore-rules
+  -c mcp_servers.cadence.url="<mcpUrl>" -c mcp_servers.cadence.bearer_token_env_var="CADENCE_MCP_TOKEN"
+  -c default_permissions="cadence"
+  -c permissions.cadence.filesystem={":minimal"="read",":slash_tmp"="deny","<cwd>"="read","<addDir>"="read",...,
+       "<Edit/Write target>"="write",...,"<Read deny target>"="deny",...}
+  -c permissions.cadence.network.enabled=false
+  -c project_doc_max_bytes=0 -c tools.web_search=false -c approval_policy="never"
+  -c shell_environment_policy.inherit="core" -c shell_environment_policy.include_only=["PATH","HOME","TMPDIR","LANG","LC_*"]
+  [-c model_reasoning_effort="<effort>"] [-m <model>] -
+```
+
+An empty or relative `PATH` entry would look `codex` up in the turn's cwd, which the agent may write, and run a binary
+it left there outside any sandbox; `claudeEnv` filters `PATH` the same way, and `loadConfig` resolves a relative
+`CODEX_PATH` or `CLAUDE_PATH` against the folder Cadence starts in. `approval_policy="never"`: a model that asks for
+escalated permissions (`require_escalated`) gets none.
+
+The permission profile (`codexFilesystem`) is the Codex form of the turn's Claude rules, and it binds the shell
+commands, `apply_patch` and `view_image` alike: reads only the cwd and `turn.addDirs` (plus `:minimal`, what a shell
+needs to start: system binaries and libraries, not the home folder); writes only the targets of the turn's `Edit`/`Write`
+rules, a trailing `/**` dropped (a project chat: `scenes`, `components`, `art-direction.md`; a scene chat:
+`scenes/<id>.tsx`; a brand build: the brand folder), so `CLAUDE.md` and `project.json` stay read-only; the `Read` deny
+rules (`accounts.json`, `elevenlabs.json`) are unreadable even inside a readable folder. `:minimal` opens `/tmp`
+read-write, `":slash_tmp"="deny"` closes it; a more specific path still wins, so a project under `/tmp` keeps its access.
+A path listed twice keeps its last access (TOML rejects duplicate keys). `run()` resolves the cwd, the addDirs and the
+`Read` rule paths with `realpath` first (a path not created yet through its closest existing parent): the sandbox
+compares real paths, and refuses a whole profile whose writable root goes through a symlink. A write target resolves
+only its parent: a target that is itself a symlink (an earlier turn may have planted one), or that lands outside the
+real cwd, refuses the turn before spawning, since resolving it would grant a write on whatever the link points to. A
+writable folder not created yet (`components`) is created first, so the sandbox protects it as an existing root (no
+`rmdir` or `mv` of it). Within a turn the agent can still replace a file it may write with a symlink to one it may not
+read (`accounts.json`) or swap a folder on the way for a link, and a process it detaches with `setsid` keeps doing so
+after the turn. So the server reads the agent-writable files it hands back or hashes (`art-direction.md`, scene files,
+a brand's `brand.json` and `KIT.md`, every file `check_brand` reads, the code hash, the files of a version snapshot)
+with `readFileNoFollow`, writes into a folder a turn can write (a restore, `copy_from_repo`, `add_google_font`, a scene
+created, duplicated or deleted, the components a template copies) with `writeFileInside` and `removeFileInside`, lists
+a brand's `assets/` with `listInside`, and removes the folder of a failed or dead brand build with `removeTreeInside`.
+None follows a link below the real project or brand folder, even one that stays inside it, and none relies on a check by
+path before or after, which a folder swapped for a link and back in between would pass. A deleted scene is copied to
+the trash and then removed, since a rename by path would follow a swapped `scenes/`. An open (a read, a write's temp
+file) is refused by the kernel itself: `O_NOFOLLOW_ANY` on macOS (ELOOP on a link anywhere in the path), on Linux a
+walk that opens each folder with `O_NOFOLLOW` through the previous one's `/proc/self/fd/<fd>`. A read adds
+`O_NONBLOCK`, so a FIFO is refused at once instead of holding a libuv thread. Node has no `mkdirat`, `renameat` or
+`unlinkat`. On Linux they go through the opened folder's `/proc/self/fd/<fd>`, which the kernel resolves to that folder
+wherever it is now; without `/proc` they fail, rather than find every name missing and report a removal as done. On
+macOS `/.vol/<dev>/<ino>` is no substitute (it resolves back to a path and leaked under a swap race), so a `/bin/sh`
+with an empty environment walks down with `cd -P`, checks after each step that `/bin/pwd -P` (getcwd: the shell's
+builtin resolves the path string again) is exactly the expected folder, trailing newlines included, and runs `mkdir`,
+`rm -f`, `/usr/bin/perl`'s plain `rename` or `/usr/bin/find` (a listing) by name from there (`mv` would move the file
+into a folder found under the target name; without perl a write fails): a swap can move that folder, never redirect
+it. A write's temp file and its rename land in the same folder, or the rename is refused; a failed write removes its
+temp file where the walk still reaches it. `removeTreeInside` is `rm -rf`, whose fts checks that each folder it enters
+is the one it listed. Only the Linux CI runs the Linux branch for real. A snapshot skips a `scenes` or `components`
+entry that is not a real folder, and fails on a file refused this way instead of versioning what it points to. A
+restore answers 409 when a folder on the way to one of its paths is a link, checking
+every path before it records its "unsaved" snapshot and makes its first write. A Codex that
+ignores the profile would run unconfined, so `run()` fails closed: no turn spawns unless `status()` (`codexStatus`) is
+ok, which takes, in this order, Codex 0.161.0 or later (the first with `sandbox -P` and `[permissions.<name>]`
+profiles; an older or unparsable version is reason `unconfined` without a probe), a probe that concludes confined,
+then a login (`logged-out` otherwise). The probe runs, in an empty `CODEX_HOME` and `HOME`,
+`codex sandbox -P cadence <the -c profile above, for an empty temp folder <inside>> -C <inside> /bin/cat probe <outside>/probe`
+and must print the inside file and not the outside one (reason `unconfined` otherwise; a probe that cannot run at all
+is reason `error`). A refused turn ends with one error event named after the reason, a `status()` that rejects
+included; the agent picker and the Profile card say why Codex stays disabled. No network for commands; the Codex process
+itself still reaches the model and the Cadence MCP server. `project_doc_max_bytes=0` also stops Codex from reading
+`AGENTS.md` up to the git root, a read outside the profile that would fail the turn. `sandbox_mode` is not passed: with
+`workspace-write` the whole cwd was writable, `CLAUDE.md` included, and every file readable. Verified with Codex 0.161.0
+on macOS (Seatbelt): `codex sandbox -P` with this profile in an empty `CODEX_HOME`, then
+`tests/server/codex-confinement.test.ts`, which runs the real `codex exec` against a local fake model (a
+`model_providers` entry with a 127.0.0.1 `base_url`, no credentials) whose tool calls read outside (shell and `view_image`), read a
+denied file inside a readable folder, write `CLAUDE.md` and outside (shell and `apply_patch`), print the environment and
+open a connection: all refused, the environment holds no secret, while `scenes/`, `components/` (created during the
+turn) and `art-direction.md` stay writable and the brand folder readable; a second turn, a scene chat whose project is
+reached through a symlink, writes its own scene and is refused another one; a brand build writes its brand folder,
+reads its clone and is refused a write to the clone, outside and a read of `accounts.json`. Each turn first runs the
+provider's own probe against the installed binary. Skipped when `codex` is not installed.
 
 ## MCP (`/mcp`, streamable HTTP, stateless)
 
@@ -589,7 +670,8 @@ arrives, with or without Content-Length) runs in this order:
 
 Any refusal answers 400 (409 for a brand being built, 413 over a cap) naming the cause, and leaves `projects/` and
 `brands/` as they were. Chats keep their session id when it is a UUID (any other value is dropped, since it reaches
-the CLI's argv): a Claude Code session missing on this machine starts again (the `session-lost` retry).
+the CLI's argv): a Claude Code session or a Codex thread missing on this machine starts again (the `session-lost`
+retry; Codex reports it as the `session_lost` subtype, so the retry never reads Codex's text).
 
 An archive is untrusted. Its scenes and kit components run in the frame like any scene (frame origin, CSP, no access
 to the editor token); its text (`project.json`, notes, chats, `KIT.md`) reaches the agent like any project file,
@@ -778,9 +860,10 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
 - ElevenLabs (`ElevenLabsClient`, behind `ElevenLabsApi`; `startServer({ elevenLabs })` injects a fake in tests): the
   person's own API key, saved by `PUT /api/voices/elevenlabs/key` in `<root>/.cadence/elevenlabs.json` with mode 600,
   after a `GET /v2/voices` that proves ElevenLabs accepts it. Like `accounts.json`, it never reaches the browser or a
-  project (projects are versioned), and Claude Code turns are denied both files (`--disallowedTools`); Codex's
-  `workspace-write` sandbox limits writes, not reads, so a Codex turn can read them. One that no longer parses is a
-  500 that names the file without quoting it (`JSON.parse` would). With `startServer({ secrets })` the key goes through
+  project (projects are versioned), and no agent turn can read either file: Claude Code turns are denied both
+  (`--disallowedTools`), Codex turns read only their own folders and deny both in their permission profile. A Codex
+  turn can still point a file it may write at one of them with a symlink; the server never follows it (`readFileNoFollow`,
+  see "Codex"). One that no longer parses is a 500 that names the file without quoting it (`JSON.parse` would). With `startServer({ secrets })` the key goes through
   the host app's `SecretStore` under the name `elevenlabs` instead, and no file is written; a store that fails is a 500
   ("key not saved", or not read) that never quotes the store's error, and a failed save changes nothing. With a host
   app's client (`ElevenLabsApi.hosted`), the host brings the key: `GET /api/voices` answers
@@ -946,7 +1029,8 @@ contract: removing or reshaping one is a major version.
   reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the
   Profile and the agent choice of the new project and new brand dialogs, and turns the agent's name into "our AI" in
   the editor's and the server's texts (`agentName()` in `src/shared/types.ts`; the providers get it at construction for
-  their turn errors, and a refused login then names no CLI command to run), `gitSources` the Profile's Git accounts,
+  their turn errors, and a refused login then names no CLI command to run; Codex's own stderr, failed-turn message and
+  error notes are then left out, since they name it), `gitSources` the Profile's Git accounts,
   `networkApps` the buttons that edit a network app's keys (connect and disconnect stay), `modelPicker` the model and
   effort choice of the settings (both chat scopes) and of the chat composers (a message then carries no model, so the
   turn runs on the settings' models, which the host may set outside the editor's catalog), `costs` every dollar amount

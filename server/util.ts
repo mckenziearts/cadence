@@ -1,9 +1,14 @@
 // Small helpers shared by every server module. Keep this file dependency-free (messages aside).
+import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import fs from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
+import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { ID_PATTERN } from '../src/shared/types';
 import { language, m } from './i18n';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Write through a temp file + rename so readers never see a half-written file. `mkdir: false` writes only into a folder
@@ -16,7 +21,7 @@ export async function writeFileAtomic(
   { mkdir = true }: { mkdir?: boolean } = {},
 ): Promise<void> {
   if (mkdir) await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  const tmp = tmpFile(file);
   await fs.writeFile(tmp, data, { mode });
   await fs.rename(tmp, file);
 }
@@ -43,6 +48,229 @@ export async function readJsonOr<T>(file: string, fallback: T): Promise<T> {
 
 export function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   return writeFileAtomic(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/**
+ * Read a file an agent turn can write without following a symlink: its sandbox lets it swap the file, or a folder on the
+ * way, for a link to one it may not read, such as accounts.json, and the server would carry that content back into a
+ * prompt or a version. A link anywhere below `root` is refused (ELOOP or ENOTDIR).
+ */
+export async function readFileNoFollow(root: string, file: string): Promise<Buffer>;
+export async function readFileNoFollow(root: string, file: string, encoding: 'utf8'): Promise<string>;
+export async function readFileNoFollow(root: string, file: string, encoding?: 'utf8'): Promise<Buffer | string> {
+  // O_NONBLOCK: a FIFO would otherwise hold a libuv thread until a writer comes; it changes nothing for a regular file.
+  const handle = await openInside(root, file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    if (!(await handle.stat()).isFile()) throw new Error(`${file} is not a regular file`);
+    return await handle.readFile(encoding ?? null);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** writeFileAtomic for a folder an agent turn can write: a folder it swaps for a link never sends the write elsewhere. */
+export async function writeFileInside(root: string, file: string, data: string | Buffer, mode?: number): Promise<void> {
+  const tmp = tmpFile(file);
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+  const handle = await openInside(root, tmp, flags, mode).catch(async (e: NodeJS.ErrnoException) => {
+    if (e.code !== 'ENOENT') throw e;
+    await inParentInside(root, file, { mkdir: true });
+    return openInside(root, tmp, flags, mode);
+  });
+  try {
+    try {
+      await handle.writeFile(data);
+    } finally {
+      await handle.close();
+    }
+    await inParentInside(root, file, { renameFrom: path.basename(tmp) });
+  } catch (e) {
+    // Where the walk still reaches it, beside a name that is a folder say; not in a folder a swap moved away.
+    await removeFileInside(root, tmp).catch(() => undefined);
+    throw e;
+  }
+}
+
+/** fs.rm(file, { force: true }) for a folder an agent turn can write, never through a link on the way. */
+export async function removeFileInside(root: string, file: string): Promise<void> {
+  await inParentInside(root, file, { unlink: true });
+}
+
+/** fs.readdir for a folder an agent turn can write: refused when it, or a folder on the way, is a link. */
+export async function listInside(root: string, dir: string): Promise<string[]> {
+  if (!isInside(root, dir)) throw outsideError(root, dir);
+  const names = path.relative(root, dir).split(path.sep);
+  if (process.platform === 'darwin') {
+    // find prints "./<name>" and a NUL after each.
+    return (await walk(root, dir, 'ls', names))
+      .split('\0')
+      .filter(Boolean)
+      .map((entry) => entry.slice(2));
+  }
+  const folder = await openFolderInside(root, names);
+  try {
+    return await fs.readdir(procPath(folder));
+  } finally {
+    await folder.close();
+  }
+}
+
+/**
+ * fs.rm(dir, { recursive: true, force: true }) for a folder an agent turn can write. rm walks the tree with fts, which
+ * checks each folder it enters is the one it listed: a folder swapped for a link is never followed.
+ */
+export async function removeTreeInside(dir: string): Promise<void> {
+  await execFileAsync('/bin/rm', ['-rf', '--', dir], { env: {} });
+}
+
+/** macOS 11+, absent from fs.constants: the open fails (ELOOP) on a link anywhere in the path. */
+const O_NOFOLLOW_ANY = 0x20000000;
+
+/**
+ * Open `file` with no link followed between `root` and it, checked by the kernel in the open: a check made by path before
+ * or after can always be raced. Only darwin and linux run Cadence.
+ */
+async function openInside(root: string, file: string, flags: number, mode?: number): Promise<FileHandle> {
+  if (!isInside(root, file)) throw outsideError(root, file);
+  if (process.platform === 'darwin') {
+    // A root reached through a link is legitimate: nothing an agent writes is above it.
+    const target = path.join(await fs.realpath(root), path.relative(root, file));
+    // The kernel refuses O_NOFOLLOW with O_NOFOLLOW_ANY (EINVAL), which covers the last name too.
+    return fs.open(target, (flags & ~constants.O_NOFOLLOW) | O_NOFOLLOW_ANY, mode);
+  }
+  const { folder, name } = await openParentInside(root, file);
+  try {
+    return await fs.open(`${procPath(folder)}/${name}`, flags, mode);
+  } finally {
+    await folder.close();
+  }
+}
+
+type FolderOp = { mkdir: true } | { renameFrom: string } | { unlink: true };
+
+/**
+ * Create the folders of `file`, rename a sibling onto it or unlink it, without following a link between `root` and it.
+ * Node has no renameat or unlinkat. On Linux the folder is opened and named through /proc; on macOS a shell walks down
+ * with `cd -P`, checks the real working folder at each step, then acts by name from that folder: a swap can move it, never
+ * redirect it. The rename is perl's plain rename(2): mv would move the file into a folder found under the target name.
+ */
+async function inParentInside(root: string, file: string, op: FolderOp): Promise<void> {
+  if (!isInside(root, file)) throw outsideError(root, file);
+  const names = path.relative(root, file).split(path.sep);
+  const name = names.pop()!;
+  if (process.platform === 'darwin') {
+    const [what, ...args] = 'mkdir' in op ? ['mkdir'] : 'unlink' in op ? ['rm', name] : ['mv', op.renameFrom, name];
+    await walk(root, file, what, names, args);
+    return;
+  }
+  const parent = await openParentInside(root, file, 'mkdir' in op).catch((e: NodeJS.ErrnoException) => {
+    if (e.code === 'ENOENT' && 'unlink' in op) return null;
+    throw e;
+  });
+  if (!parent) return;
+  try {
+    const at = procPath(parent.folder);
+    if ('renameFrom' in op) await fs.rename(`${at}/${op.renameFrom}`, `${at}/${name}`);
+    if ('unlink' in op)
+      await fs.unlink(`${at}/${name}`).catch((e: NodeJS.ErrnoException) => {
+        if (e.code !== 'ENOENT') throw e;
+      });
+  } finally {
+    await parent.folder.close();
+  }
+}
+
+/** macOS: IN_FOLDER's output; a folder on the way that is not the one its name gives is refused as outside. */
+async function walk(root: string, file: string, what: string, folders: string[], args: string[] = []): Promise<string> {
+  const run = execFileAsync('/bin/sh', ['-c', IN_FOLDER, 'sh', what, root, folders.join('/'), ...args], { env: {} });
+  const { stdout } = await run.catch((e: { code?: unknown }) => {
+    throw e.code === 3 ? outsideError(root, file) : new Error(`${file}: ${what} failed (${String(e.code)})`);
+  });
+  return stdout;
+}
+
+/**
+ * $1 mkdir, rm, mv or ls; $2 the root; $3 the folders below it, joined by "/"; then rm's name or mv's two names. Exits 3
+ * when a folder on the way is not the physical one its name gives, 0 for an rm whose folder is missing. /bin/pwd is
+ * getcwd: the builtin resolves the path string again, which a swap passes. ls lists the last folder itself.
+ */
+const IN_FOLDER = `
+what=$1 root=$2 folders=$3
+shift 3
+# $(...) drops the trailing newlines a folder name can end with: the dot keeps them.
+real() { r=$(/bin/pwd -P && echo .) || exit 1; r=\${r%.}; r=\${r%?}; }
+if [ "$what" = rm ] && [ ! -d "$root" ]; then exit 0; fi
+cd -P -- "$root" || exit 1
+real
+here=$r
+set -f
+IFS=/
+for folder in $folders; do
+  if [ "$what" = mkdir ]; then /bin/mkdir -- "./$folder" 2>/dev/null; fi
+  if [ "$what" = rm ] && [ ! -e "./$folder" ] && [ ! -L "./$folder" ]; then exit 0; fi
+  cd -P -- "./$folder" || exit 1
+  here=$here/$folder
+  real
+  [ "$r" = "$here" ] || exit 3
+done
+case $what in
+  rm) exec /bin/rm -f -- "./$1" ;;
+  mv) exec /usr/bin/perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "./$1" "./$2" ;;
+  ls) exec /usr/bin/find . -mindepth 1 -maxdepth 1 -print0 ;;
+esac
+`;
+
+/** Linux: the folder of `file`, opened from `root` one name at a time through /proc with no link followed. */
+async function openParentInside(root: string, file: string, mkdir = false): Promise<{ folder: FileHandle; name: string }> {
+  const names = path.relative(root, file).split(path.sep);
+  const name = names.pop()!;
+  return { folder: await openFolderInside(root, names, mkdir), name };
+}
+
+/** Linux: `root`, then each of `names` below it opened through the one before, never through a link. */
+async function openFolderInside(root: string, names: string[], mkdir = false): Promise<FileHandle> {
+  // A root reached through a link is legitimate: nothing an agent writes is above it.
+  let folder = await fs.open(root, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    for (const sub of names) {
+      const at = `${procPath(folder)}/${sub}`;
+      if (mkdir)
+        await fs.mkdir(at).catch((e: NodeJS.ErrnoException) => {
+          if (e.code !== 'EEXIST') throw e;
+        });
+      const next = await fs.open(at, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      await folder.close();
+      folder = next;
+    }
+  } catch (e) {
+    await folder.close();
+    throw e;
+  }
+  return folder;
+}
+
+/** The magic link is the opened folder itself, wherever it is now: no rename or link can redirect what goes through it. */
+function procPath(folder: FileHandle): string {
+  // Without /proc every name through it is missing, and a removal would pass for done.
+  if (process.platform !== 'linux' || !existsSync('/proc/self/fd')) throw new Error(`no /proc/self/fd on ${process.platform}`);
+  return `/proc/self/fd/${folder.fd}`;
+}
+
+function outsideError(root: string, file: string): Error {
+  return new Error(`${file} is outside ${root}`);
+}
+
+const tmpFile = (file: string) => `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+
+/**
+ * PATH without its empty and relative entries. A child spawned in a folder an agent can write looks its command up in
+ * that folder through them ("PATH=$PATH:" or "."), and would run a binary a turn planted there, outside any sandbox.
+ */
+export function absolutePath(value: string): string {
+  return value
+    .split(path.delimiter)
+    .filter((dir) => path.isAbsolute(dir))
+    .join(path.delimiter);
 }
 
 export async function pathExists(p: string): Promise<boolean> {

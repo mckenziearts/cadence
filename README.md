@@ -444,7 +444,8 @@ the scene contract.
 - **Network accounts.** App keys and connections stay in `.cadence/accounts.json`, readable by your user account only:
   never sent to the browser, out of Claude Code's reach. The return from a network only accepts a single-use state,
   valid 10 minutes, that the editor asked for. The ElevenLabs key gets the same treatment in `.cadence/elevenlabs.json`.
-  Codex's sandbox limits what it writes, not what it reads: with Codex as the assistant, both files are within its reach.
+  Codex turns run in a sandbox that reads only their own folders and denies both files; a Codex that cannot be confined
+  (older than 0.161.0) stays disabled.
 
 Never expose it on a network.
 

@@ -933,6 +933,8 @@ describe('MCP endpoint', () => {
     await fs.writeFile(path.join(repoDir, 'public', 'logo.svg'), '<svg viewBox="0 0 1 1"/>');
     await fs.writeFile(path.join(repoDir, '.env'), 'SECRET=1');
     await fs.writeFile(path.join(root, 'outside.svg'), '<svg/>');
+    // A build reserves the brand folder before its turn starts.
+    await fs.mkdir(path.join(root, 'brands', 'acme'), { recursive: true });
     const client = await connect(tokens.issue({ kind: 'brand', brandId: 'acme', repoDir }));
     try {
       const { tools } = await client.listTools();
@@ -957,6 +959,41 @@ describe('MCP endpoint', () => {
       assert.match(texts(preview)[0], /Button : boom/);
       assert.deepEqual(calls.kitSheet, ['acme']);
       assert.match(texts(await call(client, 'check_brand'))[0], /problem\(s\):\n- brand\.json manquant[\s\S]*Button : boom/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('brand scope: copies and fonts are never written through a brand folder the turn linked out', async (ctx) => {
+    const repoDir = path.join(root, 'clone-linked');
+    await fs.mkdir(path.join(repoDir, 'public'), { recursive: true });
+    await fs.writeFile(path.join(repoDir, 'public', 'logo.svg'), '<svg viewBox="0 0 1 1"/>');
+    const [brandDir, outside] = [path.join(root, 'brands', 'linked'), path.join(root, 'brand-outside')];
+    await fs.mkdir(brandDir, { recursive: true });
+    await fs.mkdir(outside);
+    await fs.symlink(outside, path.join(brandDir, 'assets'));
+    await fs.symlink(outside, path.join(brandDir, 'fonts'));
+    const css =
+      "/* latin */\n@font-face {\n  font-family: 'Inter';\n  font-style: normal;\n  font-weight: 400;\n" +
+      "  src: url(https://fonts.gstatic.com/s/inter/v1/a.woff2) format('woff2');\n  unicode-range: U+0000-00FF;\n}\n";
+    const realFetch = globalThis.fetch;
+    const fetched: string[] = [];
+    ctx.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const href = String(input instanceof Request ? input.url : input);
+      if (href.startsWith('https://fonts.googleapis.com/')) return fetched.push(href) && new Response(css);
+      if (href.startsWith('https://fonts.gstatic.com/')) return fetched.push(href) && new Response(Buffer.from('wOF2'));
+      return realFetch(input, init);
+    });
+    const client = await connect(tokens.issue({ kind: 'brand', brandId: 'linked', repoDir }));
+    try {
+      const copied = await call(client, 'copy_from_repo', { from: 'public/logo.svg', to: 'assets/logo-mark.svg' });
+      assert.equal(copied.isError, true);
+      assert.match(texts(copied)[0], /ELOOP|outside/);
+      const font = await call(client, 'add_google_font', { family: 'Inter', weights: [400] });
+      assert.equal(font.isError, true);
+      assert.match(texts(font)[0], /ELOOP|outside/);
+      assert.equal(fetched.length, 2, 'the font was downloaded, then refused at the write');
+      assert.deepEqual(await fs.readdir(outside), []);
     } finally {
       await client.close();
     }

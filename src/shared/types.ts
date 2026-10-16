@@ -916,8 +916,11 @@ export interface AgentStatus {
   label: string;
   version?: string;
   detail?: string;
-  /** Why it is not ok, so the Profile can offer the right install or login help. */
-  reason?: 'missing' | 'logged-out' | 'error';
+  /**
+   * Why it is not ok, so the Profile can offer the right install or login help. `unconfined`: the installed CLI does not
+   * apply the permission profile that keeps a turn in its folders, so Cadence refuses its turns.
+   */
+  reason?: 'missing' | 'logged-out' | 'error' | 'unconfined';
 }
 
 /**

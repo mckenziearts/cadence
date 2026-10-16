@@ -1,9 +1,8 @@
 // A Google font vendored into a brand's fonts/ folder: frames and the kit page only load fonts from their own origin,
 // and a brand built from a repository rarely uses one of the @fontsource packages Cadence ships.
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { m } from '../i18n';
-import { HttpError, shortHash, slugify } from '../util';
+import { HttpError, shortHash, slugify, writeFileInside } from '../util';
 
 const CSS_API = 'https://fonts.googleapis.com/css2';
 const FILES = 'https://fonts.gstatic.com/';
@@ -56,15 +55,14 @@ export async function vendorGoogleFont(
   const kept = faces.some((f) => SUBSETS.has(f.subset)) ? faces.filter((f) => SUBSETS.has(f.subset)) : faces;
   if (!kept.length) throw new HttpError(502, m().media.brands.fonts.noFile(name));
 
-  const dir = path.join(brandDir, 'fonts');
-  await fs.mkdir(dir, { recursive: true });
   const files = new Map<string, string>();
   for (const face of kept) {
     if (files.has(face.url)) continue;
     const file = `${slugify(name, 'police')}-${shortHash(face.url)}.woff2`;
     const res = await fetch(face.url, { headers: { 'User-Agent': USER_AGENT } });
     if (!res.ok) throw new HttpError(502, m().media.brands.fonts.refused(name, res.status));
-    await fs.writeFile(path.join(dir, file), Buffer.from(await res.arrayBuffer()));
+    // The brand build's turn writes brandDir: fonts/ may be a link to any folder this server may write.
+    await writeFileInside(brandDir, path.join(brandDir, 'fonts', file), Buffer.from(await res.arrayBuffer()));
     files.set(face.url, file);
   }
   const rules = kept.map((face) =>
