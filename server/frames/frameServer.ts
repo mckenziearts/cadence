@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import type { ViteDevServer } from 'vite';
-import type { BrandFile, ProjectState } from '../../src/shared/types';
+import { type FrameKind, frameLabel, frameSite } from '../../src/shared/frameOrigin';
+import { type BrandFile, ID_PATTERN, type ProjectState } from '../../src/shared/types';
 import type { BrandStore, CadenceConfig, ProjectStore } from '../contracts';
 import { hasRequestSecret } from '../http';
 import { language, m } from '../i18n';
@@ -37,6 +38,24 @@ export function createFrameHandler(deps: {
   brands: BrandStore;
 }): (req: IncomingMessage, res: ServerResponse) => void {
   const { config, vite, store, brands } = deps;
+  /** `<kind> <label>` to id. A label nobody knows rescans the folder: the project or brand may be new. */
+  const ids = new Map<string, string>();
+
+  async function scan(kind: FrameKind): Promise<void> {
+    const names = await fs.readdir(kind === 'project' ? config.projectsDir : config.brandsDir).catch(() => []);
+    for (const name of names.filter((n) => ID_PATTERN.test(n))) ids.set(`${kind} ${await frameLabel(name)}`, name);
+  }
+
+  /** The existing project or brand whose origin the Host names, else null. */
+  async function siteOf(host: string): Promise<{ kind: FrameKind; id: string } | null> {
+    const site = frameSite(config.frameOrigin, host);
+    if (!site) return null;
+    const key = `${site.kind} ${site.label}`;
+    if (!ids.has(key)) await scan(site.kind);
+    const id = ids.get(key);
+    if (!id || !(await (site.kind === 'project' ? store : brands).exists(id))) return null;
+    return { kind: site.kind, id };
+  }
 
   async function frameHtml(url: string, page: 'frame.html' | 'kit.html'): Promise<string> {
     const source = await fs.readFile(path.join(config.root, page), 'utf8');
@@ -59,10 +78,10 @@ export function createFrameHandler(deps: {
     if (config.requestSecret && !hasRequestSecret(req, config.requestSecret)) {
       return send(res, req, 403, 'text/plain; charset=utf-8', m().core.http.secret);
     }
-    const host = req.headers.host ?? '';
-    if (host !== `127.0.0.1:${config.framePort}` && host !== `localhost:${config.framePort}`) {
-      return send(res, req, 403, 'text/plain; charset=utf-8', m().core.http.host);
-    }
+    // One origin per project and per brand, so scene or kit code never shares storage or same-origin frames with another
+    // project's or brand's. The Host check also stops DNS rebinding.
+    const site = await siteOf(req.headers.host ?? '');
+    if (!site) return send(res, req, 403, 'text/plain; charset=utf-8', m().core.http.host);
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.setHeader('Allow', 'GET, HEAD');
       return send(res, req, 405, 'text/plain; charset=utf-8', m().api.frames.method);
@@ -103,9 +122,9 @@ export function createFrameHandler(deps: {
     ) {
       return send(res, req, 404, 'text/plain; charset=utf-8', m().core.http.notFound);
     }
-    // The editor's brand panel loads the brand fonts from here: kit.html tells it the files, never the kit's CSS.
+    // The editor's brand panel loads the brand fonts from the brand's origin: kit.html tells it the files, never the kit's CSS.
     const origin = req.headers.origin;
-    if (origin && FONT_FILE.test(pathname) && editorOrigins(config).includes(origin)) {
+    if (site.kind === 'brand' && origin && FONT_FILE.test(pathname) && editorOrigins(config).includes(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
     }

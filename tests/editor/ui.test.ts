@@ -17,6 +17,7 @@ import type { AgentProvider, BrandSource, ElevenLabsApi, SpeechEngine } from '..
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
 import { HttpError } from '../../server/util';
+import { frameOriginOf } from '../../src/shared/frameOrigin';
 import { defaultVoiceOver } from '../../server/voiceover/voices';
 import { writeWav } from '../../server/voiceover/wav';
 import {
@@ -430,7 +431,7 @@ describe('editor', () => {
     await page.context().close();
   });
 
-  it('runs the preview in its own process: the frame origin is another site', { timeout: 90_000 }, async () => {
+  it("runs the preview in its own process: the project's frame origin is another site", { timeout: 90_000 }, async () => {
     // Chrome isolates sites; the headless shell of the tests only does with this switch.
     const isolated = await chromium.launch({ args: ['--site-per-process'] });
     try {
@@ -442,12 +443,44 @@ describe('editor', () => {
       const cdp = await isolated.newBrowserCDPSession();
       const { targetInfos } = await cdp.send('Target.getTargets');
       const frame = targetInfos.find((target) => target.type === 'iframe' && target.url.includes('/frame.html'));
-      assert.ok(frame?.url.startsWith(`${server.config.frameOrigin}/frame.html`), JSON.stringify(targetInfos));
-      assert.equal(new URL(server.config.frameOrigin).hostname, 'localhost');
+      const origin = await frameOriginOf(server.config.frameOrigin, 'project', A);
+      assert.ok(frame?.url.startsWith(`${origin}/frame.html`), JSON.stringify(targetInfos));
+      assert.match(new URL(origin).hostname, /^p-[0-9a-f]{32}\.localhost$/);
     } finally {
       await isolated.close();
     }
   });
+
+  it(
+    "loads each project's preview from that project's own frame origin, also right after a switch",
+    { timeout: 90_000 },
+    async () => {
+      const page = await newPage();
+      const frames: URL[] = [];
+      page.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/frame.html') frames.push(url);
+      });
+      try {
+        await open(`${A}/titre`, page);
+        await page.frameLocator(`iframe[src*="project=${A}&"]`).locator('#root').waitFor({ state: 'attached' });
+        // The stage stays mounted: until B's origin is hashed, A's must not be used for B's page.
+        await page.evaluate((id) => (location.hash = `#/${id}/titre`), B);
+        await page.frameLocator(`iframe[src*="project=${B}&"]`).locator('#root').waitFor({ state: 'attached', timeout: 30_000 });
+        const presented = page.waitForRequest((request) => new URL(request.url()).pathname === '/frame.html');
+        await page.getByRole('button', { name: 'Présenter', exact: true }).click();
+        await presented;
+        const projects = frames.map((url) => url.searchParams.get('project'));
+        assert.ok(projects.includes(A) && projects.filter((id) => id === B).length >= 2, JSON.stringify(projects));
+        for (const url of frames) {
+          const expected = await frameOriginOf(server.config.frameOrigin, 'project', url.searchParams.get('project')!);
+          assert.equal(url.origin, expected, url.href);
+        }
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
 
   it('keeps the preview on the frame origin: scene code cannot send it to another site', { timeout: 90_000 }, async () => {
     let requests = 0;
@@ -465,7 +498,8 @@ describe('editor', () => {
         w.violations = [];
         document.addEventListener('securitypolicyviolation', (e) => w.violations.push(e.effectiveDirective));
       });
-      const preview = page.frames().find((frame) => frame.url().startsWith(`${server.config.frameOrigin}/frame.html`))!;
+      const origin = await frameOriginOf(server.config.frameOrigin, 'project', A);
+      const preview = page.frames().find((frame) => frame.url().startsWith(`${origin}/frame.html`))!;
       const outside = `http://127.0.0.1:${(other.address() as AddressInfo).port}/?data=secret`;
       // Deferred, so the evaluate returns before the frame leaves.
       await preview.evaluate((url) => void setTimeout(() => location.assign(url)), outside);
@@ -483,7 +517,7 @@ describe('editor', () => {
     }
   });
 
-  it('shows the brand kit from the frame origin: no brand code runs in the editor page', { timeout: 90_000 }, async () => {
+  it('shows the brand kit from its own frame origin: no brand code runs in the editor page', { timeout: 90_000 }, async () => {
     const page = await newPage();
     const fromEditor: string[] = [];
     page.on('request', (request) => {
@@ -497,7 +531,7 @@ describe('editor', () => {
     // Extras and copy come from the kit page, which loaded the kit; the editor only lists them.
     await page.getByText('ProfileCard', { exact: true }).waitFor({ timeout: 30_000 });
     await page.getByText(/Written to the millisecond/).waitFor();
-    // The brand fonts, loaded from the frame origin under Cadence's own names (never the kit's CSS).
+    // The brand fonts, loaded from the brand's frame origin under Cadence's own names (never the kit's CSS).
     await page.waitForFunction(() =>
       [...document.fonts].some((f) => f.family.replace(/["']/g, '') === 'Cadence brand cadence display' && f.status === 'loaded'),
     );
@@ -512,7 +546,8 @@ describe('editor', () => {
     });
     const kits = page.frames().filter((frame) => frame.url().includes('/kit.html'));
     assert.equal(kits.length, 4, 'the sheet and the three extras of the Cadence brand');
-    for (const kit of kits) assert.ok(kit.url().startsWith(`${server.config.frameOrigin}/kit.html?brand=cadence&view=`));
+    const origin = await frameOriginOf(server.config.frameOrigin, 'brand', 'cadence');
+    for (const kit of kits) assert.ok(kit.url().startsWith(`${origin}/kit.html?brand=cadence&view=`));
     assert.deepEqual(fromEditor, []);
     await page.context().close();
   });
@@ -2457,7 +2492,8 @@ describe('preview', () => {
     });
     await server.services.store.update(id, { language: 'fr' });
     const page = await newPage();
-    await page.goto(`${server.config.frameOrigin}/frame.html?project=${id}&scene=langue&format=16:9&mode=capture`);
+    const origin = await frameOriginOf(server.config.frameOrigin, 'project', id);
+    await page.goto(`${origin}/frame.html?project=${id}&scene=langue&format=16:9&mode=capture`);
     await page.waitForFunction(() => window.__cadence?.ready.then(() => true), undefined, { timeout: 30_000 });
     const text = async () => {
       await page.evaluate(() => window.__cadence!.seek(0.5));
@@ -3369,7 +3405,7 @@ describe('content security policy', () => {
       await page.getByRole('button', { name: 'Lecture', exact: true }).click();
       await page.waitForTimeout(1000);
       await page.getByRole('button', { name: 'Pause', exact: true }).click();
-      // The brand fonts come from the frame origin.
+      // The brand fonts come from the brand's frame origin.
       await page.getByRole('button', { name: 'Cadence', exact: true }).click();
       await page.getByRole('dialog', { name: 'Marque Cadence', exact: true }).waitFor();
       await page.waitForFunction(() =>

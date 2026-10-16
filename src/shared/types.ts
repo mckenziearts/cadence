@@ -971,7 +971,7 @@ export interface AppState {
   templates: { scenes: SceneTemplateMeta[]; projects: ProjectTemplateMeta[] };
   settings: Settings;
   agent: AgentStatus;
-  /** Origin of the frame server, e.g. http://127.0.0.1:5311 (the editor loads frames from there). */
+  /** Base of the frame origins, e.g. http://localhost:5311: frameOriginOf() gives a project's or a brand's. */
   frameOrigin: string;
   models: ModelSpec[];
   /** Brand builds of this run, newest first. */

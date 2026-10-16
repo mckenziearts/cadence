@@ -9,7 +9,7 @@ import { after, before, test, type TestContext } from 'node:test';
 import { launchChromium } from '../../server/capture/capture';
 import { LOCAL } from '../../server/capture/policy';
 import { startServer, type RunningServer } from '../../server/index';
-import { makeRoot, type TestRoot } from './helpers';
+import { frameGet, makeRoot, type TestRoot } from './helpers';
 
 const repo = path.resolve(import.meta.dirname, '../..');
 let t: TestRoot;
@@ -67,7 +67,13 @@ function needsChromium(t: TestContext): boolean {
 }
 
 test('the frame origin refuses a request without the secret', async () => {
-  assert.equal((await fetch(`${server.config.frameOrigin}/frame.html?project=${projectId}`)).status, 403);
+  // The project's own origin, so the secret is the only reason left to refuse.
+  const refused = await frameGet(
+    server.config.frameOrigin,
+    { kind: 'project', id: projectId },
+    `/frame.html?project=${projectId}`,
+  );
+  assert.deepEqual([refused.status, refused.body], [403, 'Secret de requête manquant ou invalide']);
 });
 
 test('captures a scene frame through a frame origin that requires the request secret', async (t) => {

@@ -1,15 +1,16 @@
 // Brand panel: colors, fonts, live kit components, extras and copy of the project's brand. The kit is brand code, maybe
-// written by the brand builder: it renders in kit.html iframes on the frame origin, never in the editor page and its token.
+// written by the brand builder: it renders in kit.html iframes on the brand's frame origin, never in the editor page and its
+// token.
 import clsx from 'clsx';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KitFontFace, KitToEditor } from '../../shared/frameProtocol';
 import type { BrandFile } from '../../shared/types';
 import { api } from '../api';
 import { useT } from '../i18n';
-import { useStore } from '../store';
 import { copyText } from '../store/ui';
 import { SectionTitle, Spinner } from './ui';
 import { useAgentName } from './agents';
+import { useFrameOrigin } from './frameOrigin';
 
 const COLORS: (keyof BrandFile['colors'])[] = [
   'background',
@@ -30,13 +31,13 @@ type KitInfo = Extract<KitToEditor, { type: 'kit' }>;
 export function BrandPanel({ brandId }: { brandId: string }) {
   const texts = useT().production.brand;
   const agent = useAgentName();
-  const frameOrigin = useStore((s) => s.app?.frameOrigin ?? '');
+  const frameOrigin = useFrameOrigin('brand', brandId);
   const [brand, setBrand] = useState<BrandFile | null>(null);
   const [kit, setKit] = useState<KitInfo | null>(null);
   const [kitError, setKitError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (brand && kit) addBrandFonts(brand, kit.fonts, frameOrigin);
+    if (brand && kit && frameOrigin) addBrandFonts(brand, kit.fonts, frameOrigin);
   }, [brand, kit, frameOrigin]);
 
   useEffect(() => {
@@ -220,7 +221,7 @@ function KitFrame(props: {
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const latest = useRef(props);
   latest.current = props;
-  const origin = useStore((s) => s.app?.frameOrigin ?? '');
+  const origin = useFrameOrigin('brand', props.query.brand);
 
   useLayoutEffect(() => {
     const el = box.current!;
@@ -282,7 +283,7 @@ function brandFontName(brandId: string, role: (typeof FONT_ROLES)[number]): stri
   return `Cadence brand ${brandId} ${role}`;
 }
 
-/** The faces of each role's first family, files on the frame origin only (which allows the editor to load them). */
+/** The faces of each role's first family, files on the brand's frame origin only (which lets the editor load them). */
 function addBrandFonts(brand: BrandFile, faces: KitFontFace[], frameOrigin: string): void {
   for (const role of FONT_ROLES) {
     const family = brand.fonts[role]

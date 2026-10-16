@@ -1,7 +1,7 @@
 // Frame origin + frame page in a real Chromium: guards, rendering at exact times, brand/fonts/assets, errors,
 // reloads (scene, component, Tailwind class), text checks, CSP and the postMessage bridge.
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -12,17 +12,23 @@ import { LOCAL } from '../../server/capture/policy';
 import type { CadenceConfig } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
+import { frameOriginOf } from '../../src/shared/frameOrigin';
 import type { ProjectFile } from '../../src/shared/types';
 import { near, pixel, startHarness, type Harness } from './helpers/harness';
 
 let h: Harness;
 let browser: Browser;
 let id: string;
+/** The project's own frame origin, and the fixture brand's. */
+let projectOrigin: string;
+let brandOrigin: string;
 
 before(async () => {
   h = await startHarness('frames');
   browser = await chromium.launch({ args: CHROMIUM_ARGS });
   id = await h.project('frames');
+  projectOrigin = await frameOriginOf(h.config.frameOrigin, 'project', id);
+  brandOrigin = await frameOriginOf(h.config.frameOrigin, 'brand', 'test');
 });
 
 after(async () => {
@@ -35,7 +41,7 @@ async function open(query: Record<string, string>, viewport = { width: 1920, hei
   const context = await browser.newContext({ viewport, deviceScaleFactor: 0.5 });
   const page = await context.newPage();
   await page.goto(
-    `${h.config.frameOrigin}/frame.html?${new URLSearchParams({ project: id, format: '16:9', mode: 'capture', ...query })}`,
+    `${projectOrigin}/frame.html?${new URLSearchParams({ project: id, format: '16:9', mode: 'capture', ...query })}`,
   );
   await page.evaluate(() => window.__cadence!.ready);
   return page;
@@ -67,6 +73,8 @@ async function addScene(sceneId: string, code: string, duration = 1): Promise<vo
   await writeFile(file, JSON.stringify(project, null, 2));
 }
 
+/** A raw request to 127.0.0.1 with the Host header of the project's frame origin, or `host`: Node does not resolve every
+ * `*.localhost` name. */
 function request(
   pathname: string,
   init: { method?: string; host?: string; origin?: string } = {},
@@ -78,7 +86,7 @@ function request(
         port: h.config.framePort,
         path: pathname,
         method: init.method ?? 'GET',
-        headers: { host: init.host ?? `127.0.0.1:${h.config.framePort}`, ...(init.origin ? { origin: init.origin } : {}) },
+        headers: { host: init.host ?? new URL(projectOrigin).host, ...(init.origin ? { origin: init.origin } : {}) },
       },
       (res) => {
         let body = '';
@@ -98,22 +106,45 @@ describe('frame origin', () => {
     for (const blocked of ['/', '/index.html', '/api/state', '/mcp', '/frame-api/nope', '/__open-in-editor?file=frame.html']) {
       assert.equal((await request(blocked)).status, 404, blocked);
     }
-    assert.equal((await request(`/frame.html?project=${id}`, { host: `localhost:${h.config.framePort}` })).status, 200);
+  });
+
+  it('answers only the origins of existing projects and brands', async () => {
+    const port = h.config.framePort;
+    const hostOf = async (kind: 'project' | 'brand', of: string) =>
+      new URL(await frameOriginOf(h.config.frameOrigin, kind, of)).host;
+    assert.equal((await request(`/frame.html?project=${id}`)).status, 200);
+    assert.equal((await request('/kit.html?brand=test', { host: new URL(brandOrigin).host })).status, 200);
+    for (const host of [
+      `127.0.0.1:${port}`,
+      `localhost:${port}`,
+      `[::1]:${port}`,
+      await hostOf('project', 'e2e-missing'),
+      // A project's label is not a brand's origin, nor a brand's label a project's.
+      await hostOf('brand', id),
+      await hostOf('project', 'test'),
+      `${new URL(projectOrigin).hostname}:${port + 1}`,
+    ]) {
+      assert.equal((await request(`/frame.html?project=${id}`, { host })).status, 403, host);
+    }
+
+    const created = await h.project('frames');
+    assert.equal((await request(`/frame.html?project=${created}`, { host: await hostOf('project', created) })).status, 200);
+    await rm(h.store.dir(created), { recursive: true });
+    assert.equal((await request(`/frame.html?project=${created}`, { host: await hostOf('project', created) })).status, 403);
   });
 
   it('serves frame.html with the CSP and the editor origins', async () => {
-    const res = await fetch(`${h.config.frameOrigin}/frame.html?project=${id}`);
-    const csp = res.headers.get('content-security-policy') ?? '';
+    const res = await request(`/frame.html?project=${id}`);
+    const csp = String(res.headers['content-security-policy']);
     assert.match(csp, /connect-src 'self'/);
     assert.match(csp, /img-src 'self' data: blob:/);
     assert.match(csp, /font-src 'self' data:/);
     assert.match(csp, new RegExp(`frame-ancestors ${h.config.editorOrigin} http://localhost:${h.config.editorPort}`));
-    const html = await res.text();
     assert.match(
-      html,
+      res.body,
       new RegExp(`<meta name="cadence-editor-origin" content="${h.config.editorOrigin} http://localhost:${h.config.editorPort}"`),
     );
-    assert.match(html, /\/src\/frame\/main\.tsx/);
+    assert.match(res.body, /\/src\/frame\/main\.tsx/);
   });
 
   it('puts the frame CSP on every response, not only on the pages', async () => {
@@ -131,8 +162,7 @@ describe('frame origin', () => {
   });
 
   it('gives the frame read-only project data and diagnostics', async () => {
-    const res = await fetch(`${h.config.frameOrigin}/frame-api/projects/${id}`);
-    const data = (await res.json()) as {
+    const data = JSON.parse((await request(`/frame-api/projects/${id}`)).body) as {
       project: { id: string; scenes: unknown[] };
       brand: { id: string };
       brandId: string;
@@ -143,10 +173,10 @@ describe('frame origin', () => {
     assert.equal(data.brandId, 'test');
     assert.equal(data.brand.id, 'test');
     assert.equal(data.brandUrl, `/@fs${h.brands.dir('test')}/`);
-    assert.equal((await fetch(`${h.config.frameOrigin}/frame-api/projects/Nope!`)).status, 400);
-    assert.equal((await fetch(`${h.config.frameOrigin}/frame-api/projects/e2e-missing`)).status, 404);
-    const ok = await fetch(`${h.config.frameOrigin}/frame-api/projects/${id}/scenes/green/diagnostics`);
-    assert.deepEqual(await ok.json(), { error: null });
+    assert.equal((await request('/frame-api/projects/Nope!')).status, 400);
+    assert.equal((await request('/frame-api/projects/e2e-missing')).status, 404);
+    const ok = await request(`/frame-api/projects/${id}/scenes/green/diagnostics`);
+    assert.deepEqual(JSON.parse(ok.body), { error: null });
   });
 
   it('keeps .cadence folders out of reach', async () => {
@@ -183,13 +213,18 @@ describe('frame origin', () => {
     }
   });
 
-  it('lets the editor load font files, and nothing else, for its brand panel', async () => {
+  it('lets the editor load font files from a brand origin, and nothing else, for its brand panel', async () => {
     const font = '/node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2';
-    const allowed = (await request(font, { origin: h.config.editorOrigin })).headers;
+    const brand = new URL(brandOrigin).host;
+    const allowed = (await request(font, { host: brand, origin: h.config.editorOrigin })).headers;
     assert.equal(allowed['access-control-allow-origin'], h.config.editorOrigin);
     assert.equal(allowed.vary, 'Origin');
-    assert.equal((await request(font, { origin: 'http://evil.test' })).headers['access-control-allow-origin'], undefined);
-    const script = await request('/src/frame/main.tsx', { origin: h.config.editorOrigin });
+    assert.equal(
+      (await request(font, { host: brand, origin: 'http://evil.test' })).headers['access-control-allow-origin'],
+      undefined,
+    );
+    assert.equal((await request(font, { origin: h.config.editorOrigin })).headers['access-control-allow-origin'], undefined);
+    const script = await request('/src/frame/main.tsx', { host: brand, origin: h.config.editorOrigin });
     assert.equal(script.status, 200);
     assert.equal(script.headers['access-control-allow-origin'], undefined);
   });
@@ -343,7 +378,7 @@ describe('frame page', () => {
   it('fits and centers the canvas in editor mode', async () => {
     const context = await browser.newContext({ viewport: { width: 960, height: 540 } });
     const page = await context.newPage();
-    await page.goto(`${h.config.frameOrigin}/frame.html?project=${id}&scene=red-blue&format=9:16&mode=editor`);
+    await page.goto(`${projectOrigin}/frame.html?project=${id}&scene=red-blue&format=9:16&mode=editor`);
     await page.evaluate(() => window.__cadence!.ready);
     const rect = await page.evaluate(() => {
       const r = document.querySelector('[data-cadence-stage]')!.getBoundingClientRect();
@@ -412,8 +447,8 @@ describe('frame page', () => {
     const transitive = await seek(page, 0.1);
     assert.match(transitive.errors[0], /Bad\.tsx/);
 
-    const diagnostics = await fetch(`${h.config.frameOrigin}/frame-api/projects/${id}/scenes/imports-bad/diagnostics`);
-    assert.match(((await diagnostics.json()) as { error: string }).error, /components\/Bad\.tsx/);
+    const diagnostics = await request(`/frame-api/projects/${id}/scenes/imports-bad/diagnostics`);
+    assert.match((JSON.parse(diagnostics.body) as { error: string }).error, /components\/Bad\.tsx/);
     await page.context().close();
   });
 
@@ -1161,7 +1196,7 @@ describe('frame CSP', () => {
       document.addEventListener('securitypolicyviolation', (e) => w.violations.push(`${e.effectiveDirective} ${e.blockedURI}`));
     });
     const page = await context.newPage();
-    await page.goto(`${h.config.frameOrigin}/frame.html?project=${id}&scene=brand&format=16:9&mode=capture`);
+    await page.goto(`${projectOrigin}/frame.html?project=${id}&scene=brand&format=16:9&mode=capture`);
     await page.evaluate(() => window.__cadence!.ready);
     await seek(page, 0.5);
     assert.ok(near(await colorAt(page, 100, 100), [0, 200, 255]));
@@ -1277,10 +1312,10 @@ describe('postMessage bridge', () => {
   it('talks to the editor origin only', async () => {
     const context = await browser.newContext();
     const page = await context.newPage();
-    const frameUrl = `${h.config.frameOrigin}/frame.html?project=${id}&scene=throws&format=16:9&mode=editor`;
+    const frameUrl = `${projectOrigin}/frame.html?project=${id}&scene=throws&format=16:9&mode=editor`;
     await page.goto(h.editorPage(frameUrl));
     const ready = await waitFor(page, 'ready');
-    assert.equal(ready.origin, h.config.frameOrigin);
+    assert.equal(ready.origin, projectOrigin);
     assert.equal(ready.data.source, 'cadence-frame');
     assert.equal(ready.data.generation, h.store.generation(id));
 
@@ -1306,9 +1341,9 @@ describe('postMessage bridge', () => {
     await h.store.syncCode(id);
     const context = await browser.newContext();
     const page = await context.newPage();
-    await page.goto(h.editorPage(`${h.config.frameOrigin}/frame.html?project=${id}&scene=bridge-sounds&format=16:9&mode=editor`));
+    await page.goto(h.editorPage(`${projectOrigin}/frame.html?project=${id}&scene=bridge-sounds&format=16:9&mode=editor`));
     const first = await waitFor(page, 'sounds');
-    assert.equal(first.origin, h.config.frameOrigin);
+    assert.equal(first.origin, projectOrigin);
     assert.equal(first.data.sceneId, 'bridge-sounds');
     assert.deepEqual(first.data.cues, [{ at: 0.5, sound: 'pop', gain: 1 }]);
     const types = await page.evaluate(() => (window as unknown as { received: Received[] }).received.map((m) => m.data.type));
@@ -1352,7 +1387,7 @@ describe('postMessage bridge', () => {
     await h.store.syncCode(id);
     const context = await browser.newContext();
     const page = await context.newPage();
-    await page.goto(h.editorPage(`${h.config.frameOrigin}/frame.html?project=${id}&scene=format-sounds&format=16:9&mode=editor`));
+    await page.goto(h.editorPage(`${projectOrigin}/frame.html?project=${id}&scene=format-sounds&format=16:9&mode=editor`));
     assert.deepEqual((await waitFor(page, 'sounds')).data.cues, [{ at: 0.25, sound: 'pop', gain: 1 }]);
 
     const post = (message: object) =>
@@ -1376,7 +1411,7 @@ describe('postMessage bridge', () => {
     ];
     const context = await browser.newContext();
     const page = await context.newPage();
-    await page.goto(h.editorPage(`${h.config.frameOrigin}/frame.html?project=${id}&format=16:9&mode=editor`));
+    await page.goto(h.editorPage(`${projectOrigin}/frame.html?project=${id}&format=16:9&mode=editor`));
     const whole = await waitFor(page, 'sounds');
     assert.equal(whole.data.sceneId, null);
     const cues = whole.data.cues as unknown[];
@@ -1412,7 +1447,7 @@ describe('postMessage bridge', () => {
   it('cannot be embedded by another origin', async () => {
     const other = http.createServer((_req, res) => {
       res.setHeader('Content-Type', 'text/html');
-      res.end(`<iframe id="frame" src="${h.config.frameOrigin}/frame.html?project=${id}&amp;mode=editor"></iframe>`);
+      res.end(`<iframe id="frame" src="${projectOrigin}/frame.html?project=${id}&amp;mode=editor"></iframe>`);
     });
     await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
     const context = await browser.newContext();

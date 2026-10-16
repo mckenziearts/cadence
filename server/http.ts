@@ -28,6 +28,9 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
   const { config, editorToken, tokens, accounts, mcp, editor } = deps;
   const api = getRequestListener(deps.api.fetch as (request: Request, env: unknown) => Response | Promise<Response>);
   const hosts = new Set([`127.0.0.1:${config.editorPort}`, `localhost:${config.editorPort}`]);
+  const frames = new URL(config.frameOrigin);
+  // Every project's and brand's frame origin (frameOriginOf); CSP has no wildcard narrower than a whole label.
+  const frameOrigins = `${frames.protocol}//*.${frames.host}`;
 
   return (req, res) => {
     let url: URL | undefined;
@@ -112,12 +115,13 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
           res.writeHead(200, {
             'Content-Type': 'text/html; charset=utf-8',
             'Cache-Control': 'no-store',
-            // No inline script, no other site: an injected tag cannot reach the token. The brand fonts come from the frame
-            // origin; the previews show that origin only, so scene code cannot send its own frame to another site.
+            // No inline script, no other site: an injected tag cannot reach the token. The brand fonts come from the brands'
+            // frame origins (only those answer CORS for fonts); the previews show frame origins only, so scene code cannot
+            // send its own frame to another site.
             'Content-Security-Policy':
               "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
-              `font-src 'self' data: ${config.frameOrigin}; media-src 'self' blob:; connect-src 'self'; object-src 'none'; ` +
-              `base-uri 'none'; form-action 'self'; frame-src ${config.frameOrigin}; frame-ancestors 'none'`,
+              `font-src 'self' data: ${frameOrigins}; media-src 'self' blob:; connect-src 'self'; object-src 'none'; ` +
+              `base-uri 'none'; form-action 'self'; frame-src ${frameOrigins}; frame-ancestors 'none'`,
             'X-Content-Type-Options': 'nosniff',
           });
           res.end(html);

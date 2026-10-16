@@ -7,7 +7,7 @@ import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
 import type { ElevenLabsApi } from '../../server/contracts';
 import { startServer, type RunningServer } from '../../server/index';
-import { makeRoot, type TestRoot } from './helpers';
+import { frameGet, makeRoot, type TestRoot } from './helpers';
 
 let t: TestRoot;
 let server: RunningServer;
@@ -55,11 +55,11 @@ after(async () => {
   await t.cleanup();
 });
 
-/** The editor page's CSP, as server/http.ts writes it for `frameOrigin`. */
-const editorCsp = (frameOrigin: string) =>
+/** The editor page's CSP, as server/http.ts writes it for the frame port: one origin per project and per brand. */
+const editorCsp = (framePort: number) =>
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
-  `font-src 'self' data: ${frameOrigin}; media-src 'self' blob:; connect-src 'self'; object-src 'none'; ` +
-  `base-uri 'none'; form-action 'self'; frame-src ${frameOrigin}; frame-ancestors 'none'`;
+  `font-src 'self' data: http://*.localhost:${framePort}; media-src 'self' blob:; connect-src 'self'; ` +
+  `object-src 'none'; base-uri 'none'; form-action 'self'; frame-src http://*.localhost:${framePort}; frame-ancestors 'none'`;
 /** A script tag without `src`: inline code, which the editor's CSP would block. */
 const INLINE_SCRIPT = /<script(?![^>]*\bsrc=)[^>]*>/;
 /** What the editor origin serves besides its page: a document there runs nothing and loads nothing. */
@@ -103,7 +103,9 @@ test('editor HTML, API, SSE and frame data are wired together', async () => {
   const project = await res.json();
   assert.equal(project.id, 'integration');
 
-  const frame = await (await fetch(`${frameOrigin}/frame-api/projects/integration`)).json();
+  const frame = JSON.parse(
+    (await frameGet(frameOrigin, { kind: 'project', id: 'integration' }, '/frame-api/projects/integration')).body,
+  );
   assert.equal(frame.brandId, 'orbit');
   assert.equal(frame.project.scenes[0].url, `/@fs${path.join(t.config.projectsDir, 'integration', 'scenes', 'titre.tsx')}`);
 
@@ -115,9 +117,9 @@ test('editor HTML, API, SSE and frame data are wired together', async () => {
 });
 
 test('serves the editor from a production build: no Vite module, React production, cached assets, byte ranges', async () => {
-  const { editorOrigin, frameOrigin } = server.config;
+  const { editorOrigin, framePort } = server.config;
   const page = await fetch(`${editorOrigin}/`);
-  assert.equal(page.headers.get('content-security-policy'), editorCsp(frameOrigin));
+  assert.equal(page.headers.get('content-security-policy'), editorCsp(framePort));
   const html = await page.text();
   assert.doesNotMatch(html, INLINE_SCRIPT);
   assert.doesNotMatch(html, /@vite\/client|\/src\/editor/);
@@ -247,10 +249,12 @@ test('a request secret of 32 characters reaches both servers: 403 without X-Cade
   try {
     assert.equal(guarded.config.requestSecret, requestSecret);
     const { editorOrigin, frameOrigin } = guarded.config;
-    for (const url of [`${editorOrigin}/`, `${frameOrigin}/frame.html`]) {
-      assert.equal((await fetch(url)).status, 403, url);
-      assert.equal((await fetch(url, { headers: { 'x-cadence-secret': requestSecret } })).status, 200, `${url} with the secret`);
-    }
+    const secret = { 'x-cadence-secret': requestSecret };
+    assert.equal((await fetch(`${editorOrigin}/`)).status, 403);
+    assert.equal((await fetch(`${editorOrigin}/`, { headers: secret })).status, 200, 'the editor with the secret');
+    const kit = { kind: 'brand', id: 'cadence' } as const;
+    assert.equal((await frameGet(frameOrigin, kit, '/kit.html')).status, 403);
+    assert.equal((await frameGet(frameOrigin, kit, '/kit.html', secret)).status, 200, 'a kit with the secret');
   } finally {
     await guarded.close();
   }
@@ -269,9 +273,9 @@ test('npm run dev serves the editor through Vite, with React in development', as
     dev: true,
   });
   try {
-    const { editorOrigin, frameOrigin } = dev.config;
+    const { editorOrigin, framePort } = dev.config;
     const page = await fetch(`${editorOrigin}/`);
-    assert.equal(page.headers.get('content-security-policy'), editorCsp(frameOrigin));
+    assert.equal(page.headers.get('content-security-policy'), editorCsp(framePort));
     const html = await page.text();
     assert.match(html, /\/@vite\/client[\s\S]*\/src\/editor\/main\.tsx/);
     assert.doesNotMatch(html, INLINE_SCRIPT);

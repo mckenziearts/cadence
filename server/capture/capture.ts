@@ -7,6 +7,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { errors as playwrightErrors, type Browser, type BrowserContext, type Page } from 'playwright';
 import { z } from 'zod';
+import { frameOriginOf } from '../../src/shared/frameOrigin';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { FORMATS, isFormatId, type FormatId, type ProjectState, type SceneState } from '../../src/shared/types';
 import { captureLocale, CHROMIUM_SANDBOX_FAILED, chromiumSandbox } from '../config';
@@ -107,8 +108,8 @@ export interface FramePage {
 }
 
 /**
- * A page of the frame origin in its own context. Kit and scene code are untrusted and the frame CSP covers neither
- * navigations, window.open, workers' sockets nor WebRTC: requests may only reach the frame origin, every other
+ * A page of one project's or brand's frame origin in its own context. Kit and scene code are untrusted and the frame CSP
+ * covers neither navigations, window.open, workers' sockets nor WebRTC: requests may only reach that origin, every other
  * connection goes to a proxy that is not there, popups close. `problems` collects page errors and console errors.
  */
 async function openIsolatedPage(
@@ -152,7 +153,10 @@ async function openIsolatedPage(
   }
 }
 
-/** A frame.html page in capture mode: viewport = canvas, device pixel ratio = output scale. */
+/**
+ * A frame.html page in capture mode on the project's origin under `frameOrigin`: viewport = canvas, device pixel ratio =
+ * output scale.
+ */
 export async function openFramePage(
   browser: Browser,
   frameOrigin: string,
@@ -166,7 +170,8 @@ export async function openFramePage(
   },
 ): Promise<FramePage> {
   const { width, height } = FORMATS[opts.format];
-  const { context, page, problems } = await openIsolatedPage(browser, frameOrigin, {
+  const origin = await frameOriginOf(frameOrigin, 'project', opts.projectId);
+  const { context, page, problems } = await openIsolatedPage(browser, origin, {
     width,
     height,
     scale: opts.scale,
@@ -176,7 +181,7 @@ export async function openFramePage(
     const params = new URLSearchParams({ project: opts.projectId, format: opts.format, mode: 'capture' });
     if (opts.sceneId) params.set('scene', opts.sceneId);
     if (opts.captions === false) params.set('captions', '0');
-    await page.goto(`${frameOrigin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
+    await page.goto(`${origin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
     if (!(await fromPage(page.evaluate(() => window.__cadence !== undefined)))) {
       throw new Error(m().media.capture.frameNotStarted(problems));
     }
@@ -466,7 +471,8 @@ export class PlaywrightCapture implements CaptureService {
     opts: { scale?: number } = {},
   ): Promise<{ image: Buffer; problems: string[]; loaded: boolean }> {
     const browser = await this.browser();
-    const { context, page, problems } = await openIsolatedPage(browser, this.config.frameOrigin, {
+    const origin = await frameOriginOf(this.config.frameOrigin, 'brand', brandId);
+    const { context, page, problems } = await openIsolatedPage(browser, origin, {
       width: 1920,
       height: 1080,
       scale: opts.scale ?? 0.5,
@@ -474,7 +480,7 @@ export class PlaywrightCapture implements CaptureService {
     });
     try {
       const params = new URLSearchParams({ brand: brandId, v: String(Date.now()) });
-      await page.goto(`${this.config.frameOrigin}/kit.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
+      await page.goto(`${origin}/kit.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
       const sheet = await withTimeout(
         fromPage(
           page.evaluate(

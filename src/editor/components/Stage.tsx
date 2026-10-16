@@ -11,6 +11,7 @@ import { currentScene, get, previewDuration, sceneAt, set, useStore } from '../s
 import { prefill } from '../store/chat';
 import { setFormat, setPlaying } from '../store/project';
 import { FrameView, type FrameHandle } from './FrameView';
+import { useFrameOrigin } from './frameOrigin';
 import { PlaybackEngine, Transport } from './Transport';
 import { Button, FormatGlyph, IconButton, Segmented, Spinner } from './ui';
 import { useAgentName } from './agents';
@@ -100,8 +101,8 @@ function StageHeader() {
 
 function Preview({ sounds }: { sounds: SoundPlayer }) {
   const t = useT();
-  const app = useStore((s) => s.app)!;
   const project = useStore((s) => s.project)!;
+  const frameOrigin = useFrameOrigin('project', project.id);
   const format = useStore((s) => s.format);
   const mode = useStore((s) => s.mode);
   const sceneId = useStore((s) => currentScene(s)?.id ?? null);
@@ -160,7 +161,7 @@ function Preview({ sounds }: { sounds: SoundPlayer }) {
         if ((e.target as HTMLElement).dataset.canvas !== undefined) setPlaying(!get().playing);
       }}
     >
-      {w > 0 && h > 0 && (
+      {w > 0 && h > 0 && frameOrigin && (
         <div
           data-canvas=""
           className="absolute overflow-hidden bg-white shadow-[0_0_0_2px_var(--color-ink),6px_6px_0_2px_var(--color-ink)]"
@@ -169,7 +170,7 @@ function Preview({ sounds }: { sounds: SoundPlayer }) {
           <FrameView
             key={key}
             ref={frame}
-            frameOrigin={app.frameOrigin}
+            frameOrigin={frameOrigin}
             projectId={project.id}
             mode="editor"
             sceneId={shownSceneId}

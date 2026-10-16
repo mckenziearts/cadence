@@ -32,7 +32,7 @@ async function listenEditor(config: Partial<CadenceConfig> = {}): Promise<{ serv
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as AddressInfo).port;
   const handler = createEditorHandler({
-    config: { ...t.config, editorPort: port, frameOrigin: 'http://127.0.0.1:5300', ...config },
+    config: { ...t.config, editorPort: port, frameOrigin: 'http://localhost:5300', ...config },
     editorToken: TOKEN,
     tokens: { resolve: (token) => (token === MCP_TOKEN ? { kind: 'open' } : null) },
     accounts: {
@@ -173,15 +173,16 @@ test('editor HTML carries the token and the frame origin; frame.html and kit.htm
   assert.equal(res.status, 200);
   assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
   assert.equal(res.headers['cache-control'], 'no-store');
-  // The previews may only show the frame origin: scene code cannot send its own frame to another site.
+  // The previews may only show frame origins (one per project and per brand, all under localhost on the frame port):
+  // scene code cannot send its own frame to another site. Brand fonts come from the brands' origins.
   assert.equal(
     res.headers['content-security-policy'],
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
-      "font-src 'self' data: http://127.0.0.1:5300; media-src 'self' blob:; connect-src 'self'; object-src 'none'; " +
-      "base-uri 'none'; form-action 'self'; frame-src http://127.0.0.1:5300; frame-ancestors 'none'",
+      "font-src 'self' data: http://*.localhost:5300; media-src 'self' blob:; connect-src 'self'; object-src 'none'; " +
+      "base-uri 'none'; form-action 'self'; frame-src http://*.localhost:5300; frame-ancestors 'none'",
   );
   assert.match(res.body, new RegExp(`<head>\\s*<meta name="cadence-token" content="${TOKEN}" />`));
-  assert.match(res.body, /<meta name="cadence-frame-origin" content="http:\/\/127\.0\.0\.1:5300" \/>/);
+  assert.match(res.body, /<meta name="cadence-frame-origin" content="http:\/\/localhost:5300" \/>/);
   assert.match(res.body, /@vite\/client/, 'transformed by Vite');
   assert.equal((await request('/index.html')).status, 200);
   assert.equal((await request('/frame.html')).status, 404);

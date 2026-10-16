@@ -13,7 +13,7 @@ import { m } from '../../server/i18n';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import { assertNoCssCodeExec, createVite } from '../../server/frames/vite';
 import { CssCodeScan } from '../../server/util';
-import { makeRoot, writeCompleteBrand } from './helpers';
+import { frameGet, makeRoot, writeCompleteBrand } from './helpers';
 
 const managed = (root: string) =>
   [['projects', 'brands', 'templates'].map((d) => path.join(root, d)), path.join(root, 'brands')] as const;
@@ -411,9 +411,11 @@ test('the frame origin answers 404 to a query that would make Tailwind compile a
   const server = http.createServer((req, res) => handle(req, res));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const framePort = (server.address() as AddressInfo).port;
-  handle = createFrameHandler({ config: { ...config, framePort }, vite, store: {} as never, brands: {} as never });
+  const frameOrigin = `http://localhost:${framePort}`;
+  const brands = { exists: async (id: string) => id === 'cadence' } as never;
+  handle = createFrameHandler({ config: { ...config, framePort, frameOrigin }, vite, store: {} as never, brands });
   try {
-    const status = async (url: string) => (await fetch(`http://127.0.0.1:${framePort}${url}`)).status;
+    const status = async (url: string) => (await frameGet(frameOrigin, { kind: 'brand', id: 'cadence' }, url)).status;
     for (const query of ['?x&lang.css', '?html-proxy&index=0.css', '?x%26lang%2Ecss', '?index=%30.css', '?%E0']) {
       assert.equal(await status(`/@fs/p/notes.md${query}`), 404, query);
     }

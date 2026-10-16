@@ -106,7 +106,7 @@ middleware mode, two HTTP servers bound to the loopback only, **127.0.0.1 and ::
 the port IPv4 got, and both start again (5 tries) when it is taken there; with a fixed port, a taken ::1 fails the
 start; a host without IPv6 runs on 127.0.0.1 alone (`server/index.ts`, `listenLoopback()`). The editor is a production
 build made at every start, in memory (`server/editor.ts`, about 150 ms, so it is never stale); the Vite dev server
-serves the frame origin (scenes are edited live), and the editor too with `npm run dev` (`start --dev`). Vite reads
+serves the frame origins (scenes are edited live), and the editor too with `npm run dev` (`start --dev`). Vite reads
 `NODE_ENV` once per process and sets it when it is unset: `startServer()` sets it first, `production` (React's
 production build in the editor and in frames) or `development` with `--dev`. Ctrl+C, SIGTERM and a closed terminal
 (SIGHUP) run `server.close()`, which stops the turns, the renders and Chromium: Chromium is launched without
@@ -117,12 +117,20 @@ Playwright's own signal handlers, which would exit first or, on SIGHUP, keep the
 | Origin | Default | Serves |
 | --- | --- | --- |
 | Editor | `http://127.0.0.1:5310` | `/` (editor HTML), `/assets/*` (the build; Vite modules with `--dev`), `/api/*`, `/api/events` (SSE), `/mcp`, `/oauth/<network>/callback` |
-| Frame | `http://localhost:5311` | `/frame.html`, `/kit.html`, `/frame-api/*` (read-only), Vite modules (scenes, runtime, brands) |
+| Frame | `http://p-<label>.localhost:5311`, `http://b-<label>.localhost:5311` | `/frame.html`, `/kit.html`, `/frame-api/*` (read-only), Vite modules (scenes, runtime, brands) |
 
-Different ports are different origins: scene code (frame origin) cannot read or call the editor API. The frame origin
-uses the name `localhost` for the same loopback (both servers listen on 127.0.0.1 and ::1 only): for Chrome it is
-another site, so the preview and the kit iframes run in their own process, off the editor's main thread. An editor
-opened as `localhost` shares that site again: it works, without that gain.
+Different ports are different origins: scene code (frame origin) cannot read or call the editor API. Each project and
+each brand has a frame origin of its own on the frame port: a project's scenes load from
+`http://p-<label>.localhost:<framePort>`, a brand's kit from `http://b-<label>.localhost:<framePort>`, where the label
+is the first 32 hex characters of the SHA-256 of the id (`frameOriginOf()` in `src/shared/frameOrigin.ts`: an id may be
+longer than a DNS label or start with `xn--`). Scene or kit code therefore never shares storage or a same-origin frame
+with another project's or brand's. The label sits right under `localhost`, so each frame origin is also a site of its
+own: no cookie domain covers two of them (under a shared `project.localhost`, one would reach every project). Chrome
+resolves every `*.localhost` name to the loopback itself, without DNS, and both servers listen on 127.0.0.1 and ::1
+only. `CadenceConfig.frameOrigin` stays the base, `http://localhost:<framePort>`, which serves nothing. For Chrome a
+frame origin is another site than the editor, so the preview and the kit iframes run in their own process, off the
+editor's main thread. The cost: the browser's HTTP cache is split per origin as well, so the first open of each project
+or brand fetches the runtime and its dependencies again (about 0.5 to 2 MB from the loopback).
 
 Guards (editor origin, `server/http.ts`):
 - With a request secret (`startServer({ requestSecret })`, see "Embedding Cadence"), every request without
@@ -134,47 +142,53 @@ Guards (editor origin, `server/http.ts`):
   The token is random per server start and injected only into the editor HTML as
   `<meta name="cadence-token">`. A custom header forces a CORS preflight, which the server never approves.
 - `/api/*` GET: allowed when `Sec-Fetch-Site` is `same-origin`, `none` or absent (media tags, curl). `cross-site`
-  (the frame origin) and `same-site` (the frame origin, for an editor opened as `localhost`) are rejected.
+  and `same-site` (the frame origins) are rejected.
   `/api/events` also accepts `?token=`.
 - `/mcp` requires `Authorization: Bearer <mcpToken>`; the token resolves to a scope (see MCP). Requests with an
   `Origin` header are rejected (browsers never call MCP).
 - `/frame.html` and `/kit.html` return 404 on the editor origin: scene and brand code never run next to the token.
-- The editor HTML is sent with the CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
-  img-src 'self' data: blob:; font-src 'self' data: <frame origin>; media-src 'self' blob:; connect-src 'self';
-  object-src 'none'; base-uri 'none'; form-action 'self'; frame-src <frame origin>; frame-ancestors 'none'`. The editor
-  has no inline script (the dev mode has no React preamble, HMR is off), so an injected tag cannot run next to the
-  token. `font-src` takes the frame origin for the brand fonts, `img-src` takes `data:` for the favicon, and an
-  ElevenLabs voice's sample comes through `/api/voices/elevenlabs/:voice/preview` so `media-src` stays `'self'`. The previews
-  show the frame origin only (scene code cannot send its own frame to another site), and no other site may embed the
-  editor. What the editor origin serves besides its page, the API, MCP and the network callbacks (the built assets, or in
-  dev mode whatever Vite serves, project and brand files under `/@fs` included) is sent with the CSP
-  `default-src 'none'; sandbox` and `nosniff`, so an SVG an agent wrote, opened as a page, runs no script next to the token.
+- The editor HTML is sent with the CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
+  'self' data: blob:; font-src 'self' data: http://*.localhost:<framePort>; media-src 'self' blob:; connect-src 'self';
+  object-src 'none'; base-uri 'none'; form-action 'self'; frame-src http://*.localhost:<framePort>; frame-ancestors
+  'none'`. The editor has no inline script (the dev mode has no React preamble, HMR is off), so an injected tag cannot
+  run next to the token. `font-src` takes the frame origins for the brand fonts (only a brand's origin answers CORS for
+  a font), `img-src` takes `data:` for the favicon, and an ElevenLabs voice's sample comes through
+  `/api/voices/elevenlabs/:voice/preview` so `media-src` stays `'self'`. The previews show frame origins only (scene
+  code cannot send its own frame to another site), and no other site may embed the editor. What the editor origin serves
+  besides its page, the API, MCP and the network callbacks (the built assets, or in dev mode whatever Vite serves,
+  project and brand files under `/@fs` included) is sent with the CSP `default-src 'none'; sandbox` and `nosniff`, so an
+  SVG an agent wrote, opened as a page, runs no script next to the token.
 - `GET /oauth/<network>/callback` is where a network sends the person back after the consent page: a cross-site
   navigation, so outside `/api`. It acts only on a state issued by `POST /api/networks/:id/connect` (editor token),
   single use, 10 minutes, bound to its network, and answers a small HTML page (CSP `default-src 'none'`, no referrer).
 
-Frame origin (`server/frames/frameServer.ts`): the request secret when set (no exemption), Host check, GET/HEAD only, never serves `/api`, `/mcp`,
-`/index.html`, `/__open-in-editor`. Every response is sent with a CSP, not only `frame.html` and `kit.html` (scene code
-could load any other document of the origin in an iframe and send requests from there): `default-src 'self'; script-src
+Frame origins (`server/frames/frameServer.ts`): the request secret when set (no exemption), then the Host check: the
+Host must be the frame origin of a project or brand that exists. `frameSite()` reads the kind and the label, the server
+maps the label back to the id (a label it does not know rescans `projects/` or `brands/`, for a project or brand created
+since) and checks it still exists; anything else gets 403 (`127.0.0.1`, plain `localhost`, another port, a deleted
+project), which also stops DNS rebinding. Then GET/HEAD only, never `/api`, `/mcp`, `/index.html`,
+`/__open-in-editor`. Every response is sent with a CSP, not only `frame.html` and `kit.html` (scene code could load any
+other document of the origin in an iframe and send requests from there): `default-src 'self'; script-src
 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
 media-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors <editor origins>`
 (both `127.0.0.1` and `localhost` editor hosts), so scene code cannot fetch other origins and only the
 editor may embed frames. HMR is off, and the Cadence plugin removes the Vite client's websocket dial (in middleware
 mode it would target port 24678 and log an uncaught error on every page). `<meta name="cadence-editor-origin">` (space-separated list) drives postMessage origin checks.
-Font files (`.woff2`, `.woff`, `.ttf`, `.otf`) answer `Access-Control-Allow-Origin` to the editor origins, and only
-them: the brand panel shows the brand fonts (see "Brand builds").
+Font files (`.woff2`, `.woff`, `.ttf`, `.otf`) on a brand's frame origin answer `Access-Control-Allow-Origin` to the
+editor origins, and only them: the brand panel shows the brand fonts (see "Brand builds").
 The editor origin also answers 404 to `/__open-in-editor` (any website could otherwise launch the user's editor).
 
 Capture pages (`server/capture/capture.ts`, thumbnails, agent frames, seams, renders) are locked down beyond the CSP,
-which WebRTC ignores and which does not stop navigations or popups: every request that is not for the frame origin is
-aborted (`context.route('**')`), other connections go to a dead proxy (`127.0.0.1:9`, frame host bypassed), WebRTC may
+which WebRTC ignores and which does not stop navigations or popups: every request that is not for the page's frame origin (the
+project's, or the brand's for the kit sheet) is aborted (`context.route('**')`), other connections go to a dead proxy
+(`127.0.0.1:9`, that origin's host bypassed), WebRTC may
 not use UDP (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`), service workers are blocked and popups are
-closed. With a request secret they send it as `extraHTTPHeaders` (`openIsolatedPage()`), which only the frame origin
+closed. With a request secret they send it as `extraHTTPHeaders` (`openIsolatedPage()`), which only that frame origin
 receives since every other request is aborted; reference captures (`screenshotUrl()`) never send it. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first frame)
 and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE` (default `fr-FR`, checked at start);
 the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
 Contact sheets (`sheet.ts`) lay the strip's PNG tiles out as data URLs in a context of their own, JavaScript off and
-every request aborted: that page loads nothing and is not the frame origin.
+every request aborted: that page loads nothing and is on no frame origin.
 Scene code runs in the capture page's main world, next to `window.__cadence`, so what a page logs, throws and returns
 is untrusted in size too. Capture and render browsers therefore run in a child process: `browser-host.ts` forks
 `chromium-server.mjs` (plain JavaScript, `execArgv: []`) with `process.execPath`, or the Node binary
@@ -391,12 +405,12 @@ token.
   removes the marker; failure and cancel remove the folder. `sweep()` at start removes folders whose marker names a dead process.
 - **Checks** (`check.ts`): `brandProblems()` (brand.json, theme.css mirroring it, every named font loaded, SVG logos,
   notes) never runs the kit; the brand tests use it for the presets. `checkBrand()` adds the kit sheet: `kit.html`
-  on the frame origin renders logos, colors, fonts, every UI sample (`src/shared/kitSamples.tsx`) and extras, and
+  on the brand's frame origin renders logos, colors, fonts, every UI sample (`src/shared/kitSamples.tsx`) and extras, and
   reports what throws or does not load (`CaptureService.kitSheet`); Vite's compile error replaces the browser's
   when the kit does not load.
 - **Brand panel** (editor top bar, `BrandPanel.tsx`): a kit is code the brand builder may have written, so the editor
   never imports it. `kit.html?view=panel` (a smaller sheet) and `kit.html?view=extra&name=<extra>` run in sandboxed
-  iframes on the frame origin and post `KitToEditor` messages (`src/shared/frameProtocol.ts`): their natural size,
+  iframes on the brand's frame origin and post `KitToEditor` messages (`src/shared/frameProtocol.ts`): their natural size,
   and from the panel view the extras, the copy and the theme's `@font-face` rules as data. The editor checks each
   message, lists the texts as text and registers the faces as `FontFace`s under its own names (`Cadence brand <id>
   <role>`), so a brand font never applies to the editor's own text. Chrome lays out a cross-origin iframe only once
@@ -678,7 +692,7 @@ arrives, with or without Content-Length) runs in this order:
    managed dirs. Anything else is refused: Tailwind's fallback resolver opens `file:` URLs and reads `?` and `#` as
    part of the file name (`./a.css?.png`), so a file of another kind the agent writes is never compiled. A request
    whose query makes Tailwind compile a file of another kind (`&lang.css`, `index=<n>.css`) is refused by the build
-   and answered 404 by the frame origin. The guard also refuses a `node_modules/` or `package.json` in a managed
+   and answered 404 by the frame origins. The guard also refuses a `node_modules/` or `package.json` in a managed
    folder that holds a stylesheet at any depth: Tailwind's fallback resolver looks for them (packages, `imports` with
    `#`) in the folders above the importing stylesheet and follows them to files of any extension that the scan never
    reads. Names are compared as a case-insensitive disk compares them (APFS opens `Node_Modules` for `node_modules`
@@ -703,7 +717,7 @@ Any refusal answers 400 (409 for a brand being built, 413 over a cap) naming the
 the CLI's argv): a Claude Code session or a Codex thread missing on this machine starts again (the `session-lost`
 retry; Codex reports it as the `session_lost` subtype, so the retry never reads Codex's text).
 
-An archive is untrusted. Its scenes and kit components run in the frame like any scene (frame origin, CSP, no access
+An archive is untrusted. Its scenes and kit components run in the frame like any scene (their own frame origin, CSP, no access
 to the editor token); its text (`project.json`, notes, chats, `KIT.md`) reaches the agent like any project file,
 under the agent's usual restrictions. The reader accepts only regular files under safe relative paths (no `..`, no
 absolute path, no link, no duplicate under APFS case folding), and nothing outside the staging folders is written
@@ -1092,7 +1106,8 @@ contract: removing or reshaping one is a major version.
   servers answer 403 to any request without `X-Cadence-Secret` equal to it, compared in constant time over SHA-256
   digests (`hasRequestSecret()` in `server/http.ts`), before any other guard. `GET /oauth/<network>/callback` and `/mcp`
   keep their own guards instead. A plain browser cannot send the header, so a host app sets it on every request of its
-  own window (editor and frame origins); Cadence's capture and render pages add it themselves. Without the option,
+  own window (the editor origin and every frame origin: a host matches `*.localhost:<framePort>`, or the hosts
+  `frameSite()` in `src/shared/frameOrigin.ts` accepts); Cadence's capture and render pages add it themselves. Without the option,
   nothing changes. The editor opens two kinds of editor-origin URL in a new tab, outside that window: a network's
   connection page (`Profile.tsx`, `window.open`), which ends on `/oauth/<network>/callback`, and the captured
   references of the Media panel (`/api/projects/:id/assets/file`, `target="_blank"`). A host opens the first wherever it
@@ -1123,7 +1138,7 @@ contract: removing or reshaping one is a major version.
   endpoint, a failed connection, the server's close, a refused launch, a render and the 300 MB page through a host's
   process.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
-- The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
+- The frame origins never serve `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand
   kits there import the core's `dependencies` (its `package.json`, read at start) and nothing else: the frames Vite
   server lists them in `resolve.dedupe`, so they resolve from the core's `node_modules` and never from the importer's

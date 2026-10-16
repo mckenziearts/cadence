@@ -85,6 +85,7 @@ export interface CadenceConfig {
   /** A host app's secret, 32 characters or more: both servers then refuse any request without it in X-Cadence-Secret. */
   requestSecret?: string;
   editorOrigin: string;
+  /** Base of the frame origins (frameOriginOf), `http://localhost:<framePort>`, which serves nothing itself. */
   frameOrigin: string;
   mcpUrl: string;
   ffmpegPath: string;

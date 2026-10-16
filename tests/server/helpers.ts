@@ -3,10 +3,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { EventEmitter } from 'node:events';
+import http from 'node:http';
 import net from 'node:net';
 import type { TestContext } from 'node:test';
 import { loadConfig } from '../../server/config';
 import type { CadenceConfig, Network } from '../../server/contracts';
+import { type FrameKind, frameOriginOf } from '../../src/shared/frameOrigin';
 import type { NetworkId } from '../../src/shared/types';
 
 export const BRAND_JSON = {
@@ -90,6 +92,30 @@ export async function makeRoot(): Promise<TestRoot> {
   await fs.mkdir(path.join(root, 'projects'));
   const config = loadConfig({ root, editorPort: 5299, framePort: 5300 });
   return { root, config, cleanup: () => fs.rm(root, { recursive: true, force: true }) };
+}
+
+/**
+ * A GET on a project's or brand's frame origin under `base` (`CadenceConfig.frameOrigin`), sent to 127.0.0.1 with that
+ * Host: fetch ignores a Host header, and not every system resolves `*.localhost`.
+ */
+export async function frameGet(
+  base: string,
+  site: { kind: FrameKind; id: string },
+  pathname: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
+  const { host } = new URL(await frameOriginOf(base, site.kind, site.id));
+  return new Promise((resolve, reject) => {
+    const options = { host: '127.0.0.1', port: new URL(base).port, path: pathname, headers: { host, ...headers } };
+    http
+      .get(options, (res) => {
+        let body = '';
+        res
+          .on('data', (chunk) => (body += chunk))
+          .on('end', () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers }));
+      })
+      .on('error', reject);
+  });
 }
 
 /** Resolves with the event's arguments, rejects after `ms`. */

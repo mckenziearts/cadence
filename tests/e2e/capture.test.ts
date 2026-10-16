@@ -30,7 +30,9 @@ import { captureLocale } from '../../server/config';
 import type { CaptureService } from '../../server/contracts';
 import { createToolServer, type McpDeps } from '../../server/mcp/tools';
 import { HttpError } from '../../server/util';
+import { frameOriginOf } from '../../src/shared/frameOrigin';
 import { FORMATS, SAFE_AREAS, type ProjectFile } from '../../src/shared/types';
+import { frameGet } from '../server/helpers';
 import { near, pixel, RecordingHub, startHarness, type Harness } from './helpers/harness';
 
 let h: Harness;
@@ -270,7 +272,8 @@ describe('PlaywrightCapture.frames', () => {
     await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
     const browser = await launchChromium();
     try {
-      const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+      // The page opens on the project's origin under this base, a name Chromium resolves to the loopback itself.
+      const origin = `http://localhost:${(site.address() as AddressInfo).port}`;
       await assert.rejects(
         openFramePage(browser, origin, { projectId: id, sceneId: null, format: '16:9', scale: 0.25 }),
         (e: Error) => {
@@ -390,7 +393,13 @@ describe('PlaywrightCapture.screenshotUrl', () => {
     } finally {
       site.close();
     }
-    for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'pas une url', `${h.config.frameOrigin}/frame.html`]) {
+    for (const bad of [
+      'file:///etc/passwd',
+      'javascript:alert(1)',
+      'pas une url',
+      `${h.config.frameOrigin}/frame.html`,
+      `${await frameOriginOf(h.config.frameOrigin, 'project', id)}/frame.html`,
+    ]) {
       await assert.rejects(
         capture.screenshotUrl(bad, { device: 'desktop', policy: LOCAL }),
         (e) => e instanceof HttpError && e.status === 400,
@@ -417,14 +426,25 @@ describe('PlaywrightCapture.screenshotUrl', () => {
         bad,
       );
     }
-    const square = `${h.config.frameOrigin}/@fs${h.store.dir(id)}/assets/square.svg`;
+    const origin = await frameOriginOf(h.config.frameOrigin, 'project', id);
+    const asset = `/@fs${h.store.dir(id)}/assets/square.svg`;
+    await mkdir(path.join(h.store.dir(id), 'assets'), { recursive: true });
+    await writeFile(
+      path.join(h.store.dir(id), 'assets', 'square.svg'),
+      '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>',
+    );
+    assert.equal(
+      (await frameGet(h.config.frameOrigin, { kind: 'project', id }, asset)).status,
+      200,
+      'the frame origin serves it',
+    );
     const site = http.createServer((req, res) => {
       if (req.url === '/to-frame') {
-        res.writeHead(302, { Location: `${h.config.frameOrigin}/frame.html?project=${id}&mode=capture` });
+        res.writeHead(302, { Location: `${origin}/frame.html?project=${id}&mode=capture` });
         return res.end();
       }
       res.setHeader('Content-Type', 'text/html');
-      res.end(`<body style="margin:0;background:#123456"><img src="${square}" style="width:400px;height:400px"></body>`);
+      res.end(`<body style="margin:0;background:#123456"><img src="${origin}${asset}" style="width:400px;height:400px"></body>`);
     });
     await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
     const url = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
