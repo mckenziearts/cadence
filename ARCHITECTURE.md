@@ -276,7 +276,7 @@ the brand. Any other stylesheet scans its home. A file of another kind that a qu
 (`?lang.css`) is refused. `resolve.preserveSymlinks` is on: Vite resolves a URL again after the frame handler checked
 it, and would otherwise read where a link there leads by then. A module keeps the path its URL or import names, which
 the load hooks read without following a link, so no link inside a project is served, even one to a file of that
-project. These checks take a module under those dirs by its configured path or by its real path. `css.modules` is off (postcss-modules would inline what `composes` and `@value`
+project. These checks take a module under those dirs by its configured path or by its real path, compared without case or Unicode normalization: macOS reaches a folder under those names too, which then fail the no-follow reads. `css.modules` is off (postcss-modules would inline what `composes` and `@value`
 name, wherever it is): a `.module.css` compiles as plain CSS. `css.postcss.map` is off (postcss would read the `.map` a
 stylesheet names, even in a string, through any link, and wait forever on a pipe). `build.assetsInlineLimit` is 0. The plugin's `load`
 hook, ordered last, reads a file under those dirs that no other plugin loads, without following a link, and returns it

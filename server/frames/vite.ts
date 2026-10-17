@@ -654,9 +654,13 @@ const URL_QUERY = /[?&]url(?:&|$)/;
 // names. A module's `?url` and `?init` only give its URL.
 const WASM_MODULE = /(?<![?#].*)\.wasm$|[?&]vite-wasm-instance(?:&|$)/;
 
-/** The managed folder (by the name it is reached under) that holds `file`. */
+/**
+ * The managed folder (by the name it is reached under) that holds `file`. Compared folded: a file system that ignores
+ * case or normalization (macOS) reaches the folder under other names too, which frameReach's real paths let through. The
+ * no-follow reads then refuse such a name, since it is not inside the folder's own.
+ */
 function rootOf(managedNames: string[], file: string): string | undefined {
-  return managedNames.find((dir) => isInside(dir, file));
+  return managedNames.find((dir) => isInside(foldName(dir), foldName(file)));
 }
 
 /**

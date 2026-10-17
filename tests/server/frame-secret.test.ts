@@ -598,3 +598,33 @@ test('a WebAssembly module of a project loads by its URL only: no read through a
     await fs.rm(outside, { force: true });
   }
 });
+
+test('a managed folder named in another case is still managed: no plugin of its stylesheets runs, no link in it is read', async (t) => {
+  const scenes = path.join(config.projectsDir, 'p', 'scenes');
+  await fs.mkdir(scenes, { recursive: true });
+  // The same folder where the file system ignores case, as macOS does by default.
+  const other = path.join(path.dirname(config.projectsDir), path.basename(config.projectsDir).toUpperCase(), 'p', 'scenes');
+  if (!(await fs.stat(other).catch(() => null))) return t.skip('this file system tells cases apart');
+  const behind = http.createServer(vite!.middlewares);
+  await new Promise<void>((resolve) => behind.listen(0, '127.0.0.1', resolve));
+  const outside = path.join(path.dirname(config.projectsDir), 'outside.txt');
+  await write(outside, 'OUTSIDE-MARKER\n');
+  await fs.symlink(outside, path.join(scenes, 'linked.txt'));
+  await write(path.join(scenes, 'plugin.mjs'), 'globalThis.cadenceCasePlugin = true;\nexport default function () {}\n');
+  await write(path.join(scenes, 'cased.css'), '@import "tailwindcss";\n@plugin "./plugin.mjs";\n');
+  try {
+    await request(port, `/@fs${other}/cased.css`, { headers: secret });
+    assert.equal('cadenceCasePlugin' in globalThis, false);
+    // Vite's file server, then its asset plugin.
+    for (const query of ['?raw', '?import&raw']) {
+      const { body } = await request((behind.address() as AddressInfo).port, `/@fs${other}/linked.txt${query}`, {
+        headers: secret,
+      });
+      assert.doesNotMatch(body, /OUTSIDE-MARKER/, query);
+    }
+  } finally {
+    behind.close();
+    for (const file of ['linked.txt', 'plugin.mjs', 'cased.css']) await fs.rm(path.join(scenes, file), { force: true });
+    await fs.rm(outside, { force: true });
+  }
+});
