@@ -320,6 +320,7 @@ describe('frame origins keep to their own project or brand', () => {
       `/@fs${h.brands.dir('other')}/index.tsx`,
       `/@fs${h.brands.dir('other')}/brand.json?import`,
       `/@fs${h.brands.dir('other')}/theme.css?inline`,
+      `/@fs${h.brands.dir('test')}/theme.css?inline&project=${other}`,
       `${fromRoot(h.brands.dir('other'))}/index.tsx`,
       '/@id/@brands/other/index.tsx',
       `/@fs${own}/../${other}/scenes/blue.tsx`,
@@ -343,6 +344,7 @@ describe('frame origins keep to their own project or brand', () => {
       `/@fs${h.store.sceneFile(id, 'blue')}`,
       fromRoot(h.store.sceneFile(id, 'blue')),
       `/@fs${h.brands.dir('other')}/index.tsx`,
+      `/@fs${h.brands.dir('test')}/theme.css?inline&project=${id}`,
     ]) {
       assert.equal((await request(url, { host: brandHost })).status, 403, url);
     }

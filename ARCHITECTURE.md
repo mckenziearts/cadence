@@ -258,28 +258,41 @@ by), `node_modules/` (+ `CADENCE_VITE_CACHE_DIR`), so the
 server code and root files are never served; `server.fs.deny` adds `**/.cadence/**`, `**/.git/**`, `.env*`. `CADENCE_VITE_CACHE_DIR`
 gives a server its own dependency cache.
 Aliases: `cadence` for `src/runtime/index.ts`, `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
-`@tailwindcss/vite`, and a Cadence plugin whose `hotUpdate` returns `[]` for files under projects/, brands/,
-templates/ (Cadence reloads frames itself). Its `transform` also refuses a stylesheet under those dirs that imports or
-links (`@import`, `@reference`, `url()`, `image-set()`) a file outside its home and the templates
-(`assertCssStaysHome()`): Tailwind inlines what an `@import` names and Vite what a `url()` names with `?inline`,
-wherever the file is. Each reference is checked as written, decoded, and without its query or fragment, relative to the
-stylesheet and to the entry Tailwind rebases on; a package name passes without dot segments, an imported stylesheet is
-read in turn. These checks take a module under those dirs by its configured path or by the real path Vite gives a module
-an import resolved. `css.modules` is off (postcss-modules would inline what `composes` and `@value` name, wherever it
-is): a `.module.css` compiles as plain CSS. The plugin's `load` hook, ordered last, reads a file under those dirs that no
-other plugin loads and returns it without a map: Vite's own read would fill the map a `sourceMappingURL` comment names
-with the content of every file its `sources` list. `tsconfig` is the core's `tsconfig.json`: otherwise each file
+`@tailwindcss/vite` (its `transform` skips every file under projects/, brands/, templates/), and a Cadence plugin whose
+`hotUpdate` returns `[]` for files under those dirs (Cadence reloads frames itself). Its `transform` compiles a
+stylesheet under those dirs itself (`compileStylesheet()`, with `compile()` from `tailwindcss`), so Tailwind opens no
+managed file on its own. The home of a stylesheet is its project, that project's brand and the templates (a brand's:
+the brand and the templates). An `@import` or `@reference` by path or `@brands/` must lead to a file of the home, read
+without following a link; a package name resolves as `src/runtime/index.ts` would and must stay in the core's
+`node_modules/`; `@plugin` and `@config` load no module. A `url()` or `image-set()`, in the entry or an imported file,
+must name a file of the home, checked as written, decoded, and without its query or fragment, relative to the file and
+to the entry (Cadence rebases an imported file's `url()` on the entry, as Tailwind does). The output may keep no
+`@import` (Tailwind leaves `url()` and remote ones to the browser) and no reference with `?inline`, which Vite would
+inline through any link. Utilities come from the class names Cadence reads itself (oxide's `Scanner` over the files of
+a readdir walk that follows no link and skips `.git`, `.cadence` and `node_modules`). A brand theme is compiled per
+project (`theme.css?inline&project=<id>&g=<n>`) and scans that project and the templates, whatever `@source` it holds;
+the frame origins answer 403 to a `project=` other than their own, and the build refuses one whose project does not use
+the brand. Any other stylesheet scans its home. A file of another kind that a query would compile as CSS
+(`?lang.css`) is refused. `resolve.preserveSymlinks` is on: Vite resolves a URL again after the frame handler checked
+it, and would otherwise read where a link there leads by then. A module keeps the path its URL or import names, which
+the load hooks read without following a link, so no link inside a project is served, even one to a file of that
+project. These checks take a module under those dirs by its configured path or by its real path. `css.modules` is off (postcss-modules would inline what `composes` and `@value`
+name, wherever it is): a `.module.css` compiles as plain CSS, and `build.assetsInlineLimit` is 0. The plugin's `load`
+hook, ordered last, reads a file under those dirs that no other plugin loads, without following a link, and returns it
+without a map: Vite's own read would fill the map a `sourceMappingURL` comment names with the content of every file its
+`sources` list. A second Cadence plugin loads `?raw` and `?inline` of those files the same way (a non-CSS `?inline` as a
+`data:` URL), and a middleware placed before Vite's raw file one serves those files themselves (`/@fs/...` and
+root-relative paths, with ranges), opened without following a link. `tsconfig` is the core's `tsconfig.json`: otherwise each file
 compiles with the one found above it, and a project's may `extend` any JSON file, whose compiler options would show in
 the code and the errors Vite gives back. Its `resolveId` resolves a bare or `#` import of a file under those dirs as
 `src/runtime/index.ts` would, and refuses one the core lacks: Vite looks a package up from the importer's folder, and its
 dependency optimizer bundles what a package imports with none of these checks. A plugin of `optimizeDeps.rolldownOptions`
 refuses to read a file under those dirs, which an alias (`@brands/../`) or a link could still lead the optimizer to.
 
-What the frame checks leave open: they compare paths before Vite reads, so a process an agent turn leaves running can
-swap a checked file for a link in between (the `@plugin` scan has the same gap), and a hard link is the file itself to
-every path check; an `@source` lets Tailwind read the class names of the files it names into the stylesheet that holds
-it, a brand theme's (`@source '../../projects'`) or one a project writes (also as `@import 'tailwindcss' source(...)`),
-which may name another project; `import.meta.glob` lists the file names its pattern matches; a scene's diagnostics tell whether a file
+What the frame checks leave open: a hard link is the file itself to every path check; Vite still reads an `.svg` that a
+compiled stylesheet's `url()` names, through any link, to decide whether to inline it (it never does), so a FIFO there,
+or a link a process an agent turn leaves running swaps in after the check, can stall that compile and hold one of
+libuv's four threads, which every file read of the server shares; `import.meta.glob` lists the file names its pattern matches; a scene's diagnostics tell whether a file
 it imports exists; a project's origin reads the brand its `project.json` names, so editing that file changes the brand
 it reads; a scene whose import leads the optimizer to a file under those dirs fails its run, and with it the packages
 other frames were waiting for, which load at their next import. `optimizeDeps.entries = ['index.html', 'frame.html']`; `include` adds React,
@@ -319,10 +332,6 @@ projects/<id>/
 State files (chats, `publications.json`, `<root>/.cadence/settings.json` and `accounts.json`) count as empty only when
 they do not exist: one that does not parse is a 500 naming the file (`readJsonOr`), and the next save never replaces
 what it held. Caches (`seams.json`, `<file>.analysis.json`) are measured again instead.
-
-Tailwind caveat: the scanner skips gitignored subfolders of an `@source` folder unless the `@source` names them
-directly. `.gitignore` ignores the `projects/` folder as a whole, never individual project folders. Brand folders are
-ignored one by one (all but `cadence`), which is fine: each brand's `theme.css` names its own folder (`@source '.'`).
 
 Scene durations: seconds rounded to the ms, min 0.1. Scene order = `project.json` order.
 `tempo` (default 120) is the fallback beat grid and converts template bars to seconds (1 bar = 240 / tempo s).
@@ -394,9 +403,10 @@ Deterministic: no module-level mutable state besides the asset base; `random(see
 
 ```
 brand.json         BrandFile (colors hex, fonts, radius, logo paths, voice, language)
-theme.css          Tailwind v4 entry for frames: @import "tailwindcss" source(none); @source "../../projects";
-                   @source "../../templates"; @source "."; font imports (@fontsource... or @font-face on ./fonts);
-                   @theme tokens (--color-primary, --color-surface..., --font-display, --font-body, --font-mono, radii)
+theme.css          Tailwind v4 entry for frames: @import "tailwindcss" source(none); font imports (@fontsource... or
+                   @font-face on ./fonts); @theme tokens (--color-primary, --color-surface..., --font-display,
+                   --font-body, --font-mono, radii). Compiled per project, with the classes of that project and the
+                   templates: an @source line changes nothing
 index.tsx          default export: BrandKit (see src/shared/brandKit.ts); named exports for extras
 ui/*.tsx           kit components (Card to ListItem), presentational, every state is a prop
 extras/*.tsx       brand-specific showcase components (PaymentCard, ProductCard, TransactionRow...)
@@ -719,23 +729,17 @@ arrives, with or without Content-Length) runs in this order:
    created with `wx`, so two entries never land on one path. Each `.css` file is scanned as it streams to the disk:
    one that holds `@plugin` or `@config`, comments removed as Tailwind removes them (a backslash in a comment escapes
    the next character), refuses the import. Other files are not scanned, so chats, history and notes may quote the
-   directives: Tailwind reads one only through a stylesheet that imports it by path, which step 3 refuses. Inside the
-   app, the frame server's guard (`assertNoCssCodeExec`) scans every managed `.css` file and checks each `@import` and
-   `@reference` on its own, even one inside a string. Only two kinds pass: a package name (`tailwindcss`,
-   `@fontsource-variable/inter/standard.css`), and a path or `@brands/` import that names a `.css` file the scan reads,
-   never a folder, a link to another kind of file, a file under `.git` or behind a linked folder that leads out of the
-   managed dirs. Anything else is refused: Tailwind's fallback resolver opens `file:` URLs and reads `?` and `#` as
-   part of the file name (`./a.css?.png`), so a file of another kind the agent writes is never compiled. A request
-   whose query makes Tailwind compile a file of another kind (`&lang.css`, `index=<n>.css`) is refused by the build
-   and answered 404 by the frame origins. The guard also refuses a `node_modules/` or `package.json` in a managed
-   folder that holds a stylesheet at any depth: Tailwind's fallback resolver looks for them (packages, `imports` with
-   `#`) in the folders above the importing stylesheet and follows them to files of any extension that the scan never
-   reads. Names are compared as a case-insensitive disk compares them (APFS opens `Node_Modules` for `node_modules`
-   and `a.CSS` for `a.css`).
-3. Checks, one import at a time from here on, before anything moves: the staging folders pass the frame server's
-   guard (`cssCodeOffenders`), with each path import read from where its folder lands (and looked up in the staging
-   folders too), so nothing that would stop every frame compile moves in; a brand of the archive being
-   built here (its folder holds `.building`) refuses the whole import (409), and so does a local folder of that id that
+   directives: the frame build reads one only through a stylesheet that imports it by path, which step 3 refuses.
+3. Checks, one import at a time from here on, before anything moves: the staging folders pass `cssCodeOffenders`, so
+   nothing that would stop every frame compile moves in. It checks each `@import` and `@reference` of every `.css`
+   file on its own, even one inside a string, read from where its folder lands (and looked up in the staging folders
+   too). Only two kinds pass: a package name (`tailwindcss`, `@fontsource-variable/inter/standard.css`), and a path or
+   `@brands/` import that names a `.css` file the scan reads, never a folder, a link to another kind of file, a file
+   under `.git` or behind a linked folder that leads out of the managed dirs; `compileStylesheet` would read anything
+   else as CSS or refuse it. It also refuses a `node_modules/` or `package.json` in a folder that holds a stylesheet at
+   any depth (an export never writes them): a bare or `#` import resolves through them. Names are compared as a
+   case-insensitive disk compares them (APFS opens `Node_Modules` for `node_modules` and `a.CSS` for `a.css`). Then
+   a brand of the archive being built here (its folder holds `.building`) refuses the whole import (409), and so does a local folder of that id that
    holds no brand; a brand not installed here must pass `brandProblems`; each `project.json` must pass the
    store's schema (the rules `read()` applies, duplicate scene ids included), and its brand must be `cadence`, in the
    archive, or installed here and not being built. The empty folders a new project starts with (`components/`,

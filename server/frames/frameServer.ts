@@ -153,7 +153,7 @@ export function createFrameHandler(deps: {
       return json(res, req, 200, { error: await diagnoseFile(vite, file, await reach(site)) });
     }
     // Vite's /__open-in-editor would let any page (or scene) launch the user's code editor.
-    // Tailwind would compile the file as CSS whatever its extension (see COMPILED_AS_CSS in vite.ts).
+    // Such a query makes Vite compile a file of any extension as CSS (isCSSRequest), and Tailwind with it.
     if (
       pathname === '/' ||
       pathname === '/index.html' ||
@@ -162,6 +162,8 @@ export function createFrameHandler(deps: {
     ) {
       return send(res, req, 404, 'text/plain; charset=utf-8', m().core.http.notFound);
     }
+    // A brand theme holds the classes of the project it is compiled for (see compileStylesheet in vite.ts).
+    if (!compiledForOwnProject(site, search)) return send(res, req, 403, 'text/plain; charset=utf-8', m().api.frames.forbidden);
     // fs.allow covers every project and brand: a frame reads only its own, whatever path or module leads to another.
     if (!(await servable(site, url))) return send(res, req, 403, 'text/plain; charset=utf-8', m().api.frames.forbidden);
     // The editor's brand panel loads the brand fonts from the brand's origin: kit.html tells it the files, never the kit's CSS.
@@ -187,6 +189,15 @@ export function createFrameHandler(deps: {
 function own(site: Site, kind: FrameKind, id: string): string {
   if (site.kind !== kind || id !== site.id) throw new HttpError(403, m().api.frames.forbidden);
   return id;
+}
+
+/** No `project=`, or only this origin's project: Vite decodes the URL once more before the plugins read the query. */
+function compiledForOwnProject(site: Site, search: string): boolean {
+  try {
+    return new URLSearchParams(decodeURI(search)).getAll('project').every((id) => site.kind === 'project' && id === site.id);
+  } catch {
+    return false;
+  }
 }
 
 /** Vite decodes the URL before Tailwind sees it; a query that does not decode is refused too. */

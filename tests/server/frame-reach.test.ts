@@ -1,15 +1,13 @@
-// What one frame origin may read, without a server: realPath's bound, homeOf, frameReach and assertCssStaysHome.
+// What one frame origin may read, without a server: realPath's bound, homeOf and frameReach.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import type { ViteDevServer } from 'vite';
 import { loadConfig } from '../../server/config';
-import { assertCssStaysHome, frameReach, homeOf } from '../../server/frames/vite';
+import { frameReach, homeOf } from '../../server/frames/vite';
 import { realPath } from '../../server/util';
 import { makeRoot } from './helpers';
-
-const OUTSIDE = /is outside this stylesheet's project, brand and the templates/;
 
 async function write(file: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -102,48 +100,6 @@ test('a frame reads its project, its brand, the templates and the app, never ano
       [path.join(projectsDir, 'a', ...Array<string>(200).fill('a')), false],
     ];
     for (const [file, expected] of cases) assert.equal(await readable(file), expected, path.relative(root, file).slice(0, 80));
-  } finally {
-    await cleanup();
-  }
-});
-
-test('a stylesheet may not import or link outside its home and the templates, by any hop or spelling', async () => {
-  const { config, cleanup } = await linkedRoot();
-  try {
-    const { projectsDir } = config;
-    await write(path.join(projectsDir, 'b', 'secret.css'), '.secret {}');
-    await write(path.join(projectsDir, 'a', 'components', 'hop.css'), "@import '../../b/secret.css';\n");
-    await write(path.join(projectsDir, 'a', 'components', 'own.css'), '.own {}');
-    const refused: [string, RegExp][] = [
-      ["@import './hop.css';", OUTSIDE],
-      ['.a { background: url(..%2F..%2Fb%2Fsecret.css); }', OUTSIDE],
-      ['.a { background: url(%2E%2E/%2E%2E/b/secret.css); }', /cannot be followed here/],
-      ['.a { background: url(../../b); }', OUTSIDE],
-      [`.a { background: url(./${'a/'.repeat(40)}x.png); }`, OUTSIDE],
-    ];
-    for (const [css, reason] of refused) {
-      const file = path.join(projectsDir, 'a', 'components', 'entry.css');
-      await write(file, css);
-      await assert.rejects(assertCssStaysHome(file, config), reason, css.slice(0, 60));
-    }
-    const file = path.join(projectsDir, 'a', 'components', 'entry.css');
-    await write(file, "@import './own.css';\n.a { background: url(./missing.png); }\n");
-    await assertCssStaysHome(file, config);
-  } finally {
-    await cleanup();
-  }
-});
-
-test('a template stylesheet may not import a project file, named by its configured or its real path', async () => {
-  const { real, linked, cleanup } = await linkedRoot();
-  try {
-    await write(path.join(real, 'projects', 'b', 'secret.css'), '.secret {}');
-    // Vite names a module by its URL's path, within the configured folders, or by the real path an import resolved.
-    for (const templatesDir of [linked.templatesDir, path.join(real, 'templates')]) {
-      const file = path.join(templatesDir, 'scenes', 't', 'x.css');
-      await write(file, "@import '../../../projects/b/secret.css';\n");
-      await assert.rejects(assertCssStaysHome(file, linked), OUTSIDE, file);
-    }
   } finally {
     await cleanup();
   }

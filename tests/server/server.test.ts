@@ -131,7 +131,7 @@ test("a scene importing another project's file gets the diagnostic that names it
     "import { secret } from '../../other/scenes/secret';\nexport default () => secret;\n",
   );
   const res = await fetch(`${editorOrigin}/api/projects/${project.id}/scenes/${scene}/diagnostics`, { headers });
-  assert.deepEqual(await res.json(), { error: m().api.frames.notServed(await fs.realpath(other)) });
+  assert.deepEqual(await res.json(), { error: m().api.frames.notServed(other) });
 });
 
 test('a scene importing its own component that fails to compile gets the compile error', async () => {

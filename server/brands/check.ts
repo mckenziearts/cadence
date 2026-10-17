@@ -156,9 +156,6 @@ async function themeProblems(dir: string, root: string, css: string, file: Brand
   const require = createRequire(path.join(root, 'package.json'));
   const tailwind = "@import 'tailwindcss' source(none);";
   if (!css.includes(tailwind)) problems.push(t.themeLine(tailwind));
-  for (const source of ['../../projects', '../../templates', '.']) {
-    if (!css.includes(`@source '${source}';`)) problems.push(t.themeLine(`@source '${source}';`));
-  }
   const token = (name: string) => new RegExp(`--${name}:\\s*([^;]+);`).exec(css)?.[1].trim();
   for (const key of COLOR_KEYS) {
     if (token(`color-${kebab(key)}`) !== file.colors?.[key]) {

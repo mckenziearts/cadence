@@ -17,9 +17,17 @@ import { FileProjectStore } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import { startServer } from '../../server/index';
 import { m } from '../../server/i18n';
-import { assertNoCssCodeExec } from '../../server/frames/vite';
 import { HttpError, KeyedMutex, pathExists } from '../../server/util';
-import { fileEntry, makeRoot, nextEvent, rawHeader, rejectsWithStatus, writeCompleteBrand, type TestRoot } from './helpers';
+import {
+  assertNoCssCodeExec,
+  fileEntry,
+  makeRoot,
+  nextEvent,
+  rawHeader,
+  rejectsWithStatus,
+  writeCompleteBrand,
+  type TestRoot,
+} from './helpers';
 
 const MiB = 1024 * 1024;
 

@@ -58,14 +58,21 @@ export function writeJsonAtomic(file: string, value: unknown): Promise<void> {
 export async function readFileNoFollow(root: string, file: string): Promise<Buffer>;
 export async function readFileNoFollow(root: string, file: string, encoding: 'utf8'): Promise<string>;
 export async function readFileNoFollow(root: string, file: string, encoding?: 'utf8'): Promise<Buffer | string> {
-  // O_NONBLOCK: a FIFO would otherwise hold a libuv thread until a writer comes; it changes nothing for a regular file.
-  const handle = await openInside(root, file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const handle = await openFileNoFollow(root, file);
   try {
-    if (!(await handle.stat()).isFile()) throw new Error(`${file} is not a regular file`);
     return await handle.readFile(encoding ?? null);
   } finally {
     await handle.close();
   }
+}
+
+/** The regular file `file` opened for reading as readFileNoFollow does; the caller closes it. */
+export async function openFileNoFollow(root: string, file: string): Promise<FileHandle> {
+  // O_NONBLOCK: a FIFO would otherwise hold a libuv thread until a writer comes; it changes nothing for a regular file.
+  const handle = await openInside(root, file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  if ((await handle.stat().catch(() => null))?.isFile()) return handle;
+  await handle.close();
+  throw new Error(`${file} is not a regular file`);
 }
 
 /** writeFileAtomic for a folder an agent turn can write: a folder it swaps for a link never sends the write elsewhere. */
@@ -426,7 +433,7 @@ export function foldName(name: string): string {
 /** A frame the agent looked at, as saved under `.cadence/frames`: JPEG normally, PNG from the MCP tool. */
 export const AGENT_FRAME_NAME = /^[\w.-]+\.(jpe?g|png)$/;
 
-/** A `node_modules` folder or a `package.json`, through which Tailwind's fallback resolver reaches a file of any kind. */
+/** A `node_modules` folder or a `package.json`, through which a bare or `#` import resolves to a file of any kind. */
 export function isResolverInput(name: string): boolean {
   const folded = foldName(name);
   return folded === 'node_modules' || folded === 'package.json';

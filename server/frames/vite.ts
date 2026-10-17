@@ -2,11 +2,17 @@
 // own modules with `npm run dev` (server/editor.ts). Cadence reloads frames itself, so HMR is off.
 // Adapted from saeedvaziry/caleb-video-editor (MIT)
 import fs from 'node:fs/promises';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { compile } from 'tailwindcss';
 import {
+  createIdResolver,
   createServer,
+  isCSSRequest,
   isFileLoadingAllowed,
   mergeConfig,
   type DevEnvironment,
@@ -16,10 +22,11 @@ import {
   type ViteDevServer,
 } from 'vite';
 import { ID_PATTERN } from '../../src/shared/types';
+import { contentType, parseRange } from '../api/files';
 import type { CadenceConfig } from '../contracts';
 import { m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
-import { CssCodeScan, foldName, isInside, isResolverInput, readFileNoFollow, realPath } from '../util';
+import { CssCodeScan, foldName, isInside, isResolverInput, openFileNoFollow, readFileNoFollow, realPath } from '../util';
 
 export async function createVite({
   config,
@@ -30,6 +37,9 @@ export async function createVite({
   overrides?: InlineConfig;
 }): Promise<ViteDevServer> {
   const managed = [config.projectsDir, config.brandsDir, config.templatesDir];
+  // A module is named by the path its URL or import names (preserveSymlinks), so a dir reached through a link (`/var` on
+  // macOS) is known under both names.
+  const managedNames = [...new Set([...managed, ...(await Promise.all(managed.map(realPath)))])];
   const cacheDir = process.env.CADENCE_VITE_CACHE_DIR;
   const { dependencies } = JSON.parse(await fs.readFile(path.join(config.root, 'package.json'), 'utf8')) as {
     dependencies: Record<string, string>;
@@ -53,9 +63,7 @@ export async function createVite({
         // scene code runs on the frame origin and must not read server/, bin/, tests/ or the root config files.
         allow: [
           path.join(config.root, 'src'),
-          // Vite names a module by the real path its import resolved to, so a dir reached through a link (`/var` on
-          // macOS) is allowed under both names.
-          ...new Set([...managed, ...(await Promise.all(managed.map(realPath)))]),
+          ...managedNames,
           path.join(config.root, 'node_modules'),
           ...(cacheDir ? [cacheDir] : []),
         ],
@@ -74,6 +82,9 @@ export async function createVite({
       // Vite resolves a bare import from the importer's folder, and managed dirs may live outside the core (a host app's
       // own folders) with no node_modules: deduped ids resolve from `root` instead, so scenes get the core's packages.
       dedupe: Object.keys(dependencies),
+      // Else Vite resolves a URL again after the frame handler checked it, to where a link there leads by then: a file
+      // swapped for a link to another project's. The load hooks read the path it names without following a link.
+      preserveSymlinks: true,
     },
     // Several Cadence servers (tests, CLI renders) may run side by side: each can get its own dependency cache.
     ...(cacheDir ? { cacheDir } : {}),
@@ -98,11 +109,25 @@ export async function createVite({
     // compiler options would reach the frame and the diagnostics in the code and the errors Vite gives back.
     tsconfig: path.join(config.root, 'tsconfig.json'),
     // postcss-modules inlines what `composes: ... from` and `@value ... from` name, wherever that file is, out of reach
-    // of assertCssStaysHome: a `.module.css` compiles as plain CSS.
+    // of compileStylesheet's checks: a `.module.css` compiles as plain CSS.
     css: { modules: false },
-    plugins: [cadencePlugin(managed, config), react(), tailwindcss()],
+    // Vite reads an SVG a URL names to inline it as a data: URL, through any link: it reads it still, inlines it never.
+    build: { assetsInlineLimit: 0 },
+    plugins: [
+      cadencePlugin(managedNames, config),
+      cadenceAssets(managedNames),
+      react(),
+      // The editor's own stylesheets (`npm run dev`); managed ones are compiled by compileStylesheet.
+      ...skipManaged(tailwindcss(), managedNames),
+    ],
   };
   const server = await createServer(mergeConfig(base, overrides) as InlineConfig);
+  // Vite's file servers follow links: a managed file swapped for one after frameReach's check would be served.
+  const stack = server.middlewares.stack;
+  const rawFs = stack.findIndex(({ handle }) => typeof handle === 'function' && handle.name === 'viteServeRawFsMiddleware');
+  if (rawFs < 0)
+    throw new Error("Vite's raw file middleware (viteServeRawFsMiddleware) is gone: managed files would be served by it");
+  stack.splice(rawFs, 0, { route: '', handle: serveManagedFile(server, managedNames) });
   // Vite watches its root only: managed dirs a host app keeps elsewhere are added, so an edit made from a terminal
   // session or by hand reaches ProjectStore.watch() there too.
   server.watcher.add(managed.filter((dir) => !isInside(config.root, dir)));
@@ -130,34 +155,13 @@ async function brandIconSets(brandsDir: string): Promise<string[]> {
 }
 
 // Only infra that never holds a managed stylesheet; an import that reaches into it is refused (importsOtherThanCss),
-// whoever wrote the file there. Everything else is read:
-// Tailwind inlines @import itself and honours neither this set nor Vite's server.fs rules, so a @plugin in any
-// import-reachable .css runs code at compile time. A name-based skip of e.g. `renders` was a bypass, because a dir
-// named `renders` under the agent-writable components/ is import-reachable (components/renders/evil.css).
+// whoever wrote the file there.
 const SKIP_WALK = new Set(['.git']);
-// What a bare or `#` specifier resolves through (isResolverInput): Tailwind's fallback resolver (enhanced-resolve)
-// follows node_modules and package.json `imports` to a file of any extension, which the walk never reads. It looks for
-// them only in the folders above the importing stylesheet: one in a folder holding no stylesheet is out of its reach.
-// No project, brand or template needs either, archives leave them out, and outside the managed dirs only the app's own
-// are found.
 
 /**
- * Refuse any CSS under the managed dirs that carries `@plugin` or `@config`: Tailwind would load and run that module
- * in this process when it compiles. The whole subtree is scanned (not just the imported entry) because Tailwind
- * resolves @import itself, so a leaf reached through @import hops, in any directory, would otherwise slip past. CSS
- * compiles are infrequent (brand themes, scene-imported CSS), so walking the managed dirs each time stays cheap.
- */
-export async function assertNoCssCodeExec(managedDirs: string[], brandsDir: string): Promise<void> {
-  const offenders = await cssCodeOffenders(managedDirs, brandsDir);
-  if (offenders.length) {
-    throw new Error(
-      `CSS @plugin/@config runs code at build time and is not allowed here, nor node_modules or package.json, through which an @import reaches unchecked files:\n${offenders.join('\n')}`,
-    );
-  }
-}
-
-/**
- * The files and folders under `dirs` that assertNoCssCodeExec refuses. `brandsDir` is where the `@brands` alias points.
+ * What an archive may not bring under `dirs`: a stylesheet that carries `@plugin` or `@config` or imports what is not a
+ * managed .css file or a package, and the node_modules and package.json (isResolverInput) beside a stylesheet.
+ * compileStylesheet refuses the first and never reads the others. `brandsDir` is where the `@brands` alias points.
  * `moves` maps a staging folder to the folder it is about to be moved into: a stylesheet's path imports are then read
  * from where it lands, and what they reach under a destination is looked up in the staging folder too.
  */
@@ -210,8 +214,8 @@ const CSS_IMPORT = /@(?:import|reference)(?=\s*("[^"]*"|'[^']*'))/gi;
 const PACKAGE = /^(@[\w-][\w.-]*\/)?[\w-][\w.-]*(\/[\w-][\w.-]*)*$/;
 
 /**
- * Tailwind reads what a stylesheet imports as CSS whatever its extension, and its fallback resolver opens more than
- * Vite would (`file:` URLs, `?` and `#` as part of a file name). So only two kinds of import pass. A package name, which
+ * compileStylesheet reads a path import as CSS whatever its extension; an archive's stylesheet may carry only what it
+ * will compile from where it lands. So only two kinds of import pass. A package name, which
  * resolves to the app's node_modules (one under the managed dirs is refused by the walk). A path (`./`, `../`, `/`) or
  * the `@brands` alias, which must name a .css file the walk reads: not a folder, not a link to another kind of file, not
  * under `.git` or a linked folder that leads out of the managed dirs.
@@ -250,35 +254,155 @@ const CSS_URL = /url\(\s*("[^"]*"|'[^']*'|(?:\\.|[^'")\\])+)\s*\)/gi;
 const CSS_IMAGE_SET = /image-set\(([^;}]*)/gi;
 const CSS_STRING = /"[^"]*"|'[^']*'/g;
 
+const OUTSIDE = "is outside this stylesheet's project, brand and the templates";
+// Features.Utilities: a const enum, which isolatedModules cannot read from Tailwind's declaration file.
+const UTILITIES = 16;
+const { Scanner } = createRequire(import.meta.url)('@tailwindcss/oxide') as typeof import('@tailwindcss/oxide');
+
 /**
- * Refuse a stylesheet of a project, a brand or the templates that imports or links a file outside its home: its own
- * folder, its project's brand, the templates, and packages by name. Tailwind inlines what @import and @reference name,
- * and Vite what url() names with `?inline`, wherever that file is: a project's stylesheet would otherwise carry another
- * project's or brand's files into its frame. Compared by real path; an imported stylesheet is read in turn.
+ * Compile a stylesheet of a project, a brand or the templates, Tailwind reading no file itself. What it imports is read
+ * here without following a link: a file of its home (cssHome) or a package of the app. Its classes come from the files
+ * of that home, and a brand theme compiled for a project (`project=<id>`) takes that project's too. No module runs
+ * (`@plugin`, `@config`), and no url() leaves the home or asks to be inlined: Vite would read that file through any link.
  */
-export async function assertCssStaysHome(entry: string, config: CadenceConfig): Promise<void> {
-  const home = await cssHome(entry, config);
-  if (!home) return;
-  const dirs = [path.dirname(await realPath(entry))];
-  const seen = new Set<string>();
-  const read = async (file: string): Promise<void> => {
-    if (seen.has(file)) return;
-    seen.add(file);
-    for (const [ref, imported] of cssReferences(await fs.readFile(file, 'utf8'))) {
-      // Tailwind rebases the url() of what it inlines on the entry's folder.
-      const files = await referencedFiles(ref, imported, [path.dirname(file), ...dirs], config);
-      if (!files) throw new Error(`${file}: ${ref} cannot be followed here`);
-      for (const candidate of files) {
-        const real = await realPath(candidate).catch(() => null);
-        const stat = real ? await fs.stat(real).catch(() => null) : null;
-        if (!real || !home.some((dir) => isInside(dir, real)) || stat?.isDirectory() || (imported && !stat?.isFile())) {
-          throw new Error(`${file}: ${ref} is outside this stylesheet's project, brand and the templates`);
-        }
-        if (imported) await read(real);
+async function compileStylesheet(
+  code: string,
+  id: string,
+  config: CadenceConfig,
+  resolvePackage: (id: string) => Promise<string | undefined>,
+): Promise<string> {
+  const file = id.replace(/[?#].*$/, '');
+  const entry = await realPath(file);
+  const entryDir = path.dirname(entry);
+  const home = (await cssHome(file, config)) ?? [];
+  const projects = new Set(new URLSearchParams(id.slice(file.length)).getAll('project'));
+  if (projects.size > 1) throw new Error(`${file}: compiled for more than one project`);
+  let scanned = home;
+  for (const project of projects) {
+    const own = ID_PATTERN.test(project) ? await homeOf(path.join(config.projectsDir, project, 'project.json'), config) : null;
+    if (!own?.some((dir) => isInside(dir, entry)))
+      throw new Error(`${file}: compiled for ${project}, not a project of this brand`);
+    scanned = [...own, await realDir(config.templatesDir)];
+  }
+  await assertLinksStayHome(file, code, [entryDir], home, config);
+  const nodeModules = await realDir(path.join(config.root, 'node_modules'));
+  const compiler = await compile(code, {
+    base: entryDir,
+    loadModule: async (module) => {
+      throw new Error(`${file}: a stylesheet runs no module here (${module})`);
+    },
+    loadStylesheet: async (imported, base) => {
+      const fromPackage = isInside(nodeModules, base);
+      const alias = imported === '@brands' || imported.startsWith('@brands/');
+      let real: string;
+      let content: string;
+      if (!fromPackage && (alias || /^[./]/.test(imported))) {
+        const named = alias ? path.join(config.brandsDir, imported.slice('@brands'.length)) : path.resolve(base, imported);
+        real = await realPath(named).catch(() => '');
+        const dir = home.find((dir) => isInside(dir, real));
+        if (!dir) throw new Error(`${file}: ${imported} ${OUTSIDE}`);
+        content = await readFileNoFollow(dir, real, 'utf8').catch(() => {
+          throw new Error(`${file}: ${imported} is not a file`);
+        });
+        // Its url() are rebased on the entry's folder, where Vite resolves them.
+        await assertLinksStayHome(file, content, [path.dirname(real), entryDir], home, config);
+      } else {
+        const named = fromPackage && /^\.\.?\//.test(imported) ? path.resolve(base, imported) : await resolvePackage(imported);
+        real = named ? await realPath(named).catch(() => '') : '';
+        if (!isInside(nodeModules, real)) throw new Error(`${file}: ${imported} cannot be followed here`);
+        content = await fs.readFile(real, 'utf8');
+      }
+      return { path: real, base: path.dirname(real), content: rebaseUrls(content, path.dirname(real), entryDir) };
+    },
+  });
+  const css = compiler.build(compiler.features & UTILITIES ? await candidatesIn(scanned) : []);
+  // Tailwind leaves an `@import url()` or a remote one to the browser.
+  if (/@import\b/i.test(css)) throw new Error(`${file}: only a file of its own or a package can be imported here`);
+  for (const [ref] of cssReferences(css)) {
+    if (/^(?:data|https?):|^\/\//i.test(ref)) continue;
+    let decoded: string[] = [];
+    try {
+      decoded = [ref, decodeURI(ref), decodeURIComponent(ref)];
+    } catch {}
+    // Vite inlines such a file, which it reads through any link.
+    if (!decoded.length || decoded.some((s) => /[?&]inline\b/i.test(s)))
+      throw new Error(`${file}: ${ref} cannot be followed here`);
+  }
+  return css;
+}
+
+/** Refuse a url() of `text` that names a file outside `home`, read from any of `dirs`, or that no path check can follow. */
+async function assertLinksStayHome(
+  file: string,
+  text: string,
+  dirs: string[],
+  home: string[],
+  config: CadenceConfig,
+): Promise<void> {
+  for (const [ref, imported] of cssReferences(text)) {
+    if (imported) continue;
+    const files = await referencedFiles(ref, dirs, config);
+    if (!files) throw new Error(`${file}: ${ref} cannot be followed here`);
+    for (const candidate of files) {
+      const real = await realPath(candidate).catch(() => '');
+      const outside = !home.some((dir) => isInside(dir, real)) || (await fs.stat(real).catch(() => null))?.isDirectory();
+      if (outside) throw new Error(`${file}: ${ref} ${OUTSIDE}`);
+    }
+  }
+}
+
+const SCANNED = /\.(?:[cm]?[jt]sx?|json|mdx?|html?|svg|txt)$/i;
+const NOT_SCANNED = new Set(['.git', '.cadence', 'node_modules']);
+// ponytail: a bigger file (a log, a data dump) gives no class and is never read; scan it in chunks if one ever must.
+const SCAN_LIMIT = 1 << 20;
+
+/** The class candidates of the files under `dirs`, read without following a link. */
+async function candidatesIn(dirs: string[]): Promise<string[]> {
+  const files: { content: string; extension: string }[] = [];
+  const walk = async (root: string, dir: string): Promise<void> => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!NOT_SCANNED.has(entry.name)) await walk(root, child);
+      } else if (entry.isFile() && SCANNED.test(entry.name)) {
+        const content = await openFileNoFollow(root, child).then(
+          async (handle) => {
+            try {
+              return (await handle.stat()).size <= SCAN_LIMIT ? await handle.readFile('utf8') : null;
+            } finally {
+              await handle.close();
+            }
+          },
+          () => null,
+        );
+        if (content !== null) files.push({ content, extension: path.extname(entry.name).slice(1) });
       }
     }
   };
-  await read(await realPath(entry));
+  await Promise.all(dirs.map((dir) => walk(dir, dir)));
+  return new Scanner({ sources: [] }).scanFiles(files);
+}
+
+// @tailwindcss/node's, which rebases the url() of a stylesheet it inlines; `compile` alone leaves them as written.
+const CSS_URL_TOKEN = /(?<!@import\s+)(?<=^|[^\w\-\u0080-\uffff])url\((\s*('[^']+'|"[^"]+")\s*|[^'")]+)\)/g;
+
+/** The relative url() of a stylesheet read from `from`, made relative to `to` as @tailwindcss/node does. */
+function rebaseUrls(css: string, from: string, to: string): string {
+  if (from === to) return css;
+  return css.replace(CSS_URL_TOKEN, (token, inner: string) => {
+    let url = inner.trim();
+    let quote = url[0] === '"' || url[0] === "'" ? url[0] : '';
+    if (quote) url = url.slice(1, -1);
+    if (/^([a-z]+:)?\/\/|^\s*data:/i.test(url) || !/^[.\w]/.test(url) || /^[A-Z_][.\w-]*\(/i.test(url) || url.startsWith('/')) {
+      return token;
+    }
+    let rebased = path.posix.relative(to, path.posix.join(from, url));
+    if (!rebased.startsWith('.')) rebased = `./${rebased}`;
+    if (!quote && rebased !== encodeURI(rebased)) quote = '"';
+    if (quote === "'" && rebased.includes("'")) quote = '"';
+    if (quote === '"') rebased = rebased.replace(/(?<!\\)"/g, '\\"');
+    return `url(${quote}${rebased}${quote})`;
+  });
 }
 
 /** The folders a stylesheet may import and link from: its home and the templates; null outside them. */
@@ -335,8 +459,8 @@ async function brandOf(project: string): Promise<unknown> {
 
 /**
  * What a frame of the project or brand that holds `entry` may load: what is in its home (homeOf) and, outside the
- * projects and brands, what Vite serves at all (app, packages, templates). Through links, as Vite reads it. A folder
- * never: Vite would answer with a file it picks inside (an index, a package.json entry).
+ * projects and brands, what Vite serves at all (app, packages, templates). By the real path, so a link leads nowhere
+ * its target may not. A folder never: Vite would answer with a file it picks inside (an index, a package.json entry).
  */
 export async function frameReach(
   vite: ViteDevServer,
@@ -370,8 +494,8 @@ function* cssReferences(text: string): Generator<[ref: string, imported: boolean
  * decoded, as Vite and Tailwind may each read it. Empty for what names no file (an external URL, a fragment); null for
  * what no path check can follow (another scheme, a backslash, a package name with dot segments).
  */
-async function referencedFiles(ref: string, imported: boolean, dirs: string[], config: CadenceConfig): Promise<string[] | null> {
-  if (!ref || ref.startsWith('#')) return imported ? null : [];
+async function referencedFiles(ref: string, dirs: string[], config: CadenceConfig): Promise<string[] | null> {
+  if (!ref || ref.startsWith('#')) return [];
   if (/^(?:data|https?):|^\/\//i.test(ref)) return [];
   let decoded: string[];
   try {
@@ -409,16 +533,16 @@ function relocate(file: string, moves: [from: string, to: string][]): string {
 const GENERATION_PARAM = /([?&])g=[^&]*&?/;
 
 /**
- * Project, brand and template files are reloaded by Cadence (see ProjectStore.syncCode), never by Vite's HMR.
+ * Project, brand and template files are reloaded by Cadence (see ProjectStore.syncCode), never by Vite's HMR, and their
+ * stylesheets are compiled by compileStylesheet.
  *
  * Frames import scenes and brands with `?g=<generation>` so the browser loads each generation afresh. Vite keeps one
  * module per file anyway: a new `?g=` URL resolves to the plain id and re-transforms it. One module per generation
- * would keep one Tailwind compiler per brand theme per generation alive (about 1 MB each).
+ * would keep every generation's module alive.
  */
-function cadencePlugin(managedDirs: string[], config: CadenceConfig): Plugin {
-  // Vite names a module by the URL's path, or by its real path once an import resolved it.
-  const isManaged = async (file: string) =>
-    [...managedDirs, ...(await Promise.all(managedDirs.map(realDir)))].some((dir) => isInside(dir, file));
+function cadencePlugin(managedNames: string[], config: CadenceConfig): Plugin {
+  const isManaged = (file: string) => Boolean(rootOf(managedNames, file));
+  let resolveCss: ReturnType<typeof createIdResolver>;
   return {
     name: 'cadence',
     enforce: 'pre',
@@ -430,8 +554,8 @@ function cadencePlugin(managedDirs: string[], config: CadenceConfig): Plugin {
               name: 'cadence:deps',
               // The dependency optimizer bundles a package with what it imports, read with none of the frame's checks,
               // and an alias or a link can still lead it to a managed file.
-              async load(id) {
-                if (await isManaged(id.replace(/[?#].*$/, ''))) {
+              load(id) {
+                if (isManaged(id.replace(/[?#].*$/, ''))) {
                   throw new Error(`The dependency optimizer reads no project, brand or template file: ${id}`);
                 }
                 return null;
@@ -441,10 +565,20 @@ function cadencePlugin(managedDirs: string[], config: CadenceConfig): Plugin {
         },
       },
     }),
+    configResolved(resolved) {
+      // Vite's own resolver for CSS imports, from the app's packages only (see resolveId).
+      resolveCss = createIdResolver(resolved, {
+        extensions: ['.css'],
+        mainFields: ['style'],
+        conditions: ['style', 'development|production'],
+        tryIndex: false,
+        preferRelative: false,
+      });
+    },
     async resolveId(source, importer, options) {
       // Vite looks a package up from the importer's folder, and its dependency optimizer bundles what that package
       // imports with none of the frame's checks: a managed file gets the packages the runtime gets.
-      if (importer && /^[\w@#]/.test(source) && (await isManaged(importer.replace(/[?#].*$/, '')))) {
+      if (importer && /^[\w@#]/.test(source) && isManaged(importer.replace(/[?#].*$/, ''))) {
         const resolved = await this.resolve(source, path.join(config.root, 'src/runtime/index.ts'), {
           ...options,
           skipSelf: true,
@@ -464,41 +598,128 @@ function cadencePlugin(managedDirs: string[], config: CadenceConfig): Plugin {
       return resolved;
     },
     load: {
-      // Last, so only for a file no other plugin loads. Vite would read it itself, then fill the map a `sourceMappingURL`
-      // comment names with every file its `sources` list, wherever they are, and serve that with the module.
+      // Last, so only for a file no other plugin loads. Vite would read it through any link, then fill the map a
+      // `sourceMappingURL` comment names with every file its `sources` list, wherever they are, and serve that too.
       order: 'post',
       async handler(id) {
         const file = id.replace(/[?#].*$/, '');
-        if (id.startsWith('\0') || !(await isManaged(file))) return null;
-        if (!isFileLoadingAllowed(this.environment.getTopLevelConfig(), file)) return null;
-        const code = await fs.readFile(file, 'utf8').catch(() => null);
-        return code === null ? null : { code, map: null };
+        const root = rootOf(managedNames, file);
+        if (!root || !isFileLoadingAllowed(this.environment.getTopLevelConfig(), file)) return null;
+        return { code: await readFileNoFollow(root, file, 'utf8'), map: null };
       },
     },
     hotUpdate({ file }) {
-      if (managedDirs.some((dir) => isInside(dir, file))) return [];
+      if (isManaged(file)) return [];
     },
     async transform(code, id) {
       // HMR is off, yet in middleware mode Vite's client still dials ws://<host>:24678: an uncaught error on every
       // page, or another app's dev server. A string patch: if Vite renames the call, only that error comes back.
       if (id.endsWith('/vite/dist/client/client.mjs')) return code.replace(VITE_CLIENT_CONNECT, '');
-      // `cadence` runs before `@tailwindcss/vite` (see createVite's plugin order), so this throws before Tailwind
-      // compiles any CSS that would run code. Tailwind inlines @import itself, so a check on this one file would miss
-      // a two-hop @import to @plugin: scan the whole managed set instead.
+      // What Vite's CSS plugin compiles after this one: a query ending in `.css` makes it compile a file of any kind.
       const file = id.replace(/[?#].*$/, '');
-      if (!COMPILED_AS_CSS.test(id) || !(await isManaged(file))) return;
+      if (!isCSSRequest(id) || SPECIAL_QUERY.test(id) || !isManaged(file)) return;
       if (!file.endsWith('.css')) throw new Error(`Only a .css file is compiled as CSS here: ${file}`);
-      await assertNoCssCodeExec(managedDirs, config.brandsDir);
-      await assertCssStaysHome(file, config);
+      const runtime = path.join(config.root, 'src/runtime/index.ts');
+      const resolvePackage = (imported: string) => resolveCss(this.environment, imported, runtime);
+      return { code: await compileStylesheet(code, id, config, resolvePackage), map: null };
     },
   };
 }
 
+// Vite's SPECIAL_QUERY_RE: a `?raw`, `?url` or worker import of a stylesheet is no stylesheet.
+const SPECIAL_QUERY = /[?&](?:worker|sharedworker|raw|url)\b/;
+const RAW_QUERY = /[?&]raw(?:&|$)/;
+const INLINE_QUERY = /[?&]inline\b/;
+
+/** The managed folder (by the name it is reached under) that holds `file`. */
+function rootOf(managedNames: string[], file: string): string | undefined {
+  return managedNames.find((dir) => isInside(dir, file));
+}
+
 /**
- * The ids @tailwindcss/vite compiles (its transform filter): a query ending in `.css`, `&lang.css` or `index=<n>.css`
- * makes it compile a file of any extension, which the walk never reads.
+ * `?raw` and `?inline` imports of a project, brand or template file, which Vite reads through any link: read here
+ * without following one. A stylesheet's `?inline` is its compiled CSS (cadencePlugin's transform).
  */
-const COMPILED_AS_CSS = /\.css(?:\?.*)?$|&lang\.css|[?&]index=\d+\.css$/;
+function cadenceAssets(managedNames: string[]): Plugin {
+  return {
+    name: 'cadence:assets',
+    enforce: 'pre',
+    async load(id) {
+      const file = id.replace(/[?#].*$/, '');
+      const root = rootOf(managedNames, file);
+      const config = this.environment.getTopLevelConfig();
+      if (!root || !isFileLoadingAllowed(config, file)) return null;
+      let value: string;
+      if (RAW_QUERY.test(id)) value = await readFileNoFollow(root, file, 'utf8');
+      else if (INLINE_QUERY.test(id) && !isCSSRequest(id) && config.assetsInclude(file)) {
+        value = `data:${contentType(file)};base64,${(await readFileNoFollow(root, file)).toString('base64')}`;
+      } else return null;
+      return { code: `export default ${JSON.stringify(value)}`, map: { mappings: '' }, moduleType: 'js' };
+    },
+  };
+}
+
+/** `plugins` with their transform skipped for a project, brand or template file. */
+function skipManaged(plugins: Plugin[], managedNames: string[]): Plugin[] {
+  return plugins.map((plugin) => {
+    const { transform } = plugin;
+    if (!transform) return plugin;
+    const hook = typeof transform === 'function' ? { handler: transform } : transform;
+    return {
+      ...plugin,
+      transform: {
+        ...hook,
+        handler(code, id, options) {
+          return rootOf(managedNames, id.replace(/[?#].*$/, '')) ? undefined : hook.handler.call(this, code, id, options);
+        },
+      },
+    };
+  });
+}
+
+/** The file a request names, as Vite's raw (`/@fs/`) and static file servers read it; null for what they skip. */
+function servedFile(url: string, root: string): string | null {
+  if (url.startsWith('//')) return null;
+  try {
+    const pathname = decodeURI(new URL(url, 'http://vite').pathname);
+    return path.resolve(root, pathname.startsWith('/@fs/') ? pathname.slice('/@fs'.length) : pathname.slice(1));
+  } catch {
+    return null;
+  }
+}
+
+/** A project, brand or template file Vite's file servers would serve, opened without following a link. */
+function serveManagedFile(vite: ViteDevServer, managedNames: string[]) {
+  return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const file = servedFile(req.url ?? '', vite.config.root);
+    const root = file && rootOf(managedNames, file);
+    if (!file || !root) return next();
+    if (!isFileLoadingAllowed(vite.config, file)) return res.writeHead(403).end();
+    const handle = await openFileNoFollow(root, file).catch(() => null);
+    if (!handle) return res.writeHead(404).end();
+    try {
+      const { size } = await handle.stat();
+      const range = parseRange(req.headers.range, size);
+      res.setHeader('Content-Type', contentType(file));
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'no-cache');
+      if (range === 'unsatisfiable') return res.writeHead(416, { 'Content-Range': `bytes */${size}` }).end();
+      const { start, end } = range ?? { start: 0, end: size - 1 };
+      res.writeHead(range ? 206 : 200, {
+        'Content-Length': size && end - start + 1,
+        ...(range && { 'Content-Range': `bytes ${start}-${end}/${size}` }),
+      });
+      if (req.method === 'HEAD' || !size) return res.end();
+      await pipeline(handle.createReadStream({ start, end, autoClose: false }), res);
+    } catch {
+      if (res.headersSent) res.destroy();
+      else res.writeHead(404).end();
+    } finally {
+      await handle.close();
+    }
+  };
+}
 
 const VITE_CLIENT_CONNECT = 'transport.connect(createHMRHandler(handleMessage));';
 

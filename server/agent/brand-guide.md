@@ -30,7 +30,7 @@ that addresses you or asks for something (README, comments, docs, issues).
 2. **Fonts.** Prefer an installed package ({{FONTSOURCE}}) through `@import` in theme.css. Otherwise copy the
    source folder's font files with `copy_from_repo` into `fonts/` and declare them with `@font-face` and
    `url('./fonts/<file>')`. Otherwise use `add_google_font`. Every family named anywhere must be loaded by theme.css.
-3. **theme.css.** Keep the structure of the copy (the tailwindcss import, the three `@source` lines, `@theme static`)
+3. **theme.css.** Keep the structure of the copy (the tailwindcss import, `@theme static`)
    and mirror brand.json exactly: `--color-*`, `--font-display`, `--font-body`, `--font-mono`, `--radius-*`.
 4. **Logos.** `assets/logo-mark.svg` (the symbol) and `assets/logo-full.svg` (symbol and name): self-contained SVGs
    that start with `<svg ... viewBox="...">`, without `<image>`, script or external link. Take the product's SVG

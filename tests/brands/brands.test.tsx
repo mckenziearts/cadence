@@ -144,3 +144,16 @@ test('the brand checks report what a broken brand gets wrong', async () => {
     fs.rmSync(path.dirname(dir), { recursive: true, force: true });
   }
 });
+
+test('a brand theme needs no @source line: Cadence scans its project and the templates itself', async () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-brand-')), 'cadence');
+  fs.cpSync(path.join(BRANDS_DIR, 'cadence'), dir, { recursive: true });
+  try {
+    const theme = path.join(dir, 'theme.css');
+    fs.writeFileSync(theme, fs.readFileSync(theme, 'utf8').replace(/^@source .*\n/gm, ''));
+    assert.doesNotMatch(fs.readFileSync(theme, 'utf8'), /@source/);
+    assert.deepEqual(await brandProblems(dir, ROOT), []);
+  } finally {
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});

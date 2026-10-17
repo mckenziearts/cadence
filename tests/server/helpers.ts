@@ -7,6 +7,7 @@ import http from 'node:http';
 import net from 'node:net';
 import type { TestContext } from 'node:test';
 import { loadConfig } from '../../server/config';
+import { cssCodeOffenders } from '../../server/frames/vite';
 import type { CadenceConfig, Network } from '../../server/contracts';
 import { type FrameKind, frameOriginOf } from '../../src/shared/frameOrigin';
 import type { NetworkId } from '../../src/shared/types';
@@ -294,4 +295,14 @@ export function failListen(ctx: TestContext, host: string, code: string, times =
     process.nextTick(() => this.emit('error', Object.assign(new Error(`listen ${code} ${host}:${String(args[0])}`), { code })));
     return this;
   });
+}
+
+/** Throws what an archive import would refuse under `managedDirs` (cssCodeOffenders). */
+export async function assertNoCssCodeExec(managedDirs: string[], brandsDir: string): Promise<void> {
+  const offenders = await cssCodeOffenders(managedDirs, brandsDir);
+  if (offenders.length) {
+    throw new Error(
+      `CSS @plugin/@config runs code at build time and is not allowed here, nor node_modules or package.json, through which an @import reaches unchecked files:\n${offenders.join('\n')}`,
+    );
+  }
 }

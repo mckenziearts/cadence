@@ -52,7 +52,7 @@ let cleanup: () => Promise<void>;
 
 before(async () => {
   const root = await makeRoot();
-  // Reached through a link, as `/var` is on macOS: Vite names a module an import resolved by its real path.
+  // Reached through a link, as `/var` is on macOS: a module is named by its configured path or its real path.
   const link = `${root.root}-link`;
   await fs.symlink(root.root, link);
   cleanup = async () => {
@@ -184,12 +184,12 @@ async function write(file: string, content: string): Promise<void> {
   await fs.writeFile(file, content);
 }
 
-/** The body, with the source maps Vite inlines decoded. */
+/** The body, with the data: URLs Vite inlines (source maps, `?inline` assets) decoded. */
 const withMaps = (body: string) =>
   [
     body,
-    ...[...body.matchAll(/sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,([\w+/=]+)/g)].map(([, map]) =>
-      Buffer.from(map!, 'base64').toString(),
+    ...[...body.matchAll(/data:[\w/+.-]*(?:;[\w-]+=[\w-]+)*;base64,([\w+/=]+)/g)].map(([, data]) =>
+      Buffer.from(data!, 'base64').toString(),
     ),
   ].join('\n');
 
@@ -272,12 +272,12 @@ test("a scene's own files still load as Vite's asset modules: ?import, ?raw, ?ur
   await write(path.join(scenes, 'mark.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
   // The URLs a scene's imports are rewritten to, asked before any import of them: Vite's own pre-transform, which skips
   // its access check, would otherwise have answered them already.
-  // A file this small is inlined as a URL, in dev too.
+  // A managed file is never inlined unasked: Vite would read it through a link.
   const modules: [string, RegExp][] = [
-    ['?import', /export default "data:image\/svg\+xml,/],
+    ['?import', /export default "\/@fs\/[^"]*\/mark\.svg"/],
     ['?import&raw', /export default "<svg /],
-    ['?import&url', /export default "data:image\/svg\+xml,/],
-    ['?import&inline', /export default "data:image\/svg\+xml,/],
+    ['?import&url', /export default "\/@fs\/[^"]*\/mark\.svg"/],
+    ['?import&inline', /export default "data:image\/svg\+xml;base64,/],
   ];
   for (const [query, module] of modules) {
     const url = `/@fs${await fs.realpath(scenes)}/mark.svg${query}`;
@@ -336,5 +336,125 @@ test("a scene compiles with the app's TypeScript settings, never those a tsconfi
     assert.doesNotMatch(withMaps(body), /Q-ONLY-MARKER/);
   } finally {
     await fs.rm(settings);
+  }
+});
+
+test('a brand theme is compiled only for the project of the origin that asks, never on a brand origin', async () => {
+  const theme = path.join(config.brandsDir, 'cadence', 'theme.css');
+  const project = path.join(config.projectsDir, 'p', 'project.json');
+  // A project of the same brand, whose classes the theme would hold.
+  const other = path.join(config.projectsDir, 'q', 'project.json');
+  await write(theme, "@import 'tailwindcss' source(none);\n");
+  await write(project, JSON.stringify({ brand: 'cadence' }));
+  await write(other, JSON.stringify({ brand: 'cadence' }));
+  try {
+    const brandHost = await hostOf('brand', 'cadence');
+    const cases: [string, string, number][] = [
+      [projectHost, '?inline&project=p', 200],
+      [projectHost, '?inline&project=q', 403],
+      [projectHost, '?inline&project=p&project=q', 403],
+      [projectHost, '?inline&project=%71', 403],
+      [projectHost, '?inline&project=%2571', 403],
+      // The handler and Vite would read this query differently: Vite refuses a URL with a fragment, which no browser sends.
+      [projectHost, '?inline#&project=q', 400],
+      [projectHost, '?inline&project=p#&project=q', 400],
+      [brandHost, '?inline', 200],
+      [brandHost, '?inline&project=p', 403],
+      [brandHost, '?inline&project=cadence', 403],
+    ];
+    for (const [host, query, status] of cases) {
+      const response = await request(port, `/@fs${theme}${query}`, { host, headers: secret });
+      assert.equal(response.status, status, `${host} ${query}`);
+    }
+  } finally {
+    await fs.rm(theme);
+    await fs.rm(project);
+    await fs.rm(other);
+  }
+});
+
+test('a managed file is served with single ranges', async () => {
+  const video = path.join(config.projectsDir, 'p', 'assets', 'clip.mp4');
+  await write(video, '0123456789'.repeat(100));
+  const url = `/@fs${video}`;
+  const whole = await request(port, url, { headers: secret });
+  assert.deepEqual([whole.status, whole.headers['content-type'], whole.body.length], [200, 'video/mp4', 1000]);
+  assert.equal(whole.headers['accept-ranges'], 'bytes');
+  const part = await request(port, url, { headers: { ...secret, range: 'bytes=10-24' } });
+  assert.deepEqual([part.status, part.headers['content-range'], part.body], [206, 'bytes 10-24/1000', '012345678901234']);
+  const past = await request(port, url, { headers: { ...secret, range: 'bytes=2000-' } });
+  assert.deepEqual([past.status, past.headers['content-range']], [416, 'bytes */1000']);
+  const head = await request(port, url, { method: 'HEAD', headers: secret });
+  assert.deepEqual([head.status, head.headers['content-length'], head.body], [200, '1000', '']);
+  const suffix = await request(port, url, { headers: { ...secret, range: 'bytes=-5' } });
+  assert.deepEqual([suffix.status, suffix.headers['content-range'], suffix.body], [206, 'bytes 995-999/1000', '56789']);
+  const empty = path.join(config.projectsDir, 'p', 'assets', 'empty.mp4');
+  await write(empty, '');
+  const none = await request(port, `/@fs${empty}`, { headers: secret });
+  assert.deepEqual([none.status, none.headers['content-length'], none.body], [200, '0', '']);
+  const noPart = await request(port, `/@fs${empty}`, { headers: { ...secret, range: 'bytes=0-' } });
+  assert.deepEqual([noPart.status, noPart.headers['content-range']], [416, 'bytes */0']);
+});
+
+test("a project's .env, key files and .cadence folder are never served, also past the origin's check", async () => {
+  const behind = http.createServer(vite!.middlewares);
+  await new Promise<void>((resolve) => behind.listen(0, '127.0.0.1', resolve));
+  const dir = path.join(config.projectsDir, 'p');
+  const names = ['.env', '.env.local', 'assets/key.pem', 'assets/id.key', '.cadence/chats/c.json', 'scenes/.npmrc'];
+  for (const name of names) await write(path.join(dir, name), 'DENIED-MARKER\n');
+  try {
+    for (const name of names) {
+      for (const query of ['', '?raw', '?import&raw', '?url']) {
+        const url = `/@fs${dir}/${name}${query}`;
+        for (const [to, host] of [
+          [port, projectHost],
+          [(behind.address() as AddressInfo).port, projectHost],
+        ] as const) {
+          const { status, body } = await request(to, url, { host, headers: secret });
+          assert.doesNotMatch(withMaps(body), /DENIED-MARKER/, `${to} ${url}`);
+          if (!query) assert.equal(status, 403, `${to} ${url}`);
+        }
+      }
+    }
+  } finally {
+    behind.close();
+    for (const name of names) await fs.rm(path.join(dir, name));
+  }
+});
+
+test('a managed file swapped for a link after the origin checked it gives nothing of what the link names', async () => {
+  // Vite's own middlewares, past the frame handler's check: what they read when the swap lands in between.
+  const behind = http.createServer(vite!.middlewares);
+  await new Promise<void>((resolve) => behind.listen(0, '127.0.0.1', resolve));
+  const scenes = path.join(config.projectsDir, 'p', 'scenes');
+  // Outside the managed folders, and in another project: a link there would pass for a file of the managed folders.
+  const targets = [
+    path.join(path.dirname(config.projectsDir), 'outside'),
+    path.join(config.projectsDir, 'q', 'scenes', 'secret'),
+  ];
+  const names = ['notes.txt', 'notes.mp4', 'notes.svg', 'notes.css', 'notes.tsx', 'notes.json'];
+  // A string: valid JSON and JavaScript, kept whole in what Vite compiles.
+  for (const target of targets) for (const name of names) await write(target + path.extname(name), '"OUTSIDE-MARKER"\n');
+  await write(path.join(scenes, 'kept.txt'), 'kept\n');
+  try {
+    for (const target of targets) {
+      for (const name of names) {
+        await fs.rm(path.join(scenes, name), { force: true });
+        await fs.symlink(target + path.extname(name), path.join(scenes, name));
+        for (const query of ['', '?raw', '?import&raw', '?import&inline', '?import&url', '?inline', '?import']) {
+          for (const dir of [scenes, await fs.realpath(scenes)]) {
+            const url = `/@fs${dir}/${name}${query}`;
+            const { body } = await request((behind.address() as AddressInfo).port, url, { headers: secret });
+            assert.doesNotMatch(withMaps(body), /OUTSIDE-MARKER/, `${path.relative(config.projectsDir, target)}: ${url}`);
+          }
+        }
+      }
+    }
+    const kept = await request((behind.address() as AddressInfo).port, `/@fs${scenes}/kept.txt?raw`, { headers: secret });
+    assert.match(kept.body, /kept/);
+  } finally {
+    behind.close();
+    for (const name of names) await fs.rm(path.join(scenes, name), { force: true });
+    for (const target of targets) for (const name of names) await fs.rm(target + path.extname(name), { force: true });
   }
 });

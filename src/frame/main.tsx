@@ -196,7 +196,9 @@ async function loadBrand(next: FrameProjectData): Promise<void> {
   brandKey = key;
   try {
     const [css, mod] = await Promise.all([
-      import(/* @vite-ignore */ `${next.brandUrl}theme.css?inline&g=${generation}`) as Promise<{ default: string }>,
+      import(
+        /* @vite-ignore */ `${next.brandUrl}theme.css?inline&project=${encodeURIComponent(next.project.id)}&g=${generation}`
+      ) as Promise<{ default: string }>,
       import(/* @vite-ignore */ `${next.brandUrl}index.tsx?g=${generation}`) as Promise<{ default?: BrandKit }>,
     ]);
     if (!mod.default?.ui) throw new Error(texts.kitExport);
