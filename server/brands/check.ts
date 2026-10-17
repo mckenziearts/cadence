@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { BrandColors, BrandFile } from '../../src/shared/types';
 import type { CaptureService } from '../contracts';
 import { m } from '../i18n';
-import { cssRunsCode, readFileNoFollow } from '../util';
+import { CssCodeScan, cssRunsCode, PACKAGE, readFileNoFollow, realPath } from '../util';
 
 export const COLOR_KEYS: (keyof BrandColors)[] = [
   'background',
@@ -176,15 +176,18 @@ async function themeProblems(dir: string, root: string, css: string, file: Brand
   const faces = (source: string) => {
     for (const [, name] of source.matchAll(/font-family:\s*['"]([^'"]+)['"]/g)) loaded.add(name);
   };
-  for (const [, spec] of css.matchAll(/@import '(@fontsource[^']+)';/g)) {
-    let resolved: string;
+  const nodeModules = await realPath(path.join(root, 'node_modules'));
+  for (const [, spec] of new CssCodeScan().push(css).matchAll(/@import '(@fontsource[^']+)';/g)) {
+    let source: string;
     try {
-      resolved = require.resolve(spec);
+      // A package name only: dot segments after it climb out of node_modules; the read stays in it, on a regular file.
+      if (!PACKAGE.test(spec)) throw new Error(`${spec}: not a package name`);
+      source = await readFileNoFollow(nodeModules, require.resolve(spec), 'utf8');
     } catch {
       problems.push(t.notInstalled(spec));
       continue;
     }
-    faces(await fs.readFile(resolved, 'utf8'));
+    faces(source);
   }
   for (const [, rel] of css.matchAll(/url\('(\.\/fonts\/[^']+)'\)/g)) {
     if ((await read(dir, path.join(dir, rel))) === null) problems.push(t.themeFile(rel));

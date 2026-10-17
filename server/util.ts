@@ -433,6 +433,9 @@ export function foldName(name: string): string {
 /** A frame the agent looked at, as saved under `.cadence/frames`: JPEG normally, PNG from the MCP tool. */
 export const AGENT_FRAME_NAME = /^[\w.-]+\.(jpe?g|png)$/;
 
+// `tailwindcss`, `@fontsource-variable/inter/standard.css`: no scheme, query, fragment or dot segment.
+export const PACKAGE = /^(@[\w-][\w.-]*\/)?[\w-][\w.-]*(\/[\w-][\w.-]*)*$/;
+
 /** A `node_modules` folder or a `package.json`, through which a bare or `#` import resolves to a file of any kind. */
 export function isResolverInput(name: string): boolean {
   const folded = foldName(name);

@@ -145,6 +145,50 @@ test('the brand checks report what a broken brand gets wrong', async () => {
   }
 });
 
+test('a brand theme names a font package, never a path through one', async () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-brand-')), 'cadence');
+  fs.cpSync(path.join(BRANDS_DIR, 'cadence'), dir, { recursive: true });
+  try {
+    const file = JSON.parse(fs.readFileSync(path.join(dir, 'brand.json'), 'utf8')) as BrandFile;
+    file.fonts.display = `'Marcellus', ${file.fonts.display}`;
+    fs.writeFileSync(path.join(dir, 'brand.json'), JSON.stringify(file));
+    // Dot segments after a package name can climb out of node_modules: refused even where they stay in it. A commented
+    // import loads nothing.
+    const spec = '@fontsource/x/../marcellus/index.css';
+    fs.appendFileSync(path.join(dir, 'theme.css'), `\n@import '${spec}';\n/* @import '@fontsource/nowhere-sans'; */\n`);
+    const problems = (await brandProblems(dir, ROOT)).join('\n');
+    assert.ok(problems.includes(`${spec} n’est pas installé`), problems);
+    assert.match(problems, /nomme la police « Marcellus », que theme\.css ne charge jamais/);
+    assert.doesNotMatch(problems, /nowhere-sans/);
+  } finally {
+    fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+test('a brand theme reads a font package only from the node_modules of Cadence, never through a link', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-brand-'));
+  const dir = path.join(base, 'cadence');
+  const root = path.join(base, 'app');
+  const outside = path.join(base, 'outside');
+  fs.cpSync(path.join(BRANDS_DIR, 'cadence'), dir, { recursive: true });
+  fs.mkdirSync(path.join(root, 'node_modules', '@fontsource'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'package.json'), '{}');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'index.css'), "@font-face { font-family: 'Outside Face'; }\n");
+  fs.symlinkSync(outside, path.join(root, 'node_modules', '@fontsource', 'linked'));
+  try {
+    const file = JSON.parse(fs.readFileSync(path.join(dir, 'brand.json'), 'utf8')) as BrandFile;
+    file.fonts.display = `'Outside Face', ${file.fonts.display}`;
+    fs.writeFileSync(path.join(dir, 'brand.json'), JSON.stringify(file));
+    fs.appendFileSync(path.join(dir, 'theme.css'), "\n@import '@fontsource/linked/index.css';\n");
+    const problems = (await brandProblems(dir, root)).join('\n');
+    assert.ok(problems.includes('@fontsource/linked/index.css n’est pas installé'), problems);
+    assert.match(problems, /nomme la police « Outside Face », que theme\.css ne charge jamais/);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('a brand theme needs no @source line: Cadence scans its project and the templates itself', async () => {
   const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cadence-brand-')), 'cadence');
   fs.cpSync(path.join(BRANDS_DIR, 'cadence'), dir, { recursive: true });

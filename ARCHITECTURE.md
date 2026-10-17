@@ -173,9 +173,9 @@ answers only `?project=<id>` on that project's origin, `kit.html` only `?brand=<
 only the origin's own id: 403 otherwise. Every other request goes through `frameReach()` (`server/frames/vite.ts`)
 before Vite: the file its path names and the file Vite resolves the URL to (the module graph's id, else `resolveId`,
 which a plugin may point elsewhere; a `.map` counts as its module) must both be, by real path, in the origin's home (`homeOf()`: the project's folder and its brand's, or the brand's folder) or,
-outside `projects/` and `brands/`, under `server.fs.allow` (app sources, packages, templates), and neither may be a
-folder (Vite would answer with a file it picks inside) nor sit under more than 32 missing folders (`realPath()` stops
-there). `/@vite/client` and `/@vite/env` pass; a backslash, a NUL,
+outside `projects/` and `brands/`, under `server.fs.allow` (app sources, packages, templates), and neither may be,
+when it exists, anything but a regular file (Vite would answer a folder with a file it picks inside, and its read of a
+pipe would wait for a writer) nor sit under more than 32 missing folders (`realPath()` stops there). `/@vite/client` and `/@vite/env` pass; a backslash, a NUL,
 `__x00__` (Vite's NUL) or a dot segment gets 403. `fs.allow` stays as a second layer. Diagnostics, on the frame
 origin and through the API, MCP and brand checks, compile only what the frame of that scene or brand could load: a code
 frame would show the file. Every response carries `X-DNS-Prefetch-Control: off`, and a CSP, not only `frame.html` and `kit.html` (scene code could load any
@@ -277,11 +277,16 @@ the brand. Any other stylesheet scans its home. A file of another kind that a qu
 it, and would otherwise read where a link there leads by then. A module keeps the path its URL or import names, which
 the load hooks read without following a link, so no link inside a project is served, even one to a file of that
 project. These checks take a module under those dirs by its configured path or by its real path. `css.modules` is off (postcss-modules would inline what `composes` and `@value`
-name, wherever it is): a `.module.css` compiles as plain CSS, and `build.assetsInlineLimit` is 0. The plugin's `load`
+name, wherever it is): a `.module.css` compiles as plain CSS. `css.postcss.map` is off (postcss would read the `.map` a
+stylesheet names, even in a string, through any link, and wait forever on a pipe). `build.assetsInlineLimit` is 0. The plugin's `load`
 hook, ordered last, reads a file under those dirs that no other plugin loads, without following a link, and returns it
 without a map: Vite's own read would fill the map a `sourceMappingURL` comment names with the content of every file its
-`sources` list. A second Cadence plugin loads `?raw` and `?inline` of those files the same way (a non-CSS `?inline` as a
-`data:` URL), and a middleware placed before Vite's raw file one serves those files themselves (`/@fs/...` and
+`sources` list. A second Cadence plugin loads `?raw`, `?inline` and `?url&inline` of those files the same way (an asset's `?inline` as
+a `data:` URL, whatever the rest of its query holds), and answers an `.svg` with its URL, without the read Vite makes to
+decide whether to inline it. It refuses a WebAssembly module of those files but for its `?url` and `?init` (Vite's wasm
+plugin reads the module for its import and export names). Vite shows the lines around a postcss error from the file the
+error names, read again through any link: for those files the first plugin drops that name, and Vite shows the compiled CSS.
+A middleware placed before Vite's raw file one serves those files themselves (`/@fs/...` and
 root-relative paths, with ranges), opened without following a link. `tsconfig` is the core's `tsconfig.json`: otherwise each file
 compiles with the one found above it, and a project's may `extend` any JSON file, whose compiler options would show in
 the code and the errors Vite gives back. Its `resolveId` resolves a bare or `#` import of a file under those dirs as

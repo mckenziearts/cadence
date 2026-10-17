@@ -26,7 +26,7 @@ import { contentType, parseRange } from '../api/files';
 import type { CadenceConfig } from '../contracts';
 import { m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
-import { CssCodeScan, foldName, isInside, isResolverInput, openFileNoFollow, readFileNoFollow, realPath } from '../util';
+import { CssCodeScan, foldName, isInside, isResolverInput, openFileNoFollow, PACKAGE, readFileNoFollow, realPath } from '../util';
 
 export async function createVite({
   config,
@@ -109,8 +109,9 @@ export async function createVite({
     // compiler options would reach the frame and the diagnostics in the code and the errors Vite gives back.
     tsconfig: path.join(config.root, 'tsconfig.json'),
     // postcss-modules inlines what `composes: ... from` and `@value ... from` name, wherever that file is, out of reach
-    // of compileStylesheet's checks: a `.module.css` compiles as plain CSS.
-    css: { modules: false },
+    // of compileStylesheet's checks: a `.module.css` compiles as plain CSS. postcss reads the `.map` file a stylesheet
+    // names, even in a string, through any link and with a read that waits forever on a pipe: it reads no map.
+    css: { modules: false, postcss: { map: false } },
     // Vite reads an SVG a URL names to inline it as a data: URL, through any link: it reads it still, inlines it never.
     build: { assetsInlineLimit: 0 },
     plugins: [
@@ -210,8 +211,6 @@ export async function cssCodeOffenders(
 
 // The lookahead consumes nothing, so a string holding `@import "` cannot swallow the import that follows it.
 const CSS_IMPORT = /@(?:import|reference)(?=\s*("[^"]*"|'[^']*'))/gi;
-// `tailwindcss`, `@fontsource-variable/inter/standard.css`: no scheme, query, fragment or dot segment.
-const PACKAGE = /^(@[\w-][\w.-]*\/)?[\w-][\w.-]*(\/[\w-][\w.-]*)*$/;
 
 /**
  * compileStylesheet reads a path import as CSS whatever its extension; an archive's stylesheet may carry only what it
@@ -460,7 +459,8 @@ async function brandOf(project: string): Promise<unknown> {
 /**
  * What a frame of the project or brand that holds `entry` may load: what is in its home (homeOf) and, outside the
  * projects and brands, what Vite serves at all (app, packages, templates). By the real path, so a link leads nowhere
- * its target may not. A folder never: Vite would answer with a file it picks inside (an index, a package.json entry).
+ * its target may not. What exists must be a regular file: for a folder Vite would answer with a file it picks inside
+ * (an index, a package.json entry), and its read of a pipe would wait for a writer. A missing file is Vite's 404.
  */
 export async function frameReach(
   vite: ViteDevServer,
@@ -473,7 +473,8 @@ export async function frameReach(
   );
   return async (file) => {
     const real = await realPath(file).catch(() => null);
-    if (!real || (await fs.stat(real).catch(() => null))?.isDirectory()) return false;
+    const stat = real && (await fs.stat(real).catch(() => null));
+    if (!real || (stat && !stat.isFile())) return false;
     const within = (dir: string) => dir === real || isInside(dir, real);
     return home.some((dir) => isInside(dir, real)) || (!within(projects) && !within(brands) && served.some(within));
   };
@@ -574,6 +575,23 @@ function cadencePlugin(managedNames: string[], config: CadenceConfig): Plugin {
         tryIndex: false,
         preferRelative: false,
       });
+      // Vite shows the lines around a postcss error from the file the error names, read again through any link. Without
+      // that name, it shows them from the CSS this plugin compiled.
+      const css = resolved.plugins.find(({ name }) => name === 'vite:css');
+      if (!css?.transform) throw new Error("Vite's CSS plugin (vite:css) is gone: its errors would show a linked file");
+      const hook = typeof css.transform === 'function' ? { handler: css.transform } : css.transform;
+      css.transform = {
+        ...hook,
+        async handler(code, id, options) {
+          try {
+            return await hook.handler.call(this, code, id, options);
+          } catch (error) {
+            const { loc } = error as { loc?: { file?: string } };
+            if (loc && isManaged(id.replace(/[?#].*$/, ''))) delete loc.file;
+            throw error;
+          }
+        },
+      };
     },
     async resolveId(source, importer, options) {
       // Vite looks a package up from the importer's folder, and its dependency optimizer bundles what that package
@@ -630,6 +648,11 @@ function cadencePlugin(managedNames: string[], config: CadenceConfig): Plugin {
 const SPECIAL_QUERY = /[?&](?:worker|sharedworker|raw|url)\b/;
 const RAW_QUERY = /[?&]raw(?:&|$)/;
 const INLINE_QUERY = /[?&]inline\b/;
+// Vite's urlRE: with `inline`, its asset plugin reads any file into a data: URL, whatever the extension.
+const URL_QUERY = /[?&]url(?:&|$)/;
+// Vite's wasmDirectRE and wasmInstanceRE: its wasm plugin reads such a module through any link, for its import and export
+// names. A module's `?url` and `?init` only give its URL.
+const WASM_MODULE = /(?<![?#].*)\.wasm$|[?&]vite-wasm-instance(?:&|$)/;
 
 /** The managed folder (by the name it is reached under) that holds `file`. */
 function rootOf(managedNames: string[], file: string): string | undefined {
@@ -637,8 +660,10 @@ function rootOf(managedNames: string[], file: string): string | undefined {
 }
 
 /**
- * `?raw` and `?inline` imports of a project, brand or template file, which Vite reads through any link: read here
- * without following one. A stylesheet's `?inline` is its compiled CSS (cadencePlugin's transform).
+ * `?raw`, `?inline` and `?url&inline` imports of a project, brand or template file, which Vite reads through any link:
+ * read here without following one. A stylesheet's `?inline` is its compiled CSS (cadencePlugin's transform). An svg
+ * gets Vite's dev URL without the read Vite makes to inline it, which `assetsInlineLimit: 0` never does. A WebAssembly
+ * module is refused, its URL is not.
  */
 function cadenceAssets(managedNames: string[]): Plugin {
   return {
@@ -647,12 +672,15 @@ function cadenceAssets(managedNames: string[]): Plugin {
     async load(id) {
       const file = id.replace(/[?#].*$/, '');
       const root = rootOf(managedNames, file);
+      if (root && WASM_MODULE.test(id)) throw new Error(`A WebAssembly module loads here by its URL only (?url, ?init): ${file}`);
       const config = this.environment.getTopLevelConfig();
       if (!root || !isFileLoadingAllowed(config, file)) return null;
       let value: string;
       if (RAW_QUERY.test(id)) value = await readFileNoFollow(root, file, 'utf8');
-      else if (INLINE_QUERY.test(id) && !isCSSRequest(id) && config.assetsInclude(file)) {
+      else if (INLINE_QUERY.test(id) && (URL_QUERY.test(id) || config.assetsInclude(file))) {
         value = `data:${contentType(file)};base64,${(await readFileNoFollow(root, file)).toString('base64')}`;
+      } else if (file.endsWith('.svg')) {
+        value = path.posix.join(config.base, isInside(config.root, file) ? path.relative(config.root, file) : `@fs${file}`);
       } else return null;
       return { code: `export default ${JSON.stringify(value)}`, map: { mappings: '' }, moduleType: 'js' };
     },

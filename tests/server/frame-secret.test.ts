@@ -1,14 +1,15 @@
 // The frame origin with a request secret: real Vite and frame handler on a free port, no Chromium.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
-import type { ViteDevServer } from 'vite';
+import type { Plugin, ViteDevServer } from 'vite';
 import { loadConfig } from '../../server/config';
 import { createFrameHandler } from '../../server/frames/frameServer';
-import { createVite, diagnoseFile } from '../../server/frames/vite';
+import { createVite, diagnoseFile, frameReach } from '../../server/frames/vite';
 import { m } from '../../server/i18n';
 import { type FrameKind, frameOriginOf } from '../../src/shared/frameOrigin';
 import { BRAND_JSON, makeRoot } from './helpers';
@@ -49,6 +50,20 @@ let config: ReturnType<typeof loadConfig>;
 let projectHost: string;
 let vite: ViteDevServer | undefined;
 let cleanup: () => Promise<void>;
+/** A stylesheet the next transform of it swaps for a link to `target`. */
+let swapNext: { sheet: string; target: string } | undefined;
+// Between the read that compiled a stylesheet and Vite's CSS plugin, where a swap made from a shell can land.
+const swap: Plugin = {
+  name: 'swap',
+  enforce: 'pre',
+  async transform(_code, id) {
+    if (!swapNext || !id.startsWith(swapNext.sheet)) return;
+    const { sheet, target } = swapNext;
+    swapNext = undefined;
+    await fs.rm(sheet);
+    await fs.symlink(target, sheet);
+  },
+};
 
 before(async () => {
   const root = await makeRoot();
@@ -74,7 +89,7 @@ before(async () => {
     ...loadConfig({ root: repo, projectsDir, brandsDir, templatesDir, stateDir, editorPort: 0, framePort: port }),
     requestSecret: SECRET,
   };
-  vite = await createVite({ config });
+  vite = await createVite({ config, overrides: { plugins: [swap] } });
   await fs.mkdir(path.join(projectsDir, 'p'));
   projectHost = await hostOf('project', 'p');
   const inDir = (dir: string) => (id: string) =>
@@ -436,12 +451,28 @@ test('a managed file swapped for a link after the origin checked it gives nothin
   // A string: valid JSON and JavaScript, kept whole in what Vite compiles.
   for (const target of targets) for (const name of names) await write(target + path.extname(name), '"OUTSIDE-MARKER"\n');
   await write(path.join(scenes, 'kept.txt'), 'kept\n');
+  await write(path.join(scenes, 'kept.json'), '"kept"\n');
   try {
     for (const target of targets) {
       for (const name of names) {
         await fs.rm(path.join(scenes, name), { force: true });
         await fs.symlink(target + path.extname(name), path.join(scenes, name));
-        for (const query of ['', '?raw', '?import&raw', '?import&inline', '?import&url', '?inline', '?import']) {
+        for (const query of [
+          '',
+          '?raw',
+          '?import&raw',
+          '?import&inline',
+          '?import&url',
+          '?inline',
+          '?import',
+          '?url&inline',
+          '?import&url&inline',
+          '?inline&url',
+          // A query ending in `.css`, with `raw=`, `url=` or `worker=` keeping it from compiling as CSS.
+          '?raw=1&inline&x=.css',
+          '?url=1&inline&x=.css',
+          '?inline&worker=1&x=.css',
+        ]) {
           for (const dir of [scenes, await fs.realpath(scenes)]) {
             const url = `/@fs${dir}/${name}${query}`;
             const { body } = await request((behind.address() as AddressInfo).port, url, { headers: secret });
@@ -452,9 +483,118 @@ test('a managed file swapped for a link after the origin checked it gives nothin
     }
     const kept = await request((behind.address() as AddressInfo).port, `/@fs${scenes}/kept.txt?raw`, { headers: secret });
     assert.match(kept.body, /kept/);
+    const inlined = await request((behind.address() as AddressInfo).port, `/@fs${scenes}/kept.json?url&inline`, {
+      headers: secret,
+    });
+    assert.match(withMaps(inlined.body), /"kept"/);
   } finally {
     behind.close();
     for (const name of names) await fs.rm(path.join(scenes, name), { force: true });
     for (const target of targets) for (const name of names) await fs.rm(target + path.extname(name), { force: true });
+  }
+});
+
+test('a pipe named like an asset is refused by the origin, and Vite behind it never waits on one', async () => {
+  const behind = http.createServer(vite!.middlewares);
+  await new Promise<void>((resolve) => behind.listen(0, '127.0.0.1', resolve));
+  const scenes = path.join(config.projectsDir, 'p', 'scenes');
+  await fs.mkdir(scenes, { recursive: true });
+  const pipe = path.join(scenes, 'pipe.svg');
+  execFileSync('mkfifo', [pipe]);
+  let waited = false;
+  // A writer opens without waiting only while a read waits on the pipe, and that read then ends: the test fails instead
+  // of hanging.
+  const writer = setInterval(() => {
+    fs.open(pipe, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK).then(
+      (file) => {
+        waited = true;
+        return file.close();
+      },
+      () => {},
+    );
+  }, 250);
+  try {
+    for (const query of ['?import', '?import&url', '']) {
+      assert.equal((await request(port, `/@fs${scenes}/pipe.svg${query}`, { headers: secret })).status, 403, query);
+      const { status, body } = await request((behind.address() as AddressInfo).port, `/@fs${scenes}/pipe.svg${query}`, {
+        headers: secret,
+      });
+      if (query) assert.match(body, /export default "\/@fs\/[^"]*\/pipe\.svg"/, `${query} ${status}`);
+      else assert.equal(status, 404);
+    }
+    assert.equal(waited, false);
+  } finally {
+    clearInterval(writer);
+    behind.close();
+    await fs.rm(pipe, { force: true });
+  }
+});
+
+test("a stylesheet's error shows what the frame compiled, never the file a link swapped in names", async () => {
+  const scenes = path.join(config.projectsDir, 'p', 'scenes');
+  const outside = path.join(path.dirname(config.projectsDir), 'outside.txt');
+  const sheet = path.join(scenes, 'broken.css');
+  await write(outside, 'line 1\nline 2\nOUTSIDE-MARKER\nline 4\n');
+  // Tailwind keeps the open bracket, then postcss refuses it: Vite runs postcss on a stylesheet with a url().
+  await write(sheet, '.a { background: url(data:image/png;base64,AA==) }\n.b { --x: [ }\n');
+  try {
+    const reach = await frameReach(vite!, config, sheet);
+    swapNext = { sheet, target: outside };
+    const text = (await diagnoseFile(vite!, sheet, reach)) ?? '';
+    assert.equal(swapNext, undefined);
+    assert.match(text, /Unclosed bracket/);
+    assert.match(text, /--x: \[/);
+    assert.doesNotMatch(text, /OUTSIDE-MARKER/);
+  } finally {
+    swapNext = undefined;
+    for (const file of [sheet, outside]) await fs.rm(file, { force: true });
+  }
+});
+
+test('a stylesheet never has the source map it names read: the map could name any file, or be a pipe', async () => {
+  const scenes = path.join(config.projectsDir, 'p', 'scenes');
+  const outside = path.join(path.dirname(config.projectsDir), 'OUTSIDE-SOURCE.css');
+  const sheet = path.join(scenes, 'mapped.css');
+  await write(outside, '.b { --x: [ }\n');
+  // postcss finds the map's name in a string too, and names the source it maps an error to.
+  await write(
+    sheet,
+    '.a { background: url(data:image/png;base64,AA==); content: "/*# sourceMappingURL=mapped.css.map */" }\n.b { --x: [ }\n',
+  );
+  const lines = Array.from({ length: 20 }, () => 'AACA').join(';');
+  await write(`${sheet}.map`, JSON.stringify({ version: 3, sources: [outside], names: [], mappings: `AAAA;${lines}` }));
+  try {
+    const text = (await diagnoseFile(vite!, sheet, await frameReach(vite!, config, sheet))) ?? '';
+    assert.match(text, /Unclosed bracket/);
+    assert.doesNotMatch(text, /OUTSIDE-SOURCE/);
+  } finally {
+    for (const file of [sheet, `${sheet}.map`, outside]) await fs.rm(file, { force: true });
+  }
+});
+
+test('a WebAssembly module of a project loads by its URL only: no read through a link for its export names', async () => {
+  const behind = http.createServer(vite!.middlewares);
+  await new Promise<void>((resolve) => behind.listen(0, '127.0.0.1', resolve));
+  const get = async (url: string) => (await request((behind.address() as AddressInfo).port, url, { headers: secret })).body;
+  const scenes = path.join(config.projectsDir, 'p', 'scenes');
+  const outside = path.join(path.dirname(config.projectsDir), 'outside.wasm');
+  // A module whose one export, its memory, is named OUTSIDE_MARKER.
+  const name = Buffer.from('OUTSIDE_MARKER');
+  const wasm = Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 5, 3, 1, 0, 0, 7, name.length + 4, 1, name.length, ...name, 2, 0]);
+  await fs.mkdir(scenes, { recursive: true });
+  await fs.writeFile(outside, wasm);
+  await fs.writeFile(path.join(scenes, 'own.wasm'), wasm);
+  await fs.symlink(outside, path.join(scenes, 'linked.wasm'));
+  await fs.symlink(outside, path.join(scenes, 'linked.txt'));
+  try {
+    for (const url of ['linked.wasm?import', 'linked.txt?vite-wasm-instance&import', 'own.wasm?import']) {
+      assert.doesNotMatch(await get(`/@fs${scenes}/${url}`), /OUTSIDE_MARKER/, url);
+    }
+    assert.match(await get(`/@fs${scenes}/own.wasm?import&url`), /export default "\/@fs\/[^"]*\/own\.wasm"/);
+    assert.match(await get(`/@fs${scenes}/own.wasm?import&init`), /\/@fs\/[^"]*\/own\.wasm/);
+  } finally {
+    behind.close();
+    for (const file of ['own.wasm', 'linked.wasm', 'linked.txt']) await fs.rm(path.join(scenes, file), { force: true });
+    await fs.rm(outside, { force: true });
   }
 });
