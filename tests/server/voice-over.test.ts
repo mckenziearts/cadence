@@ -23,6 +23,11 @@ import { makeRoot, rejectsWithStatus, type TestRoot } from './helpers';
 const RATE = 16000;
 /** What the fake Piper says a sentence lasts. */
 const seconds = (text: string) => Math.round((0.4 + 0.02 * text.length) * 1000) / 1000;
+/** The track's gain on a sample `k` samples from its sentence's nearest end: a raised-cosine fade over 8 ms. */
+const fadeGain = (k: number, rate: number) => {
+  const fade = Math.round(0.008 * rate);
+  return k < fade ? 0.5 - 0.5 * Math.cos((Math.PI * k) / fade) : 1;
+};
 
 let t: TestRoot;
 let store: FileProjectStore;
@@ -330,8 +335,8 @@ test('sync speaks each sentence once, lays them from scene start + at, and follo
       {
         sceneId: 'demo',
         text: 'Trois quatre cinq.',
-        start: 2.5 + a,
-        end: Math.round((2.5 + a + b) * 1000) / 1000,
+        start: Math.round((2.5 + a + 0.15) * 1000) / 1000,
+        end: Math.round((2.5 + a + 0.15 + b) * 1000) / 1000,
         speaker: null,
       },
     ],
@@ -398,12 +403,12 @@ test("each script line speaks with its speaker's voice, one Piper call per voice
     placed.map(({ words: _words, level: _level, ...line }) => line),
     [
       { sceneId: 'demo', text: 'Bonjour.', start: 2.5, end: ms(2.5 + a), speaker: 'camille', line: 0 },
-      { sceneId: 'demo', text: 'Ça va ?', start: ms(2.5 + a), end: ms(2.5 + a + b), speaker: 'camille', line: 0 },
+      { sceneId: 'demo', text: 'Ça va ?', start: ms(2.5 + a + 0.15), end: ms(2.5 + a + 0.15 + b), speaker: 'camille', line: 0 },
       {
         sceneId: 'demo',
         text: 'Oui.',
-        start: ms(2.5 + a + b + 0.2),
-        end: ms(2.5 + a + b + 0.2 + c),
+        start: ms(2.5 + a + 0.15 + b + 0.2),
+        end: ms(2.5 + a + 0.15 + b + 0.2 + c),
         speaker: 'leo',
         gesture: 'nod',
         line: 1,
@@ -411,7 +416,7 @@ test("each script line speaks with its speaker's voice, one Piper call per voice
     ],
   );
   // Words in video seconds, timed by characters (Piper gives no alignment); a level every 40 ms of the sentence.
-  const at = 2.5 + a;
+  const at = 2.5 + a + 0.15;
   assert.deepEqual(placed[1].words, [
     { text: 'Ça', start: ms(at), end: ms(at + (2 * b) / 7) },
     { text: 'va', start: ms(at + (3 * b) / 7), end: ms(at + (5 * b) / 7) },
@@ -420,7 +425,7 @@ test("each script line speaks with its speaker's voice, one Piper call per voice
   assert.deepEqual(placed[2].level, Array<number>(Math.ceil(c * 25)).fill(255));
 });
 
-test("one speaker's lines in a row follow each other with no pause, each sentence keeps its line's gesture, a scene without lines speaks with the project voice", async () => {
+test("one speaker's sentences without silence of their own follow each other 0.15 s apart, each sentence keeps its line's gesture, a scene without lines speaks with the project voice", async () => {
   const id = await twoScenes();
   await install('fr_FR-gilles-low');
   const camille = { id: 'camille', name: 'Camille', voice: 'fr_FR-gilles-low' };
@@ -445,13 +450,27 @@ test("one speaker's lines in a row follow each other with no pause, each sentenc
     [
       { sceneId: intro, text: 'Salut.', start: 0, end: s, speaker: null, gesture: undefined },
       { sceneId: 'demo', text: 'Bonjour.', start: 2, end: ms(2 + a), speaker: 'camille', gesture: 'wave' },
-      { sceneId: 'demo', text: 'Ça va ?', start: ms(2 + a), end: ms(2 + a + b), speaker: 'camille', gesture: 'wave' },
-      { sceneId: 'demo', text: 'Super.', start: ms(2 + a + b), end: ms(2 + a + b + c), speaker: 'camille', gesture: undefined },
+      {
+        sceneId: 'demo',
+        text: 'Ça va ?',
+        start: ms(2 + a + 0.15),
+        end: ms(2 + a + 0.15 + b),
+        speaker: 'camille',
+        gesture: 'wave',
+      },
+      {
+        sceneId: 'demo',
+        text: 'Super.',
+        start: ms(2 + a + 0.15 + b + 0.15),
+        end: ms(2 + a + 0.15 + b + 0.15 + c),
+        speaker: 'camille',
+        gesture: undefined,
+      },
       {
         sceneId: 'demo',
         text: 'Oui.',
-        start: ms(2 + a + b + c + 0.2),
-        end: ms(2 + a + b + c + 0.2 + d),
+        start: ms(2 + a + 0.15 + b + 0.15 + c + 0.2),
+        end: ms(2 + a + 0.15 + b + 0.15 + c + 0.2 + d),
         speaker: 'leo',
         gesture: undefined,
       },
@@ -734,7 +753,8 @@ test('ElevenLabs is asked once per voice and model, with the lines as written, a
   );
   assert.equal(placed[0].start, 2);
   assert.equal(placed[1].start, ms(placed[0].end + 0.2), 'a turn');
-  assert.equal(placed[2].start, placed[1].end, 'the same speaker goes on');
+  // Its sentences end loud and start after 0.04 s of silence: the pause adds what they lack for 0.15 s.
+  assert.equal(placed[2].start, ms(placed[1].end + 0.11), 'the same speaker goes on');
   assert.equal(placed[3].start, ms(placed[2].end + 0.2), 'a turn');
   assert.deepEqual(placed[1].words, [{ text: 'mot', start: ms(placed[1].start + 0.1), end: ms(placed[1].start + 0.25) }]);
   assert.deepEqual(placed[1].level, [7, 9]);
@@ -1016,9 +1036,10 @@ test('the track lays each sentence at its time, as one WAV', async () => {
   assert.equal(sampleRate, RATE);
   assert.equal(samples.length, Math.ceil(track.lines[1].end * RATE));
   const at = Math.round(2.25 * RATE);
+  const fade = Math.round(0.008 * RATE);
   assert.equal(samples[at - 1], 0, 'silent before the first sentence');
-  assert.equal(samples[at], 1000);
-  assert.equal(samples.at(-1), 1000);
+  assert.deepEqual([samples[at], samples[at + fade / 2], samples[at + fade]], [0, 500, 1000], 'faded in over 8 ms');
+  assert.deepEqual([samples.at(-1 - fade), samples.at(-1)], [1000, 0], 'and out');
 });
 
 test('the track mixes voices of different sample rates at the highest one, resampling the others', async () => {
@@ -1040,11 +1061,14 @@ test('the track mixes voices of different sample rates at the highest one, resam
   const { sampleRate, samples } = readWav(await fs.readFile(track.file));
   assert.equal(sampleRate, 22050);
   assert.equal(samples.length, Math.ceil(track.lines[1].end * 22050));
-  assert.equal(samples[Math.round(track.lines[1].start * 22050)], 1000, 'the 22050 Hz voice as it was spoken');
-  // The 16000 Hz ramp keeps its pitch: sample k of the track is sample k * 16000 / 22050 of the voice.
+  const fade = Math.round(0.008 * 22050);
+  assert.equal(samples[Math.round(track.lines[1].start * 22050) + fade], 1000, 'the 22050 Hz voice as it was spoken');
+  // The 16000 Hz ramp keeps its pitch: sample k of the track is sample k * 16000 / 22050 of the voice, faded at its ends.
   const at = Math.round(track.lines[0].start * 22050);
-  for (const k of [0, 1, 2, 1000, 5001, Math.round(seconds('Oui.') * 22050) - 2]) {
-    assert.ok(Math.abs(samples[at + k] - (k * 16000) / 22050) <= 1, `sample ${k}: ${samples[at + k]}`);
+  const length = Math.round(seconds('Oui.') * 22050);
+  for (const k of [0, 1, 2, 1000, 5001, length - 2]) {
+    const expected = ((k * 16000) / 22050) * fadeGain(Math.min(k, length - 1 - k), 22050);
+    assert.ok(Math.abs(samples[at + k] - expected) <= 1, `sample ${k}: ${samples[at + k]}`);
   }
 });
 
@@ -1064,8 +1088,11 @@ test('two sentences that overlap are lowered just enough where their sum would c
   const endA = atA + Math.round(seconds(first) * RATE);
   const endB = atB + Math.round(seconds(second) * RATE);
   assert.ok(atB < endA, 'the first sentence runs into the second');
-  const a = (i: number) => (i >= atA && i < endA ? tone(first, i - atA) : 0);
-  const b = (i: number) => (i >= atB && i < endB ? tone(second, i - atB) : 0);
+  // Each sentence as the track lays it, faded in and out.
+  const laid = (text: string, i: number, at: number, end: number) =>
+    i >= at && i < end ? Math.round(tone(text, i - at) * fadeGain(Math.min(i - at, end - 1 - i), RATE)) : 0;
+  const a = (i: number) => laid(first, i, atA, endA);
+  const b = (i: number) => laid(second, i, atB, endB);
   const { samples } = readWav(await fs.readFile((await voiceOver.track(id))!.file));
 
   const ratios: number[] = [];
@@ -1098,7 +1125,7 @@ test('two sentences that overlap are lowered just enough where their sum would c
     );
   }
 
-  // 50 ms away from the overlap, each sentence is as Piper spoke it.
+  // 50 ms away from the overlap, each sentence is as Piper spoke it, faded.
   const margin = Math.round(0.05 * RATE);
   const expect = (from: number, to: number, f: (i: number) => number) =>
     Int16Array.from({ length: to - from }, (_, j) => f(from + j));
@@ -1110,7 +1137,7 @@ test('two sentences that overlap are lowered just enough where their sum would c
   const apart = (await voiceOver.track(id))!;
   const at = Math.round(apart.lines[1].start * RATE);
   const end = at + Math.round(seconds(second) * RATE);
-  const expected = expect(0, end, (i) => a(i) + (i >= at ? tone(second, i - at) : 0));
+  const expected = expect(0, end, (i) => a(i) + laid(second, i, at, end));
   assert.deepEqual(readWav(await fs.readFile(apart.file)).samples, expected);
 });
 

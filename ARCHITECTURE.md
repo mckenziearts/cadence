@@ -1014,7 +1014,8 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   character, with no engine call. A sync never brings a deleted project back: the cache folder is made only under a
   project folder that still exists, the engines write only into it, and a project deleted mid-sync is a 404.
 - `ProjectState` (`setVoiceOverProvider`): `voiceOver` (settings in use), `voiceOverLines` (generated sentences laid
-  one after the other from `scene.start + at`, 0.2 s apart where the speaker changes, in video seconds, each with its
+  one after the other from `scene.start + at`, 0.2 s apart where the speaker changes and, between one speaker's
+  sentences, with the silence they lack for 0.15 s (measured on their `level`: under 8 is silence), in video seconds, each with its
   `speaker`, its `words`, its mouth `level` at 25 Hz, the index of its script `line` and that line's `gesture`), `voiceOverPending` (scenes with a sentence not
   generated; they have no line at all), `voiceOverError` (why the engine last failed on the sentences still missing;
   null while a sync tries them again, once they change, or once spoken) and `voiceOverUrl` (the track, `?v=` changes
@@ -1025,11 +1026,11 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   of each pending scene in the Voice tab, a voice download), an export, or `set_voice_over`. A success sends
   `project-changed`.
 - Track: `track.wav`, the sentences laid at their times over silence, one per project, rebuilt when its lines change.
-  Sentences that overlap (one running into the next scene's voice-over) are summed; where the sum would pass full
+  Each sentence fades in and out over 8 ms (raised cosine), so one cut on a sound does not click. Sentences that overlap (one running into the next scene's voice-over) are summed; where the sum would pass full
   scale, the shared stretch is lowered just enough (one gain for the stretch, 20 ms linear ramps on each side) instead
   of being clipped. The track takes the highest sample rate of its sentences (ElevenLabs speaks at 24 kHz, Piper at
   its voice's rate) and resamples the others linearly; without overlap, the samples are otherwise the sentences'
-  own.
+  own, faded.
   The preview plays it in a second `<audio>` that follows the video clock (`src/editor/lib/voiceOver.ts`).
 - Music under the voice: `voiceSpans` merges back-to-back sentences, `duckGain` gives the music `musicLevel` inside a
   span with 0.25 s linear ramps (`src/shared/voiceOver.ts`), in the preview and in the MP4 (`duckExpression`, a
