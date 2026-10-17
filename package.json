@@ -11,7 +11,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.15"
   },
   "scripts": {
     "start": "tsx bin/cadence.ts start",

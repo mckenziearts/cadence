@@ -7,7 +7,7 @@
 <p align="center">A local, prompt-driven motion design studio for marketing videos, for one brand or several.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.12-5FA04E?logo=nodedotjs&logoColor=white" alt="Node.js 22.12 or later">
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.15-5FA04E?logo=nodedotjs&logoColor=white" alt="Node.js 22.15 or later">
   <img src="https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white" alt="TypeScript 7">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
   <img src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white" alt="Vite 8">
@@ -38,7 +38,7 @@ their own Claude account.
 
 Required:
 
-- Node.js 22.12 or later.
+- Node.js 22.15 or later.
 - Git, to clone Cadence and to build a brand from a repository.
 - ffmpeg with libx264 and aac, for the MP4 export and the music analysis.
 - [Claude Code](https://code.claude.com), signed in to your Claude account: Cadence uses your subscription, there is no
@@ -101,7 +101,7 @@ On Linux, run `npm run setup -- --with-deps` instead: it also installs the syste
 on Debian and Ubuntu).
 
 Always install with `npm ci --ignore-scripts`, never `npm install`: a compromised package can run code at install
-time. The repository's `.npmrc` blocks those scripts too, and refuses a Node.js older than 22.12.
+time. The repository's `.npmrc` blocks those scripts too, and refuses a Node.js older than 22.15.
 
 Default ports: 5310 for the editor, 5311 for frames. To change them: `npm start -- --port 5410 --frame-port 5411`.
 

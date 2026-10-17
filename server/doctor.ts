@@ -63,7 +63,7 @@ function checkPlatform(): Check {
 
 function checkNode(): Check {
   const [major, minor] = process.versions.node.split('.').map(Number);
-  return major > 22 || (major === 22 && minor >= 12)
+  return major > 22 || (major === 22 && minor >= 15)
     ? { level: 'ok', label: `Node.js ${process.versions.node}` }
     : { level: 'fail', label: m().media.doctor.nodeOld(process.versions.node), fix: m().media.doctor.nodeFix };
 }

@@ -211,7 +211,7 @@ export default {
     readyBusy: (origin: string) =>
       `Cadence may already be running: open ${origin}. Otherwise run \`npm start -- --port 5320 --frame-port 5321\``,
     nodeOld: (version: string) => `Node.js ${version} is too old`,
-    nodeFix: 'Install Node.js 22.12 or later',
+    nodeFix: 'Install Node.js 22.15 or later',
     ffmpegMissing: (bin: string) => `ffmpeg not found (${bin})`,
     ffmpegFix: 'macOS: `brew install ffmpeg`; Debian/Ubuntu: `sudo apt install ffmpeg`; or set FFMPEG_PATH',
     encoders: (version: string, missing: string[]) =>

@@ -213,7 +213,7 @@ export default {
     readyBusy: (origin: string) =>
       `Cadence tourne peut-être déjà : ouvrez ${origin}. Sinon, lancez \`npm start -- --port 5320 --frame-port 5321\``,
     nodeOld: (version: string) => `Node.js ${version} est trop ancien`,
-    nodeFix: 'Installez Node.js 22.12 ou plus récent',
+    nodeFix: 'Installez Node.js 22.15 ou plus récent',
     ffmpegMissing: (bin: string) => `ffmpeg introuvable (${bin})`,
     ffmpegFix: 'macOS : `brew install ffmpeg` \u00b7 Debian/Ubuntu : `sudo apt install ffmpeg` \u00b7 ou définissez FFMPEG_PATH',
     encoders: (version: string, missing: string[]) => `ffmpeg ${version} sans encodeur ${missing.join(' ni ')}`,
