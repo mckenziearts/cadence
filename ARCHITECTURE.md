@@ -54,7 +54,8 @@ cadence/
     doctor.ts               environment checks
     util.ts                 shared helpers (atomic writes, mutex, safe paths, ids)
     contracts.ts            service interfaces
-    store/                  projects.ts, brands.ts, templates.ts, versions.ts, assets.ts
+    store/                  projects.ts, brands.ts, templates.ts, versions.ts, assets.ts, captureHosts.ts
+                            (FileCaptureHosts, <root>/.cadence/capture-hosts.json)
     brands/                 check.ts (brand checks), source.ts (GitHub via gh, GitLab via glab, else git),
                             fonts.ts (Google Fonts), build.ts (BrandBuilder)
     accounts/               accounts.ts (FileAccountService, <root>/.cadence/accounts.json), publish.ts (Publisher)
@@ -62,7 +63,10 @@ cadence/
     api/                    Hono routes under /api (index.ts = createApi)
     archive/                tar.ts (ustar reader and writer, no dependency), projects.ts (ProjectArchiver)
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
-    capture/                capture.ts (Playwright), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg)
+    capture/                capture.ts (Playwright), browser-host.ts + chromium-server.mjs (Chromium in a child
+                            process), serve-chromium.mjs (the Chromium server that process runs, exported for a
+                            host app), sheet.ts (contact sheets), seams.ts (pixelmatch), render.ts (ffmpeg),
+                            policy.ts (what a capture may reach), pinned.ts (the captures' own fetch)
     music/                  decode, fft, features, beats, structure, analyze, grid (overrides), service, cli,
                             worker (the analysis off the server's thread), synth + soundtracks (the preset
                             soundtracks, composed in code)
@@ -97,82 +101,206 @@ cadence/
 ## Processes, origins and security
 
 One Node process (`npm start` runs `bin/cadence.ts start`, which calls `startServer()`), one Vite dev server in
-middleware mode, two HTTP servers bound to **127.0.0.1 only**. The editor is a production build made at every start, in
-memory (`server/editor.ts`, about 150 ms, so it is never stale); the Vite dev server serves the frame origin (scenes are
-edited live), and the editor too with `npm run dev` (`start --dev`). Vite reads `NODE_ENV` once per process and sets it
-when it is unset: `startServer()` sets it first, `production` (React's production build in the editor and in frames) or
-`development` with `--dev`. Ctrl+C, SIGTERM and a closed terminal (SIGHUP) run `server.close()`, which stops the turns,
-the renders and Chromium: Chromium is launched without Playwright's own signal handlers, which would exit first or, on
-SIGHUP, keep the process alive. `startServer()` refuses Windows (scene URLs are `/@fs<absolute path>`), and points to
-WSL 2.
+middleware mode, two HTTP servers bound to the loopback only, **127.0.0.1 and ::1** on the same port: Chromium tries
+`localhost` on ::1 as well, so no other local user can take `[::1]:<port>` in front of Cadence. With port 0, ::1 takes
+the port IPv4 got, and both start again (5 tries) when it is taken there; with a fixed port, a taken ::1 fails the
+start; a host without IPv6 runs on 127.0.0.1 alone (`server/index.ts`, `listenLoopback()`). The editor is a production
+build made at every start, in memory (`server/editor.ts`, about 150 ms, so it is never stale); the Vite dev server
+serves the frame origins (scenes are edited live), and the editor too with `npm run dev` (`start --dev`). Vite reads
+`NODE_ENV` once per process and sets it when it is unset: `startServer()` sets it first, `production` (React's
+production build in the editor and in frames) or `development` with `--dev`. Ctrl+C, SIGTERM and a closed terminal
+(SIGHUP) run `server.close()`, which stops the turns, the renders and Chromium: Chromium is launched without
+Playwright's own signal handlers, which would exit first or, on SIGHUP, keep the process alive, and its host process
+(see "Capture pages") ignores SIGINT, SIGTERM and SIGHUP: it ends when the server closes its IPC channel, or dies.
+`startServer()` refuses Windows (scene URLs are `/@fs<absolute path>`), and points to WSL 2.
 
 | Origin | Default | Serves |
 | --- | --- | --- |
 | Editor | `http://127.0.0.1:5310` | `/` (editor HTML), `/assets/*` (the build; Vite modules with `--dev`), `/api/*`, `/api/events` (SSE), `/mcp`, `/oauth/<network>/callback` |
-| Frame | `http://localhost:5311` | `/frame.html`, `/kit.html`, `/frame-api/*` (read-only), Vite modules (scenes, runtime, brands) |
+| Frame | `http://p-<label>.localhost:5311`, `http://b-<label>.localhost:5311` | `/frame.html`, `/kit.html`, `/frame-api/*` (read-only), Vite modules (scenes, runtime, brands) |
 
-Different ports are different origins: scene code (frame origin) cannot read or call the editor API. The frame origin
-uses the name `localhost` for the same loopback (both servers listen on 127.0.0.1 only): for Chrome it is another site,
-so the preview and the kit iframes run in their own process, off the editor's main thread. An editor opened as
-`localhost` shares that site again: it works, without that gain.
+Different ports are different origins: scene code (frame origin) cannot read or call the editor API. Each project and
+each brand has a frame origin of its own on the frame port: a project's scenes load from
+`http://p-<label>.localhost:<framePort>`, a brand's kit from `http://b-<label>.localhost:<framePort>`, where the label
+is the first 32 hex characters of the SHA-256 of the id (`frameOriginOf()` in `src/shared/frameOrigin.ts`: an id may be
+longer than a DNS label or start with `xn--`). Scene or kit code therefore never shares storage or a same-origin frame
+with another project's or brand's. The label sits right under `localhost`, so each frame origin is also a site of its
+own: no cookie domain covers two of them (under a shared `project.localhost`, one would reach every project). Chrome
+resolves every `*.localhost` name to the loopback itself, without DNS, and both servers listen on 127.0.0.1 and ::1
+only. `CadenceConfig.frameOrigin` stays the base, `http://localhost:<framePort>`, which serves nothing. For Chrome a
+frame origin is another site than the editor, so the preview and the kit iframes run in their own process, off the
+editor's main thread. The cost: the browser's HTTP cache is split per origin as well, so the first open of each project
+or brand fetches the runtime and its dependencies again (about 0.5 to 2 MB from the loopback).
 
 Guards (editor origin, `server/http.ts`):
+- With a request secret (`startServer({ requestSecret })`, see "Embedding Cadence"), every request without
+  `X-Cadence-Secret: <secret>` gets 403 first, before the Host check and any routing; WebSocket upgrades are plain
+  requests here (no `upgrade` listener) and get the same check. Only `GET /oauth/<network>/callback` (its state) and
+  `/mcp` (its bearer token) are exempt. Without the secret nothing changes.
 - Reject requests whose `Host` is not `127.0.0.1:<editorPort>` or `localhost:<editorPort>` (DNS rebinding).
 - `/api/*` with a mutating method (POST/PUT/PATCH/DELETE) requires header `X-Cadence-Token: <editorToken>`.
   The token is random per server start and injected only into the editor HTML as
   `<meta name="cadence-token">`. A custom header forces a CORS preflight, which the server never approves.
 - `/api/*` GET: allowed when `Sec-Fetch-Site` is `same-origin`, `none` or absent (media tags, curl). `cross-site`
-  (the frame origin) and `same-site` (the frame origin, for an editor opened as `localhost`) are rejected.
+  and `same-site` (the frame origins) are rejected.
   `/api/events` also accepts `?token=`.
 - `/mcp` requires `Authorization: Bearer <mcpToken>`; the token resolves to a scope (see MCP). Requests with an
   `Origin` header are rejected (browsers never call MCP).
 - `/frame.html` and `/kit.html` return 404 on the editor origin: scene and brand code never run next to the token.
-- The editor HTML is sent with the CSP `frame-src <frame origin>; frame-ancestors 'none'`: the previews show the frame
-  origin only (scene code cannot send its own frame to another site), and no other site may embed the editor.
+- The editor HTML is sent with the CSP `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
+  'self' data: blob:; font-src 'self' data: http://*.localhost:<framePort>; media-src 'self' blob:; connect-src 'self';
+  object-src 'none'; base-uri 'none'; form-action 'self'; frame-src http://*.localhost:<framePort>; frame-ancestors
+  'none'`. The editor has no inline script (the dev mode has no React preamble, HMR is off), so an injected tag cannot
+  run next to the token. `font-src` takes the frame origins for the brand fonts (only a brand's origin answers CORS for
+  a font), `img-src` takes `data:` for the favicon, and an ElevenLabs voice's sample comes through
+  `/api/voices/elevenlabs/:voice/preview` so `media-src` stays `'self'`. The previews show frame origins only (scene
+  code cannot send its own frame to another site), and no other site may embed the editor. What the editor origin serves
+  besides its page, the API, MCP and the network callbacks (the built assets, or in dev mode whatever Vite serves,
+  project and brand files under `/@fs` included) is sent with the CSP `default-src 'none'; sandbox` and `nosniff`, so an
+  SVG an agent wrote, opened as a page, runs no script next to the token.
 - `GET /oauth/<network>/callback` is where a network sends the person back after the consent page: a cross-site
   navigation, so outside `/api`. It acts only on a state issued by `POST /api/networks/:id/connect` (editor token),
   single use, 10 minutes, bound to its network, and answers a small HTML page (CSP `default-src 'none'`, no referrer).
 
-Frame origin (`server/frames/frameServer.ts`): Host check, GET/HEAD only, never serves `/api`, `/mcp`,
-`/index.html`, `/__open-in-editor`. Every response is sent with a CSP, not only `frame.html` and `kit.html` (scene code
-could load any other document of the origin in an iframe and send requests from there): `default-src 'self'; script-src
+Frame origins (`server/frames/frameServer.ts`): the request secret when set (no exemption), then the Host check: the
+Host must be the frame origin of a project or brand that exists. `frameSite()` reads the kind and the label, the server
+maps the label back to the id (a label it does not know rescans `projects/` or `brands/`, for a project or brand created
+since) and checks it still exists; anything else gets 403 (`127.0.0.1`, plain `localhost`, another port, a deleted
+project), which also stops DNS rebinding. Then GET/HEAD only, never `/api`, `/mcp`, `/index.html`,
+`/__open-in-editor`. Each origin then reads only its own project or brand. A scene can navigate its own iframe to
+another frame origin (the sandbox allows it, and `frame-ancestors` lets the editor embed any of them), so `frame.html`
+answers only `?project=<id>` on that project's origin, `kit.html` only `?brand=<id>` on that brand's, and `/frame-api`
+only the origin's own id: 403 otherwise. Every other request goes through `frameReach()` (`server/frames/vite.ts`)
+before Vite: the file its path names and the file Vite resolves the URL to (the module graph's id, else `resolveId`,
+which a plugin may point elsewhere; a `.map` counts as its module) must both be, by real path, in the origin's home (`homeOf()`: the project's folder and its brand's, or the brand's folder) or,
+outside `projects/` and `brands/`, under `server.fs.allow` (app sources, packages, templates), and neither may be,
+when it exists, anything but a regular file (Vite would answer a folder with a file it picks inside, and its read of a
+pipe would wait for a writer) nor sit under more than 32 missing folders (`realPath()` stops there). `/@vite/client` and `/@vite/env` pass; a backslash, a NUL,
+`__x00__` (Vite's NUL) or a dot segment gets 403. `fs.allow` stays as a second layer. Diagnostics, on the frame
+origin and through the API, MCP and brand checks, compile only what the frame of that scene or brand could load: a code
+frame would show the file. Every response carries `X-DNS-Prefetch-Control: off`, and a CSP, not only `frame.html` and `kit.html` (scene code could load any
+other document of the origin in an iframe and send requests from there): `default-src 'self'; script-src
 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
 media-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors <editor origins>`
 (both `127.0.0.1` and `localhost` editor hosts), so scene code cannot fetch other origins and only the
 editor may embed frames. HMR is off, and the Cadence plugin removes the Vite client's websocket dial (in middleware
 mode it would target port 24678 and log an uncaught error on every page). `<meta name="cadence-editor-origin">` (space-separated list) drives postMessage origin checks.
-Font files (`.woff2`, `.woff`, `.ttf`, `.otf`) answer `Access-Control-Allow-Origin` to the editor origins, and only
-them: the brand panel shows the brand fonts (see "Brand builds").
+Font files (`.woff2`, `.woff`, `.ttf`, `.otf`) on a brand's frame origin answer `Access-Control-Allow-Origin` to the
+editor origins, and only them: the brand panel shows the brand fonts (see "Brand builds").
 The editor origin also answers 404 to `/__open-in-editor` (any website could otherwise launch the user's editor).
 
 Capture pages (`server/capture/capture.ts`, thumbnails, agent frames, seams, renders) are locked down beyond the CSP,
-which WebRTC ignores and which does not stop navigations or popups: every request that is not for the frame origin is
-aborted (`context.route('**')`), other connections go to a dead proxy (`127.0.0.1:9`, frame host bypassed), WebRTC may
+which WebRTC ignores and which does not stop navigations or popups: every request that is not for the page's frame origin (the
+project's, or the brand's for the kit sheet) is aborted (`context.route('**')`), other connections go to a dead proxy
+(`127.0.0.1:9`, that origin's host bypassed), WebRTC may
 not use UDP (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`), service workers are blocked and popups are
-closed. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first frame)
+closed. With a request secret they send it as `extraHTTPHeaders` (`openIsolatedPage()`), which only that frame origin
+receives since every other request is aborted; reference captures (`screenshotUrl()`) never send it. Chromium also runs with `--blink-settings=imageAnimationPolicy=2` (animated GIF/WebP/SVG keep their first frame)
 and `--disable-partial-raster`. Capture contexts use the locale `CADENCE_LOCALE` (default `fr-FR`, checked at start);
 the editor preview uses the viewer's, so scenes pass an explicit locale to `Intl.*`.
 Contact sheets (`sheet.ts`) lay the strip's PNG tiles out as data URLs in a context of their own, JavaScript off and
-every request aborted: that page loads nothing and is not the frame origin.
-One limit stays: scene code runs in the capture page's main world, next to `window.__cadence`, and Playwright runs in
-the server process, so every console message, page error and value a page returns to `page.evaluate` reaches Node
-whole. A hostile scene can make the server's memory grow (hundreds of MB from a few large messages): a local denial of
-service, with no data leaving the machine. The checks in the page and in Node bound honest code only; running capture
-in a child process would close it (open question, for an ADR).
+every request aborted: that page loads nothing and is on no frame origin.
+Scene code runs in the capture page's main world, next to `window.__cadence`, so what a page logs, throws and returns
+is untrusted in size too. Capture and render browsers therefore run in a child process: `browser-host.ts` forks
+`chromium-server.mjs` (plain JavaScript, `execArgv: []`) with `process.execPath`, or the Node binary
+`CADENCE_NODE_PATH` names. Under Electron (`process.versions.electron`) `CADENCE_NODE_PATH` is required and the launch
+fails without it: Electron's binary runs as Node only while its RunAsNode fuse is on, a packaged app usually turns it
+off, and the forked binary would then start the app instead, a failure only the packaged build would show. An
+Electron host names a Node binary it ships, or starts the process itself with `browserServer` (see "Embedding
+Cadence"). The child runs `serveChromium()` (`serve-chromium.mjs`, plain JavaScript and exported, the same entry a
+host's own process runs): `chromium.launchServer()` on a Unix socket in a `mkdtemp` folder (0700, removed when the
+child exits), and the child sends the endpoint over IPC; the server attaches with `chromium.connect('ws+unix:...')`.
+Never a loopback port: Playwright's `/json` hands its endpoint path to any local process, which could then drive the
+capture browser, read local files and reach the pages carrying the request secret. A socket path as `port` is
+Playwright 1.63 behaviour, not documented: `serveChromium()` refuses any other endpoint and
+`tests/server/browser-host.test.ts` checks that no TCP port is open; a socket path past 103 bytes (a long `TMPDIR`)
+fails the launch before Chromium starts. Playwright reads Chromium's CDP pipe and output in that child:
+a message larger than a string can hold (`console.log(big, big)` with 300 MB strings ended the 0.12.0 server with
+`ERR_STRING_TOO_LONG`) ends the child, the pages and captures in flight fail with an error, and the next capture starts
+a new child. Closing the browser (or losing it) disconnects the IPC channel, the child closes Chromium and exits;
+`close()` waits for it (SIGKILL after 10 s). With `browserServer` the host's process takes the child's place: the same
+300 MB page ends it, and its `exited` and `close()` do what the child's exit and the IPC channel do here. In Node, the
+problems a page logs and the errors `seek()` returns keep 20 lines of 2,000 characters at most (`MAX_PROBLEMS`, `PROBLEM_CHARS`); what page code throws through
+`page.evaluate` and the scene id `seek()` answers are cut to 2,000 characters too (`fromPage`). What remains: a message up to 256 MB (the
+limit of Playwright's WebSocket client, past which the connection drops as in a crash) still reaches the server whole
+before it is cut, so a hostile scene can make the server's memory spike for a moment (a local denial of service,
+nothing leaves the machine). The doctor's one-off launch stays in process. Render frames cross the WebSocket in base64
+with Playwright's fixed permessage-deflate (level 3, no option turns it off in 1.63): about +2 ms per frame at JPEG
+quality 95 on photographic frames, up to +33 ms at quality 100 on noisy ones, inflated on the server's thread. Past
+that, the render's screenshots would move into the child, which would write the JPEG files itself.
 
-Reference captures (`screenshotUrl`) check every request by origin: host names are resolved, link-local,
-unspecified and multicast addresses (IPv4-mapped included) are refused, and so are Cadence's own ports; other
-loopback and private hosts stay allowed (local dev sites). Redirect hops are checked as they start and a refused hop
-voids the capture (that one GET has still left; a checking forward proxy would stop it, and DNS rebinding too).
+Reference captures (`screenshotUrl`) never let Chromium reach the network: their context goes through the dead proxy
+with nothing bypassed (the Chromium server drops `PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK`, so the loopback
+too), page WebSockets are closed before they open, and a route answers every request from `fetchPinned()`
+(`server/capture/pinned.ts`) under the capture's `Policy` (`server/capture/policy.ts`). It resolves each host once per
+capture, refuses a forbidden address before dialing, dials only the checked answer and follows redirects itself; a
+resource's redirects stay on its origin. The page is fetched first, so its refusals and errors are the capture's (fixed
+messages naming the URL asked for or a host, never the network's own words), then opened at its final URL. Only GET
+requests are fetched, with the browser's User-Agent, Accept, Accept-Language, Referer and Origin; a cross-origin answer
+reaches the page only with its own `Access-Control-Allow-Origin` (Playwright 1.63's fulfill would grant one). The
+agent's captures (MCP `capture_reference`) open a page only from a host the person approved for the project
+(`approved()`): `POST /api/projects/:id/capture-hosts` (`DELETE` to withdraw one) keeps them in `<root>/.cadence/capture-hosts.json`, outside the
+project folder and its archives, where no agent turn may write, and deleting the project drops them. Any other host is
+refused before a lookup, with a message telling the agent to try again in a later turn, and a `capture-host` event
+lets the editor ask the person. The page's redirects and its main frame's navigations stay on approved hosts; its
+resources do not. The host of the page asked for sets the addresses and ports of the whole capture: a name, public
+addresses only, on ports 80 and 443 or its own, and so does a public address; `localhost` the loopback, and a local
+address that address, on any port, which the editor tells the person before they allow it. The person's captures
+(`POST /api/projects/:id/refs`) are `LOCAL`: loopback and private networks on any port as well, for local dev sites,
+until a hop of the page is answered from a public address: from there the capture keeps the ports and loses the private
+ranges. Neither reaches Cadence's own ports. HTTPS trusts Node's CAs and the system's, so a local CA that a dev tool
+installed works; one in neither store needs `NODE_EXTRA_CA_CERTS`. A redirected resource keeps its first URL as its base.
 
 Vite (`server/frames/vite.ts`): `root = <root>`, `appType: 'custom'`, `server.middlewareMode`, `server.hmr: false`,
 `server.ws: false` (no HMR websocket, so several Cadence servers can run side by side),
-`server.fs.allow` = `src/`, `projects/`, `brands/`, `templates/`, `node_modules/` (+ `CADENCE_VITE_CACHE_DIR`), so the
+`server.fs.allow` = `src/`, `projects/`, `brands/`, `templates/` (each also by its real path, the one Vite names a module
+by), `node_modules/` (+ `CADENCE_VITE_CACHE_DIR`), so the
 server code and root files are never served; `server.fs.deny` adds `**/.cadence/**`, `**/.git/**`, `.env*`. `CADENCE_VITE_CACHE_DIR`
 gives a server its own dependency cache.
 Aliases: `cadence` for `src/runtime/index.ts`, `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
-`@tailwindcss/vite`, and a Cadence plugin whose `hotUpdate` returns `[]` for files under projects/, brands/,
-templates/ (Cadence reloads frames itself). `optimizeDeps.entries = ['index.html', 'frame.html']`; `include` adds React,
+`@tailwindcss/vite` (its `transform` skips every file under projects/, brands/, templates/), and a Cadence plugin whose
+`hotUpdate` returns `[]` for files under those dirs (Cadence reloads frames itself). Its `transform` compiles a
+stylesheet under those dirs itself (`compileStylesheet()`, with `compile()` from `tailwindcss`), so Tailwind opens no
+managed file on its own. The home of a stylesheet is its project, that project's brand and the templates (a brand's:
+the brand and the templates). An `@import` or `@reference` by path or `@brands/` must lead to a file of the home, read
+without following a link; a package name resolves as `src/runtime/index.ts` would and must stay in the core's
+`node_modules/`; `@plugin` and `@config` load no module. A `url()` or `image-set()`, in the entry or an imported file,
+must name a file of the home, checked as written, decoded, and without its query or fragment, relative to the file and
+to the entry (Cadence rebases an imported file's `url()` on the entry, as Tailwind does). The output may keep no
+`@import` (Tailwind leaves `url()` and remote ones to the browser) and no reference with `?inline`, which Vite would
+inline through any link. Utilities come from the class names Cadence reads itself (oxide's `Scanner` over the files of
+a readdir walk that follows no link and skips `.git`, `.cadence` and `node_modules`). A brand theme is compiled per
+project (`theme.css?inline&project=<id>&g=<n>`) and scans that project and the templates, whatever `@source` it holds;
+the frame origins answer 403 to a `project=` other than their own, and the build refuses one whose project does not use
+the brand. Any other stylesheet scans its home. A file of another kind that a query would compile as CSS
+(`?lang.css`) is refused. `resolve.preserveSymlinks` is on: Vite resolves a URL again after the frame handler checked
+it, and would otherwise read where a link there leads by then. A module keeps the path its URL or import names, which
+the load hooks read without following a link, so no link inside a project is served, even one to a file of that
+project. These checks take a module under those dirs by its configured path or by its real path, compared without case or Unicode normalization: macOS reaches a folder under those names too, which then fail the no-follow reads. `css.modules` is off (postcss-modules would inline what `composes` and `@value`
+name, wherever it is): a `.module.css` compiles as plain CSS. `css.postcss.map` is off (postcss would read the `.map` a
+stylesheet names, even in a string, through any link, and wait forever on a pipe). `build.assetsInlineLimit` is 0. The plugin's `load`
+hook, ordered last, reads a file under those dirs that no other plugin loads, without following a link, and returns it
+without a map: Vite's own read would fill the map a `sourceMappingURL` comment names with the content of every file its
+`sources` list. A second Cadence plugin loads `?raw`, `?inline` and `?url&inline` of those files the same way (an asset's `?inline` as
+a `data:` URL, whatever the rest of its query holds), and answers an `.svg` with its URL, without the read Vite makes to
+decide whether to inline it. It refuses a WebAssembly module of those files but for its `?url` and `?init` (Vite's wasm
+plugin reads the module for its import and export names). Vite shows the lines around a postcss error from the file the
+error names, read again through any link: for those files the first plugin drops that name, and Vite shows the compiled CSS.
+A middleware placed before Vite's raw file one serves those files themselves (`/@fs/...` and
+root-relative paths, with ranges), opened without following a link. `tsconfig` is the core's `tsconfig.json`: otherwise each file
+compiles with the one found above it, and a project's may `extend` any JSON file, whose compiler options would show in
+the code and the errors Vite gives back. Its `resolveId` resolves a bare or `#` import of a file under those dirs as
+`src/runtime/index.ts` would, and refuses one the core lacks: Vite looks a package up from the importer's folder, and its
+dependency optimizer bundles what a package imports with none of these checks. A plugin of `optimizeDeps.rolldownOptions`
+refuses to read a file under those dirs, which an alias (`@brands/../`) or a link could still lead the optimizer to.
+
+What the frame checks leave open: a hard link is the file itself to every path check; Vite still reads an `.svg` that a
+compiled stylesheet's `url()` names, through any link, to decide whether to inline it (it never does), so a FIFO there,
+or a link a process an agent turn leaves running swaps in after the check, can stall that compile and hold one of
+libuv's four threads, which every file read of the server shares; `import.meta.glob` lists the file names its pattern matches; a scene's diagnostics tell whether a file
+it imports exists; a project's origin reads the brand its `project.json` names, so editing that file changes the brand
+it reads; a scene whose import leads the optimizer to a file under those dirs fails its run, and with it the packages
+other frames were waiting for, which load at their next import. `optimizeDeps.entries = ['index.html', 'frame.html']`; `include` adds React,
 lucide-react and clsx, and the Heroicons and Tabler sets that the brands present at start import (bundling all of them
 made a cold start 0.9 s and 983 MB instead of 0.2 s and 509 MB). A brand built later gets its set bundled at its first
 import, which pages already open take in their stride: they keep a single React.
@@ -209,10 +337,6 @@ projects/<id>/
 State files (chats, `publications.json`, `<root>/.cadence/settings.json` and `accounts.json`) count as empty only when
 they do not exist: one that does not parse is a 500 naming the file (`readJsonOr`), and the next save never replaces
 what it held. Caches (`seams.json`, `<file>.analysis.json`) are measured again instead.
-
-Tailwind caveat: the scanner skips gitignored subfolders of an `@source` folder unless the `@source` names them
-directly. `.gitignore` ignores the `projects/` folder as a whole, never individual project folders. Brand folders are
-ignored one by one (all but `cadence`), which is fine: each brand's `theme.css` names its own folder (`@source '.'`).
 
 Scene durations: seconds rounded to the ms, min 0.1. Scene order = `project.json` order.
 `tempo` (default 120) is the fallback beat grid and converts template bars to seconds (1 bar = 240 / tempo s).
@@ -284,9 +408,10 @@ Deterministic: no module-level mutable state besides the asset base; `random(see
 
 ```
 brand.json         BrandFile (colors hex, fonts, radius, logo paths, voice, language)
-theme.css          Tailwind v4 entry for frames: @import "tailwindcss" source(none); @source "../../projects";
-                   @source "../../templates"; @source "."; font imports (@fontsource... or @font-face on ./fonts);
-                   @theme tokens (--color-primary, --color-surface..., --font-display, --font-body, --font-mono, radii)
+theme.css          Tailwind v4 entry for frames: @import "tailwindcss" source(none); font imports (@fontsource... or
+                   @font-face on ./fonts); @theme tokens (--color-primary, --color-surface..., --font-display,
+                   --font-body, --font-mono, radii). Compiled per project, with the classes of that project and the
+                   templates: an @source line changes nothing
 index.tsx          default export: BrandKit (see src/shared/brandKit.ts); named exports for extras
 ui/*.tsx           kit components (Card to ListItem), presentational, every state is a prop
 extras/*.tsx       brand-specific showcase components (PaymentCard, ProductCard, TransactionRow...)
@@ -323,18 +448,19 @@ token.
 - **Build** (`build.ts`, `BrandBuilder`, one at a time): reserve `brands/<slug>/` with a `.building` marker holding
   `<pid> <build>` (unlisted by `FileBrandStore.list()`), copy `brands/cadence` into it with the new id and name, then
   run one restricted Claude turn: system prompt `server/agent/brand-guide.md`, cwd = the brand folder, Read on the
-  clone, `brands/` and `src/shared/`, Write and Edit on the brand folder only, MCP scope `brand`. Then
+  clone, its own brand folder and `src/shared/` (no other brand), Write and Edit on the brand folder only, MCP scope
+  `brand`. The same scope binds a Codex build turn through its permission profile (see "Codex"). Then
   `checkBrand()`; problems left get one resumed fix turn, then the build fails. Each turn adds what it used to
   `BrandBuild.costUsd` (the fix turn: its session totals minus the first turn's) and to the usage log. Success
   removes the marker; failure and cancel remove the folder. `sweep()` at start removes folders whose marker names a dead process.
 - **Checks** (`check.ts`): `brandProblems()` (brand.json, theme.css mirroring it, every named font loaded, SVG logos,
   notes) never runs the kit; the brand tests use it for the presets. `checkBrand()` adds the kit sheet: `kit.html`
-  on the frame origin renders logos, colors, fonts, every UI sample (`src/shared/kitSamples.tsx`) and extras, and
+  on the brand's frame origin renders logos, colors, fonts, every UI sample (`src/shared/kitSamples.tsx`) and extras, and
   reports what throws or does not load (`CaptureService.kitSheet`); Vite's compile error replaces the browser's
   when the kit does not load.
 - **Brand panel** (editor top bar, `BrandPanel.tsx`): a kit is code the brand builder may have written, so the editor
   never imports it. `kit.html?view=panel` (a smaller sheet) and `kit.html?view=extra&name=<extra>` run in sandboxed
-  iframes on the frame origin and post `KitToEditor` messages (`src/shared/frameProtocol.ts`): their natural size,
+  iframes on the brand's frame origin and post `KitToEditor` messages (`src/shared/frameProtocol.ts`): their natural size,
   and from the panel view the extras, the copy and the theme's `@font-face` rules as data. The editor checks each
   message, lists the texts as text and registers the faces as `FontFace`s under its own names (`Cadence brand <id>
   <role>`), so a brand font never applies to the editor's own text. Chrome lays out a cross-origin iframe only once
@@ -390,8 +516,10 @@ claude -p --output-format stream-json --verbose --include-partial-messages
 
 The guide and the MCP config are written to a private temp folder (0700, files 0600) removed when the turn ends,
 so neither the bearer token nor the 30 KB guide shows up in `ps`. `--restricted` also means no CLAUDE.md memory
-is loaded (verified with a canary: neither the project's nor the user's global CLAUDE.md reaches the in-app agent),
-which is why the guide is appended to the system prompt.
+is loaded, which is why the guide is appended to the system prompt. Verified with Claude Code 2.1.302 in a real turn
+under the user's own HOME and login, from a cwd whose `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md` and parent
+`CLAUDE.md` each held a canary: none of them and nothing of the user's global CLAUDE.md reached the model, no user hook
+ran and no skill loaded.
 
 Env: remove `ANTHROPIC_API_KEY` unless `config.useApiKey` (use the subscription login); remove `CLAUDECODE` and
 `CLAUDE_CODE_ENTRYPOINT` (nested-session guards); `MCP_TOOL_TIMEOUT=300000`, `MAX_MCP_OUTPUT_TOKENS=120000`.
@@ -418,6 +546,109 @@ music, seams, craft rules, scope rules. Per-turn context (prepended to the user 
 path, playhead, music context, last seam results and render errors for the scene, and the on-screen language
 (project setting or brand default).
 
+### Codex
+
+`CodexProvider.run(turn)` spawns the local `codex` (`codexArgs`, cwd = the turn's cwd, prompt on stdin, the MCP bearer
+in `CADENCE_MCP_TOKEN`, the environment cut to what Codex needs by `codexEnv`, `PATH` kept to its absolute entries):
+
+```
+codex exec [resume <thread>] --json --skip-git-repo-check --ignore-user-config --ignore-rules
+  -c mcp_servers.cadence.url="<mcpUrl>" -c mcp_servers.cadence.bearer_token_env_var="CADENCE_MCP_TOKEN"
+  -c default_permissions="cadence"
+  -c permissions.cadence.filesystem={":minimal"="read",":slash_tmp"="deny","<cwd>"="read","<addDir>"="read",...,
+       "<Edit/Write target>"="write",...,"<Read deny target>"="deny",...}
+  -c permissions.cadence.network.enabled=false
+  -c project_doc_max_bytes=0 -c tools.web_search=false -c skills.include_instructions=false
+  -c features.multi_agent=false -c features.multi_agent_v2.max_concurrent_threads_per_session=1
+  -c approval_policy="never" -c shell_environment_policy.inherit="core" -c shell_environment_policy.include_only=["PATH","HOME","TMPDIR","LANG","LC_*"]
+  [-c model_reasoning_effort="<effort>"] [-m <model>] -
+```
+
+An empty or relative `PATH` entry would look `codex` up in the turn's cwd, which the agent may write, and run a binary
+it left there outside any sandbox; `claudeEnv` filters `PATH` the same way, and `loadConfig` resolves a relative
+`CODEX_PATH` or `CLAUDE_PATH` against the folder Cadence starts in. `approval_policy="never"`: a model that asks for
+escalated permissions (`require_escalated`) gets none.
+
+The permission profile (`codexFilesystem`) is the Codex form of the turn's Claude rules, and it binds the shell
+commands, `apply_patch` and `view_image` alike: reads only the cwd and `turn.addDirs` (plus `:minimal`, what a shell
+needs to start: system binaries and libraries, not the home folder); writes only the targets of the turn's `Edit`/`Write`
+rules, a trailing `/**` dropped (a project chat: `scenes`, `components`, `art-direction.md`; a scene chat:
+`scenes/<id>.tsx`; a brand build: the brand folder), so `CLAUDE.md` and `project.json` stay read-only; the `Read` deny
+rules (`accounts.json`, `elevenlabs.json`) are unreadable even inside a readable folder. `:minimal` opens `/tmp`
+read-write, `":slash_tmp"="deny"` closes it; a more specific path still wins, so a project under `/tmp` keeps its access.
+A path listed twice keeps its last access (TOML rejects duplicate keys). `run()` resolves the cwd, the addDirs and the
+`Read` rule paths with `realpath` first (a path not created yet through its closest existing parent): the sandbox
+compares real paths, and refuses a whole profile whose writable root goes through a symlink. A write target resolves
+only its parent: a target that is itself a symlink (an earlier turn may have planted one), or that lands outside the
+real cwd, refuses the turn before spawning, since resolving it would grant a write on whatever the link points to. A
+writable folder not created yet (`components`) is created first, so the sandbox protects it as an existing root (no
+`rmdir` or `mv` of it). Within a turn the agent can still replace a file it may write with a symlink to one it may not
+read (`accounts.json`) or swap a folder on the way for a link, and a process it detaches with `setsid` keeps doing so
+after the turn. So the server reads the agent-writable files it hands back or hashes (`art-direction.md`, scene files,
+a brand's `brand.json` and `KIT.md`, every file `check_brand` reads, the code hash, the files of a version snapshot)
+with `readFileNoFollow`, writes into a folder a turn can write (a restore, `copy_from_repo`, `add_google_font`, a scene
+created, duplicated or deleted, the components a template copies) with `writeFileInside` and `removeFileInside`, lists
+a brand's `assets/` with `listInside`, and removes the folder of a failed or dead brand build with `removeTreeInside`.
+None follows a link below the real project or brand folder, even one that stays inside it, and none relies on a check by
+path before or after, which a folder swapped for a link and back in between would pass. A deleted scene is copied to
+the trash and then removed, since a rename by path would follow a swapped `scenes/`. An open (a read, a write's temp
+file) is refused by the kernel itself: `O_NOFOLLOW_ANY` on macOS (ELOOP on a link anywhere in the path), on Linux a
+walk that opens each folder with `O_NOFOLLOW` through the previous one's `/proc/self/fd/<fd>`. A read adds
+`O_NONBLOCK`, so a FIFO is refused at once instead of holding a libuv thread. Node has no `mkdirat`, `renameat` or
+`unlinkat`. On Linux they go through the opened folder's `/proc/self/fd/<fd>`, which the kernel resolves to that folder
+wherever it is now; without `/proc` they fail, rather than find every name missing and report a removal as done. On
+macOS `/.vol/<dev>/<ino>` is no substitute (it resolves back to a path and leaked under a swap race), so a `/bin/sh`
+with an empty environment walks down with `cd -P`, checks after each step that `/bin/pwd -P` (getcwd: the shell's
+builtin resolves the path string again) is exactly the expected folder, trailing newlines included, and runs `mkdir`,
+`rm -f`, `/usr/bin/perl`'s plain `rename` or `/usr/bin/find` (a listing) by name from there (`mv` would move the file
+into a folder found under the target name; without perl a write fails): a swap can move that folder, never redirect
+it. A write's temp file and its rename land in the same folder, or the rename is refused; a failed write removes its
+temp file where the walk still reaches it. `removeTreeInside` is `rm -rf`, whose fts checks that each folder it enters
+is the one it listed. Only the Linux CI runs the Linux branch for real. A snapshot skips a `scenes` or `components`
+entry that is not a real folder, and fails on a file refused this way instead of versioning what it points to. A
+restore answers 409 when a folder on the way to one of its paths is a link, checking
+every path before it records its "unsaved" snapshot and makes its first write. A Codex that
+ignores the profile would run unconfined, so `run()` fails closed: no turn spawns unless `status()` (`codexStatus`) is
+ok, which takes, in this order, Codex 0.161.0 or later (the first with `sandbox -P` and `[permissions.<name>]`
+profiles; an older or unparsable version is reason `unconfined` without a probe), a probe that concludes confined,
+then a login (`logged-out` otherwise). The probe runs, in an empty `CODEX_HOME` and `HOME`,
+`codex sandbox -P cadence <the -c profile above, for an empty temp folder <inside>> -C <inside> /bin/cat probe <outside>/probe`
+and must print the inside file and not the outside one; two more runs of the same profile, at the same time, must fail
+to create a file beside it (`/bin/sh -c ': > "$1"'`) and to connect to a listener the probe opens on 127.0.0.1
+(`/usr/bin/curl`; without curl that check sees nothing, the other two still run). Reason `unconfined` otherwise; a
+probe that cannot run at all is reason `error`. A refused turn ends with one error event named after the reason, a `status()` that rejects
+included; the agent picker and the Profile card say why Codex stays disabled. No network for commands; the Codex process
+itself still reaches the model and the Cadence MCP server. `project_doc_max_bytes=0` also stops Codex from reading
+`AGENTS.md` up to the git root, a read outside the profile that would fail the turn. `sandbox_mode` is not passed: with
+`workspace-write` the whole cwd was writable, `CLAUDE.md` included, and every file readable. Verified with Codex 0.161.0
+on macOS (Seatbelt): `codex sandbox -P` with this profile in an empty `CODEX_HOME`, then
+`tests/server/codex-confinement.test.ts`, which runs the real `codex exec` against a local fake model (a
+`model_providers` entry with a 127.0.0.1 `base_url`, no credentials) whose tool calls read outside (shell and `view_image`), read a
+denied file inside a readable folder, write `CLAUDE.md` and outside (shell and `apply_patch`), print the environment and
+open a connection: all refused, the environment holds no secret, while `scenes/`, `components/` (created during the
+turn) and `art-direction.md` stay writable and the brand folder readable; a second turn, a scene chat whose project is
+reached through a symlink, writes its own scene and is refused another one; a brand build writes its brand folder,
+reads its clone and is refused a write to the clone, outside and a read of `accounts.json`. Each turn first runs the
+provider's own probe against the installed binary. Skipped when `codex` is not installed.
+
+What the same tests show of Codex 0.161.0 beyond the shell and `apply_patch`. A sub-agent (the v1 `multi_agent` tools,
+and the v2 `collaboration` ones the gpt-6 models get from the catalogue) stays in the turn's sandbox, but its commands,
+writes and tokens never reach `exec --json`, so the brand build's file list, the chat activity and the usage would miss
+them: `features.multi_agent=false` removes v1, and the v2 tools, which no key removes, fail with "agent thread limit
+reached" while the root is the only thread allowed. Each key alone leaves the other version working. Code mode
+(`functions.exec`, the only tool mode of the gpt-6 models) stays on: its isolate has no `fetch`, `require`, `process` or
+module imports, and its nested `exec_command` and `apply_patch` go through the same profile as direct calls (a nested
+`exec_command` the sandbox refuses shows in no `command_execution` event). Codex refuses to create `.agents`,
+`.codex` or `.git` at the top of a folder it may write; skills another writer puts in a cwd's `.agents/skills` or
+`.codex/skills`, or in `$HOME/.agents/skills`, still reached fresh and resumed turns whatever `--ignore-user-config`
+says, hence `skills.include_instructions=false`. A planted `.codex/config.toml` does not apply under
+`--ignore-user-config`, and no `AGENTS.md`, `.codex/AGENTS.md` or `AGENTS.override.md` reaches the model.
+
+A real turn (Codex 0.161.0, `gpt-6-luna`, the user's own login, `codexArgs` and `codexEnv` as `run()` passes them)
+ran its four steps through code mode: reading `scenes/` worked; reading outside, writing `CLAUDE.md` from the shell and
+deleting it with `apply_patch` were refused. The file stayed unchanged and the outside file's content is in neither the
+events nor the session Codex records. Only the successful read showed as a `command_execution`.
+
 ## MCP (`/mcp`, streamable HTTP, stateless)
 
 Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a brand build: only the four tools of
@@ -438,7 +669,7 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `set_speakers` | no | yes | replaces the project speakers through `ProjectStore.update` (its checks: voice per engine, at most 10, no removing a speaker a line uses) |
 | `create_scene`, `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene` | no | yes | `create_scene` takes a template id or TSX code |
 | `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns |
-| `capture_reference` | no | yes | screenshot an http(s) URL into assets/refs/ |
+| `capture_reference` | no | yes | screenshot an http(s) page into assets/refs/, from a host the person approved for the project only |
 | `save_version` | yes | yes | named snapshot |
 
 Project-only tools are not even registered for scene tokens. `render_frames` saves the JPEGs it returns (the frames,
@@ -526,23 +757,17 @@ arrives, with or without Content-Length) runs in this order:
    created with `wx`, so two entries never land on one path. Each `.css` file is scanned as it streams to the disk:
    one that holds `@plugin` or `@config`, comments removed as Tailwind removes them (a backslash in a comment escapes
    the next character), refuses the import. Other files are not scanned, so chats, history and notes may quote the
-   directives: Tailwind reads one only through a stylesheet that imports it by path, which step 3 refuses. Inside the
-   app, the frame server's guard (`assertNoCssCodeExec`) scans every managed `.css` file and checks each `@import` and
-   `@reference` on its own, even one inside a string. Only two kinds pass: a package name (`tailwindcss`,
-   `@fontsource-variable/inter/standard.css`), and a path or `@brands/` import that names a `.css` file the scan reads,
-   never a folder, a link to another kind of file, a file under `.git` or behind a linked folder that leads out of the
-   managed dirs. Anything else is refused: Tailwind's fallback resolver opens `file:` URLs and reads `?` and `#` as
-   part of the file name (`./a.css?.png`), so a file of another kind the agent writes is never compiled. A request
-   whose query makes Tailwind compile a file of another kind (`&lang.css`, `index=<n>.css`) is refused by the build
-   and answered 404 by the frame origin. The guard also refuses a `node_modules/` or `package.json` in a managed
-   folder that holds a stylesheet at any depth: Tailwind's fallback resolver looks for them (packages, `imports` with
-   `#`) in the folders above the importing stylesheet and follows them to files of any extension that the scan never
-   reads. Names are compared as a case-insensitive disk compares them (APFS opens `Node_Modules` for `node_modules`
-   and `a.CSS` for `a.css`).
-3. Checks, one import at a time from here on, before anything moves: the staging folders pass the frame server's
-   guard (`cssCodeOffenders`), with each path import read from where its folder lands (and looked up in the staging
-   folders too), so nothing that would stop every frame compile moves in; a brand of the archive being
-   built here (its folder holds `.building`) refuses the whole import (409), and so does a local folder of that id that
+   directives: the frame build reads one only through a stylesheet that imports it by path, which step 3 refuses.
+3. Checks, one import at a time from here on, before anything moves: the staging folders pass `cssCodeOffenders`, so
+   nothing that would stop every frame compile moves in. It checks each `@import` and `@reference` of every `.css`
+   file on its own, even one inside a string, read from where its folder lands (and looked up in the staging folders
+   too). Only two kinds pass: a package name (`tailwindcss`, `@fontsource-variable/inter/standard.css`), and a path or
+   `@brands/` import that names a `.css` file the scan reads, never a folder, a link to another kind of file, a file
+   under `.git` or behind a linked folder that leads out of the managed dirs; `compileStylesheet` would read anything
+   else as CSS or refuse it. It also refuses a `node_modules/` or `package.json` in a folder that holds a stylesheet at
+   any depth (an export never writes them): a bare or `#` import resolves through them. Names are compared as a
+   case-insensitive disk compares them (APFS opens `Node_Modules` for `node_modules` and `a.CSS` for `a.css`). Then
+   a brand of the archive being built here (its folder holds `.building`) refuses the whole import (409), and so does a local folder of that id that
    holds no brand; a brand not installed here must pass `brandProblems`; each `project.json` must pass the
    store's schema (the rules `read()` applies, duplicate scene ids included), and its brand must be `cadence`, in the
    archive, or installed here and not being built. The empty folders a new project starts with (`components/`,
@@ -556,9 +781,10 @@ arrives, with or without Content-Length) runs in this order:
 
 Any refusal answers 400 (409 for a brand being built, 413 over a cap) naming the cause, and leaves `projects/` and
 `brands/` as they were. Chats keep their session id when it is a UUID (any other value is dropped, since it reaches
-the CLI's argv): a Claude Code session missing on this machine starts again (the `session-lost` retry).
+the CLI's argv): a Claude Code session or a Codex thread missing on this machine starts again (the `session-lost`
+retry; Codex reports it as the `session_lost` subtype, so the retry never reads Codex's text).
 
-An archive is untrusted. Its scenes and kit components run in the frame like any scene (frame origin, CSP, no access
+An archive is untrusted. Its scenes and kit components run in the frame like any scene (their own frame origin, CSP, no access
 to the editor token); its text (`project.json`, notes, chats, `KIT.md`) reaches the agent like any project file,
 under the agent's usual restrictions. The reader accepts only regular files under safe relative paths (no `..`, no
 absolute path, no link, no duplicate under APFS case folding), and nothing outside the staging folders is written
@@ -610,6 +836,11 @@ GET    /api/voices                                 VoicesState (Piper's state, t
                                                    elevenLabs.configured; never the key)
 POST   /api/voices/:voice/download                 answers VoiceInfo once both files are in place, md5 checked
 GET    /api/voices/elevenlabs                      { voices, models } from the saved key's account; 409 without a key
+GET    /api/voices/elevenlabs/:voice/preview       the voice's MP3 sample, fetched without the key from its https URL,
+                                                   public addresses on port 443 only through the captures' address
+                                                   policy, each redirect checked, 8 MB at most; 409 without a key, 404
+                                                   when the voice has no sample or its URL is refused, 502 when the
+                                                   storage fails
 PUT    /api/voices/elevenlabs/key                  { key }, checked against ElevenLabs before it is saved, answers
                                                    { configured: true }; 400 when ElevenLabs refuses it
 DELETE /api/voices/elevenlabs/key                  answers { configured: false }; drops Settings.defaultVoice too
@@ -643,6 +874,9 @@ POST   /api/projects/:id/assets                    multipart "file", answers Ass
 DELETE /api/projects/:id/assets                    ?path= 
 GET    /api/projects/:id/assets/file               ?path=, answers file
 POST   /api/projects/:id/refs                      CaptureRefInput, answers AssetInfo
+GET    /api/projects/:id/capture-hosts             { hosts }: the hosts approved for the agent's captures
+POST   /api/projects/:id/capture-hosts             { host } as URL.host writes it (400 otherwise), answers { hosts }
+DELETE /api/projects/:id/capture-hosts             { host }, answers { hosts } (a host not approved changes nothing)
 GET    /api/brands/:id                             BrandFile
 GET    /api/brands/:id/logo                        ?variant=mark|full, answers image/svg+xml
 DELETE /api/brands/:id                             to .cadence/trash/brands; 400 for cadence, 409 if projects use it or it builds
@@ -664,7 +898,7 @@ Frame origin read-only data: `GET /frame-api/projects/:id` answers `{ project: P
 brandId: string, brandUrl: string }` (brand = the project's brand, or `cadence`; `brandUrl` = `/@fs<brandsDir>/<id>/`,
 from which the frame imports `theme.css?inline&g=<gen>` and `index.tsx?g=<gen>`),
 `GET /frame-api/projects/:id/scenes/:sid/diagnostics`, `GET /frame-api/brands/:id` (kit.html), which
-answers `{ brand, brandId, brandUrl }`.
+answers `{ brand, brandId, brandUrl }`. Each answers only the id of the origin it is asked on, 403 otherwise.
 
 ## Rendering
 
@@ -745,9 +979,10 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
 - ElevenLabs (`ElevenLabsClient`, behind `ElevenLabsApi`; `startServer({ elevenLabs })` injects a fake in tests): the
   person's own API key, saved by `PUT /api/voices/elevenlabs/key` in `<root>/.cadence/elevenlabs.json` with mode 600,
   after a `GET /v2/voices` that proves ElevenLabs accepts it. Like `accounts.json`, it never reaches the browser or a
-  project (projects are versioned), and Claude Code turns are denied both files (`--disallowedTools`); Codex's
-  `workspace-write` sandbox limits writes, not reads, so a Codex turn can read them. One that no longer parses is a
-  500 that names the file without quoting it (`JSON.parse` would). With `startServer({ secrets })` the key goes through
+  project (projects are versioned), and no agent turn can read either file: Claude Code turns are denied both
+  (`--disallowedTools`), Codex turns read only their own folders and deny both in their permission profile. A Codex
+  turn can still point a file it may write at one of them with a symlink; the server never follows it (`readFileNoFollow`,
+  see "Codex"). One that no longer parses is a 500 that names the file without quoting it (`JSON.parse` would). With `startServer({ secrets })` the key goes through
   the host app's `SecretStore` under the name `elevenlabs` instead, and no file is written; a store that fails is a 500
   ("key not saved", or not read) that never quotes the store's error, and a failed save changes nothing. With a host
   app's client (`ElevenLabsApi.hosted`), the host brings the key: `GET /api/voices` answers
@@ -779,7 +1014,8 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   character, with no engine call. A sync never brings a deleted project back: the cache folder is made only under a
   project folder that still exists, the engines write only into it, and a project deleted mid-sync is a 404.
 - `ProjectState` (`setVoiceOverProvider`): `voiceOver` (settings in use), `voiceOverLines` (generated sentences laid
-  one after the other from `scene.start + at`, 0.2 s apart where the speaker changes, in video seconds, each with its
+  one after the other from `scene.start + at`, 0.2 s apart where the speaker changes and, between one speaker's
+  sentences, with the silence they lack for 0.15 s (measured on their `level`: under 8 is silence), in video seconds, each with its
   `speaker`, its `words`, its mouth `level` at 25 Hz, the index of its script `line` and that line's `gesture`), `voiceOverPending` (scenes with a sentence not
   generated; they have no line at all), `voiceOverError` (why the engine last failed on the sentences still missing;
   null while a sync tries them again, once they change, or once spoken) and `voiceOverUrl` (the track, `?v=` changes
@@ -790,11 +1026,11 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
   of each pending scene in the Voice tab, a voice download), an export, or `set_voice_over`. A success sends
   `project-changed`.
 - Track: `track.wav`, the sentences laid at their times over silence, one per project, rebuilt when its lines change.
-  Sentences that overlap (one running into the next scene's voice-over) are summed; where the sum would pass full
+  Each sentence fades in and out over 8 ms (raised cosine), so one cut on a sound does not click. Sentences that overlap (one running into the next scene's voice-over) are summed; where the sum would pass full
   scale, the shared stretch is lowered just enough (one gain for the stretch, 20 ms linear ramps on each side) instead
   of being clipped. The track takes the highest sample rate of its sentences (ElevenLabs speaks at 24 kHz, Piper at
   its voice's rate) and resamples the others linearly; without overlap, the samples are otherwise the sentences'
-  own.
+  own, faded.
   The preview plays it in a second `<audio>` that follows the video clock (`src/editor/lib/voiceOver.ts`).
 - Music under the voice: `voiceSpans` merges back-to-back sentences, `duckGain` gives the music `musicLevel` inside a
   span with 0.25 s linear ramps (`src/shared/voiceOver.ts`), in the preview and in the MP4 (`duckExpression`, a
@@ -860,7 +1096,8 @@ contract: removing or reshaping one is a major version.
   card closes the window and opens `#/@marque`, which the host provides through `pages`. The id starts with `@` (its
   type says so), since a hash without it names a project. Building chips in the top bar and the new project window
   still open the core's progress window. Without the prop, the card opens the core's repository window as before.
-  `tests/server/editor-root.test.ts` checks it in Chromium.
+  `newBrandHint` replaces the card's line under its title ("From a GitHub repository") to say what that page builds a
+  brand from; the host passes it in the interface language. `tests/server/editor-root.test.ts` checks both in Chromium.
 - `openNewBrand(buildId?)`: a host page opens the core's "New brand" window itself, the repository picker without an
   argument, the progress of that build with one (a build started with `api.startBrandBuild({ source, ref, name })`,
   say). The progress of a build that has a `source` offers no "Start over", since its `ref` never reaches the editor;
@@ -912,7 +1149,8 @@ contract: removing or reshaping one is a major version.
   reaches the editor in `GET /api/state` (`AppState.features`). `agentPicker` hides the agent cards and usage of the
   Profile and the agent choice of the new project and new brand dialogs, and turns the agent's name into "our AI" in
   the editor's and the server's texts (`agentName()` in `src/shared/types.ts`; the providers get it at construction for
-  their turn errors, and a refused login then names no CLI command to run), `gitSources` the Profile's Git accounts,
+  their turn errors, and a refused login then names no CLI command to run; Codex's own stderr, failed-turn message and
+  error notes are then left out, since they name it), `gitSources` the Profile's Git accounts,
   `networkApps` the buttons that edit a network app's keys (connect and disconnect stay), `modelPicker` the model and
   effort choice of the settings (both chat scopes) and of the chat composers (a message then carries no model, so the
   turn runs on the settings' models, which the host may set outside the editor's catalog), `costs` every dollar amount
@@ -932,12 +1170,47 @@ contract: removing or reshaping one is a major version.
   `--titlebar-max-width` on `:root` (`none`) to keep the box the window's width less its 24 px sides, so it does not move
   as the window widens. A host whose window buttons sit at the top left places them for the bar it shows.
   `tests/editor/ui.test.ts` checks both in Chromium.
+- `requestSecret`: `startServer({ requestSecret })` (32 characters or more, else `startServer()` throws) makes both
+  servers answer 403 to any request without `X-Cadence-Secret` equal to it, compared in constant time over SHA-256
+  digests (`hasRequestSecret()` in `server/http.ts`), before any other guard. `GET /oauth/<network>/callback` and `/mcp`
+  keep their own guards instead. A plain browser cannot send the header, so a host app sets it on every request of its
+  own window (the editor origin and every frame origin: a host matches `*.localhost:<framePort>`, or the hosts
+  `frameSite()` in `src/shared/frameOrigin.ts` accepts); Cadence's capture and render pages add it themselves. Without the option,
+  nothing changes. The editor opens two kinds of editor-origin URL in a new tab, outside that window: a network's
+  connection page (`Profile.tsx`, `window.open`), which ends on `/oauth/<network>/callback`, and the captured
+  references of the Media panel (`/api/projects/:id/assets/file`, `target="_blank"`). A host opens the first wherever it
+  likes, since the callback is exempt; with the secret, the callback page drops its link back to the editor, which that
+  tab could not load, so the person just closes the tab. A host opens the second in a window of its own session: the system
+  browser gets a 403. `tests/server/http.test.ts` checks the editor origin, `tests/server/frame-secret.test.ts` the
+  frame origin, `tests/e2e/frames.test.ts` a capture through it and a reference capture that never carries it.
+- `browserServer`: `startServer({ browserServer })` (`BrowserServer` and `ChromiumOptions` in `server/contracts.ts`)
+  lets a host app start the Chromium process itself, for a host whose binary cannot run as Node (an Electron app with
+  its RunAsNode fuse off, where forking would start a second app). The core calls it at every launch: the captures'
+  browser and each relaunch after it is lost, each render, and `launchChromium(hook)` (`server/capture/capture.ts`) for
+  a host's own pages. It receives the core's launch options (arguments, sandbox, signal handling: JSON) and forwards
+  them as is to `serveChromium(options)` from `server/capture/serve-chromium.mjs` (typed by `serve-chromium.d.mts`),
+  run in a process of the host's own. That process ignores SIGINT, SIGTERM and SIGHUP, so Cadence closes Chromium
+  itself; since no signal ends it, the host ends it when the process that called `startServer()` ends, as the core's
+  fork follows its IPC channel. The hook must settle (it may reject: the person then reads
+  "Chromium does not start" with the host's message); the core does not time it out, since a launch it gave up on
+  would leave a process nobody closes. It resolves to `{ wsEndpoint, exited, close() }`: `wsEndpoint` is the one
+  `serveChromium()` returned, a Unix socket in a 0700 folder (`ws+unix:`); the core refuses any other endpoint, and
+  calls `close()`, since a loopback TCP endpoint would let any local process drive the browser. `exited` settles
+  (resolves or rejects) once that process has ended, and the captures in flight then fail and the next capture calls
+  the hook again. `close()` ends the process and removes the socket folder (`dir` of `serveChromium()`), even after a
+  fatal end, since the process may die without running its exit handlers (a page logging 300 MB); it settles within
+  10 s, killing the process if it must. The core calls it once, when the browser is closed or lost, when a launch
+  fails after the hook resolved, and when the server closes; it waits 11 s at most, and past that the process and its
+  folder are the host's to end. Without the option, the core forks `chromium-server.mjs`.
+  `tests/server/browser-host.test.ts` checks the calls, `exited` (resolved and rejected), `close()`, the refused
+  endpoint, a failed connection, the server's close, a refused launch, a render and the 300 MB page through a host's
+  process.
 - `--dev` (`dev: true`) is reserved to work on the core itself: `startServer()` refuses it together with `editorRoot`.
-- The frame origin never serves `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
+- The frame origins never serve `editorRoot`: its Vite server keeps the core as its root and its `fs.allow` list.
 - `projectsDir` and `brandsDir` (and `templatesDir`) may live anywhere, e.g. in the host's user data. Scenes and brand
-  kits there import the core's `dependencies` (its `package.json`, read at start) and nothing else: the frames Vite
-  server lists them in `resolve.dedupe`, so they resolve from the core's `node_modules` and never from the importer's
-  folder. Vite's watcher gets them too, so edits made outside the editor still reload. `tests/server/outside-root.test.ts`
+  kits there import the core's packages and nothing else: the Cadence plugin of the frames Vite server resolves them as
+  the runtime would, never from the importer's folder, and `resolve.dedupe` lists the core's `dependencies` (its
+  `package.json`, read at start) so a package's own imports of them load the same copy. Vite's watcher gets them too, so edits made outside the editor still reload. `tests/server/outside-root.test.ts`
   checks both, and that the `CLAUDE.md` written there names no core path.
 
 ## Tests

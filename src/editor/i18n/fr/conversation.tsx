@@ -141,4 +141,18 @@ export default {
     noCapturesHint: (agent: string | null) =>
       `Capturez une page de votre produit : ${agent ?? 'notre IA'} s’en sert comme modèle.`,
   },
+  captureHosts: {
+    asked: (agent: string | null) => `${agent ?? 'Notre IA'} veut capturer une page de cet hôte :`,
+    scope: 'L’autoriser donne accès à toutes ses pages, pour ce projet seulement.',
+    scopeLocal: 'L’autoriser donne accès à toutes ses pages et à tous ses ports, pour ce projet seulement.',
+    local: 'Adresse locale : elle mène à votre ordinateur ou à votre réseau. N’autorisez que si vous savez à quoi elle sert.',
+    allow: 'Autoriser',
+    allowHost: (host: string) => `Autoriser ${host}`,
+    dismiss: 'Ignorer',
+    title: 'Hôtes autorisés',
+    hint: (agent: string | null) =>
+      `${agent ?? 'Notre IA'} ne capture que des pages de ces hôtes. Un nouvel hôte vous est demandé dans la conversation.`,
+    none: 'Aucun hôte autorisé',
+    remove: (host: string) => `Retirer ${host}`,
+  },
 };

@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { checkBrand } from '../brands/check';
 import { vendorGoogleFont } from '../brands/fonts';
 import type { McpScope } from '../contracts';
-import { HttpError, isInside, resolveInside } from '../util';
+import { HttpError, isInside, resolveInside, writeFileInside } from '../util';
 import type { McpDeps, ToolRegistrar } from './tools';
 
 export const BRAND_TOOLS = ['copy_from_repo', 'add_google_font', 'preview_brand', 'check_brand'];
@@ -41,8 +41,8 @@ export function registerBrandTools(tool: ToolRegistrar, scope: Extract<McpScope,
       const stat = await fs.stat(real);
       if (!stat.isFile()) throw new HttpError(400, `Not a file: ${from}`);
       if (stat.size > MAX_COPY_BYTES) throw new HttpError(413, `${from} is over 5 MB`);
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.copyFile(real, target);
+      // The turn writes the brand folder: it can make assets/ a link to any folder this server may write.
+      await writeFileInside(brandDir, target, await fs.readFile(real));
       return text(`Copied ${from} to ${path.relative(brandDir, target)} (${Math.ceil(stat.size / 1024)} KB).`);
     },
   );

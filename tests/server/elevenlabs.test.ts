@@ -1,9 +1,13 @@
 // ElevenLabs' voices, models and speech against a fake fetch: no request leaves the machine.
 import assert from 'node:assert/strict';
+import type { LookupAddress } from 'node:dns';
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import net, { type AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { type PinnedDeps, RESOURCE_BYTES } from '../../server/capture/pinned';
 import { setLanguage } from '../../server/i18n';
 import { ElevenLabsClient, sidecarFile, type ElevenLabsOptions } from '../../server/voiceover/elevenlabs';
 import { readWav } from '../../server/voiceover/wav';
@@ -18,6 +22,7 @@ interface Sent {
   headers: Headers;
   body: RequestInit['body'];
   signal: RequestInit['signal'];
+  redirect: RequestInit['redirect'];
 }
 
 function elevenLabs(
@@ -28,7 +33,14 @@ function elevenLabs(
   const client = new ElevenLabsClient({
     ...options,
     http: async (url, init = {}) => {
-      const req = { url, method: init.method ?? 'GET', headers: new Headers(init.headers), body: init.body, signal: init.signal };
+      const req = {
+        url,
+        method: init.method ?? 'GET',
+        headers: new Headers(init.headers),
+        body: init.body,
+        signal: init.signal,
+        redirect: init.redirect,
+      };
       sent.push(req);
       return respond(req, sent.length - 1);
     },
@@ -190,6 +202,138 @@ test('lists only the models that speak text', async () => {
   assert.deepEqual(await client.models(KEY), [{ id: 'eleven_multilingual_v2', name: 'Eleven Multilingual v2' }]);
   assert.equal(sent[0].url, 'https://api.elevenlabs.io/v1/models');
   assert.equal(sent[0].headers.get('xi-api-key'), KEY);
+});
+
+// A voice's sample host, on this machine: the injected lookup answers for made-up names (an IP literal answers itself) and
+// the injected createConnection dials this server whatever the checked address, like tests/server/capture-pinned.test.ts.
+const PUBLIC = '93.184.216.34';
+const asked: { url: string; key: string | undefined }[] = [];
+const samples = http.createServer((req, res) => {
+  asked.push({ url: req.url ?? '', key: req.headers['xi-api-key'] as string | undefined });
+  switch (req.url) {
+    case '/a.mp3':
+      return void res.writeHead(200, { 'Content-Type': 'audio/mpeg' }).end('ID3 sample');
+    case '/to-inside':
+      return void res.writeHead(302, { location: 'https://inside.test/a.mp3' }).end();
+    case '/to-loopback':
+      return void res.writeHead(302, { location: 'https://127.0.0.1/a.mp3' }).end();
+    case '/to-http':
+      return void res.writeHead(302, { location: 'http://storage.test/a.mp3' }).end();
+    case '/large':
+      res.on('error', () => undefined);
+      return void res.end(Buffer.alloc(RESOURCE_BYTES + 1024, 'a'));
+    case '/reset':
+      return void req.socket.destroy();
+  }
+  res.writeHead(403).end();
+});
+let samplesPort = 0;
+
+before(async () => {
+  await new Promise<void>((resolve) => samples.listen(0, '127.0.0.1', resolve));
+  samplesPort = (samples.address() as AddressInfo).port;
+});
+after(() => {
+  samples.closeAllConnections();
+  samples.close();
+});
+
+/** A client whose samples come from `samples`: `names` are what the lookup answers. */
+function sampled(names: Record<string, string[]> = { 'storage.test': [PUBLIC], 'inside.test': ['127.0.0.1'] }) {
+  const lookups: string[] = [];
+  const sockets: net.Socket[] = [];
+  const pinned: PinnedDeps = {
+    lookup: async (hostname) => {
+      lookups.push(hostname);
+      const answer = net.isIP(hostname) ? [hostname] : (names[hostname] ?? []);
+      return answer.map((address): LookupAddress => ({ address, family: net.isIP(address) }));
+    },
+    createConnection: (options) => {
+      let first = '';
+      options.lookup(options.host, {}, (_err, address) => (first = address as string));
+      const socket = net.connect(samplesPort, '127.0.0.1');
+      Object.defineProperty(socket, 'remoteAddress', { value: first });
+      sockets.push(socket);
+      return socket;
+    },
+  };
+  // A hosted client: it has a key it could send.
+  const { client, sent } = elevenLabs(() => assert.fail('the API is not asked'), { key: KEY, pinned });
+  return { client, sent, lookups, sockets };
+}
+
+test('fetches a voice sample from a public address, without the key, and closes its connection', async () => {
+  const { client, sent, sockets } = sampled();
+  const before = asked.length;
+  assert.deepEqual(await client.preview('https://storage.test/a.mp3'), Buffer.from('ID3 sample'));
+  assert.deepEqual(asked.slice(before), [{ url: '/a.mp3', key: undefined }]);
+  assert.equal(sent.length, 0);
+  assert.equal(sockets.length, 1);
+  assert.equal(sockets[0].destroyed, true, 'no keep-alive connection left behind');
+});
+
+test('a voice sample URL that is not https is refused before any lookup', async () => {
+  const { client, lookups, sockets } = sampled();
+  for (const url of ['http://127.0.0.1:8080/admin', 'http://storage.test/a.mp3', 'file:///etc/passwd', 'not a url']) {
+    await rejectsWithStatus(client.preview(url), 404);
+  }
+  assert.deepEqual(lookups, []);
+  assert.equal(sockets.length, 0);
+});
+
+// Every spelling of this machine or its network the URL parser accepts, and a name that resolves there.
+for (const host of [
+  '127.0.0.1',
+  '127.0.0.1.',
+  '127.1',
+  '127.255.255.254',
+  '2130706433',
+  '0x7f.1',
+  '0177.0.0.1',
+  '0.0.0.0',
+  '0',
+  '0.1.2.3',
+  '[::1]',
+  '[0:0:0:0:0:0:0:1]',
+  '[::]',
+  '[::ffff:127.0.0.1]',
+  '[::ffff:7f00:2]',
+  '[::ffff:0.0.0.0]',
+  '169.254.169.254',
+  '10.0.0.1',
+  '192.168.1.1',
+  '[fe80::1]',
+  'inside.test',
+]) {
+  test(`never fetches a voice sample from ${host}`, async () => {
+    const { client, sockets } = sampled();
+    await rejectsWithStatus(client.preview(`https://${host}/a.mp3`), 404);
+    assert.equal(sockets.length, 0);
+  });
+}
+
+test('fetches a voice sample from a public address or a name that only looks local', async () => {
+  for (const host of [PUBLIC, '[::ffff:8.8.8.8]', '[2606:4700::1111]', 'localhost.example.com', 'mylocalhost']) {
+    const { client } = sampled({ 'localhost.example.com': [PUBLIC], mylocalhost: [PUBLIC] });
+    assert.deepEqual(await client.preview(`https://${host}/a.mp3`), Buffer.from('ID3 sample'), host);
+  }
+});
+
+test('each redirect of a voice sample is checked: one to this machine or to plain http is refused before its socket', async () => {
+  for (const route of ['/to-inside', '/to-loopback', '/to-http']) {
+    const { client, sockets } = sampled();
+    await rejectsWithStatus(client.preview(`https://storage.test${route}`), 404);
+    assert.equal(sockets.length, 1, route);
+    assert.equal(sockets[0].destroyed, true, route);
+  }
+});
+
+test('a voice sample host that fails: its status, a cut connection, or a body over 8 MB', async () => {
+  await rejectsWithStatus(sampled().client.preview('https://storage.test/missing.mp3'), 502, /403/);
+  await rejectsWithStatus(sampled().client.preview('https://storage.test/reset'), 502, /ne répond pas/);
+  const { client, sockets } = sampled();
+  await rejectsWithStatus(client.preview('https://storage.test/large'), 404);
+  assert.equal(sockets[0].destroyed, true);
 });
 
 const refused = (status: string, message: string, http = 401) => json({ detail: { status, message } }, http);

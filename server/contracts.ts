@@ -6,7 +6,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Readable } from 'node:stream';
 import type { HttpBindings } from '@hono/node-server';
 import type { Hono } from 'hono';
+import type { LaunchOptions } from 'playwright';
 import type { AuditFinding } from '../src/shared/frameProtocol';
+import type { Policy } from './capture/policy';
 import type {
   AssetInfo,
   BrandBuild,
@@ -80,7 +82,10 @@ export interface CadenceConfig {
   editorPort: number;
   /** Frame pages + modules, read-only data. Different port = different origin. */
   framePort: number;
+  /** A host app's secret, 32 characters or more: both servers then refuse any request without it in X-Cadence-Secret. */
+  requestSecret?: string;
   editorOrigin: string;
+  /** Base of the frame origins (frameOriginOf), `http://localhost:<framePort>`, which serves nothing itself. */
   frameOrigin: string;
   mcpUrl: string;
   ffmpegPath: string;
@@ -382,14 +387,40 @@ export interface AssetStore {
   /** Save an uploaded file under assets/ (images, SVG, fonts; 50 MB max). Name is sanitized. */
   upload(projectId: string, file: { name: string; data: Buffer }): Promise<AssetInfo>;
   remove(projectId: string, assetPath: string): Promise<void>;
-  /** Screenshot a web page into assets/refs/<name>-<device>.png (reference material for the agent). */
-  captureReference(projectId: string, input: CaptureRefInput): Promise<AssetInfo>;
+  /**
+   * Screenshot a web page into assets/refs/<name>-<device>.png (reference material for the agent). `policy` is what the
+   * capture may reach: approved() for the agent's, LOCAL for the person's. No default, so no caller widens it by omission.
+   */
+  captureReference(projectId: string, input: CaptureRefInput, policy: Policy): Promise<AssetInfo>;
   /** Absolute path of an asset, after checking it stays inside assets/. */
   resolve(projectId: string, assetPath: string): string;
 }
 
 // server/capture/capture.ts: export class PlaywrightCapture implements CaptureService
-//   constructor(deps: { config: CadenceConfig; store: ProjectStore })
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore;
+//     browserServer?: (options: ChromiumOptions) => Promise<BrowserServer> })
+
+/** How the core launches Chromium, JSON-serializable: a host app forwards it as is to `serveChromium()`. */
+export type ChromiumOptions = Pick<LaunchOptions, 'args' | 'chromiumSandbox' | 'handleSIGINT' | 'handleSIGTERM' | 'handleSIGHUP'>;
+
+/**
+ * A Chromium server a host app started for the core (`StartOptions.browserServer`, ARCHITECTURE.md "Embedding
+ * Cadence"), in a process other than the Cadence server's. That process ignores SIGINT, SIGTERM and SIGHUP, so it must
+ * end when the process that called startServer() ends: the host ties it to the server's lifetime, as the core's fork
+ * follows its IPC channel. The hook must settle (it may reject): the core does not time it out.
+ */
+export interface BrowserServer {
+  /** The `wsEndpoint` `serveChromium()` returned (`ws+unix:`): the core refuses any other, a loopback TCP port above all. */
+  wsEndpoint: string;
+  /** Settles (resolved or rejected) once that process has ended: the core then drops the browser. */
+  exited: Promise<unknown>;
+  /**
+   * Ends that process and removes the socket folder (`dir`), even after the process died without its exit handlers.
+   * Settles within 10 s, killing the process if it must: the core waits 11 s at most, then the process and its folder
+   * are the host's to end.
+   */
+  close(): Promise<void>;
+}
 
 export interface CapturedFrame {
   /** Requested time (scene-local with sceneId, video time without). */
@@ -424,8 +455,11 @@ export interface CaptureService {
   ): Promise<CapturedFrame[]>;
   /** Small JPEG of a scene (cached per code generation + scene + format + t). */
   thumbnail(projectId: string, sceneId: string, opts?: { t?: number; format?: FormatId }): Promise<Buffer>;
-  /** Screenshot an external http(s) page (reference capture). */
-  screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean }): Promise<Buffer>;
+  /**
+   * Screenshot an external http(s) page (reference capture). Every request of the page goes through the pinned fetch
+   * under `policy`, and never to Cadence's own ports.
+   */
+  screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean; policy: Policy }): Promise<Buffer>;
   /** JPEG of a brand's kit sheet (kit.html, sandboxed), with what failed to render or load there. */
   kitSheet(brandId: string, opts?: { scale?: number }): Promise<{ image: Buffer; problems: string[]; loaded: boolean }>;
   /** One JPEG of PNG tiles of one size in reading order, `columns` per row, `gap` px apart (render_frames strips). */
@@ -454,7 +488,8 @@ export interface SeamService {
 }
 
 // server/capture/render.ts: export class FfmpegRenderService implements RenderService
-//   constructor(deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; voiceOver: VoiceOverService; hub: Hub })
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; voiceOver: VoiceOverService; hub: Hub;
+//     browserServer?: (options: ChromiumOptions) => Promise<BrowserServer> })
 
 export interface RenderService {
   /** One job per format; jobs run one at a time, frames captured by up to 4 parallel pages. */
@@ -530,6 +565,13 @@ export interface ElevenLabsApi {
   /** The models that speak text. */
   models(key: string | null): Promise<ElevenLabsModel[]>;
   /**
+   * A voice's sample (its `previewUrl`), fetched without the key from its https URL through the captures' address policy
+   * on port 443 only: public addresses, each redirect checked, 8 MB at most. A refused URL or address is a 404, a storage
+   * that fails or answers another status a 502. Optional, so a host's own client keeps compiling: without it every sample
+   * is a 404.
+   */
+  preview?(url: string): Promise<Buffer>;
+  /**
    * Speaks each sentence (audio tags kept), one request at a time, into the 24 kHz WAV file at the same index of `files`,
    * its words and mouth levels written first beside it (`sidecarFile`).
    */
@@ -562,6 +604,8 @@ export interface VoiceOverService {
   download(id: string): Promise<VoiceInfo>;
   /** The voices and models of the saved ElevenLabs key's account; 409 when no key is saved. */
   elevenLabs(): Promise<{ voices: ElevenLabsVoice[]; models: ElevenLabsModel[] }>;
+  /** The MP3 sample of a voice of that account, served from the editor origin its CSP allows; 404 when it has none. */
+  elevenLabsPreview(voice: string): Promise<Buffer>;
   /**
    * Save the ElevenLabs key once ElevenLabs accepts it (its refusal passes through), or remove it with null; a 500 when
    * the secret store fails, a 409 when a host app's client brings its own key.
@@ -701,6 +745,19 @@ export interface SettingsStore {
   update(patch: Partial<Settings>): Promise<Settings>;
 }
 
+// server/store/captureHosts.ts: export class FileCaptureHosts implements CaptureHostStore  (constructor(config))
+
+/** The hosts (as URL.host writes them) the person approved for the agent's captures, per project. */
+export interface CaptureHostStore {
+  list(projectId: string): Promise<string[]>;
+  /** Returns the project's hosts; 400 for a host URL.host would write otherwise. */
+  approve(projectId: string, host: string): Promise<string[]>;
+  /** Returns the project's hosts left; a host it does not hold changes nothing. */
+  revoke(projectId: string, host: string): Promise<string[]>;
+  /** Forgets the project's hosts, once it is deleted. */
+  drop(projectId: string): Promise<void>;
+}
+
 // server/api/index.ts: export function createApi(deps: ApiDeps): Hono   (routes under /api, see ARCHITECTURE.md)
 
 /** A host app's route groups, each mounted under /api/<name> behind the editor guards (ARCHITECTURE.md "Embedding Cadence"). */
@@ -722,6 +779,7 @@ export interface ApiDeps {
   settings: SettingsStore;
   usage: UsageLog;
   hub: Hub;
+  captureHosts: CaptureHostStore;
   brandSources: Record<GitHost, BrandSource>;
   brandBuilds: BrandBuildService;
   accounts: AccountService;

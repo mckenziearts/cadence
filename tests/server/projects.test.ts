@@ -1,12 +1,24 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { constants, writeFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, test, type TestContext } from 'node:test';
 import { FileBrandStore } from '../../server/store/brands';
 import { FileProjectStore, parseSceneVoiceOver } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
-import { HttpError, shortHash } from '../../server/util';
+import {
+  HttpError,
+  listInside,
+  readFileNoFollow,
+  removeFileInside,
+  removeTreeInside,
+  shortHash,
+  writeFileAtomic,
+  writeFileInside,
+} from '../../server/util';
 import type { SceneVoiceOver, VoiceOverSettings } from '../../src/shared/types';
 import { makeRoot, nextEvent, rejectsWithStatus, SCENE_TEMPLATE_CODE, type TestRoot } from './helpers';
 
@@ -667,5 +679,490 @@ describe('templates with components and voices', () => {
       if (folder === 'components') assert.deepEqual(await fs.readdir(path.join(p.dir, 'scenes')), ['titre.tsx']);
       else assert.deepEqual(await fs.readdir(path.join(p.dir, 'components')), []);
     });
+
+    test(`a ${folder}/ folder swapped for a link right after its check gets nothing written through it`, async (ctx) => {
+      const p = await store.create({ ...base, name: 'Course' });
+      const swapped = path.join(p.dir, folder);
+      const outside = path.join(t.root, 'outside');
+      const [held, heldLink] = [path.join(t.root, 'held'), path.join(t.root, 'held-link')];
+      await fs.mkdir(outside);
+      await fs.symlink(outside, heldLink);
+      // Each check sees the real folder, which a link replaces as soon as the check is done.
+      let linked = false;
+      const realpath = fs.realpath;
+      ctx.mock.method(fs, 'realpath', async (file: string) => {
+        if (file !== swapped) return realpath(file);
+        if (linked) {
+          await fs.rename(swapped, heldLink);
+          await fs.rename(held, swapped);
+        }
+        const real = await realpath(file);
+        await fs.rename(swapped, held);
+        await fs.rename(heldLink, swapped);
+        linked = true;
+        return real;
+      });
+      const input = folder === 'components' ? { name: 'Question', template: 'dialogue' } : { name: 'Question' };
+      await assert.rejects(store.createScene(p.id, input), REFUSED);
+      assert.ok(linked);
+      assert.deepEqual(await fs.readdir(outside), []);
+    });
   }
+
+  test('deleting a scene moves nothing out of another project its scenes/ folder links to', async () => {
+    const other = await store.create({ ...base, name: 'Autre' });
+    const p = await store.create({ ...base, name: 'Lien' });
+    await store.createScene(p.id, { name: 'Deux' });
+    await fs.rm(path.join(p.dir, 'scenes'), { recursive: true });
+    await fs.symlink(path.join(other.dir, 'scenes'), path.join(p.dir, 'scenes'));
+    await store.deleteScene(p.id, 'titre');
+    assert.deepEqual(await fs.readdir(path.join(other.dir, 'scenes')), ['titre.tsx']);
+    assert.deepEqual(await fs.readdir(path.join(p.dir, '.cadence', 'trash')).catch(() => []), []);
+  });
+
+  test('deleting a scene removes its file and keeps its exact code in the trash', async () => {
+    const p = await store.create({ ...base, name: 'Corbeille' });
+    await store.createScene(p.id, { name: 'Deux' });
+    const file = store.sceneFile(p.id, 'titre');
+    const code = await fs.readFile(file, 'utf8');
+    await store.deleteScene(p.id, 'titre');
+    await assert.rejects(fs.lstat(file));
+    const trash = path.join(p.dir, '.cadence', 'trash');
+    const [kept, ...rest] = await fs.readdir(trash);
+    assert.match(kept, /^titre-\d+\.tsx$/);
+    assert.deepEqual(rest, []);
+    assert.equal(await fs.readFile(path.join(trash, kept), 'utf8'), code);
+  });
+
+  test('deleting a scene removes nothing through a scenes/ folder swapped for a link after its code is read', async (ctx) => {
+    const other = await store.create({ ...base, name: 'Autre' });
+    const p = await store.create({ ...base, name: 'Lien' });
+    await store.createScene(p.id, { name: 'Deux' });
+    const scenes = path.join(p.dir, 'scenes');
+    const open = fs.open;
+    let swapped = false;
+    ctx.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+      const handle = await open(...args);
+      if (!swapped && String(args[0]).endsWith('titre.tsx')) {
+        swapped = true;
+        await fs.rename(scenes, path.join(t.root, 'held'));
+        await fs.symlink(path.join(other.dir, 'scenes'), scenes);
+      }
+      return handle;
+    });
+    await store.deleteScene(p.id, 'titre');
+    assert.ok(swapped);
+    assert.deepEqual(await fs.readdir(path.join(other.dir, 'scenes')), ['titre.tsx']);
+    assert.deepEqual(
+      (await store.get(p.id)).scenes.map((s) => s.id),
+      ['deux'],
+    );
+  });
+
+  test('a scene a restore lists again before its file is trashed keeps its file', async () => {
+    const p = await store.create({ ...base, name: 'Retour' });
+    await store.createScene(p.id, { name: 'Deux' });
+    const json = path.join(p.dir, 'project.json');
+    const listed = await fs.readFile(json, 'utf8');
+    // Between the project.json write and the move to the trash, as a restore taking the lock there would.
+    store.events.once('changed', () => writeFileSync(json, listed));
+    await store.deleteScene(p.id, 'titre');
+    assert.deepEqual(
+      (await store.get(p.id)).scenes.map((s) => [s.id, s.codeVersion !== 'missing']),
+      [
+        ['titre', true],
+        ['deux', true],
+      ],
+    );
+    assert.deepEqual(await fs.readdir(path.join(p.dir, '.cadence', 'trash')).catch(() => []), []);
+  });
+});
+
+test('a file an agent can write is never read through a symlink it put there', async () => {
+  const p = await store.create({ ...base, name: 'Lien' });
+  const secret = path.join(t.root, '.cadence', 'accounts.json');
+  await fs.mkdir(path.dirname(secret), { recursive: true });
+  await fs.writeFile(secret, 'TOPSECRET');
+  const swap = async (file: string) => {
+    await fs.rm(file, { force: true });
+    await fs.symlink(secret, file);
+  };
+
+  await swap(path.join(p.dir, 'art-direction.md'));
+  assert.equal(await store.readArtDirection(p.id), '');
+
+  await swap(store.sceneFile(p.id, 'titre'));
+  await rejectsWithStatus(store.duplicateScene(p.id, 'titre'), 404);
+  assert.equal((await store.get(p.id)).scenes[0].codeVersion, 'missing');
+
+  const brand = path.join(t.config.brandsDir, 'cadence');
+  await swap(path.join(brand, 'KIT.md'));
+  await swap(path.join(brand, 'art-direction.md'));
+  assert.ok(!(await new FileBrandStore(t.config).describe(null)).includes('TOPSECRET'));
+  assert.ok(!(await store.readArtDirection((await store.create({ ...base, name: 'Copie' })).id)).includes('TOPSECRET'));
+  // A brand.json the store would accept: following the link would describe that brand instead of failing.
+  const json = JSON.parse(await fs.readFile(path.join(brand, 'brand.json'), 'utf8'));
+  const lookalike = path.join(t.root, '.cadence', 'lookalike.json');
+  await fs.writeFile(lookalike, JSON.stringify({ ...json, name: 'TOPSECRET' }));
+  await fs.rm(path.join(brand, 'brand.json'));
+  await fs.symlink(lookalike, path.join(brand, 'brand.json'));
+  await rejectsWithStatus(new FileBrandStore(t.config).describe(null), 500, /^(?![\s\S]*TOPSECRET)/);
+});
+
+test('the code hash never reads through a scenes/ folder linked out of the project', async () => {
+  const p = await store.create({ ...base, name: 'Lien' });
+  await store.syncCode(p.id);
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside);
+  await fs.writeFile(path.join(outside, 'titre.tsx'), 'one');
+  await fs.rm(path.join(p.dir, 'scenes'), { recursive: true });
+  await fs.symlink(outside, path.join(p.dir, 'scenes'));
+  assert.equal(await store.syncCode(p.id), true, 'its own scene is gone');
+  await fs.writeFile(path.join(outside, 'titre.tsx'), 'two');
+  assert.equal(await store.syncCode(p.id), false);
+});
+
+test("a brand's assets folder swapped for a link lists nothing of it in the brand description", async () => {
+  const brands = new FileBrandStore(t.config);
+  const assets = path.join(t.config.brandsDir, 'cadence', 'assets');
+  assert.match(await brands.describe(null), /assets\/logo-mark\.svg/);
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside);
+  await fs.writeFile(path.join(outside, 'SECRETNAME.txt'), '');
+  await fs.rm(assets, { recursive: true });
+  await fs.symlink(outside, assets);
+  assert.doesNotMatch(await brands.describe(null), /SECRETNAME/);
+});
+
+/**
+ * The kernel refuses a link on the way inside the open: ELOOP, or ENOTDIR for a folder Linux opens with O_DIRECTORY. The
+ * macOS shell walk reports the folder outside.
+ */
+const REFUSED = /ELOOP|ENOTDIR|outside/;
+
+/** A project folder whose components/a links to a folder outside it, holding a secret. */
+async function linkedOut() {
+  const project = path.join(t.root, 'p');
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(path.join(project, 'components', 'b'), { recursive: true });
+  await fs.mkdir(outside);
+  await fs.writeFile(path.join(outside, 'x.ts'), 'TOPSECRET');
+  await fs.writeFile(path.join(project, 'components', 'b', 'y.ts'), 'inside');
+  await fs.symlink(outside, path.join(project, 'components', 'a'));
+  return { project, outside, link: path.join(project, 'components', 'a') };
+}
+
+/** A project folder whose components/a links to its own .cadence/chats, which an agent turn may not write. */
+async function linkedInward() {
+  const project = path.join(t.root, 'p');
+  const inner = path.join(project, '.cadence', 'chats');
+  await fs.mkdir(inner, { recursive: true });
+  await fs.mkdir(path.join(project, 'components'));
+  await fs.writeFile(path.join(inner, 'chat.json'), 'CHAT');
+  await fs.symlink(inner, path.join(project, 'components', 'a'));
+  return { project, inner, link: path.join(project, 'components', 'a') };
+}
+
+/**
+ * scenes/sub holds x.ts; a link to a folder outside, holding a secret where x.ts would be, waits beside the project to
+ * take the place of `swapped` (scenes/sub or scenes).
+ */
+async function swappable(swapped = 'scenes/sub') {
+  const project = path.join(t.root, 'p');
+  const folder = path.join(project, swapped);
+  const outside = path.join(t.root, 'outside');
+  const file = path.join(project, 'scenes', 'sub', 'x.ts');
+  const secret = path.join(outside, path.relative(folder, file));
+  const [heldFolder, heldLink] = [path.join(t.root, 'held-folder'), path.join(t.root, 'held-link')];
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.mkdir(path.dirname(secret), { recursive: true });
+  await fs.writeFile(file, 'inside');
+  await fs.writeFile(secret, 'TOPSECRET');
+  await fs.symlink(outside, heldLink);
+  const toLink = async () => {
+    await fs.rename(folder, heldFolder);
+    await fs.rename(heldLink, folder);
+  };
+  const toFolder = async () => {
+    await fs.rename(folder, heldLink);
+    await fs.rename(heldFolder, folder);
+  };
+  const listing = await fs.readdir(outside, { recursive: true });
+  const outsideUntouched = async () => {
+    assert.deepEqual(await fs.readdir(outside, { recursive: true }), listing);
+    assert.equal(await fs.readFile(secret, 'utf8'), 'TOPSECRET');
+  };
+  return { project, file, folder, heldFolder, toLink, toFolder, outsideUntouched };
+}
+
+/** fs.open with the folder swapped for a link during the open only. */
+function swapDuringOpen(ctx: TestContext, { toLink, toFolder }: { toLink: () => Promise<void>; toFolder: () => Promise<void> }) {
+  const open = fs.open;
+  const state = { swapped: false };
+  ctx.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+    await toLink();
+    try {
+      return await open(...args);
+    } finally {
+      await toFolder();
+      state.swapped = true;
+    }
+  });
+  return state;
+}
+
+describe('readFileNoFollow', () => {
+  test('reads a nested file inside its root', async () => {
+    const { project } = await linkedOut();
+    assert.equal(await readFileNoFollow(project, path.join(project, 'components', 'b', 'y.ts'), 'utf8'), 'inside');
+  });
+
+  test('refuses a file reached through a folder that links out of its root', async () => {
+    const { project, link } = await linkedOut();
+    await assert.rejects(readFileNoFollow(project, path.join(link, 'x.ts'), 'utf8'), REFUSED);
+  });
+
+  for (const swapped of ['scenes/sub', 'scenes']) {
+    test(`refuses a file whose ${swapped} folder is a link out of its root during the open only`, async (ctx) => {
+      const setup = await swappable(swapped);
+      const state = swapDuringOpen(ctx, setup);
+      const read = await readFileNoFollow(setup.project, setup.file, 'utf8').catch((e: Error) => e);
+      assert.ok(read instanceof Error, `read ${read}`);
+      assert.match(read.message, REFUSED);
+      assert.ok(state.swapped, 'the folder was a link during the open');
+    });
+  }
+
+  test('never refuses a file an atomic write replaces during the read', async (ctx) => {
+    const { project, file } = await swappable();
+    const open = fs.open;
+    ctx.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+      const handle = await open(...args);
+      // On Linux the folders on the way are opened first.
+      if (String(args[0]).endsWith(path.basename(file))) await writeFileAtomic(file, 'rewritten');
+      return handle;
+    });
+    assert.equal(await readFileNoFollow(project, file, 'utf8'), 'inside');
+  });
+
+  test('refuses a file that is itself a link, even to a file inside its root', async () => {
+    const { project } = await linkedOut();
+    await fs.symlink(path.join(project, 'components', 'b', 'y.ts'), path.join(project, 'components', 'b', 'z.ts'));
+    await assert.rejects(readFileNoFollow(project, path.join(project, 'components', 'b', 'z.ts'), 'utf8'), REFUSED);
+  });
+
+  test('refuses a file reached through a link to another folder inside its root', async () => {
+    const { project, link } = await linkedInward();
+    await assert.rejects(readFileNoFollow(project, path.join(link, 'chat.json'), 'utf8'), REFUSED);
+  });
+
+  test('refuses a file named outside its root even when it resolves inside', async () => {
+    const { project } = await swappable();
+    await fs.symlink(path.join(project, 'scenes', 'sub'), path.join(t.root, 'alias'));
+    await assert.rejects(readFileNoFollow(project, path.join(t.root, 'alias', 'x.ts'), 'utf8'), /outside/);
+  });
+
+  test('refuses a FIFO at once instead of waiting for a writer', { timeout: 2_000 }, async (ctx) => {
+    // Its own folder: afterEach removes t.root before this test's after hook could release a blocked open.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-fifo-'));
+    const fifo = path.join(dir, 'fifo');
+    execFileSync('mkfifo', [fifo]);
+    // A regression blocks a libuv thread on the open: a writer releases it, so the run fails instead of hanging.
+    ctx.after(async () => {
+      await fs.open(fifo, constants.O_WRONLY | constants.O_NONBLOCK).then(
+        (handle) => handle.close(),
+        () => undefined,
+      );
+      await fs.rm(dir, { recursive: true, force: true });
+    });
+    await assert.rejects(readFileNoFollow(dir, fifo), /not a regular file/);
+  });
+});
+
+describe('writeFileInside', () => {
+  test('writes through plain folders and creates the missing ones', async () => {
+    const project = path.join(t.root, 'p');
+    await fs.mkdir(path.join(project, 'components'), { recursive: true });
+    const file = path.join(project, 'components', 'a', 'b', 'x.ts');
+    await writeFileInside(project, file, 'written');
+    assert.equal(await fs.readFile(file, 'utf8'), 'written');
+    await writeFileInside(project, file, 'again');
+    assert.equal(await fs.readFile(file, 'utf8'), 'again');
+    assert.deepEqual(await fs.readdir(path.dirname(file)), ['x.ts'], 'no temporary file left');
+  });
+
+  test('refuses a folder that is a link out of its root, creating nothing through it', async () => {
+    const { project, outside, link } = await linkedOut();
+    await assert.rejects(writeFileInside(project, path.join(link, 'x.ts'), 'written'), REFUSED);
+    await assert.rejects(writeFileInside(project, path.join(link, 'deep', 'x.ts'), 'written'), REFUSED);
+    assert.deepEqual(await fs.readdir(outside), ['x.ts']);
+    assert.equal(await fs.readFile(path.join(outside, 'x.ts'), 'utf8'), 'TOPSECRET');
+  });
+
+  test('writes nothing into another folder of its root through a link to it', async () => {
+    const { project, inner, link } = await linkedInward();
+    await assert.rejects(writeFileInside(project, path.join(link, 'chat.json'), 'written'), REFUSED);
+    await assert.rejects(writeFileInside(project, path.join(link, 'deep', 'x.ts'), 'written'), REFUSED);
+    assert.deepEqual(await fs.readdir(inner), ['chat.json']);
+    assert.equal(await fs.readFile(path.join(inner, 'chat.json'), 'utf8'), 'CHAT');
+  });
+
+  test('refuses a file named outside its root', async () => {
+    const project = path.join(t.root, 'p');
+    await fs.mkdir(project);
+    await assert.rejects(writeFileInside(project, path.join(t.root, 'x.ts'), 'written'), /outside/);
+    await assert.rejects(fs.access(path.join(t.root, 'x.ts')));
+  });
+
+  test('refuses a name that is a folder, writing nothing into it and leaving no temporary file beside it', async () => {
+    const project = path.join(t.root, 'p');
+    const dir = path.join(project, 'components', 'd');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'keep'), 'kept');
+    // The rename fails, after the temporary file was written: the cleanup is what this checks.
+    await assert.rejects(writeFileInside(project, dir, 'written'), /mv failed|EISDIR/);
+    assert.deepEqual(await fs.readdir(dir), ['keep']);
+    assert.deepEqual(await fs.readdir(path.dirname(dir)), ['d']);
+  });
+
+  test('takes names with spaces, a leading dash, quotes, newlines and shell characters as plain names', async () => {
+    const project = path.join(t.root, 'p');
+    await fs.mkdir(project);
+    for (const rel of ['a b/-n/*[x]?$(touch p).ts', '-rf/c\'d/"e"/`touch q`;f.ts', 'g\nh/ i \n.ts', 'j\n/k\n']) {
+      const file = path.join(project, rel);
+      await writeFileInside(project, file, rel);
+      assert.equal(await readFileNoFollow(project, file, 'utf8'), rel);
+      await removeFileInside(project, file);
+      await assert.rejects(fs.lstat(file));
+    }
+    for (const entry of await fs.readdir(project, { recursive: true, withFileTypes: true })) {
+      assert.ok(entry.isDirectory(), `${entry.name} left in the root`);
+    }
+  });
+
+  for (const swapped of ['scenes/sub', 'scenes']) {
+    test(`writes nothing outside when ${swapped} is a link out of its root while the temporary file opens`, async (ctx) => {
+      const setup = await swappable(swapped);
+      const state = swapDuringOpen(ctx, setup);
+      await assert.rejects(writeFileInside(setup.project, setup.file, 'written'), REFUSED);
+      assert.ok(state.swapped);
+      await setup.outsideUntouched();
+    });
+
+    test(`writes nothing outside when ${swapped} becomes a link once the temporary file is open`, async (ctx) => {
+      const setup = await swappable(swapped);
+      const open = fs.open;
+      let swappedAfter = false;
+      ctx.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+        const handle = await open(...args);
+        if (!swappedAfter && Number(args[1]) & constants.O_CREAT) {
+          swappedAfter = true;
+          await setup.toLink();
+        }
+        return handle;
+      });
+      await assert.rejects(writeFileInside(setup.project, setup.file, 'written'), REFUSED);
+      assert.ok(swappedAfter, 'the folder became a link before the rename');
+      await setup.outsideUntouched();
+      assert.equal(await fs.readFile(path.join(setup.heldFolder, path.relative(setup.folder, setup.file)), 'utf8'), 'inside');
+    });
+  }
+});
+
+describe('removeFileInside', () => {
+  test('removes a file inside its root; a missing file or folder is no error', async () => {
+    const { project, file } = await swappable();
+    await fs.writeFile(path.join(project, 'top.md'), 'top');
+    await removeFileInside(project, file);
+    await removeFileInside(project, path.join(project, 'top.md'));
+    assert.deepEqual(await fs.readdir(path.dirname(file)), []);
+    await assert.rejects(fs.access(path.join(project, 'top.md')));
+    await removeFileInside(project, file);
+    await removeFileInside(project, path.join(project, 'gone', 'x.ts'));
+  });
+
+  test('removes nothing through a folder that is a link out of its root', async () => {
+    const { project, outside, link } = await linkedOut();
+    await assert.rejects(removeFileInside(project, path.join(link, 'x.ts')), REFUSED);
+    assert.equal(await fs.readFile(path.join(outside, 'x.ts'), 'utf8'), 'TOPSECRET');
+  });
+
+  test('removes nothing through a link to another folder inside its root', async () => {
+    const { project, inner, link } = await linkedInward();
+    await assert.rejects(removeFileInside(project, path.join(link, 'chat.json')), REFUSED);
+    assert.equal(await fs.readFile(path.join(inner, 'chat.json'), 'utf8'), 'CHAT');
+  });
+
+  test('removes nothing through a link to a sibling folder whose name only adds a trailing newline', async () => {
+    const project = path.join(t.root, 'p');
+    const sibling = path.join(project, 'components', 'b\n');
+    await fs.mkdir(sibling, { recursive: true });
+    await fs.writeFile(path.join(sibling, 'x.ts'), 'kept');
+    await fs.symlink(sibling, path.join(project, 'components', 'b'));
+    await assert.rejects(removeFileInside(project, path.join(project, 'components', 'b', 'x.ts')), REFUSED);
+    assert.equal(await fs.readFile(path.join(sibling, 'x.ts'), 'utf8'), 'kept');
+  });
+
+  test('unlinks a file that is a link without touching its target; a missing root is no error', async () => {
+    const { project, outside } = await linkedOut();
+    const link = path.join(project, 'components', 'b', 'z.ts');
+    await fs.symlink(path.join(outside, 'x.ts'), link);
+    await removeFileInside(project, link);
+    await assert.rejects(fs.lstat(link));
+    assert.equal(await fs.readFile(path.join(outside, 'x.ts'), 'utf8'), 'TOPSECRET');
+    await removeFileInside(path.join(t.root, 'gone'), path.join(t.root, 'gone', 'scenes', 'x.ts'));
+  });
+});
+
+describe('listInside', () => {
+  test('lists a folder inside its root', async () => {
+    const { project } = await linkedOut();
+    assert.deepEqual(await listInside(project, path.join(project, 'components', 'b')), ['y.ts']);
+  });
+
+  test('refuses a folder that is a link, out of its root or to another folder inside it', async () => {
+    const out = await linkedOut();
+    await assert.rejects(listInside(out.project, out.link), REFUSED);
+    await fs.rm(out.project, { recursive: true });
+    const inward = await linkedInward();
+    await assert.rejects(listInside(inward.project, inward.link), REFUSED);
+  });
+
+  test('refuses a folder named outside its root', async () => {
+    const { project } = await linkedOut();
+    await assert.rejects(listInside(project, t.root), /outside/);
+  });
+
+  test('lists names with newlines, a leading dash and dotfiles as fs.readdir does, and an empty folder as empty', async () => {
+    const project = path.join(t.root, 'p');
+    const dir = path.join(project, 'assets');
+    await fs.mkdir(path.join(dir, 'sub\n'), { recursive: true });
+    await fs.mkdir(path.join(project, 'empty'));
+    for (const name of ['-n', '.hidden', 'a\nb', 'c d', 'e\n']) await fs.writeFile(path.join(dir, name), '');
+    assert.deepEqual((await listInside(project, dir)).sort(), (await fs.readdir(dir)).sort());
+    assert.deepEqual(await listInside(project, path.join(project, 'empty')), []);
+  });
+});
+
+test('writes, reads, lists and removes through a root reached by a link', async () => {
+  const project = path.join(t.root, 'p');
+  await fs.mkdir(path.join(project, 'scenes'), { recursive: true });
+  const root = path.join(t.root, 'via');
+  await fs.symlink(project, root);
+  const file = path.join(root, 'scenes', 'x.ts');
+  await writeFileInside(root, file, 'written');
+  assert.equal(await readFileNoFollow(root, file, 'utf8'), 'written');
+  assert.deepEqual(await listInside(root, path.join(root, 'scenes')), ['x.ts']);
+  await removeFileInside(root, file);
+  assert.deepEqual(await fs.readdir(path.join(project, 'scenes')), []);
+});
+
+describe('removeTreeInside', () => {
+  test('removes a tree, unlinks the links in it without following them, and takes a missing folder as done', async () => {
+    const { project, outside } = await linkedOut();
+    await removeTreeInside(project);
+    await assert.rejects(fs.access(project));
+    assert.equal(await fs.readFile(path.join(outside, 'x.ts'), 'utf8'), 'TOPSECRET');
+    await removeTreeInside(project);
+  });
 });

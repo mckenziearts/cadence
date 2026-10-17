@@ -916,8 +916,11 @@ export interface AgentStatus {
   label: string;
   version?: string;
   detail?: string;
-  /** Why it is not ok, so the Profile can offer the right install or login help. */
-  reason?: 'missing' | 'logged-out' | 'error';
+  /**
+   * Why it is not ok, so the Profile can offer the right install or login help. `unconfined`: the installed CLI does not
+   * apply the permission profile that keeps a turn in its folders, so Cadence refuses its turns.
+   */
+  reason?: 'missing' | 'logged-out' | 'error' | 'unconfined';
 }
 
 /**
@@ -968,7 +971,7 @@ export interface AppState {
   templates: { scenes: SceneTemplateMeta[]; projects: ProjectTemplateMeta[] };
   settings: Settings;
   agent: AgentStatus;
-  /** Origin of the frame server, e.g. http://127.0.0.1:5311 (the editor loads frames from there). */
+  /** Base of the frame origins, e.g. http://localhost:5311: frameOriginOf() gives a project's or a brand's. */
   frameOrigin: string;
   models: ModelSpec[];
   /** Brand builds of this run, newest first. */
@@ -998,4 +1001,6 @@ export type ServerEvent =
   | { type: 'music'; projectId: string; status: 'analyzing' | 'ready' | 'error'; error?: string }
   | { type: 'voice-over'; projectId: string; status: 'speaking' | 'ready' | 'error'; error?: string }
   | { type: 'versions'; projectId: string }
-  | { type: 'assets'; projectId: string };
+  | { type: 'assets'; projectId: string }
+  /** The agent asked to capture a host the person has not approved for the project; `local`: see isLocalHost(). */
+  | { type: 'capture-host'; projectId: string; host: string; local: boolean };

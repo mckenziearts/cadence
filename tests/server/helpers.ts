@@ -3,8 +3,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { EventEmitter } from 'node:events';
+import http from 'node:http';
+import net from 'node:net';
+import type { TestContext } from 'node:test';
 import { loadConfig } from '../../server/config';
+import { cssCodeOffenders } from '../../server/frames/vite';
 import type { CadenceConfig, Network } from '../../server/contracts';
+import { type FrameKind, frameOriginOf } from '../../src/shared/frameOrigin';
 import type { NetworkId } from '../../src/shared/types';
 
 export const BRAND_JSON = {
@@ -88,6 +93,30 @@ export async function makeRoot(): Promise<TestRoot> {
   await fs.mkdir(path.join(root, 'projects'));
   const config = loadConfig({ root, editorPort: 5299, framePort: 5300 });
   return { root, config, cleanup: () => fs.rm(root, { recursive: true, force: true }) };
+}
+
+/**
+ * A GET on a project's or brand's frame origin under `base` (`CadenceConfig.frameOrigin`), sent to 127.0.0.1 with that
+ * Host: fetch ignores a Host header, and not every system resolves `*.localhost`.
+ */
+export async function frameGet(
+  base: string,
+  site: { kind: FrameKind; id: string },
+  pathname: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
+  const { host } = new URL(await frameOriginOf(base, site.kind, site.id));
+  return new Promise((resolve, reject) => {
+    const options = { host: '127.0.0.1', port: new URL(base).port, path: pathname, headers: { host, ...headers } };
+    http
+      .get(options, (res) => {
+        let body = '';
+        res
+          .on('data', (chunk) => (body += chunk))
+          .on('end', () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers }));
+      })
+      .on('error', reject);
+  });
 }
 
 /** Resolves with the event's arguments, rejects after `ms`. */
@@ -247,4 +276,33 @@ export const padded = (data: Buffer) => Buffer.concat([data, Buffer.alloc((512 -
 export function fileEntry(name: string, content = '', type = '0'): Buffer {
   const data = Buffer.from(content);
   return Buffer.concat([rawHeader({ name, type, size: data.length }), padded(data)]);
+}
+
+/** A socket bound to `port` on `host`, the way another local process would hold it. */
+export function occupy(port: number, host: string): Promise<net.Server> {
+  return new Promise((resolve, reject) => {
+    const blocker = net.createServer();
+    blocker.once('error', reject).listen(port, host, () => resolve(blocker));
+  });
+}
+
+/** Fails the next `times` listens on `host` with `code`, as the OS would; every other listen goes through. */
+export function failListen(ctx: TestContext, host: string, code: string, times = Infinity) {
+  const listen = net.Server.prototype.listen;
+  let left = times;
+  return ctx.mock.method(net.Server.prototype, 'listen', function (this: net.Server, ...args: unknown[]) {
+    if (args[1] !== host || left-- <= 0) return listen.apply(this, args as Parameters<typeof listen>);
+    process.nextTick(() => this.emit('error', Object.assign(new Error(`listen ${code} ${host}:${String(args[0])}`), { code })));
+    return this;
+  });
+}
+
+/** Throws what an archive import would refuse under `managedDirs` (cssCodeOffenders). */
+export async function assertNoCssCodeExec(managedDirs: string[], brandsDir: string): Promise<void> {
+  const offenders = await cssCodeOffenders(managedDirs, brandsDir);
+  if (offenders.length) {
+    throw new Error(
+      `CSS @plugin/@config runs code at build time and is not allowed here, nor node_modules or package.json, through which an @import reaches unchecked files:\n${offenders.join('\n')}`,
+    );
+  }
 }

@@ -7,7 +7,7 @@
 <p align="center">A local, prompt-driven motion design studio for marketing videos, for one brand or several.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.12-5FA04E?logo=nodedotjs&logoColor=white" alt="Node.js 22.12 or later">
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.15-5FA04E?logo=nodedotjs&logoColor=white" alt="Node.js 22.15 or later">
   <img src="https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white" alt="TypeScript 7">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
   <img src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white" alt="Vite 8">
@@ -38,7 +38,7 @@ their own Claude account.
 
 Required:
 
-- Node.js 22.12 or later.
+- Node.js 22.15 or later.
 - Git, to clone Cadence and to build a brand from a repository.
 - ffmpeg with libx264 and aac, for the MP4 export and the music analysis.
 - [Claude Code](https://code.claude.com), signed in to your Claude account: Cadence uses your subscription, there is no
@@ -82,6 +82,10 @@ For `gh` and `glab`: `sudo apt install gh glab` on Ubuntu 24.04, otherwise their
 `gh auth login` and `glab auth login`. On another distribution, install the same tools with its package manager:
 `npm run doctor` tells you what is missing.
 
+Chromium runs scene code inside its own sandbox, which needs unprivileged user namespaces. Ubuntu 23.10 and later
+restrict them: allow them with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (until the next reboot;
+put `kernel.apparmor_restrict_unprivileged_userns=0` in `/etc/sysctl.d/60-userns.conf` to keep it).
+
 ## Installation
 
 ```bash
@@ -97,7 +101,7 @@ On Linux, run `npm run setup -- --with-deps` instead: it also installs the syste
 on Debian and Ubuntu).
 
 Always install with `npm ci --ignore-scripts`, never `npm install`: a compromised package can run code at install
-time. The repository's `.npmrc` blocks those scripts too, and refuses a Node.js older than 22.12.
+time. The repository's `.npmrc` blocks those scripts too, and refuses a Node.js older than 22.15.
 
 Default ports: 5310 for the editor, 5311 for frames. To change them: `npm start -- --port 5410 --frame-port 5411`.
 
@@ -429,17 +433,20 @@ the scene contract.
 
 ## Security
 
-- **Local access only.** Cadence listens on 127.0.0.1 only. The API refuses other hosts and requests from other sites,
-  thanks to a token unique to each start.
+- **Local access only.** Cadence listens on the loopback only (127.0.0.1 and ::1). The API refuses other hosts and requests from other sites,
+  thanks to a token unique to each start. An app that embeds Cadence can also require a secret on every request, which
+  a browser cannot send.
 - **Isolated scene code.** Scenes run on another origin, with no access to the API. Their security policy forbids any
-  network call, and render pages also block every way out (workers, WebRTC, windows). Reference captures refuse
-  reserved addresses and Cadence itself.
+  network call, and render pages also block every way out (workers, WebRTC, windows). Reference captures fetch every
+  request themselves: the agent's open only the sites you approved for the project, yours your local sites too, and none
+  reaches Cadence itself.
 - **Restricted agent.** Claude has no shell and no web access. In a scene chat, it can only edit that scene's file. Its
   MCP tools go through a token valid for a single exchange.
 - **Network accounts.** App keys and connections stay in `.cadence/accounts.json`, readable by your user account only:
   never sent to the browser, out of Claude Code's reach. The return from a network only accepts a single-use state,
   valid 10 minutes, that the editor asked for. The ElevenLabs key gets the same treatment in `.cadence/elevenlabs.json`.
-  Codex's sandbox limits what it writes, not what it reads: with Codex as the assistant, both files are within its reach.
+  Codex turns run in a sandbox that reads only their own folders and denies both files; a Codex that cannot be confined
+  (older than 0.161.0) stays disabled.
 
 Never expose it on a network.
 
@@ -449,6 +456,9 @@ Never expose it on a network.
 - **"Claude Code is not logged in"**: run `claude` in a terminal, then `/login`.
 - **A scene shows a red error**: click "Ask Claude to fix it", or restore the previous version.
 - **Port already in use**: `npm start -- --port <p> --frame-port <p+1>`.
+- **"Chromium sandboxing failed" on Linux**: allow user namespaces (see Linux under Requirements). Only where that is
+  impossible, in a container for instance, start Cadence with `CADENCE_CHROMIUM_SANDBOX=0`: Chromium then runs brand and
+  scene code without its sandbox, and `npm run doctor` warns about it.
 - **After an update, the Profile shows no networks, or "gh is not responding"**: Cadence still runs the old code.
   Restart it (Ctrl+C, then `npm start`) and reload the page.
 - **YouTube keeps the video private**: the Google project has not passed the YouTube audit yet.

@@ -112,7 +112,7 @@ export function ElevenLabsVoiceSelect(props: {
             size="sm"
             label={texts.preview(current.name)}
             icon={<Play className="size-3.5" />}
-            onClick={() => listen(current.previewUrl!)}
+            onClick={() => listen(api.elevenLabsPreviewUrl(current.id))}
           />
         )}
       </div>

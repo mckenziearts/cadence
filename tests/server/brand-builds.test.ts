@@ -320,7 +320,7 @@ const done = (text: string, extra: Partial<Extract<AgentEvent, { type: 'done' }>
   ...extra,
 });
 
-test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, then lists the brand', async () => {
+test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, then lists the brand (read scope: Claude Code only)', async () => {
   const fx = await builder(async function* (turn) {
     const repo = turn.addDirs[0]!;
     await assert.rejects(fs.lstat(path.join(repo, 'public', 'hosts.svg')), 'symbolic links are gone');
@@ -358,6 +358,18 @@ test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, 
   assert.match(turn.prompt, new RegExp(`à partir de la source acme/site, copiée dans ${turn.addDirs[0]}\\. `));
   const writes = turn.allow.filter((rule) => /^(Write|Edit)\(/.test(rule));
   assert.deepEqual(writes, [`Edit(/${dir}/**)`, `Write(/${dir}/**)`]);
+  const [repo] = turn.addDirs;
+  const shared = path.join(ROOT, 'src', 'shared');
+  const reads = turn.allow.filter((rule) => rule.startsWith('Read('));
+  assert.deepEqual(reads, [`Read(/${repo}/**)`, `Read(/${dir}/**)`, `Read(/${shared}/**)`]);
+  assert.deepEqual(turn.addDirs, [repo, dir, shared]);
+  const others = (await fs.readdir(t.config.brandsDir)).filter((id) => id !== 'acme-studio');
+  assert.ok(others.includes('cadence'));
+  for (const other of [t.config.brandsDir, ...others.map((id) => fx.brands.dir(id))]) {
+    assert.ok(!reads.some((rule) => rule === `Read(/${other}/**)`), `${other} is not readable`);
+    assert.ok(!turn.addDirs.includes(other), `${other} is not added`);
+  }
+  assert.doesNotMatch(turn.systemPrompt, /other kits|brands\/cadence/, 'the guide points at the starter in the brand folder');
   assert.deepEqual(turn.deny, [`Read(/${t.config.stateDir}/accounts.json)`, `Read(/${t.config.stateDir}/elevenlabs.json)`]);
   assert.deepEqual(fx.scopes, [{ kind: 'brand', brandId: 'acme-studio', repoDir: turn.addDirs[0] }]);
   assert.equal(fx.tokens.resolve(/Bearer (\S+)/.exec(JSON.stringify(turn.mcpServers))![1]), null, 'the token is revoked');

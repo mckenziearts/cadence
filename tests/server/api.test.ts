@@ -15,6 +15,7 @@ import { Publisher } from '../../server/accounts/publish';
 import { createApi } from '../../server/api';
 import { ProjectArchiver } from '../../server/archive/projects';
 import { readTar } from '../../server/archive/tar';
+import { LOCAL } from '../../server/capture/policy';
 import type {
   BrandBuildService,
   BrandSource,
@@ -34,6 +35,7 @@ import { setLanguage } from '../../server/i18n';
 import { FileSettingsStore } from '../../server/settings';
 import { FileAssetStore } from '../../server/store/assets';
 import { FileBrandStore } from '../../server/store/brands';
+import { FileCaptureHosts } from '../../server/store/captureHosts';
 import { FileProjectStore } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import { FileVersionStore } from '../../server/store/versions';
@@ -154,7 +156,7 @@ beforeEach(async () => {
   const capture = {
     frames: async () => [],
     thumbnail: async (id: string, sceneId: string, opts: unknown) => (record('thumbnail', { id, sceneId, opts }), JPEG),
-    screenshotUrl: async () => PNG,
+    screenshotUrl: async (url: string, opts: unknown) => (record('screenshotUrl', { url, opts }), PNG),
     kitSheet: async () => ({ image: JPEG, problems: [], loaded: true }),
     contactSheet: async () => JPEG,
     close: async () => undefined,
@@ -199,6 +201,7 @@ beforeEach(async () => {
   const voiceOver = {
     voices: async () => ({ piper: { ok: true }, voices: [], elevenLabs: { configured: false } }),
     elevenLabs: async () => ({ voices: [], models: [] }),
+    elevenLabsPreview: async () => Buffer.alloc(0),
     setElevenLabsKey: async (key: string | null) => {
       record('elevenLabsKey', key);
     },
@@ -263,6 +266,7 @@ beforeEach(async () => {
     settings: new FileSettingsStore(t.config),
     usage,
     hub,
+    captureHosts: new FileCaptureHosts(t.config),
     brandSources: { github: brandSource, gitlab: glab },
     brandBuilds: {
       start: async (input) => (record('brandBuild', input), build),
@@ -635,6 +639,7 @@ test('voice-overs: the ElevenLabs key is checked, kept in a file only this machi
       return (asked.push(['models', key]), [{ id: 'eleven_multilingual_v2', name: 'Multilingual v2' }]);
     },
     speak: async () => undefined,
+    preview: async () => Buffer.alloc(0),
   };
   const voiceOver = new LocalVoiceOverService({
     config: t.config,
@@ -709,6 +714,78 @@ test('voice-overs: the ElevenLabs key is checked, kept in a file only this machi
   assert.deepEqual(await configured(), { configured: false });
 });
 
+test("voice-overs: a voice's sample comes through the editor origin, without the key", async () => {
+  const fetched: string[] = [];
+  const voiceOver = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: {
+      voices: async (key) => {
+        if (key === null) throw new HttpError(409, 'Aucune clé API ElevenLabs enregistrée');
+        return [
+          { id: 'voiceAlice1', name: 'Alice', category: 'premade', previewUrl: 'https://cdn.test/alice.mp3', languages: [] },
+          { id: 'voiceBob2', name: 'Bob', category: 'cloned', previewUrl: null, languages: [] },
+        ];
+      },
+      models: async () => [],
+      speak: async () => undefined,
+      preview: async (url) => (fetched.push(url), Buffer.from('ID3 alice')),
+    },
+  });
+  app = createApi({ ...deps, voiceOver });
+
+  assert.equal((await json('GET', '/api/voices/elevenlabs/voiceAlice1/preview')).status, 409);
+  assert.equal((await json('PUT', '/api/voices/elevenlabs/key', { key: 'sk_good' })).status, 200);
+  const res = await call('GET', '/api/voices/elevenlabs/voiceAlice1/preview');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'audio/mpeg');
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), Buffer.from('ID3 alice'));
+  assert.deepEqual(fetched, ['https://cdn.test/alice.mp3']);
+  for (const voice of ['voiceUnknown3', 'voiceBob2']) {
+    const missing = await json('GET', `/api/voices/elevenlabs/${voice}/preview`);
+    assert.equal(missing.status, 404, voice);
+    assert.match(missing.body.error, /extrait/);
+  }
+  assert.equal(fetched.length, 1);
+
+  let listed = 0;
+  const withoutPreview = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: { voices: async () => (listed++, []), models: async () => [], speak: async () => undefined },
+  });
+  app = createApi({ ...deps, voiceOver: withoutPreview });
+  assert.equal((await json('GET', '/api/voices/elevenlabs/voiceAlice1/preview')).status, 404, 'a host client without samples');
+  assert.equal(listed, 0);
+
+  const revoked = new LocalVoiceOverService({
+    config: t.config,
+    store,
+    brands: deps.brands,
+    hub,
+    engine: { check: async () => ({ ok: true }), speak: async () => undefined },
+    elevenLabs: {
+      voices: async () => {
+        throw new HttpError(401, 'Clé révoquée');
+      },
+      models: async () => [],
+      speak: async () => undefined,
+      preview: async (url) => (fetched.push(url), Buffer.alloc(0)),
+    },
+  });
+  app = createApi({ ...deps, voiceOver: revoked });
+  const refusedKey = await json('GET', '/api/voices/elevenlabs/voiceAlice1/preview');
+  assert.equal(refusedKey.status, 401, 'a revoked key');
+  assert.equal(refusedKey.body.error, 'Clé révoquée');
+  assert.equal(fetched.length, 1, 'no sample fetched');
+});
+
 test('voice-overs: a removal sent during a slow ElevenLabs check is not undone by the key it was checking', async () => {
   let checking!: () => void;
   let answer!: () => void;
@@ -724,6 +801,7 @@ test('voice-overs: a removal sent during a slow ElevenLabs check is not undone b
       voices: async () => (checking(), await answered, []),
       models: async () => [],
       speak: async () => undefined,
+      preview: async () => Buffer.alloc(0),
     },
   });
   app = createApi({ ...deps, voiceOver });
@@ -758,6 +836,7 @@ test("voice-overs: with a host app's secret store, the key is checked before it 
           await fs.writeFile(files[i], writeWav({ sampleRate: 24000, samples: new Int16Array(24000) }));
         }
       },
+      preview: async () => Buffer.alloc(0),
     },
     secrets: {
       get: async (name) => saved.get(name) ?? null,
@@ -823,7 +902,13 @@ test("voice-overs: with a host app's ElevenLabs client, the key routes answer 40
     brands: deps.brands,
     hub,
     engine: { check: async () => ({ ok: true }), speak: async () => undefined },
-    elevenLabs: { hosted: true, voices: async () => [], models: async () => [], speak: async () => undefined },
+    elevenLabs: {
+      hosted: true,
+      voices: async () => [],
+      models: async () => [],
+      speak: async () => undefined,
+      preview: async () => Buffer.alloc(0),
+    },
   });
   app = createApi({ ...deps, voiceOver });
   const voice = { engine: 'elevenlabs', voice: 'JBFqnCBsd6RMkjVDRZzb', model: 'eleven_multilingual_v2' };
@@ -1323,6 +1408,7 @@ test('assets and references', async () => {
 
   res = await json('POST', '/api/projects/demo/refs', { url: 'http://localhost:5173/', device: 'mobile' });
   assert.equal(res.body.path, 'refs/localhost-5173-mobile.png');
+  assert.equal((calls.screenshotUrl.at(-1) as { opts: { policy: unknown } }).opts.policy, LOCAL, "the person's capture");
   assert.equal((await json('POST', '/api/projects/demo/refs', { url: 'file:///etc/hosts', device: 'desktop' })).status, 400);
   assert.deepEqual(
     (await json('GET', '/api/projects/demo/assets')).body.map((a: { path: string }) => a.path),
@@ -1330,6 +1416,44 @@ test('assets and references', async () => {
   );
   assert.deepEqual((await json('DELETE', '/api/projects/demo/assets?path=capture-ecran.png')).body, { ok: true });
   assert.equal((await json('GET', '/api/projects/demo/assets')).body.length, 1);
+});
+
+test("capture hosts: the person approves hosts for one project's agent captures; deleting the project drops them", async () => {
+  const route = '/api/projects/demo/capture-hosts';
+  assert.deepEqual(await json('GET', route), { status: 200, body: { hosts: [] } });
+  assert.deepEqual((await json('POST', route, { host: 'example.com' })).body, { hosts: ['example.com'] });
+  assert.deepEqual((await json('POST', route, { host: 'localhost:5173' })).body, { hosts: ['example.com', 'localhost:5173'] });
+  assert.deepEqual((await json('POST', route, { host: 'example.com' })).body, { hosts: ['example.com', 'localhost:5173'] });
+  assert.deepEqual(await json('POST', route, { host: 'Example.com' }), {
+    status: 400,
+    body: { error: 'Hôte invalide : Example.com' },
+  });
+  assert.equal((await json('POST', route, {})).status, 400);
+  assert.equal((await json('POST', route, { host: `${'a'.repeat(250)}.test:8080` })).status, 400);
+  assert.deepEqual(await json('GET', '/api/projects/absente/capture-hosts'), {
+    status: 404,
+    body: { error: 'Projet introuvable : absente' },
+  });
+  assert.equal((await json('POST', '/api/projects/absente/capture-hosts', { host: 'example.com' })).status, 404);
+  assert.deepEqual(await deps.captureHosts.list('absente'), []);
+  assert.deepEqual((await json('GET', route)).body, { hosts: ['example.com', 'localhost:5173'] });
+  assert.deepEqual((await json('DELETE', route, { host: 'example.com' })).body, { hosts: ['localhost:5173'] });
+  assert.deepEqual(await json('DELETE', route, { host: 'unknown.test' }), { status: 200, body: { hosts: ['localhost:5173'] } });
+  assert.equal((await json('DELETE', route, {})).status, 400);
+  assert.equal((await json('DELETE', '/api/projects/absente/capture-hosts', { host: 'example.com' })).status, 404);
+  assert.deepEqual((await json('POST', route, { host: 'example.com' })).body, { hosts: ['localhost:5173', 'example.com'] });
+  assert.equal(await pathExists(path.join(t.config.stateDir, 'capture-hosts.json')), true, 'outside the project folder');
+
+  assert.equal((await json('DELETE', '/api/projects/demo')).status, 409, 'a render is running');
+  assert.deepEqual(
+    (await json('GET', route)).body,
+    { hosts: ['localhost:5173', 'example.com'] },
+    'a refused deletion keeps them',
+  );
+  await json('DELETE', '/api/renders/job-1');
+  assert.deepEqual((await json('DELETE', '/api/projects/demo')).body, { ok: true });
+  await store.create({ name: 'Démo', brand: null, formats: ['16:9'], fps: 60 });
+  assert.deepEqual((await json('GET', route)).body, { hosts: [] }, 'a new project under the same id starts with none');
 });
 
 test('brands, logos, settings', async () => {

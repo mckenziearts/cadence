@@ -32,8 +32,10 @@ import {
 import type {
   AgentProvider,
   BrandSource,
+  BrowserServer,
   HostBrandSource,
   CadenceConfig,
+  ChromiumOptions,
   ElevenLabsApi,
   HostApi,
   Network,
@@ -42,7 +44,7 @@ import type {
 } from './contracts';
 import { builtEditor, devEditor } from './editor';
 import { createFrameHandler } from './frames/frameServer';
-import { createVite, diagnoseFile, invalidateDirs } from './frames/vite';
+import { createVite, diagnoseFile, frameReach, invalidateDirs } from './frames/vite';
 import { createEditorHandler } from './http';
 import { isLanguage, m, setLanguage } from './i18n';
 import { SseHub } from './hub';
@@ -56,6 +58,7 @@ import { LocalMusicService } from './music/service';
 import { FileSettingsStore } from './settings';
 import { FileAssetStore } from './store/assets';
 import { FileBrandStore } from './store/brands';
+import { FileCaptureHosts } from './store/captureHosts';
 import { FileProjectStore } from './store/projects';
 import { FileTemplateStore } from './store/templates';
 import { FileVersionStore } from './store/versions';
@@ -88,6 +91,11 @@ export type StartOptions = Partial<CadenceConfig> & {
   api?: HostApi;
   /** Editor sections a host app hides; a missing key stays on. UI only, see ARCHITECTURE.md "Embedding Cadence". */
   features?: Partial<Features>;
+  /**
+   * A host app's way to start Chromium, in a process of its own, at every launch (captures and their relaunches, each
+   * render): it runs `serveChromium(options)` (server/capture/serve-chromium.mjs) there. Without it, the core forks one.
+   */
+  browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
 };
 
 export interface Services {
@@ -139,6 +147,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     secrets,
     api: hostApi,
     features,
+    browserServer,
     ...overrides
   } = options;
   if (dev && editorRoot) throw new Error(m().core.editorRootDev);
@@ -148,6 +157,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     if (!/^[a-z][a-z0-9-]*$/.test(key)) throw new Error(m().core.hostBrandSources.name(key));
     if (key === 'github' || key === 'gitlab') throw new Error(m().core.hostBrandSources.taken(key));
   }
+  if (overrides.requestSecret !== undefined && overrides.requestSecret.length < 32) throw new Error(m().core.requestSecret);
   // Vite reads NODE_ENV, and sets it when unset, once per process: set before any Vite call, it decides the React build
   // of the editor bundle and of the frames, whatever the order of the two.
   process.env.NODE_ENV = dev ? 'development' : 'production';
@@ -157,14 +167,14 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
   // Listen first (ports may be 0), then build everything that needs the real origins.
   let editorHandler: Handler = unavailable;
   let frameHandler: Handler = unavailable;
-  const editorServer = http.createServer((req, res) => editorHandler(req, res));
-  const frameServer = http.createServer((req, res) => frameHandler(req, res));
+  const editorServers = loopbackServers((req, res) => editorHandler(req, res));
+  const frameServers = loopbackServers((req, res) => frameHandler(req, res));
   let vite: ViteDevServer | null = null;
   let store: FileProjectStore | null = null;
   let capture: PlaywrightCapture | null = null;
   try {
-    const editorPort = await listen(editorServer, initial.editorPort, initial.host);
-    const framePort = await listen(frameServer, initial.framePort, initial.host);
+    const editorPort = await listenLoopback(editorServers, initial.editorPort, initial.host);
+    const framePort = await listenLoopback(frameServers, initial.framePort, initial.host);
     const config = loadConfig({ ...overrides, editorPort, framePort });
 
     const hub = new SseHub();
@@ -172,6 +182,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const templates = new FileTemplateStore(config);
     store = new FileProjectStore(config, { templates, brands });
     const settings = new FileSettingsStore(config);
+    const captureHosts = new FileCaptureHosts(config);
     const usage = new FileUsageLog(config);
     // CADENCE_LANGUAGE (tests, the CLI) wins; else the setting; else whatever the process already speaks.
     const forced = process.env.CADENCE_LANGUAGE;
@@ -180,7 +191,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const built = dev ? null : await builtEditor(editorRoot ?? config.root);
     vite = await createVite({ config });
     const editor = built ?? devEditor(vite, config.root);
-    capture = new PlaywrightCapture({ config, store });
+    capture = new PlaywrightCapture({ config, store, browserServer });
     const seams = new PixelSeamService({ store, capture, hub });
     const music = new LocalMusicService({ config, store, hub });
     const engine = speech ?? new PiperEngine(config.piperPath);
@@ -193,7 +204,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       elevenLabs: elevenLabs ?? new ElevenLabsClient(),
       secrets,
     });
-    const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub });
+    const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub, browserServer });
     const versions = new FileVersionStore(store, brands);
     const assets = new FileAssetStore(store, capture);
     const tokens = new McpTokens(config);
@@ -232,7 +243,8 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     });
 
     const viteServer = vite;
-    const diagnose = (file: string) => diagnoseFile(viteServer, file);
+    // What a scene or a brand imports is diagnosed only where its frame could load it: an error's code frame would show it.
+    const diagnose = async (file: string) => diagnoseFile(viteServer, file, await frameReach(viteServer, config, file));
     const brandSources = { github: new GitHubSource(), gitlab: new GitLabSource(), ...customSources };
     const brandBuilds = new BrandBuilder({
       config,
@@ -287,6 +299,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       settings,
       usage,
       hub,
+      captureHosts,
       brandSources,
       brandBuilds,
       accounts,
@@ -313,6 +326,8 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       voiceOver,
       assets,
       tokens,
+      captureHosts,
+      hub,
       diagnose,
     });
     const editorToken = randomToken();
@@ -352,11 +367,11 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
         // Claude processes would otherwise outlive the server (and keep writing into projects).
         await chats.stopAll().catch((e: Error) => console.warn(m().api.server.stopChats(e.message)));
         await brandBuilds.close().catch((e: Error) => console.warn(m().api.server.stopBrandBuilds(e.message)));
-        await shutdown(editorServer, frameServer, services.store, services.capture, services.vite);
+        await shutdown([...editorServers, ...frameServers], services.store, services.capture, services.vite);
       })());
     return { config, services, editorToken, close };
   } catch (e) {
-    await shutdown(editorServer, frameServer, store, capture, vite);
+    await shutdown([...editorServers, ...frameServers], store, capture, vite);
     throw e;
   }
 }
@@ -366,27 +381,64 @@ function unavailable(_req: http.IncomingMessage, res: http.ServerResponse): void
   res.end(m().api.server.starting);
 }
 
+type LoopbackServers = [ipv4: http.Server, ipv6: http.Server];
+
+const IPV6_LOOPBACK = '::1';
+// The host has no IPv6: nobody can take ::1 either, IPv4 alone is enough.
+const NO_IPV6 = new Set(['EADDRNOTAVAIL', 'EAFNOSUPPORT']);
+const LISTEN_TRIES = 5;
+
+function loopbackServers(handler: http.RequestListener): LoopbackServers {
+  return [http.createServer(handler), http.createServer(handler)];
+}
+
+/**
+ * Listens on 127.0.0.1 and ::1, same port: Chromium tries `localhost` on ::1 as well, where another local user could
+ * otherwise answer in Cadence's place. Port 0: ::1 takes the port IPv4 got; when it is taken there, both start again.
+ */
+async function listenLoopback([ipv4, ipv6]: LoopbackServers, port: number, host: string): Promise<number> {
+  for (let tries = 1; ; tries++) {
+    const given = await listen(ipv4, port, host).catch((e: NodeJS.ErrnoException) => {
+      throw inUse(e, `${host}:${port}`);
+    });
+    try {
+      await listen(ipv6, given, IPV6_LOOPBACK);
+      return given;
+    } catch (e) {
+      const error = e as NodeJS.ErrnoException;
+      if (error.code && NO_IPV6.has(error.code)) return given;
+      await new Promise((resolve) => {
+        ipv4.close(resolve);
+        ipv4.closeAllConnections();
+      });
+      if (error.code !== 'EADDRINUSE' || port !== 0 || tries === LISTEN_TRIES) throw inUse(error, `[${IPV6_LOOPBACK}]:${given}`);
+    }
+  }
+}
+
 function listen(server: http.Server, port: number, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    const onError = (e: NodeJS.ErrnoException) => reject(e.code === 'EADDRINUSE' ? new Error(m().api.server.portInUse(port)) : e);
-    server.once('error', onError);
+    server.once('error', reject);
     server.listen(port, host, () => {
-      server.off('error', onError);
+      server.off('error', reject);
       resolve((server.address() as AddressInfo).port);
     });
   });
 }
 
+function inUse(e: NodeJS.ErrnoException, address: string): Error {
+  return e.code === 'EADDRINUSE' ? new Error(m().api.server.portInUse(address)) : e;
+}
+
 async function shutdown(
-  editorServer: http.Server,
-  frameServer: http.Server,
+  servers: http.Server[],
   store: FileProjectStore | null,
   capture: PlaywrightCapture | null,
   vite: ViteDevServer | null,
 ): Promise<void> {
   store?.close();
   await Promise.all(
-    [editorServer, frameServer].map(
+    servers.map(
       (server) =>
         new Promise<void>((resolve) => {
           if (!server.listening) return resolve();

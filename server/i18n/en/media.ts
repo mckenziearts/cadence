@@ -8,6 +8,7 @@ export default {
   ffmpegStart: (bin: string, error: string) => `Could not start ffmpeg (${bin}): ${error}`,
   capture: {
     chromium: (error: string) => `Could not start Chromium (run "npm run setup" once): ${error}`,
+    chromiumSandbox: (fix: string) => `Chromium could not start its sandbox. ${fix}`,
     frameNotStarted: (problems: string[]) => `The frame page did not start${problems.length ? `: ${problems.join('; ')}` : ''}`,
     frameLoadTimeout: 'The frame page took too long to load',
     seekTimeout: (time: string, seconds: number) => `Rendering t = ${time} took over ${seconds} s (infinite loop?)`,
@@ -21,9 +22,17 @@ export default {
     httpOnly: 'Only http(s) URLs can be captured',
     openFailed: (url: string, error: string) => `Could not open ${url}: ${error}`,
     hostNotFound: (host: string) => `Host not found: ${host}`,
-    reserved: (host: string, address: string | null) =>
-      `Reserved address, capture refused: ${host}${address ? ` (${address})` : ''}`,
+    reserved: (host: string) => `Private or reserved address, capture refused: ${host}`,
+    port: (host: string) => `Port not allowed, capture refused: ${host}`,
+    credentials: 'A URL with a user name or password cannot be captured',
+    redirects: 'too many redirects',
+    badRedirect: 'redirect to an invalid URL',
+    tooLarge: 'the page is too large to capture',
+    slow: 'the site takes too long to answer',
+    unreachable: 'connection failed',
     itself: 'Cadence cannot capture itself',
+    notApproved: (host: string) =>
+      `The person has not approved ${host} for this project's captures: they were just asked. Try again in a later turn, once they have answered.`,
   },
   render: {
     notFound: 'Render not found',
@@ -86,6 +95,7 @@ export default {
     elevenLabsHttpStatus: (status: number) => `error ${status}`,
     elevenLabsNoKey: 'No ElevenLabs API key saved: add yours in the Profile',
     elevenLabsKeyUnreadable: (file: string) => `Could not read ${file}: save your ElevenLabs key again in the Profile`,
+    elevenLabsNoPreview: 'This voice has no sample',
     elevenLabsNoSound: 'ElevenLabs answered without a readable sound: try again',
     elevenLabsDown: 'ElevenLabs does not answer: check the Internet connection, then try again',
     elevenLabsKeyNotSaved: 'ElevenLabs key not saved: try again',
@@ -201,7 +211,7 @@ export default {
     readyBusy: (origin: string) =>
       `Cadence may already be running: open ${origin}. Otherwise run \`npm start -- --port 5320 --frame-port 5321\``,
     nodeOld: (version: string) => `Node.js ${version} is too old`,
-    nodeFix: 'Install Node.js 22.12 or later',
+    nodeFix: 'Install Node.js 22.15 or later',
     ffmpegMissing: (bin: string) => `ffmpeg not found (${bin})`,
     ffmpegFix: 'macOS: `brew install ffmpeg`; Debian/Ubuntu: `sudo apt install ffmpeg`; or set FFMPEG_PATH',
     encoders: (version: string, missing: string[]) =>
@@ -212,6 +222,9 @@ export default {
     chromiumMissing: 'Chromium (Playwright) is not installed',
     chromiumFailed: (error: string) => `Chromium does not start: ${error}`,
     chromiumLibraries: 'Install its system libraries: `npm run setup -- --with-deps`',
+    chromiumNoSandbox: (version: string) => `Chromium ${version} (Playwright) without its sandbox (CADENCE_CHROMIUM_SANDBOX=0)`,
+    chromiumSandboxFix:
+      'Linux: allow user namespaces (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`); CADENCE_CHROMIUM_SANDBOX=0 only in a container (README, Troubleshooting)',
     claudeMissing: (bin: string) => `Claude Code not found (${bin})`,
     claudeInstall: 'Install Claude Code (https://code.claude.com), run `claude`, then /login, or set CLAUDE_PATH',
     claudeReady: (version: string, login: string | undefined) => `Claude Code ${version}${login ? `: ${login}` : ''}`,
@@ -221,7 +234,7 @@ export default {
     piperMissing: (bin: string) => `Piper not found (${bin}): no voice-over without it`,
     piperFix: '`pipx install piper-tts` (Python 3.9 or later), or give its path in PIPER_PATH',
     portFree: (port: number, role: string) => `Port ${port} (${role}) is free`,
-    portBusy: (port: number, role: string) => `Port ${port} (${role}) is already in use (Cadence may already be running)`,
+    portBusy: (address: string, role: string) => `${address} (${role}) is already in use (Cadence may already be running)`,
     portFix: (variable: string) =>
       `Stop the other program or pick another port (${variable}, or --port / --frame-port with \`npm start --\`)`,
   },

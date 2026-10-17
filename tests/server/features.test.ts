@@ -126,16 +126,20 @@ test('the server hands agentPicker to the chat and the API: its 409s say "Notre 
 test('without agentPicker, the built-in agents refused by their CLI say "Notre IA"', async () => {
   const { provider: _, ...builtIn } = options;
   const bin = await mkdtemp(path.join(os.tmpdir(), 'cadence-cli-'));
-  const stub = async (name: string, stderr: string) => {
+  const stub = async (name: string, script: string) => {
     const file = path.join(bin, name);
-    await writeFile(file, `#!/bin/sh\necho "${stderr}" >&2\nexit 1\n`, { mode: 0o755 });
+    await writeFile(file, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
     return file;
   };
   const server = await startServer({
     ...builtIn,
     features: { agentPicker: false },
-    claudePath: await stub('claude', 'Not logged in'),
-    codexPath: await stub('codex', '401 Unauthorized'),
+    claudePath: await stub('claude', 'echo "Not logged in" >&2; exit 1'),
+    // Codex must pass its version and confinement probe before its login is asked.
+    codexPath: await stub(
+      'codex',
+      'case "$1" in --version) echo "codex-cli 0.161.0";; sandbox) cat probe;; *) echo "401 Unauthorized" >&2; exit 1;; esac',
+    ),
   });
   const call = async (method: string, route: string, body?: object) => {
     const res = await fetch(`${server.config.editorOrigin}/api${route}`, {
@@ -174,7 +178,12 @@ test("a host app's secret store passed to startServer is where the ElevenLabs ke
   const server = await startServer({
     ...options,
     speech: { check: async () => ({ ok: true }), speak: async () => undefined },
-    elevenLabs: { voices: async () => [], models: async () => [], speak: async () => undefined },
+    elevenLabs: {
+      voices: async () => [],
+      models: async () => [],
+      speak: async () => undefined,
+      preview: async () => Buffer.alloc(0),
+    },
     secrets: { get: async (name) => (asked.push(name), 'sk_from_store'), set: async () => undefined },
   });
   try {

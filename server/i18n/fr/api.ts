@@ -31,6 +31,7 @@ export default {
     noMusic: "Ce projet n'a pas de musique",
     imageName: (name: string) => `Nom d'image invalide : ${name}`,
     gitHost: (host: string) => `Hébergeur Git inconnu : ${host}`,
+    captureHost: (host: string) => `Hôte invalide : ${host}`,
     logoVariant: (variant: string) => `Variante de logo inconnue : ${variant}`,
     defaultBrand: "La marque neutre Cadence ne se supprime pas : les nouvelles marques partent d'elle.",
     brandInUse: (projects: string[]) => {
@@ -70,6 +71,8 @@ export default {
     unreadableManifest: (version: string) => `Version ${version} illisible (manifeste manquant ou corrompu)`,
     invalidHash: (hash: string) => `Empreinte invalide dans l'historique : ${hash}`,
     missingObject: (hash: string) => `Contenu manquant dans l'historique : ${hash}`,
+    linkedFolder: (file: string) =>
+      `Restauration refusée : « ${file} » passe par un lien symbolique. Supprimez le lien, puis réessayez.`,
   },
   projects: {
     skipped: (error: string) => `[cadence] projet ignoré : ${error}`,
@@ -194,10 +197,13 @@ Ce document est relu avant chaque modification. Décrivez ici le style commun à
   },
   frames: {
     method: 'Méthode non autorisée',
+    forbidden: 'Un cadre ne lit que son propre projet ou sa marque, et les modèles',
+    notServed: (file: string) => `${file} est hors de ce projet, de sa marque et des modèles : le cadre ne le charge pas`,
   },
   server: {
     starting: 'Cadence démarre\u2026',
-    portInUse: (port: number) => `Le port ${port} est déjà utilisé : arrêtez l'autre programme ou choisissez un autre port.`,
+    portInUse: (address: string) =>
+      `L'adresse ${address} est déjà utilisée : arrêtez l'autre programme ou choisissez un autre port.`,
     stopChats: (error: string) => `[cadence] arrêt des conversations : ${error}`,
     stopBrandBuilds: (error: string) => `[cadence] arrêt des marques en construction : ${error}`,
     closeChromium: (error: string) => `[cadence] fermeture de Chromium : ${error}`,

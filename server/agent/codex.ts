@@ -1,10 +1,13 @@
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import readline from 'node:readline';
 import { AGENT_NAMES, EFFORTS, type AgentStatus, type Effort, type ModelSpec, type UsageTokens } from '../../src/shared/types';
 import type { CadenceConfig } from '../contracts';
 import { m } from '../i18n';
-import { AsyncQueue } from '../util';
+import { AsyncQueue, absolutePath, isInside } from '../util';
 import type { AgentEvent, AgentProvider, AgentTurn } from './types';
 
 const LABEL = 'Codex';
@@ -12,12 +15,39 @@ type Json = Record<string, any>;
 type DoneEvent = Extract<AgentEvent, { type: 'done' }>;
 
 const AUTH_ERROR = /not logged in|please run .*login|unauthorized|invalid api key|401/i;
+/** A resumed thread Codex no longer has (0.161.0: "thread/resume failed: no rollout found for thread id"). */
+const SESSION_LOST = /no rollout found for (?:thread|conversation) id/i;
 /** The child reads its MCP bearer from this variable (never on the command line, so it stays out of `ps`). */
 const TOKEN_ENV = 'CADENCE_MCP_TOKEN';
+/** What `codex` needs to run, log in and reach OpenAI through a proxy; nothing else of Cadence's environment reaches it. */
+const CHILD_ENV = new Set([
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'LANG',
+  'CODEX_HOME',
+  'OPENAI_API_KEY',
+  'CODEX_ACCESS_TOKEN',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'CODEX_CA_CERTIFICATE',
+]);
+const CHILD_ENV_PATTERN = /^(LC_\w+|(https?|all|no)_proxy)$/i;
+
+/** The first `codex` whose `sandbox -P` and `[permissions.<name>]` profiles the probe and the turns rely on. */
+const MIN_VERSION = [0, 161, 0];
+
+/** Whether a dotted version is at least `min`; anything else (a dev build, an empty string) is not. */
+function atLeast(version: string, min: number[]): boolean {
+  const parts = /^(\d+)\.(\d+)\.(\d+)/.exec(version)?.slice(1).map(Number);
+  if (!parts) return false;
+  const diff = parts.map((part, i) => part - min[i]).find((d) => d !== 0) ?? 0;
+  return diff >= 0;
+}
 
 /**
- * Codex's status as the Profile shows it: is the `codex` CLI installed on this computer, and is it logged in. Mirrors
- * ClaudeCodeProvider.status().
+ * Codex's status as the Profile shows it: is the `codex` CLI installed on this computer, does it apply the permission
+ * profile, and is it logged in. Mirrors ClaudeCodeProvider.status().
  */
 export async function codexStatus(config: CadenceConfig): Promise<AgentStatus> {
   const bin = config.codexPath;
@@ -29,6 +59,12 @@ export async function codexStatus(config: CadenceConfig): Promise<AgentStatus> {
   } catch (e) {
     return { ok: false, label: LABEL, reason: 'missing', detail: m().agent.codex.notFound(bin, (e as Error).message) };
   }
+  // Older CLIs lack the permission profiles the probe relies on: refused without asking their sandbox.
+  const confined = atLeast(version, MIN_VERSION) && (await appliesProfile(bin).catch((e: Error) => e));
+  if (confined instanceof Error) {
+    return { ok: false, label: LABEL, version, reason: 'error', detail: m().agent.codex.probeFailed(confined.message) };
+  }
+  if (!confined) return { ok: false, label: LABEL, version, reason: 'unconfined', detail: m().agent.codex.unconfined(LABEL) };
   // Exit 1 or "Not logged in" both mean no usable login in the home Codex reads.
   const login = await exec(bin, ['login', 'status']).catch(() => ({ code: 1, stdout: '' }));
   if (login.code !== 0 || /not logged in/i.test(login.stdout)) {
@@ -78,9 +114,128 @@ async function loadModels(config: CadenceConfig): Promise<ModelSpec[]> {
 }
 
 /**
- * `codex exec --json` arguments. The sandbox (workspace-write, no network) confines file writes to the project folder,
- * `--ignore-user-config` keeps the user's own config, skills and project docs out of the turn while their login still
- * works, and the Cadence MCP server is injected inline so no `~/.codex/config.toml` entry is needed.
+ * The turn's file access as a Codex permission profile (an inline `[permissions.cadence.filesystem]` table): read the
+ * cwd and the addDirs, write what the turn's Edit and Write rules allow, never read what its deny rules name. `:minimal`
+ * is what a shell needs to start; it also opens /tmp read-write, which `:slash_tmp` closes again. A path listed twice
+ * (a brand build's folder is its cwd, an addDir and writable) keeps its last access, since TOML rejects duplicate keys.
+ */
+export function codexFilesystem(turn: Pick<AgentTurn, 'cwd' | 'addDirs' | 'allow' | 'deny'>): string {
+  const access = new Map<string, 'read' | 'write' | 'deny'>([
+    [':minimal', 'read'],
+    [':slash_tmp', 'deny'],
+  ]);
+  for (const dir of [turn.cwd, ...turn.addDirs]) access.set(dir, 'read');
+  for (const rule of turn.allow) {
+    const match = /^(?:Edit|Write)\(\/(\/.+?)(?:\/\*\*)?\)$/.exec(rule);
+    if (match) access.set(match[1], 'write');
+  }
+  for (const rule of turn.deny) {
+    const match = /^Read\(\/(\/.+)\)$/.exec(rule);
+    if (match) access.set(match[1], 'deny');
+  }
+  return `{${[...access].map(([target, mode]) => `${JSON.stringify(target)}="${mode}"`).join(',')}}`;
+}
+
+/** A path the sandbox can match: it compares real paths. One not created yet resolves through its closest existing parent. */
+async function realPath(target: string): Promise<string> {
+  try {
+    return await fs.promises.realpath(target);
+  } catch {
+    const parent = path.dirname(target);
+    return parent === target ? target : path.join(await realPath(parent), path.basename(target));
+  }
+}
+
+/**
+ * The turn with its folders and rule paths resolved: given through a symlink, a writable root makes Codex refuse the
+ * whole profile, and a readable one blocks every read under it. A write target is resolved through its parent only: an
+ * earlier turn may have put a link there, and following it would grant writes on whatever it points to, so a link, or
+ * a parent leading out of the cwd, refuses the turn. A writable folder is created first: the sandbox then keeps the
+ * turn from replacing it with a link.
+ */
+async function realTurn(turn: AgentTurn): Promise<AgentTurn> {
+  const cwd = await realPath(turn.cwd);
+  const realRule = async (rule: string) => {
+    const match = /^(\w+)\(\/(\/.+?)(\/\*\*)?\)$/.exec(rule);
+    if (!match) return rule;
+    const [, tool, target, glob = ''] = match;
+    if (tool !== 'Edit' && tool !== 'Write') return `${tool}(/${await realPath(target)}${glob})`;
+    const real = path.join(await realPath(path.dirname(target)), path.basename(target));
+    const stat = await fs.promises.lstat(real).catch(() => null);
+    if (stat?.isSymbolicLink() || (real !== cwd && !isInside(cwd, real))) throw new Error(m().agent.codex.linkedTarget(target));
+    if (!stat && glob) await fs.promises.mkdir(real, { recursive: true });
+    return `${tool}(/${real}${glob})`;
+  };
+  return {
+    ...turn,
+    cwd,
+    addDirs: await Promise.all(turn.addDirs.map(realPath)),
+    allow: await Promise.all(turn.allow.map(realRule)),
+    deny: await Promise.all(turn.deny.map(realRule)),
+  };
+}
+
+/** The `cadence` permission profile as `-c` overrides: the turn's files (codexFilesystem) and no network. */
+function profileArgs(turn: Pick<AgentTurn, 'cwd' | 'addDirs' | 'allow' | 'deny'>): string[] {
+  return [
+    '-c',
+    'default_permissions="cadence"',
+    '-c',
+    `permissions.cadence.filesystem=${codexFilesystem(turn)}`,
+    '-c',
+    'permissions.cadence.network.enabled=false',
+  ];
+}
+
+/**
+ * Whether this `codex` applies the profile: a CLI that does not know its keys runs the turn under its default sandbox,
+ * which reads the whole disk. `codex sandbox` (its `-P` sets `default_permissions`) with the flags a turn gets, in an
+ * empty CODEX_HOME, must read a file in the profile's folder and fail on one beside it, fail to write beside it, and
+ * fail to connect to a listener of the probe's own on 127.0.0.1.
+ */
+async function appliesProfile(bin: string): Promise<boolean> {
+  const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cadence-codex-probe-')));
+  let connected = false;
+  const listener = net.createServer((socket) => {
+    connected = true;
+    socket.destroy();
+  });
+  try {
+    const [inside, outside, home] = ['inside', 'outside', 'home'].map((name) => path.join(root, name));
+    for (const dir of [inside, outside, home]) await fs.promises.mkdir(dir);
+    await fs.promises.writeFile(path.join(inside, 'probe'), 'readable-marker');
+    await fs.promises.writeFile(path.join(outside, 'probe'), 'denied-marker');
+    // `on`, not `once`: an accept error after the listen would otherwise be an uncaught 'error' event.
+    await new Promise<void>((resolve, reject) => listener.on('error', reject).listen(0, '127.0.0.1', resolve));
+    const { port } = listener.address() as net.AddressInfo;
+    const profile = profileArgs({ cwd: inside, addDirs: [], allow: [], deny: [] });
+    const env = { PATH: process.env.PATH, HOME: home, CODEX_HOME: home };
+    const sandboxed = (command: string[]) =>
+      exec(bin, ['sandbox', '-P', 'cadence', ...profile, '-C', inside, ...command], { cwd: inside, env }).catch(() => null);
+    const written = path.join(outside, 'written');
+    // The listener answers no request and closes each socket: a curl that got through has been seen before it exits.
+    const [read] = await Promise.all([
+      sandboxed(['/bin/cat', 'probe', path.join(outside, 'probe')]),
+      sandboxed(['/bin/sh', '-c', ': > "$1"', 'sh', written]),
+      sandboxed(['/usr/bin/curl', '-s', '-m', '3', `http://127.0.0.1:${port}/`]),
+    ]);
+    const wrote = await fs.promises.lstat(written).then(
+      () => true,
+      () => false,
+    );
+    return !!read?.stdout.includes('readable-marker') && !read.stdout.includes('denied-marker') && !wrote && !connected;
+  } finally {
+    listener.close();
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+}
+
+/**
+ * `codex exec --json` arguments. The `cadence` permission profile (codexFilesystem, no network) confines the shell and
+ * apply_patch to the turn's folders, `--ignore-user-config` keeps the user's own config.toml out of the turn while their
+ * login still works, `--ignore-rules` keeps their execpolicy prefixes from approving commands, and the Cadence MCP
+ * server is injected inline so no `~/.codex/config.toml` entry is needed. `exec` has no `-P` and `exec resume` no `-s`,
+ * so every setting goes through `-c`.
  */
 export function codexArgs(turn: AgentTurn, config: CadenceConfig, model: string | null): string[] {
   const server = ((turn.mcpServers as Record<string, Json>)?.cadence ?? {}) as Json;
@@ -90,19 +245,50 @@ export function codexArgs(turn: AgentTurn, config: CadenceConfig, model: string 
     `mcp_servers.cadence.url="${url}"`,
     '-c',
     `mcp_servers.cadence.bearer_token_env_var="${TOKEN_ENV}"`,
-    '-c',
-    'sandbox_mode="workspace-write"',
+    ...profileArgs(turn),
+    // Also stops Codex from reading AGENTS.md up to the git root: outside the profile, that read fails the turn.
     '-c',
     'project_doc_max_bytes=0',
     '-c',
     'tools.web_search=false',
+    // Skills still load from the cwd's .agents/skills and .codex/skills and from $HOME/.agents/skills whatever
+    // --ignore-user-config says: another writer can put them in a brand folder. This keeps them out of the prompt.
+    '-c',
+    'skills.include_instructions=false',
+    // A sub-agent runs in the same sandbox, but its commands, writes and tokens never reach the turn's events. The v1
+    // tools go with the feature; the v2 ones stay listed while the root is the only thread allowed.
+    '-c',
+    'features.multi_agent=false',
+    '-c',
+    'features.multi_agent_v2.max_concurrent_threads_per_session=1',
+    // A model that asks for escalated permissions (sandbox_permissions "require_escalated") is never granted them.
+    '-c',
+    'approval_policy="never"',
+    // Commands the agent runs see none of Codex's own environment (its login, the MCP token, proxies).
+    '-c',
+    'shell_environment_policy.inherit="core"',
+    '-c',
+    'shell_environment_policy.include_only=["PATH","HOME","TMPDIR","LANG","LC_*"]',
     // Codex supports low/medium/high/xhigh/max/ultra natively, so the effort passes through unchanged.
     ...(turn.effort ? ['-c', `model_reasoning_effort="${turn.effort}"`] : []),
     ...(model ? ['-m', model] : []),
   ];
-  const common = ['--json', '--skip-git-repo-check', '--ignore-user-config', ...overrides];
+  const common = ['--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', ...overrides];
   // '-' reads the prompt from stdin. On resume the cwd and the Cadence guide already live in the thread.
   return turn.resume ? ['exec', 'resume', turn.sessionId, ...common, '-'] : ['exec', ...common, '-'];
+}
+
+/** Environment for the child `codex`: the allowlist above, then the turn's MCP bearer token. */
+export function codexEnv(source: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value !== undefined && (CHILD_ENV.has(name) || CHILD_ENV_PATTERN.test(name))) env[name] = value;
+  }
+  if (env.PATH !== undefined) env.PATH = absolutePath(env.PATH);
+  // An empty PATH makes spawn look a bare command up in the turn folder; with no PATH it uses the system default.
+  if (!env.PATH) delete env.PATH;
+  env[TOKEN_ENV] = token;
+  return env;
 }
 
 function bearerToken(mcpServers: Record<string, unknown>): string {
@@ -156,10 +342,35 @@ export class CodexProvider implements AgentProvider {
         return queue.end();
       }
 
+      // Fail closed: no turn starts until the probe has found this binary confined (and logged in).
+      const status = await this.status().catch((e: Error): AgentStatus => ({
+        ok: false,
+        label: LABEL,
+        reason: 'error',
+        detail: m().agent.codex.probeFailed(e.message),
+      }));
+      if (!status.ok) {
+        finish({
+          type: 'done',
+          text: refusal(status, this.agent),
+          isError: true,
+          durationMs: 0,
+          subtype: status.reason ?? 'error',
+        });
+        return queue.end();
+      }
+      let real: AgentTurn;
+      try {
+        real = await realTurn(turn);
+      } catch (e) {
+        finish({ type: 'done', text: (e as Error).message, isError: true, durationMs: 0, subtype: 'error' });
+        return queue.end();
+      }
+
       const guide = turn.resume ? '' : `${turn.systemPrompt}\n\n`;
-      const child = spawn(bin, codexArgs(turn, this.config, model), {
-        cwd: turn.cwd,
-        env: { ...process.env, [TOKEN_ENV]: bearerToken(turn.mcpServers) },
+      const child = spawn(bin, codexArgs(real, this.config, model), {
+        cwd: real.cwd,
+        env: codexEnv(process.env, bearerToken(turn.mcpServers)),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       child.stdin.on('error', () => undefined);
@@ -171,7 +382,7 @@ export class CodexProvider implements AgentProvider {
         if (event.type === 'init') threadId = event.sessionId || threadId;
         if (event.type === 'done') finish(event);
         else if (!finished) queue.push(event);
-      });
+      }, this.agent);
       readline.createInterface({ input: child.stdout }).on('line', (line) => {
         log?.write(`${line}\n`);
         parser.line(line);
@@ -193,7 +404,7 @@ export class CodexProvider implements AgentProvider {
       child.on('error', (e) => {
         finish({
           type: 'done',
-          text: m().agent.codex.spawnFailed(bin, e.message),
+          text: this.agent ? m().agent.codex.spawnFailed(bin, e.message) : m().agent.refused,
           isError: true,
           durationMs: 0,
           subtype: 'spawn_error',
@@ -210,7 +421,7 @@ export class CodexProvider implements AgentProvider {
           text: aborted ? m().agent.codex.stopped : crashText(this.agent, code, stderr),
           isError: !aborted,
           durationMs: 0,
-          subtype: aborted ? 'aborted' : 'crashed',
+          subtype: aborted ? 'aborted' : SESSION_LOST.test(stderr) ? 'session_lost' : 'crashed',
         });
         queue.end();
       });
@@ -219,9 +430,13 @@ export class CodexProvider implements AgentProvider {
   }
 }
 
-function exec(file: string, args: string[]): Promise<{ stdout: string; code: number }> {
+function exec(
+  file: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ stdout: string; code: number }> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout: 15_000 }, (error, stdout) => {
+    execFile(file, args, { timeout: 15_000, ...options }, (error, stdout) => {
       // A numeric code is a normal non-zero exit (stdout still useful); anything else is a spawn failure or timeout.
       if (error && typeof error.code !== 'number') reject(error);
       else resolve({ stdout: String(stdout), code: error ? Number(error.code) : 0 });
@@ -229,10 +444,20 @@ function exec(file: string, args: string[]): Promise<{ stdout: string; code: num
   });
 }
 
+/** Why a turn is refused before Codex starts, from the status that refused it. */
+function refusal(status: AgentStatus, agent: string | null): string {
+  if (status.reason === 'unconfined') return m().agent.codex.unconfined(agent);
+  // Every detail names Codex, which a host that hides the agent never shows.
+  if (!agent) return m().agent.refused;
+  if (status.reason === 'logged-out') return m().agent.codex.notLoggedIn;
+  return status.detail ?? m().agent.codex.unconfined(agent);
+}
+
+/** Codex's stderr names Codex, ChatGPT or OpenAI: a host that hides the agent gets the generic text alone. */
 function crashText(agent: string | null, code: number | null, stderr: string): string {
   const tail = stderr.trim().split('\n').slice(-6).join('\n');
-  if (AUTH_ERROR.test(tail)) return `${agent ? m().agent.codex.notLoggedIn : m().agent.refused}\n\n${tail}`;
-  return m().agent.codex.crashed(agent, code, tail);
+  if (AUTH_ERROR.test(tail)) return agent ? `${m().agent.codex.notLoggedIn}\n\n${tail}` : m().agent.refused;
+  return m().agent.codex.crashed(agent, code, agent ? tail : '');
 }
 
 /**
@@ -245,7 +470,11 @@ export class CodexStreamParser {
   private partial = new Map<string, string>();
   private lastMessage = '';
 
-  constructor(private emit: (event: AgentEvent) => void) {}
+  /** `agent` null: Codex's own error messages name it, so a failed turn gets a generic text and its error notes are dropped. */
+  constructor(
+    private emit: (event: AgentEvent) => void,
+    private agent: string | null = AGENT_NAMES.codex,
+  ) {}
 
   line(raw: string): void {
     let msg: Json;
@@ -269,9 +498,12 @@ export class CodexStreamParser {
       case 'turn.completed':
         this.emit(this.done(false, '', msg.usage));
         break;
-      case 'turn.failed':
-        this.emit(this.done(true, String(msg.error?.message ?? msg.error ?? ''), undefined));
+      case 'turn.failed': {
+        const message = String(msg.error?.message ?? msg.error ?? '');
+        const done = this.done(true, this.agent ? message : m().agent.chat.failed(null), undefined);
+        this.emit(SESSION_LOST.test(message) ? { ...done, subtype: 'session_lost' } : done);
         break;
+      }
     }
   }
 
@@ -311,7 +543,7 @@ export class CodexStreamParser {
           }
         break;
       case 'error':
-        if (completed && item.message) this.emit({ type: 'note', text: String(item.message) });
+        if (completed && item.message && this.agent) this.emit({ type: 'note', text: String(item.message) });
         break;
     }
   }

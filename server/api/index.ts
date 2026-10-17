@@ -27,6 +27,7 @@ import {
   type FormatId,
   type NetworkId,
 } from '../../src/shared/types';
+import { LOCAL } from '../capture/policy';
 import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
@@ -147,6 +148,7 @@ const schemas = {
     fullPage: z.boolean().optional(),
     name: z.string().max(80).optional(),
   }),
+  captureHost: z.object({ host: z.string().min(1).max(259) }),
   elevenLabsKey: z.object({ key: z.string().trim().min(1).max(256).regex(/^\S+$/) }),
   networkApp: z.object({ clientId: z.string().trim().min(1).max(300), clientSecret: z.string().trim().min(1).max(300) }),
   publish: z.object({
@@ -247,6 +249,8 @@ export function createApi(deps: ApiDeps) {
     const rendering = renders.jobs(id).some((j) => j.status === 'queued' || j.status === 'rendering' || j.status === 'encoding');
     if (rendering) throw new HttpError(409, m().api.routes.rendering);
     if (deps.publisher.busy(id)) throw new HttpError(409, m().api.routes.publishing);
+    // First: a project created later under the same id must not inherit them.
+    await deps.captureHosts.drop(id);
     await store.remove(id);
     return c.json({ ok: true });
   });
@@ -380,6 +384,9 @@ export function createApi(deps: ApiDeps) {
   app.get('/voices', async (c) => c.json(await deps.voiceOver.voices()));
   app.post('/voices/:voice/download', async (c) => c.json(await deps.voiceOver.download(c.req.param('voice'))));
   app.get('/voices/elevenlabs', async (c) => c.json(await deps.voiceOver.elevenLabs()));
+  app.get('/voices/elevenlabs/:voice/preview', async (c) =>
+    sendImage(c, await deps.voiceOver.elevenLabsPreview(c.req.param('voice')), 'audio/mpeg'),
+  );
   app.put('/voices/elevenlabs/key', async (c) => {
     await deps.voiceOver.setElevenLabsKey((await body(c, schemas.elevenLabsKey)).key);
     return c.json({ configured: true });
@@ -530,9 +537,21 @@ export function createApi(deps: ApiDeps) {
     return c.json({ ok: true });
   });
   app.get('/projects/:id/assets/file', async (c) => sendFile(c, assets.resolve(c.req.param('id'), requiredQuery(c, 'path'))));
+  // The person asks for this capture: their dev servers and LAN are fine. The agent's go through MCP, to approved hosts only.
   app.post('/projects/:id/refs', async (c) =>
-    c.json(await assets.captureReference(c.req.param('id'), await body(c, schemas.captureRef))),
+    c.json(await assets.captureReference(c.req.param('id'), await body(c, schemas.captureRef), LOCAL)),
   );
+  app.get('/projects/:id/capture-hosts', async (c) => c.json({ hosts: await deps.captureHosts.list(await existingProject(c)) }));
+  app.post('/projects/:id/capture-hosts', async (c) => {
+    const id = await existingProject(c);
+    const { host } = await body(c, schemas.captureHost);
+    return c.json({ hosts: await deps.captureHosts.approve(id, host) });
+  });
+  app.delete('/projects/:id/capture-hosts', async (c) => {
+    const id = await existingProject(c);
+    const { host } = await body(c, schemas.captureHost);
+    return c.json({ hosts: await deps.captureHosts.revoke(id, host) });
+  });
 
   // Brands & settings
   app.get('/brands/:id', async (c) => c.json(await brands.get(c.req.param('id'))));

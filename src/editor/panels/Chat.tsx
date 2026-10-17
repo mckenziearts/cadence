@@ -1,7 +1,7 @@
 // Scene and project conversations: messages streamed over SSE, agent activity with the frames it rendered, composer.
 import clsx from 'clsx';
 import { AlertTriangle, Brain, ChevronRight, Clock, GitCommitVertical, MessageSquarePlus, Square } from 'lucide-react';
-import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import {
   DEFAULT_FEATURES,
   EFFORTS,
@@ -11,12 +11,13 @@ import {
   type ChatMessage,
   type Effort,
 } from '../../shared/types';
-import { ignore } from '../api';
+import { api, ignore } from '../api';
 import { BeatPills, Button, ConfirmButton, Select } from '../components/ui';
 import { useT } from '../i18n';
 import { Markdown } from '../lib/markdown';
 import { elapsed, secsLabel, usd } from '../lib/format';
-import { set, useStore, type ChatKind, NONE } from '../store';
+import { allowedAsk, dismissedAsk } from '../lib/captureAsk';
+import { get, set, useStore, type CaptureHostAsk, type ChatKind, NONE } from '../store';
 import { clearChat, draftKey, kindOf, loadChat, modelChoice, sendMessage, setDraft, stopChat } from '../store/chat';
 import { openModal } from '../store/ui';
 import { useAgentName } from '../components/agents';
@@ -32,6 +33,7 @@ export function Chat({ chatKey, header }: { chatKey: ChatKey; header?: ReactNode
   const kind = kindOf(chatKey);
   const list = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const stick = useRef(true);
 
   useEffect(() => {
@@ -66,6 +68,7 @@ export function Chat({ chatKey, header }: { chatKey: ChatKey; header?: ReactNode
           </div>
         </div>
       )}
+      <CaptureAsk composer={composer} />
       <div
         ref={list}
         className="min-h-0 flex-1 overflow-y-auto"
@@ -91,7 +94,104 @@ export function Chat({ chatKey, header }: { chatKey: ChatKey; header?: ReactNode
           )}
         </div>
       </div>
-      <Composer chatKey={chatKey} kind={kind} busy={busy} queued={Boolean(chat?.queued)} />
+      <Composer chatKey={chatKey} kind={kind} busy={busy} queued={Boolean(chat?.queued)} area={composer} />
+    </div>
+  );
+}
+
+/** The agent's capture of a host the person has not approved: they allow it for the project, or dismiss the ask. */
+function CaptureAsk({ composer }: { composer: RefObject<HTMLTextAreaElement | null> }) {
+  const texts = useT().conversation.captureHosts;
+  const agent = useAgentName();
+  const captureAsk = useStore((s) => s.captureAsk);
+  const projectId = useStore((s) => s.project?.id);
+  const ask = captureAsk && captureAsk.projectId === projectId ? captureAsk : null;
+  return (
+    <div className={clsx(ask && 'shrink-0 space-y-2 border-b border-rule bg-wash/60 px-4 py-3 text-[13px] text-ink-2')}>
+      {/* Mounted before the ask: a live region added along with its text is often not read. */}
+      <div role="status" className="space-y-2">
+        {ask && (
+          <>
+            <p>{texts.asked(agent)}</p>
+            <p dir="ltr" className="font-mono font-medium break-all text-ink">
+              {ask.host}
+            </p>
+            <p className="text-ink-3">{ask.local ? texts.scopeLocal : texts.scope}</p>
+            {ask.local && (
+              <p className="flex gap-2 text-warn-ink">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden />
+                {texts.local}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+      {ask && <CaptureAnswer key={ask.host} ask={ask} composer={composer} />}
+    </div>
+  );
+}
+
+function CaptureAnswer({ ask, composer }: { ask: CaptureHostAsk; composer: RefObject<HTMLTextAreaElement | null> }) {
+  const texts = useT().conversation.captureHosts;
+  const [busy, setBusy] = useState(false);
+  // A second click meant for the previous ask, or the click that brings the window back, must not allow this one.
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      setArmed(false);
+      if (document.hasFocus()) timer = setTimeout(() => setArmed(true), 500);
+    };
+    arm();
+    window.addEventListener('focus', arm);
+    window.addEventListener('blur', arm);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('focus', arm);
+      window.removeEventListener('blur', arm);
+    };
+  }, []);
+
+  // An answer removes these buttons: the focus goes to the composer, not back to the top of the page.
+  const allow = async () => {
+    setBusy(true);
+    try {
+      await api.allowCaptureHost(ask.projectId, ask.host);
+      const answered = allowedAsk(get(), ask);
+      if (!answered) return;
+      composer.current?.focus();
+      set(answered);
+    } catch {
+      // toast shown
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex gap-2">
+      <Button
+        size="sm"
+        variant="primary"
+        aria-label={texts.allowHost(ask.host)}
+        disabled={!armed}
+        loading={busy}
+        onClick={() => void allow()}
+      >
+        {texts.allow}
+      </Button>
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled={busy}
+        onClick={() => {
+          composer.current?.focus();
+          set(dismissedAsk(get(), ask));
+        }}
+      >
+        {texts.dismiss}
+      </Button>
     </div>
   );
 }
@@ -360,7 +460,19 @@ function Reasoning({ notes }: { notes: string[] }) {
 
 // Composer
 
-function Composer({ chatKey, kind, busy, queued }: { chatKey: ChatKey; kind: ChatKind; busy: boolean; queued: boolean }) {
+function Composer({
+  chatKey,
+  kind,
+  busy,
+  queued,
+  area,
+}: {
+  chatKey: ChatKey;
+  kind: ChatKind;
+  busy: boolean;
+  queued: boolean;
+  area: RefObject<HTMLTextAreaElement | null>;
+}) {
   const t = useT();
   const agent = useAgentName();
   const texts = t.conversation.chat.composer;
@@ -374,7 +486,6 @@ function Composer({ chatKey, kind, busy, queued }: { chatKey: ChatKey; kind: Cha
   useStore((s) => s.picks[kind]);
   useStore((s) => s.app?.settings);
   const choice = modelChoice(kind);
-  const area = useRef<HTMLTextAreaElement>(null);
   const [sending, setSending] = useState(false);
   const spec = models.find((m) => m.id === choice.model);
 

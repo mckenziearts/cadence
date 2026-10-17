@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import net from 'node:net';
 import { promisify } from 'node:util';
 import { ClaudeCodeProvider } from './agent/claudeCode';
+import { CHROMIUM_SANDBOX_FAILED, chromiumSandbox } from './config';
 import type { CadenceConfig } from './contracts';
 import { m } from './i18n';
 import { PiperEngine } from './voiceover/piper';
@@ -62,7 +63,7 @@ function checkPlatform(): Check {
 
 function checkNode(): Check {
   const [major, minor] = process.versions.node.split('.').map(Number);
-  return major > 22 || (major === 22 && minor >= 12)
+  return major > 22 || (major === 22 && minor >= 15)
     ? { level: 'ok', label: `Node.js ${process.versions.node}` }
     : { level: 'fail', label: m().media.doctor.nodeOld(process.versions.node), fix: m().media.doctor.nodeFix };
 }
@@ -91,14 +92,17 @@ async function checkFfprobe(bin: string): Promise<Check> {
   }
 }
 
-async function checkChromium(): Promise<Check> {
+export async function checkChromium(): Promise<Check> {
   try {
     // Imported here: Playwright throws at import on a Node.js too old, and checkNode() must still report it.
     const { chromium } = await import('playwright');
-    const browser = await chromium.launch();
+    const sandbox = chromiumSandbox();
+    const browser = await chromium.launch({ chromiumSandbox: sandbox });
     const version = browser.version();
     await browser.close();
-    return { level: 'ok', label: `Chromium ${version} (Playwright)` };
+    return sandbox
+      ? { level: 'ok', label: `Chromium ${version} (Playwright)` }
+      : { level: 'warn', label: m().media.doctor.chromiumNoSandbox(version), fix: m().media.doctor.chromiumSandboxFix };
   } catch (e) {
     const message = (e as Error).message;
     if (/Executable doesn't exist/i.test(message))
@@ -106,7 +110,11 @@ async function checkChromium(): Promise<Check> {
     return {
       level: 'fail',
       label: m().media.doctor.chromiumFailed(message.split('\n')[0]),
-      fix: process.platform === 'linux' ? m().media.doctor.chromiumLibraries : 'npm run setup',
+      fix: CHROMIUM_SANDBOX_FAILED.test(message)
+        ? m().media.doctor.chromiumSandboxFix
+        : process.platform === 'linux'
+          ? m().media.doctor.chromiumLibraries
+          : 'npm run setup',
     };
   }
 }
@@ -128,14 +136,21 @@ async function checkPiper(bin: string): Promise<Check> {
     : { level: 'warn', label: t.piperMissing(bin), fix: t.piperFix };
 }
 
-async function checkPort(port: number, host: string, role: string, variable: string): Promise<Check> {
-  const free = await new Promise<boolean>((resolve) => {
-    const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.listen(port, host, () => server.close(() => resolve(true)));
-  });
+/** Cadence listens on `host` and on ::1, same port (server/index.ts): either one taken stops it. */
+export async function checkPort(port: number, host: string, role: string, variable: string): Promise<Check> {
+  const [ipv4, ipv6] = await Promise.all([isTaken(port, host), isTaken(port, '::1')]);
+  const taken = ipv4 ? `${host}:${port}` : ipv6 ? `[::1]:${port}` : null;
   const t = m().media.doctor;
-  return free
-    ? { level: 'ok', label: t.portFree(port, role) }
-    : { level: 'warn', label: t.portBusy(port, role), fix: t.portFix(variable) };
+  return taken
+    ? { level: 'warn', label: t.portBusy(taken, role), fix: t.portFix(variable) }
+    : { level: 'ok', label: t.portFree(port, role) };
+}
+
+function isTaken(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    // No IPv6 on the host: Cadence then starts on IPv4 only.
+    server.once('error', (e: NodeJS.ErrnoException) => resolve(e.code !== 'EADDRNOTAVAIL' && e.code !== 'EAFNOSUPPORT'));
+    server.listen(port, host, () => server.close(() => resolve(false)));
+  });
 }

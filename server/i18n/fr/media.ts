@@ -6,6 +6,7 @@ export default {
   ffmpegStart: (bin: string, error: string) => `Impossible de lancer ffmpeg (${bin}) : ${error}`,
   capture: {
     chromium: (error: string) => `Impossible de démarrer Chromium (lancez « npm run setup » une fois) : ${error}`,
+    chromiumSandbox: (fix: string) => `Chromium n'a pas pu démarrer son bac à sable. ${fix}`,
     frameNotStarted: (problems: string[]) =>
       `La page d’image n’a pas démarré${problems.length ? ` : ${problems.join(' \u00b7 ')}` : ''}`,
     frameLoadTimeout: 'Le chargement de la page d’image a pris trop de temps',
@@ -20,9 +21,17 @@ export default {
     httpOnly: 'Seules les adresses http(s) peuvent être capturées',
     openFailed: (url: string, error: string) => `Impossible d’ouvrir ${url} : ${error}`,
     hostNotFound: (host: string) => `Adresse introuvable : ${host}`,
-    reserved: (host: string, address: string | null) =>
-      `Adresse réservée, capture refusée : ${host}${address ? ` (${address})` : ''}`,
+    reserved: (host: string) => `Adresse privée ou réservée, capture refusée : ${host}`,
+    port: (host: string) => `Port non autorisé, capture refusée : ${host}`,
+    credentials: 'Une adresse avec identifiant ou mot de passe ne peut pas être capturée',
+    redirects: 'trop de redirections',
+    badRedirect: 'redirection vers une adresse invalide',
+    tooLarge: 'page trop lourde pour une capture',
+    slow: 'le site met trop de temps à répondre',
+    unreachable: 'connexion impossible',
     itself: 'Cadence ne peut pas se capturer elle-même',
+    notApproved: (host: string) =>
+      `La personne n’a pas autorisé ${host} pour les captures de ce projet : elle vient de recevoir la demande. Réessaie à un prochain tour, une fois qu’elle a répondu.`,
   },
   render: {
     notFound: 'Rendu introuvable',
@@ -87,6 +96,7 @@ export default {
     elevenLabsHttpStatus: (status: number) => `erreur ${status}`,
     elevenLabsNoKey: 'Aucune clé API ElevenLabs enregistrée : ajoutez la vôtre dans le Profil',
     elevenLabsKeyUnreadable: (file: string) => `${file} illisible : enregistrez à nouveau votre clé ElevenLabs dans le Profil`,
+    elevenLabsNoPreview: 'Cette voix n’a pas d’extrait',
     elevenLabsNoSound: 'ElevenLabs a répondu sans son lisible : réessayez',
     elevenLabsDown: 'ElevenLabs ne répond pas : vérifiez la connexion à Internet, puis réessayez',
     elevenLabsKeyNotSaved: 'Clé ElevenLabs non enregistrée : réessayez',
@@ -203,7 +213,7 @@ export default {
     readyBusy: (origin: string) =>
       `Cadence tourne peut-être déjà : ouvrez ${origin}. Sinon, lancez \`npm start -- --port 5320 --frame-port 5321\``,
     nodeOld: (version: string) => `Node.js ${version} est trop ancien`,
-    nodeFix: 'Installez Node.js 22.12 ou plus récent',
+    nodeFix: 'Installez Node.js 22.15 ou plus récent',
     ffmpegMissing: (bin: string) => `ffmpeg introuvable (${bin})`,
     ffmpegFix: 'macOS : `brew install ffmpeg` \u00b7 Debian/Ubuntu : `sudo apt install ffmpeg` \u00b7 ou définissez FFMPEG_PATH',
     encoders: (version: string, missing: string[]) => `ffmpeg ${version} sans encodeur ${missing.join(' ni ')}`,
@@ -213,6 +223,9 @@ export default {
     chromiumMissing: "Chromium (Playwright) n'est pas installé",
     chromiumFailed: (error: string) => `Chromium ne démarre pas : ${error}`,
     chromiumLibraries: 'Installez ses bibliothèques système : `npm run setup -- --with-deps`',
+    chromiumNoSandbox: (version: string) => `Chromium ${version} (Playwright) sans son bac à sable (CADENCE_CHROMIUM_SANDBOX=0)`,
+    chromiumSandboxFix:
+      'Linux : autorisez les espaces de noms utilisateur (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`) \u00b7 CADENCE_CHROMIUM_SANDBOX=0 seulement dans un conteneur (README, section Troubleshooting)',
     claudeMissing: (bin: string) => `Claude Code introuvable (${bin})`,
     claudeInstall:
       'Installez Claude Code (https://code.claude.com), lancez `claude` puis /login \u00b7 ou définissez CLAUDE_PATH',
@@ -223,7 +236,7 @@ export default {
     piperMissing: (bin: string) => `Piper introuvable (${bin}) : sans lui, pas de voix off`,
     piperFix: '`pipx install piper-tts` (Python 3.9 ou plus), ou indiquez son chemin dans PIPER_PATH',
     portFree: (port: number, role: string) => `Port ${port} (${role}) libre`,
-    portBusy: (port: number, role: string) => `Port ${port} (${role}) déjà utilisé (Cadence tourne peut-être déjà)`,
+    portBusy: (address: string, role: string) => `${address} (${role}) déjà utilisé (Cadence tourne peut-être déjà)`,
     portFix: (variable: string) =>
       `Arrêtez l'autre programme ou choisissez un autre port (${variable}, ou --port / --frame-port avec \`npm start --\`)`,
   },
