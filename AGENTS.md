@@ -18,8 +18,12 @@ reference is `src/runtime/API.md` (it is also inlined into the in-app agent's sy
   (`npx tsx bin/cadence.ts start --port <p> --frame-port <p+1>`) and a private Vite cache
   (`CADENCE_VITE_CACHE_DIR=node_modules/.vite-<name>`) for your own servers.
 - Never trigger real Claude turns from tests or scripts: inject a fake `AgentProvider` (`startServer({ provider })`).
-- Keep the security model intact (ARCHITECTURE.md "Processes, origins and security"): two origins, editor token,
-  MCP bearer tokens bound to scopes, restricted agent, frame CSP. New `/api` routes go through `server/http.ts` guards.
+- Keep the security model intact (ARCHITECTURE.md "Processes, origins and security"): the editor origin and one frame
+  origin per project and per brand, editor token, MCP bearer tokens bound to scopes, restricted agent, frame CSP. New
+  `/api` routes go through `server/http.ts` guards.
+- Files under `projects/`, `brands/` and `templates/` are read, written and served only through the no-follow helpers
+  of `server/util.ts` (`readFileNoFollow`, `openFileNoFollow`, `writeFileInside`, `listInside`...): a check by path
+  then a read by path lets a link swapped in between through.
 
 ## Commands
 
@@ -44,3 +48,10 @@ npm run doctor
 - Project files change on disk only through `ProjectStore` (locks + atomic writes); versions through `VersionStore`.
 - Tests: `node:test` + `node:assert/strict`, deterministic and offline; e2e projects live under `projects/e2e-*`
   (gitignored) and are removed at the end, and servers started by tests get their own temp `stateDir`.
+- CI runs `npm run test:unit` only, on Linux. A security or consent rule needs a test in a file `test:unit` lists
+  (editor logic goes in a pure function under `src/editor/lib/`); `tests/e2e/` and `tests/editor/ui.test.ts` add the
+  browser proof. macOS temp folders sit behind a link (`/var` to `/private/var`), Linux ones do not: a path test
+  builds the link it relies on.
+- Editor UI: a control that removes or disables the focused element moves the focus to where the person goes next
+  (the composer, the row now in its place, an empty-state text with `tabIndex={-1}`); a live region is mounted before
+  the text it announces.
