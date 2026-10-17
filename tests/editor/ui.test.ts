@@ -1093,16 +1093,20 @@ describe('editor', () => {
           }).observe(document.body, { childList: true, subtree: true });
         });
         const allow = page.getByRole('button', { name: 'Autoriser 192.168.1.10:3000' });
+        // A live region added along with its text is often not read: it is there, empty, before the ask.
+        const region = (await page.locator('aside').getByRole('status').elementHandle())!;
+        assert.equal(await region.textContent(), '');
+        const composed = () => page.evaluate(() => document.activeElement instanceof HTMLTextAreaElement);
         // The page may not listen yet: asked until it shows.
         for (let i = 0; i < 100 && !(await allow.count()); i++) {
           ask(A, '192.168.1.10:3000', true);
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
-        const banner = page.getByRole('status').filter({ has: allow });
         assert.match(
-          (await banner.textContent()) ?? '',
+          (await region.textContent()) ?? '',
           /veut capturer une page de cet hôte.*192\.168\.1\.10:3000.*toutes ses pages et à tous ses ports.*Adresse locale/,
         );
+        assert.equal(await region.$$eval('button', (buttons) => buttons.length), 0, 'the buttons stay out of what is read');
 
         // Another ask waits for this one to be answered.
         ask(A, 'example.com', false);
@@ -1145,6 +1149,7 @@ describe('editor', () => {
         await page.keyboard.press('Enter');
         assert.deepEqual((await posted).postDataJSON(), { host: '192.168.1.10:3000' });
         await allow.waitFor({ state: 'detached', timeout: 10_000 });
+        assert.equal(await composed(), true, 'the focus goes on in the composer');
         assert.deepEqual(await hosts(), { hosts: ['192.168.1.10:3000'] });
 
         // Another project's ask never shows.
@@ -1152,11 +1157,13 @@ describe('editor', () => {
         ask(A, 'example.com', false);
         const dismiss = page.getByRole('button', { name: 'Ignorer' });
         await dismiss.waitFor({ timeout: 10_000 });
-        const other = (await page.getByRole('status').filter({ has: dismiss }).textContent()) ?? '';
+        const other = (await region.textContent()) ?? '';
         assert.match(other, /example\.com.*toutes ses pages, pour ce projet/);
         assert.doesNotMatch(other, /ports|Adresse locale/);
-        await dismiss.click();
+        await dismiss.focus();
+        await page.keyboard.press('Enter');
         await dismiss.waitFor({ state: 'detached', timeout: 10_000 });
+        assert.equal(await composed(), true);
         assert.deepEqual(await hosts(), { hosts: ['192.168.1.10:3000'] }, 'dismissed, not allowed');
         assert.deepEqual(await page.evaluate(() => (window as unknown as { armed: boolean[] }).armed), [false, false]);
 
@@ -1180,8 +1187,11 @@ describe('editor', () => {
         assert.deepEqual((await removed).postDataJSON(), { host: '192.168.1.10:3000' });
         await remove.waitFor({ state: 'detached', timeout: 10_000 });
         assert.deepEqual(await hosts(), { hosts: ['example.com'] });
-        await page.getByRole('button', { name: 'Retirer example.com' }).click();
+        const focused = () => page.evaluate(() => document.activeElement?.ariaLabel ?? document.activeElement?.textContent);
+        assert.equal(await focused(), 'Retirer example.com', 'the focus goes to the host now in its place');
+        await page.keyboard.press('Enter');
         await page.getByText('Aucun hôte autorisé').waitFor({ timeout: 10_000 });
+        assert.equal(await focused(), await page.getByText('Aucun hôte autorisé').textContent());
         assert.deepEqual(await hosts(), { hosts: [] });
       } finally {
         await page.context().close();
@@ -1222,6 +1232,11 @@ describe('editor', () => {
       await answered;
       await barrier(page);
       assert.equal(await other.isEnabled(), true, "B's ask, still there and clickable");
+      assert.equal(
+        await page.evaluate(() => document.activeElement instanceof HTMLTextAreaElement),
+        false,
+        "A's late answer leaves the focus where it is",
+      );
       await page.getByRole('button', { name: 'Ignorer' }).click();
 
       await page.evaluate((id) => (location.hash = `#/${id}`), A);

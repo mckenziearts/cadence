@@ -25,6 +25,7 @@ import {
   tokenCount,
   usd,
 } from '../../src/editor/lib/format';
+import { allowedAsk, dismissedAsk, raisedAsk } from '../../src/editor/lib/captureAsk';
 import { Markdown } from '../../src/editor/lib/markdown';
 import { projectsPage } from '../../src/editor/lib/pages';
 import { barDrift, frameStart, playbackTime, rulerStep, sceneBars, timelineMarks } from '../../src/editor/lib/timeline';
@@ -386,4 +387,32 @@ test('import toast: how many projects, then the brands installed and those alrea
     en.home.imported(2, ['Orbit', 'Nova'], ['Cadence', 'Atlas']),
     `2${S}projects imported. Brands installed: Orbit, Nova. Brands already here: Cadence, Atlas.`,
   );
+});
+
+test("the agent's capture ask: only the open project's, and the first one stays until the person answers", () => {
+  const none = { captureAsk: null, captureIgnored: [] };
+  const event = { type: 'capture-host', projectId: 'a', host: 'intranet.local', local: true } as const;
+  const ask = raisedAsk(none, event, 'a');
+  assert.deepEqual(ask, { projectId: 'a', host: 'intranet.local', local: true });
+  assert.equal(raisedAsk(none, event, 'b'), null);
+  assert.equal(raisedAsk(none, event, undefined), null);
+  assert.equal(raisedAsk({ captureAsk: ask, captureIgnored: [] }, { ...event, host: 'other.example' }, 'a'), null);
+});
+
+test('a dismissed host is not asked again in the project, and an allowed ask clears only while it is the one shown', () => {
+  const ask = { projectId: 'a', host: 'intranet.local', local: true };
+  const shown = { captureAsk: ask, captureIgnored: ['old.example'] };
+  const dismissed = { ...shown, ...dismissedAsk(shown, ask) };
+  assert.deepEqual(dismissed, { captureAsk: null, captureIgnored: ['old.example', 'intranet.local'] });
+  assert.equal(raisedAsk(dismissed, { type: 'capture-host', ...ask }, 'a'), null);
+  assert.deepEqual(raisedAsk(dismissed, { type: 'capture-host', projectId: 'a', host: 'other.example', local: false }, 'a'), {
+    projectId: 'a',
+    host: 'other.example',
+    local: false,
+  });
+
+  assert.deepEqual(allowedAsk(shown, ask), { captureAsk: null });
+  // Another project was opened while the approval was on its way, maybe with its own ask.
+  assert.equal(allowedAsk({ captureAsk: { ...ask, projectId: 'b' }, captureIgnored: [] }, ask), null);
+  assert.equal(allowedAsk({ captureAsk: null, captureIgnored: [] }, ask), null);
 });

@@ -3,6 +3,7 @@
 import { ignore } from './api';
 import type { ServerEvent } from '../shared/types';
 import { t } from './i18n';
+import { raisedAsk } from './lib/captureAsk';
 import { get, set } from './store';
 import { applyChat, applyDelta, applyMessage, loadChat } from './store/chat';
 import { loadApp, loadCost, loadRenders, loadSeams, mergeSeams, refreshProject } from './store/project';
@@ -191,11 +192,8 @@ function handle(event: ServerEvent): void {
       if (event.projectId === current) set((s) => ({ assetsTick: s.assetsTick + 1 }));
       return;
     case 'capture-host': {
-      // The first ask stays until the person answers: a later one would swap the host under their click. The agent asks
-      // again in a later turn.
-      const { captureAsk, captureIgnored } = get();
-      if (event.projectId !== current || captureAsk || captureIgnored.includes(event.host)) return;
-      set({ captureAsk: { projectId: current, host: event.host, local: event.local } });
+      const ask = raisedAsk(get(), event, current);
+      if (ask) set({ captureAsk: ask });
       return;
     }
   }
