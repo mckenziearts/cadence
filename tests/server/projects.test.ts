@@ -834,8 +834,11 @@ test("a brand's assets folder swapped for a link lists nothing of it in the bran
   assert.doesNotMatch(await brands.describe(null), /SECRETNAME/);
 });
 
-/** The kernel refuses a link on the way inside the open (ELOOP); the macOS shell walk reports the folder outside. */
-const REFUSED = /ELOOP|outside/;
+/**
+ * The kernel refuses a link on the way inside the open: ELOOP, or ENOTDIR for a folder Linux opens with O_DIRECTORY. The
+ * macOS shell walk reports the folder outside.
+ */
+const REFUSED = /ELOOP|ENOTDIR|outside/;
 
 /** A project folder whose components/a links to a folder outside it, holding a secret. */
 async function linkedOut() {
@@ -935,7 +938,8 @@ describe('readFileNoFollow', () => {
     const open = fs.open;
     ctx.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
       const handle = await open(...args);
-      await writeFileAtomic(file, 'rewritten');
+      // On Linux the folders on the way are opened first.
+      if (String(args[0]).endsWith(path.basename(file))) await writeFileAtomic(file, 'rewritten');
       return handle;
     });
     assert.equal(await readFileNoFollow(project, file, 'utf8'), 'inside');

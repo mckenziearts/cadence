@@ -1050,10 +1050,10 @@ describe('MCP endpoint', () => {
     try {
       const copied = await call(client, 'copy_from_repo', { from: 'public/logo.svg', to: 'assets/logo-mark.svg' });
       assert.equal(copied.isError, true);
-      assert.match(texts(copied)[0], /ELOOP|outside/);
+      assert.match(texts(copied)[0], /ELOOP|ENOTDIR|outside/);
       const font = await call(client, 'add_google_font', { family: 'Inter', weights: [400] });
       assert.equal(font.isError, true);
-      assert.match(texts(font)[0], /ELOOP|outside/);
+      assert.match(texts(font)[0], /ELOOP|ENOTDIR|outside/);
       assert.equal(fetched.length, 2, 'the font was downloaded, then refused at the write');
       assert.deepEqual(await fs.readdir(outside), []);
     } finally {

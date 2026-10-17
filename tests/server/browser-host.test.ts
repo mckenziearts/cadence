@@ -70,9 +70,20 @@ async function socketDir(pid: number): Promise<string> {
   return socket[1];
 }
 
-/** `promise`, or a failure after `ms`: an endless wait would skip the cleanup that closes the browser, and the file would never end. */
-function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-  return Promise.race([promise, sleep(ms, undefined, { ref: false }).then(() => assert.fail(`${what} within ${ms} ms`))]);
+/**
+ * `promise`, or a failure after `ms`: an endless wait would skip the cleanup that closes the browser, and the file would
+ * never end. The deadline holds the event loop: under Node 22 a test waiting on unref'd timers alone ends the file.
+ */
+async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  const deadline = new AbortController();
+  try {
+    return await Promise.race([
+      promise,
+      sleep(ms, undefined, { signal: deadline.signal }).then(() => assert.fail(`${what} within ${ms} ms`)),
+    ]);
+  } finally {
+    deadline.abort();
+  }
 }
 
 function alive(pid: number): boolean {

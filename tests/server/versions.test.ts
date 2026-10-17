@@ -433,7 +433,7 @@ test('a snapshot never versions a file reached through a components folder swapp
     }
     return entries;
   });
-  await assert.rejects(baseline(), /ELOOP|outside/);
+  await assert.rejects(baseline(), /ELOOP|ENOTDIR|outside/);
   const objects = path.join(dir, '.cadence', 'versions', 'objects');
   for (const name of await fs.readdir(objects).catch(() => []))
     assert.ok(!(await fs.readFile(path.join(objects, name), 'utf8')).includes('TOPSECRET'), name);
@@ -512,7 +512,7 @@ test('a whole restore whose removal goes through a subfolder swapped for a link 
     }
     return found;
   });
-  await assert.rejects(versions.restore(id, v1.id), /ELOOP|outside/);
+  await assert.rejects(versions.restore(id, v1.id), /ELOOP|ENOTDIR|outside/);
   assert.ok(swapped, 'the folder became a link after its check');
   assert.equal(await fs.readFile(path.join(outside, 'extra.ts'), 'utf8'), 'TOPSECRET');
 });
@@ -541,7 +541,7 @@ test('a whole restore whose write goes through a subfolder swapped for a link af
   assert.ok(v1);
   await write('components/sub/x.ts', 'export const X = 2;\n');
   const state = swapAfterCheck(ctx, path.join(dir, 'components', 'sub'), outside);
-  await assert.rejects(versions.restore(id, v1.id), /ELOOP|outside/);
+  await assert.rejects(versions.restore(id, v1.id), /ELOOP|ENOTDIR|outside/);
   assert.ok(state.swapped, 'the folder became a link after its check');
   assert.deepEqual(await fs.readdir(outside), []);
 });
@@ -553,7 +553,7 @@ test('a scene restore whose scenes folder becomes a link after its check writes 
   assert.ok(v1);
   await write('scenes/deux.tsx', 'export default () => "deux v2";\n');
   const state = swapAfterCheck(ctx, path.join(dir, 'scenes'), outside);
-  await assert.rejects(versions.restore(id, v1.id, { sceneId: 'deux' }), /ELOOP|outside/);
+  await assert.rejects(versions.restore(id, v1.id, { sceneId: 'deux' }), /ELOOP|ENOTDIR|outside/);
   assert.ok(state.swapped, 'the folder became a link after its check');
   assert.deepEqual(await fs.readdir(outside), []);
 });
