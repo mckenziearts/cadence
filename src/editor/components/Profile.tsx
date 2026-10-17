@@ -258,7 +258,9 @@ function Status({ ok, children }: { ok: boolean; children: ReactNode }) {
   return (
     <p className={ok ? 'flex items-center gap-1.5 text-ok' : 'flex items-center gap-1.5 text-ink-3'}>
       {ok ? <CircleCheck className="size-3.5 shrink-0" aria-hidden /> : <CircleAlert className="size-3.5 shrink-0" aria-hidden />}
-      <span className="min-w-0 truncate">{children}</span>
+      <span className="min-w-0 truncate" title={typeof children === 'string' ? children : undefined}>
+        {children}
+      </span>
     </p>
   );
 }
@@ -480,7 +482,7 @@ function ElevenLabsKeyForm({ onSaved }: { onSaved: () => void }) {
   );
 }
 
-function AgentCard({ agent, status, selected }: { agent: AgentSpec; status: AgentStatus | undefined; selected: boolean }) {
+export function AgentCard({ agent, status, selected }: { agent: AgentSpec; status: AgentStatus | undefined; selected: boolean }) {
   const t = useT();
   const [help, setHelp] = useState(false);
   const { cli, name } = agent;
@@ -499,7 +501,9 @@ function AgentCard({ agent, status, selected }: { agent: AgentSpec; status: Agen
         ? t.profile.missing(cli)
         : status.reason === 'logged-out'
           ? t.profile.loggedOut(cli)
-          : (status.detail ?? t.profile.failing(cli))}
+          : status.reason === 'unconfined'
+            ? a.unconfined(name)
+            : (status.detail ?? t.profile.failing(cli))}
     </Status>
   );
 

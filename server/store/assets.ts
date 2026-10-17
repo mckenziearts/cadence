@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AssetInfo, AssetKind, CaptureRefInput } from '../../src/shared/types';
+import type { Policy } from '../capture/policy';
 import type { AssetStore, CaptureService, ProjectStore } from '../contracts';
 import { m } from '../i18n';
 import { HttpError, KeyedMutex, pathExists, resolveInside, slugify, uniqueId, writeFileAtomic } from '../util';
@@ -85,7 +86,7 @@ export class FileAssetStore implements AssetStore {
     await this.trash(projectId, file);
   }
 
-  async captureReference(projectId: string, input: CaptureRefInput): Promise<AssetInfo> {
+  async captureReference(projectId: string, input: CaptureRefInput, policy: Policy): Promise<AssetInfo> {
     await this.requireProject(projectId);
     let url: URL;
     try {
@@ -93,7 +94,7 @@ export class FileAssetStore implements AssetStore {
     } catch {
       throw new HttpError(400, m().api.assets.invalidUrl(input.url));
     }
-    // Local dev servers (localhost) are fine; other schemes (file:, data:, javascript:...) are not.
+    // Other schemes (file:, data:, javascript:...) never; which addresses the capture reaches is the policy's call.
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new HttpError(400, m().api.assets.httpOnly(input.url));
     }
@@ -104,7 +105,7 @@ export class FileAssetStore implements AssetStore {
     const rel = `refs/${name}-${input.device}.png`;
     let image: Buffer;
     try {
-      image = await this.capture.screenshotUrl(url.href, { device: input.device, fullPage: input.fullPage });
+      image = await this.capture.screenshotUrl(url.href, { device: input.device, fullPage: input.fullPage, policy });
     } catch (e) {
       if (e instanceof HttpError) throw e;
       throw new HttpError(502, m().api.assets.captureFailed(url.href, (e as Error).message));

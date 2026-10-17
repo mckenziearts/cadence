@@ -17,6 +17,7 @@ import type { AgentProvider, BrandSource, ElevenLabsApi, SpeechEngine } from '..
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
 import { HttpError } from '../../server/util';
+import { frameOriginOf } from '../../src/shared/frameOrigin';
 import { defaultVoiceOver } from '../../server/voiceover/voices';
 import { writeWav } from '../../server/voiceover/wav';
 import {
@@ -110,6 +111,20 @@ const speech: SpeechEngine = {
   },
 };
 
+/** A finished brand build, for the top bar and its window. */
+const BUILD: BrandBuild = {
+  id: 'e2e-build',
+  brandId: 'orbit',
+  name: 'Orbit',
+  repo: 'acme/e2e-site',
+  status: 'done',
+  activity: null,
+  files: [],
+  costUsd: 0.42,
+  createdAt: '2026-10-01T10:00:00.000Z',
+  finishedAt: '2026-10-01T10:05:00.000Z',
+};
+
 /** ElevenLabs as the Voice panel and Profile tests need it: one accepted key, two voices, never the network. */
 const ELEVENLABS_KEY = `sk_e2e_${process.pid}`;
 const elevenLabsSpoken: string[][] = [];
@@ -138,6 +153,7 @@ const elevenLabs: ElevenLabsApi = {
     await elevenLabsHold;
     for (const file of files) await writeFile(file, writeWav({ sampleRate: 24000, samples: new Int16Array(24000).fill(800) }));
   },
+  preview: async () => Buffer.from('ID3'),
 };
 
 let server: RunningServer;
@@ -170,6 +186,20 @@ async function open(hash: string, page?: Page): Promise<Page> {
 }
 
 const panel = (page: Page, name: string) => page.getByRole('group', { name: 'Panneau' }).getByRole('button', { name }).click();
+
+/** Once the page has handled every event sent before: the events stream answers in order. */
+async function barrier(page: Page): Promise<void> {
+  const state = page.waitForRequest((r) => r.url().endsWith('/api/state'));
+  server.services.hub.send({ type: 'projects-changed' });
+  await state;
+}
+
+/** Once the button labelled `name` takes clicks: focus() and the keyboard do not wait for it. */
+const armed = (page: Page, name: string) =>
+  page.waitForFunction(
+    (label) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.disabled === false,
+    name,
+  );
 
 /** Answers the page's GET of a project (A by default) through `edit` (music, code generation) without touching the files. */
 async function rewriteProject(page: Page, edit: (project: ProjectState) => ProjectState, id = A): Promise<void> {
@@ -401,7 +431,7 @@ describe('editor', () => {
     await page.context().close();
   });
 
-  it('runs the preview in its own process: the frame origin is another site', { timeout: 90_000 }, async () => {
+  it("runs the preview in its own process: the project's frame origin is another site", { timeout: 90_000 }, async () => {
     // Chrome isolates sites; the headless shell of the tests only does with this switch.
     const isolated = await chromium.launch({ args: ['--site-per-process'] });
     try {
@@ -413,12 +443,44 @@ describe('editor', () => {
       const cdp = await isolated.newBrowserCDPSession();
       const { targetInfos } = await cdp.send('Target.getTargets');
       const frame = targetInfos.find((target) => target.type === 'iframe' && target.url.includes('/frame.html'));
-      assert.ok(frame?.url.startsWith(`${server.config.frameOrigin}/frame.html`), JSON.stringify(targetInfos));
-      assert.equal(new URL(server.config.frameOrigin).hostname, 'localhost');
+      const origin = await frameOriginOf(server.config.frameOrigin, 'project', A);
+      assert.ok(frame?.url.startsWith(`${origin}/frame.html`), JSON.stringify(targetInfos));
+      assert.match(new URL(origin).hostname, /^p-[0-9a-f]{32}\.localhost$/);
     } finally {
       await isolated.close();
     }
   });
+
+  it(
+    "loads each project's preview from that project's own frame origin, also right after a switch",
+    { timeout: 90_000 },
+    async () => {
+      const page = await newPage();
+      const frames: URL[] = [];
+      page.on('request', (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === '/frame.html') frames.push(url);
+      });
+      try {
+        await open(`${A}/titre`, page);
+        await page.frameLocator(`iframe[src*="project=${A}&"]`).locator('#root').waitFor({ state: 'attached' });
+        // The stage stays mounted: until B's origin is hashed, A's must not be used for B's page.
+        await page.evaluate((id) => (location.hash = `#/${id}/titre`), B);
+        await page.frameLocator(`iframe[src*="project=${B}&"]`).locator('#root').waitFor({ state: 'attached', timeout: 30_000 });
+        const presented = page.waitForRequest((request) => new URL(request.url()).pathname === '/frame.html');
+        await page.getByRole('button', { name: 'Présenter', exact: true }).click();
+        await presented;
+        const projects = frames.map((url) => url.searchParams.get('project'));
+        assert.ok(projects.includes(A) && projects.filter((id) => id === B).length >= 2, JSON.stringify(projects));
+        for (const url of frames) {
+          const expected = await frameOriginOf(server.config.frameOrigin, 'project', url.searchParams.get('project')!);
+          assert.equal(url.origin, expected, url.href);
+        }
+      } finally {
+        await page.context().close();
+      }
+    },
+  );
 
   it('keeps the preview on the frame origin: scene code cannot send it to another site', { timeout: 90_000 }, async () => {
     let requests = 0;
@@ -436,7 +498,8 @@ describe('editor', () => {
         w.violations = [];
         document.addEventListener('securitypolicyviolation', (e) => w.violations.push(e.effectiveDirective));
       });
-      const preview = page.frames().find((frame) => frame.url().startsWith(`${server.config.frameOrigin}/frame.html`))!;
+      const origin = await frameOriginOf(server.config.frameOrigin, 'project', A);
+      const preview = page.frames().find((frame) => frame.url().startsWith(`${origin}/frame.html`))!;
       const outside = `http://127.0.0.1:${(other.address() as AddressInfo).port}/?data=secret`;
       // Deferred, so the evaluate returns before the frame leaves.
       await preview.evaluate((url) => void setTimeout(() => location.assign(url)), outside);
@@ -454,7 +517,7 @@ describe('editor', () => {
     }
   });
 
-  it('shows the brand kit from the frame origin: no brand code runs in the editor page', { timeout: 90_000 }, async () => {
+  it('shows the brand kit from its own frame origin: no brand code runs in the editor page', { timeout: 90_000 }, async () => {
     const page = await newPage();
     const fromEditor: string[] = [];
     page.on('request', (request) => {
@@ -468,7 +531,7 @@ describe('editor', () => {
     // Extras and copy come from the kit page, which loaded the kit; the editor only lists them.
     await page.getByText('ProfileCard', { exact: true }).waitFor({ timeout: 30_000 });
     await page.getByText(/Written to the millisecond/).waitFor();
-    // The brand fonts, loaded from the frame origin under Cadence's own names (never the kit's CSS).
+    // The brand fonts, loaded from the brand's frame origin under Cadence's own names (never the kit's CSS).
     await page.waitForFunction(() =>
       [...document.fonts].some((f) => f.family.replace(/["']/g, '') === 'Cadence brand cadence display' && f.status === 'loaded'),
     );
@@ -483,7 +546,8 @@ describe('editor', () => {
     });
     const kits = page.frames().filter((frame) => frame.url().includes('/kit.html'));
     assert.equal(kits.length, 4, 'the sheet and the three extras of the Cadence brand');
-    for (const kit of kits) assert.ok(kit.url().startsWith(`${server.config.frameOrigin}/kit.html?brand=cadence&view=`));
+    const origin = await frameOriginOf(server.config.frameOrigin, 'brand', 'cadence');
+    for (const kit of kits) assert.ok(kit.url().startsWith(`${origin}/kit.html?brand=cadence&view=`));
     assert.deepEqual(fromEditor, []);
     await page.context().close();
   });
@@ -654,7 +718,13 @@ describe('editor', () => {
   it('builds a brand from a GitHub repository and offers it for a new project', { timeout: 120_000 }, async () => {
     const page = await open(`${A}/titre`);
     await page.getByRole('button', { name: 'Nouveau projet' }).click();
-    await page.getByRole('button', { name: /Nouvelle marque/ }).click();
+    const newBrand = page.getByRole('button', { name: /Nouvelle marque/ });
+    assert.match(
+      (await newBrand.textContent()) ?? '',
+      /Depuis un dépôt GitHub/,
+      'without a host hint, the card reads as in 0.12.0',
+    );
+    await newBrand.click();
     await page.getByText('Connecté en tant que @e2e').waitFor();
     await page.getByRole('searchbox', { name: 'Rechercher un dépôt' }).fill('site');
     assert.equal(await page.getByRole('button', { name: /acme\/e2e-api/ }).count(), 0);
@@ -997,6 +1067,247 @@ describe('editor', () => {
       }
     },
   );
+
+  it(
+    'asks the person about a host the agent may not capture, and lists the hosts they allowed',
+    { timeout: 90_000 },
+    async () => {
+      const route = `/api/projects/${A}/capture-hosts`;
+      const hosts = () => api<{ hosts: string[] }>('GET', route);
+      const page = await open(A);
+      try {
+        const ask = (projectId: string, host: string, local: boolean) =>
+          server.services.hub.send({ type: 'capture-host', projectId, host, local });
+        // Whether each Allow button was disabled when it appeared: a click meant for the previous ask must not land on it.
+        await page.evaluate(() => {
+          const seen: boolean[] = [];
+          (window as unknown as { armed: boolean[] }).armed = seen;
+          new MutationObserver((records) => {
+            for (const node of records.flatMap((record) => [...record.addedNodes])) {
+              if (!(node instanceof Element)) continue;
+              for (const button of [node, ...node.querySelectorAll('button')]) {
+                if (button instanceof HTMLButtonElement && button.ariaLabel?.startsWith('Autoriser '))
+                  seen.push(!button.disabled);
+              }
+            }
+          }).observe(document.body, { childList: true, subtree: true });
+        });
+        const allow = page.getByRole('button', { name: 'Autoriser 192.168.1.10:3000' });
+        // A live region added along with its text is often not read: it is there, empty, before the ask.
+        const region = (await page.locator('aside').getByRole('status').elementHandle())!;
+        assert.equal(await region.textContent(), '');
+        const composed = () => page.evaluate(() => document.activeElement instanceof HTMLTextAreaElement);
+        // The page may not listen yet: asked until it shows.
+        for (let i = 0; i < 100 && !(await allow.count()); i++) {
+          ask(A, '192.168.1.10:3000', true);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        assert.match(
+          (await region.textContent()) ?? '',
+          /veut capturer une page de cet hôte.*192\.168\.1\.10:3000.*toutes ses pages et à tous ses ports.*Adresse locale/,
+        );
+        assert.equal(await region.$$eval('button', (buttons) => buttons.length), 0, 'the buttons stay out of what is read');
+
+        // Another ask waits for this one to be answered.
+        ask(A, 'example.com', false);
+        await barrier(page);
+        assert.deepEqual(await page.getByRole('button', { name: /^Autoriser/ }).evaluateAll((b) => b.map((el) => el.ariaLabel)), [
+          'Autoriser 192.168.1.10:3000',
+        ]);
+
+        // The click that brings the window back must not allow it either.
+        await armed(page, 'Autoriser 192.168.1.10:3000');
+        const away = await page.evaluate(async (label) => {
+          const button = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+          document.hasFocus = () => false;
+          window.dispatchEvent(new Event('blur'));
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          const blurred = button.disabled;
+          delete (document as { hasFocus?: unknown }).hasFocus;
+          window.dispatchEvent(new Event('focus'));
+          const back = performance.now();
+          for (let i = 0; i < 100 && button.disabled; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+          return { blurred, armed: !button.disabled, after: performance.now() - back };
+        }, 'Autoriser 192.168.1.10:3000');
+        assert.equal(away.blurred, true, 'disabled while the window is in the background');
+        assert.ok(away.armed && away.after >= 450, `armed ${Math.round(away.after)} ms after the window came back`);
+
+        // A failed approval leaves the ask answerable.
+        await page.route(`**${route}`, (r) =>
+          r.request().method() === 'POST' ? r.fulfill({ status: 500, json: { error: 'Approbation refusée' } }) : r.fallback(),
+        );
+        await armed(page, 'Autoriser 192.168.1.10:3000');
+        await allow.click();
+        await page.getByText('Approbation refusée').waitFor({ timeout: 10_000 });
+        await page.unroute(`**${route}`);
+        await barrier(page);
+        assert.equal(await page.getByRole('button', { name: 'Ignorer' }).isEnabled(), true);
+
+        const posted = page.waitForRequest((r) => r.url().endsWith(route) && r.method() === 'POST');
+        await armed(page, 'Autoriser 192.168.1.10:3000');
+        await allow.focus();
+        await page.keyboard.press('Enter');
+        assert.deepEqual((await posted).postDataJSON(), { host: '192.168.1.10:3000' });
+        await allow.waitFor({ state: 'detached', timeout: 10_000 });
+        assert.equal(await composed(), true, 'the focus goes on in the composer');
+        assert.deepEqual(await hosts(), { hosts: ['192.168.1.10:3000'] });
+
+        // Another project's ask never shows.
+        ask(B, 'other.test', false);
+        ask(A, 'example.com', false);
+        const dismiss = page.getByRole('button', { name: 'Ignorer' });
+        await dismiss.waitFor({ timeout: 10_000 });
+        const other = (await region.textContent()) ?? '';
+        assert.match(other, /example\.com.*toutes ses pages, pour ce projet/);
+        assert.doesNotMatch(other, /ports|Adresse locale/);
+        await dismiss.focus();
+        await page.keyboard.press('Enter');
+        await dismiss.waitFor({ state: 'detached', timeout: 10_000 });
+        assert.equal(await composed(), true);
+        assert.deepEqual(await hosts(), { hosts: ['192.168.1.10:3000'] }, 'dismissed, not allowed');
+        assert.deepEqual(await page.evaluate(() => (window as unknown as { armed: boolean[] }).armed), [false, false]);
+
+        // A dismissed host is not asked again while the project stays open.
+        ask(A, 'example.com', false);
+        await barrier(page);
+        assert.equal(await dismiss.count(), 0);
+        // That host only: another one is still asked.
+        ask(A, 'next.test', false);
+        await page.getByRole('button', { name: 'Autoriser next.test' }).waitFor({ timeout: 10_000 });
+        await dismiss.click();
+        await dismiss.waitFor({ state: 'detached', timeout: 10_000 });
+
+        await api('POST', route, { host: 'example.com' });
+        await panel(page, 'Médias');
+        const remove = page.getByRole('button', { name: 'Retirer 192.168.1.10:3000' });
+        await remove.waitFor({ timeout: 10_000 });
+        await page.getByRole('button', { name: 'Retirer example.com' }).waitFor();
+        const removed = page.waitForRequest((r) => r.url().endsWith(route) && r.method() === 'DELETE');
+        await remove.click();
+        assert.deepEqual((await removed).postDataJSON(), { host: '192.168.1.10:3000' });
+        await remove.waitFor({ state: 'detached', timeout: 10_000 });
+        assert.deepEqual(await hosts(), { hosts: ['example.com'] });
+        const focused = () => page.evaluate(() => document.activeElement?.ariaLabel ?? document.activeElement?.textContent);
+        assert.equal(await focused(), 'Retirer example.com', 'the focus goes to the host now in its place');
+        await page.keyboard.press('Enter');
+        await page.getByText('Aucun hôte autorisé').waitFor({ timeout: 10_000 });
+        assert.equal(await focused(), await page.getByText('Aucun hôte autorisé').textContent());
+        assert.deepEqual(await hosts(), { hosts: [] });
+      } finally {
+        await page.context().close();
+        for (const host of ['192.168.1.10:3000', 'example.com']) await api('DELETE', route, { host });
+      }
+    },
+  );
+
+  it('keeps a capture ask with the project it was asked for', { timeout: 90_000 }, async () => {
+    const hosts = (id: string) => api<{ hosts: string[] }>('GET', `/api/projects/${id}/capture-hosts`);
+    const page = await open(A);
+    try {
+      const shown = async (projectId: string, host: string) => {
+        const allow = page.getByRole('button', { name: `Autoriser ${host}` });
+        for (let i = 0; i < 100 && !(await allow.count()); i++) {
+          server.services.hub.send({ type: 'capture-host', projectId, host, local: false });
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        await armed(page, `Autoriser ${host}`);
+        return allow;
+      };
+      // The approval for A answers once B is open.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      await page.route(`**/api/projects/${A}/capture-hosts`, async (route) => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        await held;
+        await route.continue();
+      });
+      await (await shown(A, 'example.com')).click();
+      await page.evaluate((id) => (location.hash = `#/${id}`), B);
+      await page.getByRole('button', { name: 'Éditeur B' }).waitFor({ timeout: 30_000 });
+      assert.equal(await page.getByRole('button', { name: /^Autoriser/ }).count(), 0, "A's ask stays with A");
+
+      const other = await shown(B, 'other.test');
+      const answered = page.waitForResponse((r) => r.url().endsWith(`/api/projects/${A}/capture-hosts`));
+      release();
+      await answered;
+      await barrier(page);
+      assert.equal(await other.isEnabled(), true, "B's ask, still there and clickable");
+      assert.equal(
+        await page.evaluate(() => document.activeElement instanceof HTMLTextAreaElement),
+        false,
+        "A's late answer leaves the focus where it is",
+      );
+      await page.getByRole('button', { name: 'Ignorer' }).click();
+
+      await page.evaluate((id) => (location.hash = `#/${id}`), A);
+      await page.getByRole('button', { name: 'Éditeur A' }).waitFor({ timeout: 30_000 });
+      assert.equal(await page.getByRole('button', { name: /^Autoriser/ }).count(), 0);
+      assert.deepEqual(await hosts(A), { hosts: ['example.com'] }, 'allowed for the project that asked');
+      assert.deepEqual(await hosts(B), { hosts: [] });
+
+      // Dismissed while B was open: asked again once B is opened anew.
+      await page.evaluate((id) => (location.hash = `#/${id}`), B);
+      await page.getByRole('button', { name: 'Éditeur B' }).waitFor({ timeout: 30_000 });
+      await shown(B, 'other.test');
+    } finally {
+      await page.context().close();
+      await api('DELETE', `/api/projects/${A}/capture-hosts`, { host: 'example.com' });
+    }
+  });
+
+  it('lists the allowed hosts right when the server fails or answers out of order', { timeout: 90_000 }, async () => {
+    const route = `/api/projects/${A}/capture-hosts`;
+    for (const host of ['one.test', 'two.test']) await api('POST', route, { host });
+    let page = await open(A);
+    try {
+      await page.route(`**${route}`, (r) =>
+        r.request().method() === 'GET' ? r.fulfill({ status: 500, json: { error: 'Liste illisible' } }) : r.fallback(),
+      );
+      await panel(page, 'Médias');
+      await page.getByText('Liste illisible').waitFor({ timeout: 10_000 });
+      assert.equal(await page.getByText('Aucun hôte autorisé').count(), 0, 'unknown, not empty');
+      await page.context().close();
+
+      page = await open(A);
+      await panel(page, 'Médias');
+      const one = page.getByRole('button', { name: 'Retirer one.test' });
+      await one.waitFor({ timeout: 10_000 });
+      await page.route(`**${route}`, (r) =>
+        r.request().method() === 'DELETE' ? r.fulfill({ status: 500, json: { error: 'Retrait refusé' } }) : r.fallback(),
+      );
+      await one.click();
+      await page.getByText('Retrait refusé').waitFor({ timeout: 10_000 });
+      assert.equal(await one.count(), 1, 'still listed');
+      await page.unroute(`**${route}`);
+
+      // The server removes one.test first, its answer (two.test left) comes last.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let removed!: () => void;
+      const first = new Promise<void>((resolve) => (removed = resolve));
+      await page.route(`**${route}`, async (r) => {
+        if (r.request().method() !== 'DELETE' || r.request().postDataJSON().host !== 'one.test') return r.fallback();
+        const response = await r.fetch();
+        removed();
+        await held;
+        await r.fulfill({ response });
+      });
+      await one.click();
+      await first;
+      const second = page.waitForResponse((r) => r.url().endsWith(route) && r.request().method() === 'DELETE');
+      await page.getByRole('button', { name: 'Retirer two.test' }).click();
+      await second;
+      const last = page.waitForResponse((r) => r.url().endsWith(route) && r.request().method() === 'DELETE');
+      release();
+      await last;
+      await barrier(page);
+      assert.equal(await page.getByRole('button', { name: /^Retirer/ }).count(), 0);
+      await page.getByText('Aucun hôte autorisé').waitFor({ timeout: 10_000 });
+    } finally {
+      await page.context().close();
+      for (const host of ['one.test', 'two.test']) await api('DELETE', route, { host });
+    }
+  });
 
   it("shows the server's refusal of a line beside the lines in Voix, once", { timeout: 90_000 }, async () => {
     const { id, scene, lines } = await dialogue('dr');
@@ -2196,7 +2507,8 @@ describe('preview', () => {
     });
     await server.services.store.update(id, { language: 'fr' });
     const page = await newPage();
-    await page.goto(`${server.config.frameOrigin}/frame.html?project=${id}&scene=langue&format=16:9&mode=capture`);
+    const origin = await frameOriginOf(server.config.frameOrigin, 'project', id);
+    await page.goto(`${origin}/frame.html?project=${id}&scene=langue&format=16:9&mode=capture`);
     await page.waitForFunction(() => window.__cadence?.ready.then(() => true), undefined, { timeout: 30_000 });
     const text = async () => {
       await page.evaluate(() => window.__cadence!.seek(0.5));
@@ -2479,19 +2791,6 @@ describe('features', () => {
     },
   };
   /** A finished brand build that cost 0,42 $, added to the state the editor reads. */
-  const BUILD: BrandBuild = {
-    id: 'e2e-build',
-    brandId: 'orbit',
-    name: 'Orbit',
-    repo: 'acme/e2e-site',
-    status: 'done',
-    activity: null,
-    files: [],
-    costUsd: 0.42,
-    createdAt: '2026-10-01T10:00:00.000Z',
-    finishedAt: '2026-10-01T10:05:00.000Z',
-  };
-
   // The same lookups with every feature on, then off: a lookup that finds nothing when its section is on would make the
   // second run prove nothing.
   async function sectionCounts(features: Features): Promise<{
@@ -3036,4 +3335,167 @@ describe('archives', () => {
       await page.context().close();
     },
   );
+});
+
+describe('content security policy', () => {
+  /**
+   * The editor of `on` through a whole session (home, a project, the brand kit, a scene played, every modal) with no
+   * CSP violation, then an injected inline script, which raises one.
+   */
+  async function exercise(on: RunningServer): Promise<void> {
+    const renders = path.join(on.config.projectsDir, A, 'renders');
+    await mkdir(renders, { recursive: true });
+    await writeFile(path.join(renders, `${A}-16x9-e2e.mp4`), Buffer.alloc(2048, 1));
+    const page = await newPage();
+    try {
+      // Kept on this side: a reload would wipe a list kept in the page. The editor's own, not the frames'.
+      const violations: string[] = [];
+      await page.exposeBinding('cadenceViolation', ({ frame }, violation: string) => {
+        if (frame === page.mainFrame()) violations.push(violation);
+      });
+      await page.addInitScript(() => {
+        const w = window as unknown as { cadenceViolation: (violation: string) => Promise<void> };
+        document.addEventListener(
+          'securitypolicyviolation',
+          (e) => void w.cadenceViolation(`${e.effectiveDirective} ${e.blockedURI}`),
+        );
+      });
+      // A past turn that rendered a frame, so the chat offers the lightbox.
+      await page.route(`**/api/projects/${A}/chats/scene:titre`, (route) => {
+        if (route.request().method() !== 'GET') return route.fallback();
+        const chat: ChatState = {
+          key: 'scene:titre',
+          running: false,
+          queued: false,
+          totalCostUsd: 0,
+          messages: [
+            {
+              id: 'e2e-frames',
+              role: 'assistant',
+              text: 'Réponse factice.',
+              createdAt: '2026-10-01T10:00:00.000Z',
+              status: 'done',
+              activity: [
+                { id: 'e2e-tool', tool: 'render_frames', label: 'Rendu de 1 image', status: 'ok', images: ['/e2e.png'] },
+              ],
+            },
+          ],
+        };
+        return route.fulfill({ json: chat });
+      });
+      // A finished brand build in the top bar, so its window opens too.
+      await page.route('**/api/state', async (route) => {
+        const response = await route.fetch();
+        return route.fulfill({ response, json: { ...((await response.json()) as AppState), brandBuilds: [BUILD] } });
+      });
+      /** Opens the dialog named `name` from `opener`, then closes it with Escape. */
+      const dialog = async (opener: Locator, name: string) => {
+        await opener.click({ timeout: 30_000 });
+        await page.getByRole('dialog', { name, exact: true }).waitFor({ timeout: 30_000 });
+        await page.keyboard.press('Escape');
+        await page.getByRole('dialog').waitFor({ state: 'detached' });
+      };
+
+      await page.goto(`${on.config.editorOrigin}/`);
+      await page.getByRole('heading', { name: 'Projets' }).waitFor({ timeout: 60_000 });
+      await dialog(page.getByRole('button', { name: 'Nouveau projet' }), 'Nouveau projet');
+      await page.getByRole('button', { name: 'Nouveau projet' }).click();
+      await dialog(
+        page.getByRole('dialog', { name: 'Nouveau projet' }).getByRole('button', { name: /Nouvelle marque/ }),
+        'Nouvelle marque',
+      );
+
+      await page.goto(`${on.config.editorOrigin}/#/${A}/titre`);
+      await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
+      await page.frameLocator('iframe[src*="/frame.html"]').locator('#root').waitFor({ state: 'attached', timeout: 30_000 });
+      await dialog(page.getByRole('button', { name: 'Réglages', exact: true }), 'Réglages');
+      await dialog(page.getByRole('button', { name: 'Direction artistique', exact: true }), 'Direction artistique');
+      await dialog(page.getByRole('button', { name: 'Ajouter une scène' }), 'Ajouter une scène');
+      await dialog(page.getByRole('button', { name: /Titre \u2192 Deuxième/ }).first(), 'Raccord Titre \u2192 Deuxième');
+      await dialog(page.getByRole('button', { name: 'Agrandir l’image rendue par Claude Code' }), 'Image rendue par Claude Code');
+      await dialog(page.getByRole('button', { name: 'Présenter', exact: true }), 'Présentation');
+      await dialog(page.getByRole('button', { name: 'Éditeur A' }), 'Projets');
+      await dialog(page.getByRole('button', { name: 'Raccourcis clavier (?)' }), 'Raccourcis clavier');
+      await dialog(page.getByRole('button', { name: 'Marque « Orbit » : Prête' }), 'Marque « Orbit » prête');
+      await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+      await page.waitForTimeout(1000);
+      await page.getByRole('button', { name: 'Pause', exact: true }).click();
+      // The brand fonts come from the brand's frame origin.
+      await page.getByRole('button', { name: 'Cadence', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Marque Cadence', exact: true }).waitFor();
+      await page.waitForFunction(() =>
+        [...document.fonts].some(
+          (f) => f.family.replace(/["']/g, '') === 'Cadence brand cadence display' && f.status === 'loaded',
+        ),
+      );
+      await page.keyboard.press('Escape');
+      await page.getByRole('dialog').waitFor({ state: 'detached' });
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      await dialog(page.getByRole('button', { name: 'Publier', exact: true }).first(), 'Publier');
+      // An ElevenLabs voice's sample plays from the editor origin.
+      await api('PUT', '/api/voices/elevenlabs/key', { key: ELEVENLABS_KEY }, on);
+      await page.goto(`${on.config.editorOrigin}/#/@profil`);
+      const card = page.getByRole('listitem', { name: 'ElevenLabs' });
+      await card.getByRole('combobox', { name: 'Voix des nouveaux projets' }).selectOption('voiceAlice1', { timeout: 60_000 });
+      const sample = page.waitForResponse((r) => r.url().endsWith('/api/voices/elevenlabs/voiceAlice1/preview'));
+      await card.getByRole('button', { name: 'Écouter un extrait de la voix Alice' }).click();
+      assert.equal((await sample).status(), 200);
+      const youtube = page.getByRole('listitem', { name: 'YouTube' });
+      await dialog(youtube.getByRole('button', { name: /^(Configurer|Clés)$/ }), 'Clés de l’app YouTube');
+      const grok = page.getByRole('listitem', { name: 'Grok' });
+      await dialog(grok.getByRole('button', { name: 'Comment connecter' }), 'Connecter Grok');
+      // A copy: asserting on the list itself would narrow its type to never[] for the check below.
+      assert.deepEqual([...violations], []);
+
+      const ran = await page.evaluate(() => {
+        const script = document.createElement('script');
+        script.textContent = 'window.inlineRan = true';
+        document.head.append(script);
+        return (window as unknown as { inlineRan?: boolean }).inlineRan ?? false;
+      });
+      assert.equal(ran, false);
+      const deadline = Date.now() + 10_000;
+      while (!violations.some((v) => v.startsWith('script-src-elem inline'))) {
+        assert.ok(Date.now() < deadline, `no violation for the inline script: ${violations.join(', ')}`);
+        await page.waitForTimeout(50);
+      }
+    } finally {
+      await page.context().close();
+      await api('DELETE', '/api/voices/elevenlabs/key', undefined, on);
+    }
+  }
+
+  it('lets the built editor run with no violation, and blocks an inline script', { timeout: 180_000 }, async () => {
+    await exercise(server);
+  });
+
+  it('lets the dev editor run with no violation, and blocks an inline script', { timeout: 180_000 }, async () => {
+    const cacheDir = process.env.CADENCE_VITE_CACHE_DIR;
+    // Its own optimizer: the dev editor bundles other entries than the built one's frames.
+    process.env.CADENCE_VITE_CACHE_DIR = path.join(ROOT, 'node_modules/.vite-e2e/editor-dev');
+    const devState = path.join(os.tmpdir(), `cadence-e2e-dev-state-${process.pid}`);
+    let dev: RunningServer | undefined;
+    try {
+      dev = await startServer({
+        editorPort: 0,
+        framePort: 0,
+        quiet: true,
+        provider,
+        brandSources: { github: brandSource, gitlab: glabMissing },
+        networks: { youtube: fakeNetwork() },
+        elevenLabs,
+        root: ROOT,
+        stateDir: devState,
+        dev: true,
+      });
+      assert.match(await (await fetch(`${dev.config.editorOrigin}/`)).text(), /\/@vite\/client/);
+      await exercise(dev);
+    } finally {
+      await dev?.close();
+      // startServer() set it for its own React build; the other server and the cleanup keep theirs.
+      process.env.NODE_ENV = 'production';
+      process.env.CADENCE_VITE_CACHE_DIR = cacheDir;
+      await rm(devState, { recursive: true, force: true });
+    }
+  });
 });

@@ -9,11 +9,12 @@ import { frameStart, playbackTime } from '../lib/timeline';
 import { duckedVolume, followVoice } from '../lib/voiceOver';
 import { get, set, useStore } from '../store';
 import { FrameView, type FrameHandle } from './FrameView';
+import { useFrameOrigin } from './frameOrigin';
 
 export function Present() {
   const t = useT();
-  const app = useStore((s) => s.app)!;
   const project = useStore((s) => s.project)!;
+  const frameOrigin = useFrameOrigin('project', project.id);
   const format = useStore((s) => s.format);
   const reload = useStore((s) => s.frameReload);
   const generation = useStore((s) => s.generation);
@@ -159,21 +160,23 @@ export function Present() {
       className={clsx('no-drag fixed inset-0 z-[80] bg-black', idle && playing && 'cursor-none')}
       onPointerMove={poke}
     >
-      <FrameView
-        ref={frame}
-        frameOrigin={app.frameOrigin}
-        projectId={project.id}
-        mode="present"
-        sceneId={null}
-        format={format}
-        initialTime={0}
-        reload={reload}
-        generation={generation}
-        title={t.shell.present.frame}
-        className="pointer-events-none absolute inset-0 size-full border-0"
-        onReady={() => setReady(true)}
-        onSounds={(id, cues) => sounds.receive(id, cues)}
-      />
+      {frameOrigin && (
+        <FrameView
+          ref={frame}
+          frameOrigin={frameOrigin}
+          projectId={project.id}
+          mode="present"
+          sceneId={null}
+          format={format}
+          initialTime={0}
+          reload={reload}
+          generation={generation}
+          title={t.shell.present.frame}
+          className="pointer-events-none absolute inset-0 size-full border-0"
+          onReady={() => setReady(true)}
+          onSounds={(id, cues) => sounds.receive(id, cues)}
+        />
+      )}
       {project.musicUrl && <audio ref={audio} src={project.musicUrl} preload="auto" />}
       {project.voiceOverUrl && <audio ref={voice} src={project.voiceOverUrl} preload="auto" />}
       <div

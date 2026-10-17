@@ -2,19 +2,21 @@
 // reference screenshots of web pages. MP4 renders open their own pages with the same helpers (render.ts).
 // Adapted from saeedvaziry/caleb-video-editor (MIT)
 import { randomBytes } from 'node:crypto';
-import dns from 'node:dns/promises';
 import fs from 'node:fs/promises';
-import net from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { chromium, errors as playwrightErrors, type Browser, type BrowserContext, type Page } from 'playwright';
+import { errors as playwrightErrors, type Browser, type BrowserContext, type Page } from 'playwright';
 import { z } from 'zod';
+import { frameOriginOf } from '../../src/shared/frameOrigin';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { FORMATS, isFormatId, type FormatId, type ProjectState, type SceneState } from '../../src/shared/types';
-import { captureLocale } from '../config';
-import type { CadenceConfig, CapturedFrame, CaptureService, ProjectStore } from '../contracts';
+import { captureLocale, CHROMIUM_SANDBOX_FAILED, chromiumSandbox } from '../config';
+import type { BrowserServer, CadenceConfig, CapturedFrame, CaptureService, ChromiumOptions, ProjectStore } from '../contracts';
 import { language, m } from '../i18n';
 import { formatSeconds, HttpError, KeyedMutex, roundMs, shortHash, writeFileAtomic } from '../util';
+import { hostChromium } from './browser-host';
+import { Budget, fetchPinned, network, type Pinned, type PinnedDeps, Refused } from './pinned';
+import { type Policy, portOf, urlRefusal } from './policy';
 import { contactSheet } from './sheet';
 
 export const CHROMIUM_ARGS = [
@@ -45,30 +47,50 @@ const SLOT_MAX_GENERATIONS = 30;
 const SLOT_IDLE_MS = 3 * 60_000;
 const MOBILE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
-/** The discard port: nothing listens there, so capture pages reach nothing but their own origin (bypassed). */
+/**
+ * The discard port: nothing listens there. Frame pages reach nothing but their own origin (bypassed); reference captures
+ * bypass nothing, so whatever their routes do not answer (worker sockets, preconnects) goes nowhere, unresolved.
+ */
 const NOWHERE_PROXY = 'http://127.0.0.1:9';
-
-/** Never captured, whatever the entry point: link-local (cloud metadata), unspecified, multicast and broadcast. */
-const RESERVED = new net.BlockList();
-RESERVED.addSubnet('169.254.0.0', 16);
-RESERVED.addSubnet('0.0.0.0', 8);
-RESERVED.addSubnet('224.0.0.0', 3);
-RESERVED.addSubnet('fe80::', 10, 'ipv6');
-RESERVED.addAddress('::', 'ipv6');
-RESERVED.addSubnet('ff00::', 8, 'ipv6');
-const LOOPBACK = new net.BlockList();
-LOOPBACK.addSubnet('127.0.0.0', 8);
-LOOPBACK.addAddress('::1', 'ipv6');
+/** A reference capture's whole run: the page, its resources and the screenshot. */
+const REFERENCE_MS = 60_000;
+/** Request headers a reference capture forwards, so a site serves what it would serve this browser. */
+const FORWARDED = ['user-agent', 'accept', 'accept-language', 'referer', 'origin'];
 
 export class FrameTimeoutError extends Error {}
 
-export async function launchChromium(): Promise<Browser> {
+/** Scene code decides what its page logs, throws and answers: the server keeps this many lines of it, this long each. */
+export const MAX_PROBLEMS = 20;
+export const PROBLEM_CHARS = 2000;
+const clip = (text: unknown) => String(text).slice(0, PROBLEM_CHARS);
+
+/** What page code throws comes back as the rejection of page.evaluate: a long message is cut like a logged problem. */
+export function fromPage<T>(evaluation: Promise<T>): Promise<T> {
+  return evaluation.catch((e: unknown) => {
+    if (e instanceof Error && e.message.length <= PROBLEM_CHARS) throw e;
+    throw new Error(clip(e instanceof Error ? e.message : e));
+  });
+}
+
+/** Chromium for capture and render pages, in a child process, or in the host app's when it passes its browserServer. */
+export async function launchChromium(browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>): Promise<Browser> {
   try {
     // Playwright's own handlers would exit on Ctrl+C before Cadence stops its turns and renders, and its SIGHUP handler
     // keeps the process alive once the terminal is closed: Cadence closes the browser itself (server.close()).
-    return await chromium.launch({ args: CHROMIUM_ARGS, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false });
+    const options: ChromiumOptions = {
+      args: CHROMIUM_ARGS,
+      chromiumSandbox: chromiumSandbox(),
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
+    };
+    return await hostChromium(options, browserServer);
   } catch (e) {
-    throw new Error(m().media.capture.chromium((e as Error).message));
+    const message = (e as Error).message;
+    if (CHROMIUM_SANDBOX_FAILED.test(message))
+      throw new Error(m().media.capture.chromiumSandbox(m().media.doctor.chromiumSandboxFix));
+    // `npm run setup` installs the core's Chromium: a host app's process brings its own.
+    throw new Error(browserServer ? m().media.doctor.chromiumFailed(message) : m().media.capture.chromium(message));
   }
 }
 
@@ -86,14 +108,14 @@ export interface FramePage {
 }
 
 /**
- * A page of the frame origin in its own context. Kit and scene code are untrusted and the frame CSP covers neither
- * navigations, window.open, workers' sockets nor WebRTC: requests may only reach the frame origin, every other
+ * A page of one project's or brand's frame origin in its own context. Kit and scene code are untrusted and the frame CSP
+ * covers neither navigations, window.open, workers' sockets nor WebRTC: requests may only reach that origin, every other
  * connection goes to a proxy that is not there, popups close. `problems` collects page errors and console errors.
  */
 async function openIsolatedPage(
   browser: Browser,
   frameOrigin: string,
-  opts: { width: number; height: number; scale: number },
+  opts: { width: number; height: number; scale: number; requestSecret?: string },
 ): Promise<FramePage & { problems: string[] }> {
   const origin = new URL(frameOrigin);
   const context = await browser.newContext({
@@ -103,6 +125,9 @@ async function openIsolatedPage(
     // Service workers' requests would skip the routes below.
     serviceWorkers: 'block',
     proxy: { server: NOWHERE_PROXY, bypass: origin.hostname },
+    // HTTP requests to other origins never leave (routes below). WebSockets skip the routes and localhost skips the proxy:
+    // there, the frame CSP (connect-src 'self') is what keeps the secret on the frame origin.
+    ...(opts.requestSecret ? { extraHTTPHeaders: { 'X-Cadence-Secret': opts.requestSecret } } : {}),
   });
   try {
     // 'aborted' leaves the page where it is: the other codes show an error page, which would end the capture.
@@ -114,9 +139,12 @@ async function openIsolatedPage(
     const page = await context.newPage();
     page.on('popup', (popup) => void popup.close().catch(() => undefined));
     const problems: string[] = [];
-    page.on('pageerror', (e) => problems.push(e.message));
+    const keep = (text: string) => {
+      if (problems.length < MAX_PROBLEMS) problems.push(clip(text));
+    };
+    page.on('pageerror', (e) => keep(e.message));
     page.on('console', (message) => {
-      if (message.type() === 'error') problems.push(message.text());
+      if (message.type() === 'error') keep(message.text());
     });
     return { context, page, problems };
   } catch (e) {
@@ -125,24 +153,40 @@ async function openIsolatedPage(
   }
 }
 
-/** A frame.html page in capture mode: viewport = canvas, device pixel ratio = output scale. */
+/**
+ * A frame.html page in capture mode on the project's origin under `frameOrigin`: viewport = canvas, device pixel ratio =
+ * output scale.
+ */
 export async function openFramePage(
   browser: Browser,
   frameOrigin: string,
-  opts: { projectId: string; sceneId: string | null; format: FormatId; scale: number; captions?: boolean },
+  opts: {
+    projectId: string;
+    sceneId: string | null;
+    format: FormatId;
+    scale: number;
+    captions?: boolean;
+    requestSecret?: string;
+  },
 ): Promise<FramePage> {
   const { width, height } = FORMATS[opts.format];
-  const { context, page, problems } = await openIsolatedPage(browser, frameOrigin, { width, height, scale: opts.scale });
+  const origin = await frameOriginOf(frameOrigin, 'project', opts.projectId);
+  const { context, page, problems } = await openIsolatedPage(browser, origin, {
+    width,
+    height,
+    scale: opts.scale,
+    requestSecret: opts.requestSecret,
+  });
   try {
     const params = new URLSearchParams({ project: opts.projectId, format: opts.format, mode: 'capture' });
     if (opts.sceneId) params.set('scene', opts.sceneId);
     if (opts.captions === false) params.set('captions', '0');
-    await page.goto(`${frameOrigin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
-    if (!(await page.evaluate(() => window.__cadence !== undefined))) {
+    await page.goto(`${origin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
+    if (!(await fromPage(page.evaluate(() => window.__cadence !== undefined)))) {
       throw new Error(m().media.capture.frameNotStarted(problems));
     }
     await withTimeout(
-      page.evaluate(() => window.__cadence!.ready),
+      fromPage(page.evaluate(() => window.__cadence!.ready)),
       LOAD_TIMEOUT_MS,
       m().media.capture.frameLoadTimeout,
     );
@@ -154,12 +198,18 @@ export async function openFramePage(
 }
 
 /** Render time t and wait until it is painted. */
-export function seekFrame(page: Page, t: number, timeoutMs = RENDER_TIMEOUT_MS): Promise<FrameRenderResult> {
-  return withTimeout(
-    page.evaluate((time) => window.__cadence!.seek(time), t),
+export async function seekFrame(page: Page, t: number, timeoutMs = RENDER_TIMEOUT_MS): Promise<FrameRenderResult> {
+  const result = await withTimeout(
+    fromPage(page.evaluate((time) => window.__cadence!.seek(time), t)),
     timeoutMs,
     m().media.capture.seekTimeout(formatSeconds(t), timeoutMs / 1000),
   );
+  // frames() hands sceneId to the agent.
+  return {
+    errors: result.errors.slice(0, MAX_PROBLEMS).map(clip),
+    sceneId: typeof result.sceneId === 'string' ? clip(result.sceneId) : null,
+    localTime: Number(result.localTime),
+  };
 }
 
 /** The text checks read layout only: past this, the page is stuck (its next seek times out and drops the slot). */
@@ -234,6 +284,8 @@ export class PlaywrightCapture implements CaptureService {
   private readonly config: CadenceConfig;
   private readonly store: ProjectStore;
   private readonly timeoutMs: number;
+  private readonly browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
+  private readonly pinned: PinnedDeps;
   private browserPromise: Promise<Browser> | null = null;
   /** Captures queued behind a slot lock must not launch a new Chromium once the service is closed. */
   private closed = false;
@@ -242,16 +294,25 @@ export class PlaywrightCapture implements CaptureService {
   /** Code generations restart at 0 in every process: cached thumbnails of an earlier run must never match. */
   private readonly run = randomBytes(4).toString('hex');
 
-  constructor(deps: { config: CadenceConfig; store: ProjectStore; renderTimeoutMs?: number }) {
+  constructor(deps: {
+    config: CadenceConfig;
+    store: ProjectStore;
+    renderTimeoutMs?: number;
+    browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
+    /** How reference captures resolve and dial: the network unless a test stands in. */
+    pinned?: PinnedDeps;
+  }) {
     this.config = deps.config;
     this.store = deps.store;
     this.timeoutMs = deps.renderTimeoutMs ?? RENDER_TIMEOUT_MS;
+    this.browserServer = deps.browserServer;
+    this.pinned = deps.pinned ?? network;
   }
 
   private browser(): Promise<Browser> {
     if (this.closed) return Promise.reject(new HttpError(503, m().media.capture.stopping));
     if (!this.browserPromise) {
-      const launching = launchChromium();
+      const launching = launchChromium(this.browserServer);
       this.browserPromise = launching;
       launching.then(
         (browser) =>
@@ -306,6 +367,7 @@ export class PlaywrightCapture implements CaptureService {
           format,
           scale,
           captions,
+          requestSecret: this.config.requestSecret,
         });
         slot = { ...opened, uses: 0, generation, generations: 0 };
         this.slots.set(key, slot);
@@ -319,13 +381,13 @@ export class PlaywrightCapture implements CaptureService {
       try {
         const { page } = slot;
         await withTimeout(
-          page.evaluate((g) => window.__cadence!.reload(g), generation),
+          fromPage(page.evaluate((g) => window.__cadence!.reload(g), generation)),
           this.timeoutMs,
           m().media.reloadTimeout,
         );
         if (sceneId) {
           await withTimeout(
-            page.evaluate((id) => window.__cadence!.setScene(id), sceneId),
+            fromPage(page.evaluate((id) => window.__cadence!.setScene(id), sceneId)),
             this.timeoutMs,
             m().media.capture.sceneLoadTimeout,
           );
@@ -409,24 +471,29 @@ export class PlaywrightCapture implements CaptureService {
     opts: { scale?: number } = {},
   ): Promise<{ image: Buffer; problems: string[]; loaded: boolean }> {
     const browser = await this.browser();
-    const { context, page, problems } = await openIsolatedPage(browser, this.config.frameOrigin, {
+    const origin = await frameOriginOf(this.config.frameOrigin, 'brand', brandId);
+    const { context, page, problems } = await openIsolatedPage(browser, origin, {
       width: 1920,
       height: 1080,
       scale: opts.scale ?? 0.5,
+      requestSecret: this.config.requestSecret,
     });
     try {
       const params = new URLSearchParams({ brand: brandId, v: String(Date.now()) });
-      await page.goto(`${this.config.frameOrigin}/kit.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
+      await page.goto(`${origin}/kit.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
       const sheet = await withTimeout(
-        page.evaluate(
-          (missing) => window.__cadenceKit?.ready ?? { problems: [missing], loaded: true },
-          m().media.capture.kitNotStarted,
+        fromPage(
+          page.evaluate(
+            (missing) => window.__cadenceKit?.ready ?? { problems: [missing], loaded: true },
+            m().media.capture.kitNotStarted,
+          ),
         ),
         LOAD_TIMEOUT_MS,
         m().media.capture.kitLoadTimeout,
       );
       const image = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: true, timeout: 30_000 });
-      return { image, problems: [...new Set([...sheet.problems, ...problems])], loaded: sheet.loaded };
+      const found = [...new Set([...sheet.problems.slice(0, MAX_PROBLEMS), ...problems])].slice(0, MAX_PROBLEMS).map(clip);
+      return { image, problems: found, loaded: sheet.loaded };
     } finally {
       await context.close().catch(() => undefined);
     }
@@ -436,72 +503,79 @@ export class PlaywrightCapture implements CaptureService {
     return contactSheet(await this.browser(), tiles, layout);
   }
 
-  async screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean }): Promise<Buffer> {
-    let target: URL;
-    try {
-      target = new URL(url);
-    } catch {
-      throw new HttpError(400, m().media.capture.invalidUrl(url));
-    }
-    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-      throw new HttpError(400, m().media.capture.httpOnly);
-    }
-    // Every request is checked, per origin: local dev sites are fine, Cadence itself and reserved addresses are not.
+  async screenshotUrl(url: string, opts: { device: 'desktop' | 'mobile'; fullPage?: boolean; policy: Policy }): Promise<Buffer> {
     const ownPorts = [this.config.editorPort, this.config.framePort];
-    const checked = new Map<string, Promise<string | null>>();
-    const check = (href: string): Promise<string | null> => {
-      const url = new URL(href);
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') return Promise.resolve(null);
-      let reason = checked.get(url.origin);
-      if (!reason) checked.set(url.origin, (reason = refusal(url, ownPorts)));
-      return reason;
-    };
-    const first = await check(target.href);
-    if (first) throw new HttpError(400, first);
+    const policy: Policy = { ...opts.policy, allowsPort: (port) => !ownPorts.includes(port) && opts.policy.allowsPort(port) };
+    const refusal = urlRefusal(url, policy, true);
+    if (refusal) throw captureError(new Refused(refusal, url), url, ownPorts);
+    const done = new AbortController();
+    const budget = new Budget(AbortSignal.any([AbortSignal.timeout(REFERENCE_MS), done.signal]), policy);
     const browser = await this.browser();
     const context = await browser.newContext({
       ...(opts.device === 'mobile'
         ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: MOBILE_UA }
         : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }),
-      // Service workers' requests would skip the route below.
+      // Service workers' requests would skip the routes below.
       serviceWorkers: 'block',
+      // Chromium itself reaches nothing: every request is answered by the routes, from the pinned fetch.
+      proxy: { server: NOWHERE_PROXY },
     });
-    let refused = null as string | null;
-    const pending: Promise<void>[] = [];
     try {
+      // A socket closed before it opens: Vite's client only reloads once a socket that had opened closes.
+      await context.routeWebSocket(
+        () => true,
+        (ws) => ws.close(),
+      );
+      // The page itself is fetched before Chromium opens it, so its refusals and errors are the capture's.
+      let landing: Fulfilled | null = null;
       await context.route('**', async (route) => {
-        const reason = await check(route.request().url());
-        await (reason ? route.abort('aborted') : route.continue()).catch(() => undefined);
-      });
-      // Routes never see redirect hops (Playwright follows them itself), so each hop is checked as it starts and a
-      // refused one voids the capture. That hop still gets its request; a checking forward proxy would stop it.
-      context.on('request', (request) => {
-        if (!request.redirectedFrom()) return;
-        const hop = check(request.url()).then((reason) => {
-          if (!reason || refused) return;
-          refused = reason;
-          void context.close().catch(() => undefined);
-        });
-        pending.push(hop);
+        const request = route.request();
+        const response = await (async () => {
+          // ponytail: GET only, a page that posts its data (forms, GraphQL) renders without it.
+          if (request.method() !== 'GET') return null;
+          const top = request.isNavigationRequest() && request.frame().parentFrame() === null;
+          if (top && landing) {
+            const response = landing;
+            landing = null;
+            return response;
+          }
+          const headers = request.headers();
+          const pinned = await fetchPinned(request.url(), budget, this.pinned, {
+            headers: pick(headers, FORWARDED),
+            sameOrigin: true,
+            navigation: top,
+          });
+          // Playwright 1.63's fulfill grants the page's origin a cross-origin answer that does not name one: the site's
+          // own CORS headers decide, as they would in a browser.
+          const crossOrigin = headers.origin !== undefined && headers.origin !== new URL(request.url()).origin;
+          if (crossOrigin && pinned.headers['access-control-allow-origin'] === undefined) return null;
+          return fulfilled(pinned);
+        })().catch(() => null);
+        await (response ? route.fulfill(response) : route.abort('aborted')).catch(() => undefined);
       });
       const page = await context.newPage();
-      const shot = await (async () => {
-        try {
-          await page.goto(target.href, { waitUntil: 'networkidle', timeout: 30_000 });
-        } catch (e) {
-          // Pages that keep polling never go idle: take what has loaded after 30 s.
-          if (!(e instanceof playwrightErrors.TimeoutError)) {
-            throw new HttpError(502, m().media.capture.openFailed(target.href, (e as Error).message.split('\n')[0]));
-          }
-        }
-        await sleep(500);
-        return page.screenshot({ type: 'png', fullPage: Boolean(opts.fullPage), timeout: 30_000 });
-      })().catch((e: unknown) => (e instanceof Error ? e : new Error(String(e))));
-      await Promise.all(pending);
-      if (refused) throw new HttpError(400, refused);
-      if (shot instanceof Error) throw shot;
-      return shot;
+      context.on('page', (popup) => void popup.close().catch(() => undefined));
+      const userAgent = await page.evaluate(() => navigator.userAgent);
+      const first = await fetchPinned(url, budget, this.pinned, {
+        headers: { 'user-agent': userAgent },
+        navigation: true,
+      }).catch((e: unknown) => {
+        throw captureError(e, url, ownPorts);
+      });
+      // Opened at its final URL, so a redirected page's relative links resolve there.
+      const final = new URL(first.url);
+      final.hash = '';
+      landing = fulfilled(first);
+      try {
+        await page.goto(final.href, { waitUntil: 'networkidle', timeout: 30_000 });
+      } catch (e) {
+        // Pages that keep polling never go idle: take what has loaded after 30 s.
+        if (!(e instanceof playwrightErrors.TimeoutError)) throw captureError(e, url, ownPorts);
+      }
+      await sleep(500);
+      return await page.screenshot({ type: 'png', fullPage: Boolean(opts.fullPage), timeout: 30_000 });
     } finally {
+      done.abort();
       await context.close().catch(() => undefined);
     }
   }
@@ -515,22 +589,64 @@ export class PlaywrightCapture implements CaptureService {
   }
 }
 
-/**
- * Why a reference capture may not load `url`, or null. Host names are resolved: a public name may point at a reserved
- * address. Local dev servers stay allowed (a documented use), except Cadence's own ports.
- * Chromium resolves the name again: a DNS answer that changes in between (rebinding) is not caught.
- */
-async function refusal(url: URL, ownPorts: number[]): Promise<string | null> {
-  const host = url.hostname.replace(/^\[(.*)\]$/, '$1');
-  const addresses = await dns.lookup(host, { all: true }).catch(() => []);
-  if (addresses.length === 0) return m().media.capture.hostNotFound(url.hostname);
-  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-  for (const { address, family } of addresses) {
-    const type = family === 6 ? 'ipv6' : 'ipv4';
-    if (RESERVED.check(address, type)) {
-      return m().media.capture.reserved(url.hostname, address === host ? null : address);
-    }
-    if (LOOPBACK.check(address, type) && ownPorts.includes(port)) return m().media.capture.itself;
+function pick(headers: Record<string, string>, names: string[]): Record<string, string> {
+  return Object.fromEntries(names.filter((name) => headers[name] !== undefined).map((name) => [name, headers[name]]));
+}
+
+type Fulfilled = { status: number; headers: Record<string, string>; body: Buffer };
+
+function fulfilled({ status, headers, body }: Pinned): Fulfilled {
+  const flat = Object.entries(headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(', ') : (value ?? '')]);
+  return { status, headers: Object.fromEntries(flat), body };
+}
+
+/** The agent's capture of a host the person has not approved for its project: they get asked (a capture-host event). */
+export class UnapprovedHost extends HttpError {
+  constructor(readonly host: string) {
+    super(403, m().media.capture.notApproved(host));
   }
-  return null;
+}
+
+/**
+ * What a reference capture tells the person, and the agent: never the page's or the network's own words. A redirect's
+ * target shows as its host only, at most a DNS name long.
+ */
+export function captureError(e: unknown, target: string, ownPorts: number[]): HttpError {
+  const capture = m().media.capture;
+  if (e instanceof Refused) {
+    const url = URL.parse(e.href);
+    const host = (url?.hostname ?? '').slice(0, 253);
+    switch (e.reason) {
+      case 'invalid':
+        return e.href === target
+          ? new HttpError(400, capture.invalidUrl(target))
+          : new HttpError(502, capture.openFailed(target, capture.badRedirect));
+      case 'protocol':
+        return new HttpError(400, capture.httpOnly);
+      case 'host':
+        return new UnapprovedHost((url?.host ?? '').slice(0, 259));
+      case 'port':
+        return new HttpError(
+          400,
+          url && ownPorts.includes(portOf(url)) ? capture.itself : capture.port((url?.host ?? '').slice(0, 259)),
+        );
+      case 'credentials':
+        return new HttpError(400, capture.credentials);
+      case 'unresolved':
+        return new HttpError(400, capture.hostNotFound(host));
+      case 'private':
+        return new HttpError(400, capture.reserved(host));
+      case 'redirects':
+        return new HttpError(502, capture.openFailed(target, capture.redirects));
+      case 'too-large':
+      case 'budget':
+        return new HttpError(502, capture.openFailed(target, capture.tooLarge));
+      case 'slow':
+        return new HttpError(502, capture.openFailed(target, capture.slow));
+    }
+  }
+  const { name, code } = e as { name?: string; code?: unknown };
+  if (name === 'AbortError' || name === 'TimeoutError') return new HttpError(502, capture.openFailed(target, capture.slow));
+  const detail = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : capture.unreachable;
+  return new HttpError(502, capture.openFailed(target, detail));
 }

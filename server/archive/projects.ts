@@ -20,7 +20,7 @@ import { readTar, writeTar, type TarEntry, type TarFile } from './tar';
 
 /** The .cadence/ folders that are the project's history; the rest of .cadence/ is cache or tied to this machine. */
 const TRAVELLING_STATE = new Set(['chats', 'versions', 'voice-over']);
-/** Never travels: the frame build refuses node_modules and package.json under a project or a brand (see frames/vite.ts). */
+/** Never travels: no project or brand needs a node_modules or package.json, through which a bare import would resolve. */
 const local = (segment: string) => segment.startsWith('.') || isResolverInput(segment);
 
 /**

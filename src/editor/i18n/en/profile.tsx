@@ -30,6 +30,8 @@ export default {
     inUse: 'In use',
     setup: 'How to connect',
     soon: 'Soon',
+    unconfined: (name: string) =>
+      `This version of ${name} cannot limit its access to the project's folders: update it to use it.`,
     help: {
       title: (name: string) => `Connect ${name}`,
       installIntro: (name: string) => `${name} runs through its CLI. Install it, then log in.`,

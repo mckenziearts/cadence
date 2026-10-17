@@ -1,4 +1,4 @@
-// Bridge to frame.html, which runs on the FRAME origin: a cross-origin iframe driven by postMessage only
+// Bridge to frame.html, which runs on the project's own frame origin: a cross-origin iframe driven by postMessage only
 // (src/shared/frameProtocol.ts). Both sides check origins; the editor also checks the message comes from its iframe.
 import { useEffect, useImperativeHandle, useMemo, useRef, type CSSProperties, type Ref } from 'react';
 import type { EditorToFrame, FrameToEditor } from '../../shared/frameProtocol';
@@ -15,6 +15,7 @@ type Outgoing = EditorToFrame extends infer M ? (M extends { source: 'cadence-ed
 
 interface Props {
   ref?: Ref<FrameHandle>;
+  /** The project's own origin (useFrameOrigin in ./frameOrigin). */
   frameOrigin: string;
   projectId: string;
   mode: 'editor' | 'present';

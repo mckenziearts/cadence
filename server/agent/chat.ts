@@ -637,9 +637,9 @@ export class ChatManager implements ChatService {
           break;
         }
         case 'done':
-          // Claude Code: "No conversation found"; Codex: a missing thread on resume.
-          const sessionLost = /no conversation found|session not found|thread .*not found|failed to resume/i;
-          if (agentTurn.resume && ev.isError && sessionLost.test(ev.text)) return 'session-lost';
+          // Claude Code says "No conversation found"; Codex reports a missing thread as the session_lost subtype.
+          const sessionLost = ev.subtype === 'session_lost' || /no conversation found/i.test(ev.text);
+          if (agentTurn.resume && ev.isError && sessionLost) return 'session-lost';
           if (ev.sessionId) chat.sessionId = ev.sessionId;
           reply.durationMs = ev.durationMs || Date.now() - started;
           // Claude Code reports a running session total (subtract the previous run); Codex reports this turn's tokens, no cost.

@@ -47,7 +47,7 @@ import {
   writeFileAtomic,
 } from '../util';
 import { sidecarFile } from './elevenlabs';
-import { levels } from './levels';
+import { LEVELS_PER_SECOND, levels } from './levels';
 import { VOICES, defaultVoiceOver, voiceParts, voiceSpec, voiceUrl, type VoiceSpec } from './voices';
 import { readWav, wavSeconds, writeWav, type Pcm } from './wav';
 import { stripAudioTags, wordsByProrata } from './words';
@@ -58,6 +58,12 @@ const SYNC_DELAY_MS = 400;
 const OVERLAP_RAMP_S = 0.02;
 /** The pause before a line when another speaker takes the turn. */
 const TURN_GAP_S = 0.2;
+/** The silence heard at least between two sentences of one speaker: ElevenLabs trims each sentence to its words. */
+const SENTENCE_PAUSE_S = 0.15;
+/** A 40 ms window under this level (the sentence's loudest is 255, about -30 dB) is silence. */
+const QUIET_LEVEL = 8;
+/** Each sentence fades in and out over this in the track, so a sentence cut on a sound does not click. */
+const SENTENCE_FADE_S = 0.008;
 
 /** What `<hash>.json` keeps beside a spoken sentence's WAV, in sentence seconds. */
 const sidecarSchema = z.object({
@@ -143,6 +149,16 @@ export class LocalVoiceOverService implements VoiceOverService {
     const key = await this.elevenLabsKey();
     const [voices, models] = await Promise.all([this.deps.elevenLabs.voices(key), this.deps.elevenLabs.models(key)]);
     return { voices, models };
+  }
+
+  async elevenLabsPreview(voice: string): Promise<Buffer> {
+    const { elevenLabs } = this.deps;
+    if (!elevenLabs.preview) throw new HttpError(404, m().media.voiceOver.elevenLabsNoPreview);
+    // ponytail: the voices list again for each sample, a few clicks at most.
+    const voices = await elevenLabs.voices(await this.elevenLabsKey());
+    const url = voices.find((v) => v.id === voice)?.previewUrl;
+    if (!url) throw new HttpError(404, m().media.voiceOver.elevenLabsNoPreview);
+    return elevenLabs.preview(url);
   }
 
   async setElevenLabsKey(key: string | null): Promise<void> {
@@ -273,10 +289,13 @@ export class LocalVoiceOverService implements VoiceOverService {
       const rate = Math.max(...sentences.map((sentence) => sentence.sampleRate));
       const mix = new Int32Array(Math.ceil(Math.max(...lines.map((l) => l.end)) * rate));
       const spans: [number, number][] = [];
+      const fade = Math.round(SENTENCE_FADE_S * rate);
       for (const [i, line] of lines.entries()) {
         const at = Math.round(line.start * rate);
         const source = resample(sentences[i], rate);
-        for (let j = 0; j < source.length && at + j < mix.length; j++) mix[at + j] += source[j];
+        for (let j = 0; j < source.length && at + j < mix.length; j++) {
+          mix[at + j] += Math.round(source[j] * fadeGain(Math.min(j, source.length - 1 - j), fade));
+        }
         spans.push([at, Math.min(mix.length, at + source.length)]);
       }
       // A sentence that runs into the next scene's voice-over overlaps it: both are heard, and where their sum would
@@ -471,8 +490,8 @@ export class LocalVoiceOverService implements VoiceOverService {
 
 /**
  * Each scene's sentences one after the other from `scene.start + at`, in video seconds, with a short pause where another
- * speaker takes the turn. A scene with a sentence not spoken yet has no line at all: where its later sentences fall is
- * not known.
+ * speaker takes the turn, and between one speaker's sentences the silence they lack for a pause. A scene with a sentence
+ * not spoken yet has no line at all: where its later sentences fall is not known.
  */
 function place(planned: { scene: SceneState; sentences: Sentence[] }[]): PlacedLine[] {
   const lines: PlacedLine[] = [];
@@ -480,8 +499,10 @@ function place(planned: { scene: SceneState; sentences: Sentence[] }[]): PlacedL
     if (sentences.some((s) => !s.spoken)) continue;
     let t = scene.start + (scene.voiceOver?.at ?? 0);
     for (const [i, { text, file, speaker, gesture, line, spoken }] of sentences.entries()) {
-      if (i > 0 && speaker !== sentences[i - 1].speaker) t += TURN_GAP_S;
       const { seconds, words, level } = spoken!;
+      const previous = sentences[i - 1];
+      if (previous && speaker !== previous.speaker) t += TURN_GAP_S;
+      else if (previous) t += Math.max(0, SENTENCE_PAUSE_S - silence(previous.spoken!.level.toReversed()) - silence(level));
       lines.push({
         sceneId: scene.id,
         text: stripAudioTags(text),
@@ -498,6 +519,17 @@ function place(planned: { scene: SceneState; sentences: Sentence[] }[]): PlacedL
     }
   }
   return lines;
+}
+
+/** Seconds of silence a sentence's `level` starts with. */
+function silence(level: number[]): number {
+  const loud = level.findIndex((value) => value >= QUIET_LEVEL);
+  return (loud === -1 ? level.length : loud) / LEVELS_PER_SECOND;
+}
+
+/** Raised-cosine gain of a sample `k` samples from a sentence's nearest end, over a fade of `fade` samples. */
+function fadeGain(k: number, fade: number): number {
+  return k < fade ? 0.5 - 0.5 * Math.cos((Math.PI * k) / fade) : 1;
 }
 
 /** `pcm`'s samples at `rate`, linearly interpolated. */

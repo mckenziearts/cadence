@@ -26,13 +26,13 @@ export function loadConfig(overrides: Partial<CadenceConfig> = {}): CadenceConfi
     framePort,
     editorOrigin,
     // The same loopback under another name: another site for Chrome, which then runs the preview in its own process, off
-    // the editor's main thread. Both servers still listen on 127.0.0.1 only.
+    // the editor's main thread. Both servers still listen on the loopback only (127.0.0.1 and ::1).
     frameOrigin: `http://localhost:${framePort}`,
     mcpUrl: `${editorOrigin}/mcp`,
     ffmpegPath: env.FFMPEG_PATH || 'ffmpeg',
     ffprobePath: env.FFPROBE_PATH || 'ffprobe',
-    claudePath: env.CLAUDE_PATH || 'claude',
-    codexPath: env.CODEX_PATH || 'codex',
+    claudePath: binPath(env.CLAUDE_PATH, 'claude'),
+    codexPath: binPath(env.CODEX_PATH, 'codex'),
     grokPath: env.GROK_PATH || 'grok',
     geminiPath: env.GEMINI_PATH || 'gemini',
     piperPath: env.PIPER_PATH || 'piper',
@@ -57,6 +57,26 @@ export function captureLocale(): string {
   } catch {
     throw new Error(m().media.config.locale(value));
   }
+}
+
+/**
+ * Chromium's own sandbox around the pages that run brand and scene code, which Playwright turns off unless asked. On
+ * unless CADENCE_CHROMIUM_SANDBOX=0: a container, or a Linux host without unprivileged user namespaces.
+ */
+export function chromiumSandbox(): boolean {
+  return process.env.CADENCE_CHROMIUM_SANDBOX !== '0';
+}
+
+/** Playwright's launch error when the sandbox cannot start (no unprivileged user namespaces). */
+export const CHROMIUM_SANDBOX_FAILED = /Chromium sandboxing failed/i;
+
+/**
+ * A relative path to an agent CLI, resolved now: spawn would resolve it against the turn's folder, which the agent can
+ * write. A bare name stays a PATH lookup.
+ */
+function binPath(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  return value.includes('/') || value.includes(path.sep) ? path.resolve(value) : value;
 }
 
 function parsePort(name: string, value: string | undefined, fallback: number): number {

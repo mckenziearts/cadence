@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_FEATURES, type BrandBuild, type GitHost, type RepoListing, type RepoSummary } from '../../shared/types';
 import { api, ignore } from '../api';
 import { AgentPicker } from '../components/AgentPicker';
+import { useFrameOrigin } from '../components/frameOrigin';
 import { GIT_LOGOS } from '../components/logos';
 import { BeatPills, Button, ConfirmButton, Field, Kbd, Modal, Segmented, Spinner, fieldBase } from '../components/ui';
 import { useT } from '../i18n';
@@ -264,7 +265,7 @@ const BOARD_SCALE = 0.6;
 
 function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: BrandBuild) => void }) {
   const t = useT();
-  const frameOrigin = useStore((s) => s.app?.frameOrigin ?? '');
+  const frameOrigin = useFrameOrigin('brand', build.brandId);
   const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const live = !build.finishedAt;
   const step = STEPS.findIndex((s) => s.statuses.includes(build.status));
@@ -388,14 +389,16 @@ function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: 
         {build.status === 'done' && (
           <figure className="space-y-1.5">
             <div className="relative h-[360px] overflow-hidden border-2 border-ink bg-white">
-              <iframe
-                title={t.dialogs.newBrand.progress.board(build.name)}
-                src={`${frameOrigin}/kit.html?brand=${encodeURIComponent(build.brandId)}&v=${encodeURIComponent(build.finishedAt ?? '')}`}
-                // Own origin kept (it fetches the brand); no navigation, popups or forms.
-                sandbox="allow-scripts allow-same-origin"
-                className="absolute top-0 left-0 origin-top-left border-0"
-                style={{ width: `${100 / BOARD_SCALE}%`, height: `${100 / BOARD_SCALE}%`, transform: `scale(${BOARD_SCALE})` }}
-              />
+              {frameOrigin && (
+                <iframe
+                  title={t.dialogs.newBrand.progress.board(build.name)}
+                  src={`${frameOrigin}/kit.html?brand=${encodeURIComponent(build.brandId)}&v=${encodeURIComponent(build.finishedAt ?? '')}`}
+                  // Own origin kept (it fetches the brand); no navigation, popups or forms.
+                  sandbox="allow-scripts allow-same-origin"
+                  className="absolute top-0 left-0 origin-top-left border-0"
+                  style={{ width: `${100 / BOARD_SCALE}%`, height: `${100 / BOARD_SCALE}%`, transform: `scale(${BOARD_SCALE})` }}
+                />
+              )}
             </div>
             <figcaption className="text-xs text-ink-3">{t.dialogs.newBrand.progress.boardCaption}</figcaption>
           </figure>

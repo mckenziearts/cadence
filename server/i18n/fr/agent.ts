@@ -74,6 +74,12 @@ export default {
   },
   codex: {
     notLoggedIn: 'Codex n’est pas connecté : ouvrez un terminal, lancez « codex login », puis réessayez.',
+    unconfined: (agent: string | null) =>
+      agent
+        ? `Cette version de ${agent} ne sait pas limiter ses accès aux dossiers du projet : mettez ${agent} à jour, puis réessayez.`
+        : 'Notre IA ne sait pas limiter ses accès aux dossiers du projet sur cet ordinateur : mettez-la à jour, puis réessayez.',
+    probeFailed: (error: string) => `Impossible de vérifier que Codex reste dans les dossiers du projet : ${error}`,
+    linkedTarget: (file: string) => `Tour refusé : « ${file} » passe par un lien symbolique. Supprimez ce lien, puis réessayez.`,
     exitCode: (code: number) => `code de sortie ${code}`,
     notFound: (bin: string, error: string) =>
       `Codex est introuvable (« ${bin} ») : installez-le et connectez-vous, ou réglez CODEX_PATH. (${error})`,

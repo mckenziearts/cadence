@@ -8,7 +8,7 @@ import { AGENT_NAMES, type AgentStatus, type UsageTokens } from '../../src/share
 import type { CadenceConfig } from '../contracts';
 import { m } from '../i18n';
 import { NO_TOKENS } from '../usage';
-import { AsyncQueue } from '../util';
+import { AsyncQueue, absolutePath } from '../util';
 import type { AgentEvent, AgentProvider, AgentTurn } from './types';
 
 type Json = Record<string, any>;
@@ -37,6 +37,9 @@ export function claudeEnv(source: NodeJS.ProcessEnv, useApiKey: boolean): NodeJS
     if (!NESTED_SESSION_VARS.has(name) && !NESTED_SESSION_PREFIX.test(name)) env[name] = value;
   }
   if (!useApiKey) delete env.ANTHROPIC_API_KEY;
+  if (env.PATH !== undefined) env.PATH = absolutePath(env.PATH);
+  // An empty PATH makes spawn look a bare command up in the turn folder; with no PATH it uses the system default.
+  if (!env.PATH) delete env.PATH;
   // render_frames, check_seams and check_motion capture real frames; allow long tool calls and large image results.
   env.MCP_TOOL_TIMEOUT = '300000';
   env.MAX_MCP_OUTPUT_TOKENS = '120000';

@@ -1,10 +1,11 @@
 // Media: project assets (images, SVG, fonts) and reference captures the agent reads to rebuild interfaces.
 import clsx from 'clsx';
-import { Camera, Code2, FileQuestion, ImagePlus, Monitor, Smartphone, Trash2, Upload } from 'lucide-react';
+import { Camera, Code2, FileQuestion, ImagePlus, Monitor, Smartphone, Trash2, Upload, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type { AssetInfo } from '../../shared/types';
 import { api, ignore } from '../api';
-import { Button, Checkbox, ConfirmButton, EmptyState, Segmented, SectionTitle, inputClass } from '../components/ui';
+import { Button, Checkbox, ConfirmButton, EmptyState, IconButton, Segmented, SectionTitle, inputClass } from '../components/ui';
 import { useT } from '../i18n';
 import { bytes } from '../lib/format';
 import { useStore } from '../store';
@@ -77,6 +78,7 @@ export function MediaPanel() {
         )}
       </section>
       <References refs={refs} onChange={load} />
+      <CaptureHosts key={project.id} />
     </div>
   );
 }
@@ -316,6 +318,69 @@ function References({ refs, onChange }: { refs: AssetInfo[]; onChange: () => voi
                   await api.deleteAsset(project.id, asset.path);
                   onChange();
                 }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// Allowed hosts
+
+function CaptureHosts() {
+  const texts = useT().conversation.captureHosts;
+  const agent = useAgentName();
+  const project = useStore((s) => s.project)!;
+  const [hosts, setHosts] = useState<string[] | null>(null);
+  const list = useRef<HTMLUListElement>(null);
+  const none = useRef<HTMLParagraphElement>(null);
+
+  // Keyed by project: a late answer for another project lands on an unmounted list.
+  useEffect(() => {
+    api
+      .captureHosts(project.id)
+      .then((answer) => setHosts(answer.hosts))
+      .catch(ignore);
+  }, [project.id]);
+
+  // Two removals in flight may answer in either order: each one drops its own host only.
+  const remove = async (host: string, index: number) => {
+    try {
+      await api.removeCaptureHost(project.id, host);
+    } catch {
+      return; // toast shown
+    }
+    flushSync(() => setHosts((hosts) => hosts && hosts.filter((h) => h !== host)));
+    // The focused button left with its host: the focus goes to the button now in its place, not to the top of the page.
+    if (document.activeElement !== document.body) return;
+    const buttons = list.current?.querySelectorAll('button');
+    (buttons?.[Math.min(index, buttons.length - 1)] ?? none.current)?.focus();
+  };
+
+  return (
+    <section className="space-y-2.5">
+      <SectionTitle>{texts.title}</SectionTitle>
+      <p className="text-xs leading-relaxed text-ink-3">{texts.hint(agent)}</p>
+      {hosts?.length === 0 && (
+        <p ref={none} tabIndex={-1} className="text-[12.5px] text-ink-3 outline-none">
+          {texts.none}
+        </p>
+      )}
+      {hosts && hosts.length > 0 && (
+        <ul ref={list} className="space-y-1.5">
+          {hosts.map((host, index) => (
+            <li key={host} className="flex items-center gap-2 rounded-xl py-1.5 pr-1.5 pl-3 ring-1 ring-rule">
+              <span dir="ltr" className="min-w-0 flex-1 font-mono text-[12.5px] break-all text-ink-2">
+                {host}
+              </span>
+              <IconButton
+                size="xs"
+                variant="secondary"
+                label={texts.remove(host)}
+                icon={<X className="size-3" />}
+                onClick={() => void remove(host, index)}
               />
             </li>
           ))}

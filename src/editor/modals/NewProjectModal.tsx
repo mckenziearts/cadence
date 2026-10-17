@@ -27,6 +27,7 @@ export function NewProjectModal({ brand: initialBrand }: { brand?: string | null
   const t = useT();
   const app = useStore((s) => s.app)!;
   const newBrand = useStore((s) => s.newBrand);
+  const newBrandHint = useStore((s) => s.newBrandHint);
   const [name, setName] = useState('');
   const [brand, setBrand] = useState<string>(initialBrand ?? app.brands[0]?.id ?? 'cadence');
   const [template, setTemplate] = useState<string | null>(null);
@@ -197,7 +198,7 @@ export function NewProjectModal({ brand: initialBrand }: { brand?: string | null
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] font-semibold text-ink">{t.dialogs.newProject.newBrand}</span>
-                <span className="block truncate text-xs text-ink-3">{t.dialogs.newProject.newBrandHint}</span>
+                <span className="block truncate text-xs text-ink-3">{newBrandHint ?? t.dialogs.newProject.newBrandHint}</span>
               </span>
             </button>
           </div>

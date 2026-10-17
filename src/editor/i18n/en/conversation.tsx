@@ -136,4 +136,18 @@ export default {
     noCaptures: 'No captures',
     noCapturesHint: (agent: string | null) => `Capture a page of your product: ${agent ?? 'our AI'} uses it as a reference.`,
   },
+  captureHosts: {
+    asked: (agent: string | null) => `${agent ?? 'Our AI'} wants to capture a page from this host:`,
+    scope: 'Allowing it gives access to all of its pages, for this project only.',
+    scopeLocal: 'Allowing it gives access to all of its pages and ports, for this project only.',
+    local: 'Local address: it leads to your computer or your network. Allow it only if you know what it is for.',
+    allow: 'Allow',
+    allowHost: (host: string) => `Allow ${host}`,
+    dismiss: 'Dismiss',
+    title: 'Allowed hosts',
+    hint: (agent: string | null) =>
+      `${agent ?? 'Our AI'} only captures pages from these hosts. You are asked about a new host in the chat.`,
+    none: 'No allowed host',
+    remove: (host: string) => `Remove ${host}`,
+  },
 } satisfies typeof fr;

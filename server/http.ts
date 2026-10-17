@@ -1,5 +1,5 @@
 // Adapted from saeedvaziry/caleb-video-editor (MIT)
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { getRequestListener, type HttpBindings } from '@hono/node-server';
 import type { AccountService, CadenceConfig, McpTokenIssuer } from './contracts';
@@ -21,24 +21,34 @@ export interface EditorHandlerDeps {
 
 const SAFE_METHODS = new Set(['GET', 'HEAD']);
 const ALLOWED_FETCH_SITES = new Set(['same-origin', 'none']);
+const OAUTH_CALLBACK = /^\/oauth\/([a-z]+)\/callback$/;
 
 /** Request handler of the editor origin: guards (see ARCHITECTURE.md "Processes, origins and security"), then routing. */
 export function createEditorHandler(deps: EditorHandlerDeps): Handler {
   const { config, editorToken, tokens, accounts, mcp, editor } = deps;
   const api = getRequestListener(deps.api.fetch as (request: Request, env: unknown) => Response | Promise<Response>);
   const hosts = new Set([`127.0.0.1:${config.editorPort}`, `localhost:${config.editorPort}`]);
+  const frames = new URL(config.frameOrigin);
+  // Every project's and brand's frame origin (frameOriginOf); CSP has no wildcard narrower than a whole label.
+  const frameOrigins = `${frames.protocol}//*.${frames.host}`;
 
   return (req, res) => {
-    // DNS rebinding: a hostile name resolving to 127.0.0.1 carries its own Host header.
-    if (!hosts.has(req.headers.host ?? '')) return reply(res, 403, m().core.http.host);
-    let url: URL;
+    let url: URL | undefined;
     try {
       url = new URL(req.url ?? '/', 'http://local');
     } catch {
-      return reply(res, 400, m().core.http.badRequest);
+      // Answered only once both guards below passed: an unparsable path must not tell a stranger more than a valid one.
     }
-    const { pathname, searchParams } = url;
     const method = req.method ?? 'GET';
+    const callback = url && SAFE_METHODS.has(method) ? OAUTH_CALLBACK.exec(url.pathname) : null;
+    // The network's way back has its state and MCP clients their bearer token: neither can send a host app's header.
+    if (config.requestSecret && !callback && url?.pathname !== '/mcp' && !hasRequestSecret(req, config.requestSecret)) {
+      return reply(res, 403, m().core.http.secret);
+    }
+    // DNS rebinding: a hostile name resolving to 127.0.0.1 carries its own Host header.
+    if (!hosts.has(req.headers.host ?? '')) return reply(res, 403, m().core.http.host);
+    if (!url) return reply(res, 400, m().core.http.badRequest);
+    const { pathname, searchParams } = url;
 
     if (pathname === '/api' || pathname.startsWith('/api/')) {
       const safe = SAFE_METHODS.has(method);
@@ -75,8 +85,7 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
 
     // A network sends the person back here once they allow Cadence: a cross-site navigation, hence outside /api. The
     // single-use state, issued through POST /api/networks/:id/connect (editor token), is what authorizes it.
-    const callback = /^\/oauth\/([a-z]+)\/callback$/.exec(pathname);
-    if (callback && SAFE_METHODS.has(method)) {
+    if (callback) {
       accounts.callback(callback[1], searchParams).then(
         (result) => {
           res.writeHead(result.ok ? 200 : 400, {
@@ -87,7 +96,8 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
             'Referrer-Policy': 'no-referrer',
             'X-Content-Type-Options': 'nosniff',
           });
-          res.end(callbackPage(result));
+          // With a host app, this tab is outside its window: the editor there needs the secret, so the tab can only be closed.
+          res.end(callbackPage(result, !config.requestSecret));
         },
         (e: Error) => reply(res, 500, m().accounts.callback.unavailable(e.message)),
       );
@@ -105,8 +115,13 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
           res.writeHead(200, {
             'Content-Type': 'text/html; charset=utf-8',
             'Cache-Control': 'no-store',
-            // The previews show the frame origin only: scene code cannot send its own frame to another site.
-            'Content-Security-Policy': `frame-src ${config.frameOrigin}; frame-ancestors 'none'`,
+            // No inline script, no other site: an injected tag cannot reach the token. The brand fonts come from the brands'
+            // frame origins (only those answer CORS for fonts); the previews show frame origins only, so scene code cannot
+            // send its own frame to another site.
+            'Content-Security-Policy':
+              "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+              `font-src 'self' data: ${frameOrigins}; media-src 'self' blob:; connect-src 'self'; object-src 'none'; ` +
+              `base-uri 'none'; form-action 'self'; frame-src ${frameOrigins}; frame-ancestors 'none'`,
             'X-Content-Type-Options': 'nosniff',
           });
           res.end(html);
@@ -115,6 +130,10 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
       );
       return;
     }
+    // Vite also serves project and brand files here (an SVG an agent wrote, under /@fs): opened as a page, they would run
+    // next to the token. Module scripts, stylesheets and fonts ignore their own response's CSP; the editor starts no worker.
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     editor.serve(req, res);
   };
 
@@ -129,7 +148,7 @@ export function createEditorHandler(deps: EditorHandlerDeps): Handler {
 }
 
 /** What the person reads in the tab the network sent back; it closes itself when the connection worked. */
-function callbackPage(result: { ok: boolean; title: string; detail: string }): string {
+function callbackPage(result: { ok: boolean; title: string; detail: string }, backLink: boolean): string {
   const text = (value: string) => value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   return `<!doctype html>
 <html lang="${language()}">
@@ -147,8 +166,7 @@ a { color: inherit; }
 <main>
 <h1>${text(result.title)}</h1>
 <p>${text(result.detail)}</p>
-<p><a href="/#/@profil">${text(m().accounts.callback.back)}</a></p>
-</main>
+${backLink ? `<p><a href="/#/@profil">${text(m().accounts.callback.back)}</a></p>\n` : ''}</main>
 ${result.ok ? '<script>setTimeout(() => window.close(), 1500);</script>' : ''}
 </body>
 </html>
@@ -158,6 +176,13 @@ ${result.ok ? '<script>setTimeout(() => window.close(), 1500);</script>' : ''}
 function header(req: IncomingMessage, name: string): string | undefined {
   const value = req.headers[name];
   return Array.isArray(value) ? value[0] : value;
+}
+
+/** X-Cadence-Secret is the host app's secret; comparing digests keeps the time constant whatever the given length. */
+export function hasRequestSecret(req: IncomingMessage, secret: string): boolean {
+  const given = header(req, 'x-cadence-secret');
+  const digest = (value: string) => createHash('sha256').update(value).digest();
+  return given !== undefined && timingSafeEqual(digest(given), digest(secret));
 }
 
 function sameToken(given: string | undefined, expected: string): boolean {

@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { BrandColors, BrandFile } from '../../src/shared/types';
 import type { CaptureService } from '../contracts';
 import { m } from '../i18n';
-import { cssRunsCode } from '../util';
+import { CssCodeScan, cssRunsCode, PACKAGE, readFileNoFollow, realPath } from '../util';
 
 export const COLOR_KEYS: (keyof BrandColors)[] = [
   'background',
@@ -51,7 +51,8 @@ const firstFamily = (stack: string) =>
     .split(',')[0]
     .trim()
     .replace(/^['"]|['"]$/g, '');
-const read = (file: string) => fs.readFile(file, 'utf8').catch(() => null);
+// Without following links: the build turn writes this folder and could point a file at one it may not read.
+const read = (dir: string, file: string) => readFileNoFollow(dir, file, 'utf8').catch(() => null);
 
 /**
  * Problems of the brand folder `dir` (empty when it is complete), in the interface language: the user and the brand
@@ -61,7 +62,7 @@ export async function brandProblems(dir: string, root: string): Promise<string[]
   const t = m().media.brands.check;
   const problems: string[] = [];
   const id = path.basename(dir);
-  const raw = await read(path.join(dir, 'brand.json'));
+  const raw = await read(dir, path.join(dir, 'brand.json'));
   if (raw === null) return [t.missing('brand.json')];
   let file: BrandFile;
   try {
@@ -104,23 +105,25 @@ export async function brandProblems(dir: string, root: string): Promise<string[]
       problems.push(t.logoOutside(key));
       continue;
     }
-    const svg = await read(logo);
+    const svg = await read(dir, logo);
     if (svg === null) problems.push(t.logoMissing(key, file.logo[key]));
     else if (!/^<svg[^>]*viewBox="[\d. ]+"/.test(svg)) problems.push(t.logoSvg(key));
     else if (/<script|href="https?:|<image/i.test(svg)) problems.push(t.logoExternal(key));
   }
 
-  const css = await read(path.join(dir, 'theme.css'));
+  const css = await read(dir, path.join(dir, 'theme.css'));
   if (css === null) problems.push(t.missing('theme.css'));
   else problems.push(...(await themeProblems(dir, root, css, file)));
 
   // theme.css is the compiled entry, but it can @import other CSS in the folder: scan them all, not just the entry.
   for (const rel of (await fs.readdir(dir, { recursive: true, encoding: 'utf8' })).filter((f) => f.endsWith('.css'))) {
-    if (cssRunsCode((await read(path.join(dir, rel))) ?? '')) problems.push(t.cssCodeExec(rel));
+    // A stylesheet read only through a link counts as code: Tailwind would follow the link.
+    const text = await read(dir, path.join(dir, rel));
+    if (text === null || cssRunsCode(text)) problems.push(t.cssCodeExec(rel));
   }
 
   for (const note of ['art-direction.md', 'KIT.md']) {
-    const text = await read(path.join(dir, note));
+    const text = await read(dir, path.join(dir, note));
     if (text === null || text.length <= 400) problems.push(t.note(note));
   }
   return problems;
@@ -153,9 +156,6 @@ async function themeProblems(dir: string, root: string, css: string, file: Brand
   const require = createRequire(path.join(root, 'package.json'));
   const tailwind = "@import 'tailwindcss' source(none);";
   if (!css.includes(tailwind)) problems.push(t.themeLine(tailwind));
-  for (const source of ['../../projects', '../../templates', '.']) {
-    if (!css.includes(`@source '${source}';`)) problems.push(t.themeLine(`@source '${source}';`));
-  }
   const token = (name: string) => new RegExp(`--${name}:\\s*([^;]+);`).exec(css)?.[1].trim();
   for (const key of COLOR_KEYS) {
     if (token(`color-${kebab(key)}`) !== file.colors?.[key]) {
@@ -176,18 +176,21 @@ async function themeProblems(dir: string, root: string, css: string, file: Brand
   const faces = (source: string) => {
     for (const [, name] of source.matchAll(/font-family:\s*['"]([^'"]+)['"]/g)) loaded.add(name);
   };
-  for (const [, spec] of css.matchAll(/@import '(@fontsource[^']+)';/g)) {
-    let resolved: string;
+  const nodeModules = await realPath(path.join(root, 'node_modules'));
+  for (const [, spec] of new CssCodeScan().push(css).matchAll(/@import '(@fontsource[^']+)';/g)) {
+    let source: string;
     try {
-      resolved = require.resolve(spec);
+      // A package name only: dot segments after it climb out of node_modules; the read stays in it, on a regular file.
+      if (!PACKAGE.test(spec)) throw new Error(`${spec}: not a package name`);
+      source = await readFileNoFollow(nodeModules, require.resolve(spec), 'utf8');
     } catch {
       problems.push(t.notInstalled(spec));
       continue;
     }
-    faces(await fs.readFile(resolved, 'utf8'));
+    faces(source);
   }
   for (const [, rel] of css.matchAll(/url\('(\.\/fonts\/[^']+)'\)/g)) {
-    if ((await read(path.join(dir, rel))) === null) problems.push(t.themeFile(rel));
+    if ((await read(dir, path.join(dir, rel))) === null) problems.push(t.themeFile(rel));
   }
   for (const [, block] of css.matchAll(/@font-face\s*{([^}]*)}/g)) faces(block);
 
@@ -210,7 +213,7 @@ async function themeProblems(dir: string, root: string, css: string, file: Brand
   }
   const sources = (await fs.readdir(dir, { recursive: true, encoding: 'utf8' })).filter((f) => /\.(tsx?|svg)$/.test(f));
   for (const rel of sources) {
-    const source = await fs.readFile(path.join(dir, rel), 'utf8');
+    const source = (await read(dir, path.join(dir, rel))) ?? '';
     for (const [, value] of source.matchAll(/font-?[Ff]amily[=:]\s*\{?\s*["'`]([^"'`]+)["'`]/g)) stack(value, rel);
   }
   for (const [name, where] of named) {

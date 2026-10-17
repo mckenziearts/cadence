@@ -27,6 +27,10 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run format:check
       - run: npm run typecheck
+      # Chromium and its system libraries: sheet and editor-root skip without them, the sandbox tests fail.
+      - run: npm run setup -- --with-deps
+      # Chromium keeps its sandbox (server/config.ts), which needs the user namespaces Ubuntu's AppArmor restricts.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm run test:unit
 
   secrets:

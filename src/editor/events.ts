@@ -3,6 +3,7 @@
 import { ignore } from './api';
 import type { ServerEvent } from '../shared/types';
 import { t } from './i18n';
+import { raisedAsk } from './lib/captureAsk';
 import { get, set } from './store';
 import { applyChat, applyDelta, applyMessage, loadChat } from './store/chat';
 import { loadApp, loadCost, loadRenders, loadSeams, mergeSeams, refreshProject } from './store/project';
@@ -190,5 +191,10 @@ function handle(event: ServerEvent): void {
     case 'assets':
       if (event.projectId === current) set((s) => ({ assetsTick: s.assetsTick + 1 }));
       return;
+    case 'capture-host': {
+      const ask = raisedAsk(get(), event, current);
+      if (ask) set({ captureAsk: ask });
+      return;
+    }
   }
 }

@@ -72,6 +72,12 @@ export default {
   },
   codex: {
     notLoggedIn: 'Codex is not logged in: open a terminal, run "codex login", then try again.',
+    unconfined: (agent: string | null) =>
+      agent
+        ? `This version of ${agent} cannot limit its access to the project's folders: update ${agent}, then try again.`
+        : "Our AI cannot limit its access to the project's folders on this computer: update it, then try again.",
+    probeFailed: (error: string) => `Could not check that Codex stays in the project's folders: ${error}`,
+    linkedTarget: (file: string) => `Turn refused: "${file}" goes through a symbolic link. Remove the link, then try again.`,
     exitCode: (code: number) => `exit code ${code}`,
     notFound: (bin: string, error: string) => `Codex not found ("${bin}"): install it and log in, or set CODEX_PATH. (${error})`,
     loggedIn: 'Logged in to ChatGPT',

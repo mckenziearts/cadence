@@ -31,6 +31,7 @@ export default {
     noMusic: 'This project has no music',
     imageName: (name: string) => `Invalid image name: ${name}`,
     gitHost: (host: string) => `Unknown Git host: ${host}`,
+    captureHost: (host: string) => `Invalid host: ${host}`,
     logoVariant: (variant: string) => `Unknown logo variant: ${variant}`,
     defaultBrand: 'The neutral Cadence brand cannot be deleted: new brands start from it.',
     brandInUse: (projects: string[]) => {
@@ -69,6 +70,7 @@ export default {
     unreadableManifest: (version: string) => `Could not read version ${version} (manifest missing or corrupted)`,
     invalidHash: (hash: string) => `Invalid hash in the history: ${hash}`,
     missingObject: (hash: string) => `Missing content in the history: ${hash}`,
+    linkedFolder: (file: string) => `Restore refused: "${file}" goes through a symbolic link. Remove the link, then try again.`,
   },
   projects: {
     skipped: (error: string) => `[cadence] project skipped: ${error}`,
@@ -187,10 +189,12 @@ This document is reread before every change. Describe here the style all scenes 
   },
   frames: {
     method: 'Method not allowed',
+    forbidden: 'A frame reads only its own project or brand and the templates',
+    notServed: (file: string) => `${file} is outside this project, its brand and the templates: the frame does not load it`,
   },
   server: {
     starting: 'Cadence is starting...',
-    portInUse: (port: number) => `Port ${port} is already in use: stop the other program or choose another port.`,
+    portInUse: (address: string) => `Address ${address} is already in use: stop the other program or choose another port.`,
     stopChats: (error: string) => `[cadence] stopping the chats: ${error}`,
     stopBrandBuilds: (error: string) => `[cadence] stopping the brand builds: ${error}`,
     closeChromium: (error: string) => `[cadence] closing Chromium: ${error}`,

@@ -17,6 +17,7 @@ import { makeRoot, type TestRoot } from './helpers';
 const repo = path.resolve(import.meta.dirname, '../..');
 const HOST_PAGE = 'Host page marker';
 const NEW_BRAND_PAGE = 'Host new brand page';
+const NEW_BRAND_HINT = 'From the host sources';
 let t: TestRoot;
 let host: string;
 let server: RunningServer;
@@ -58,7 +59,7 @@ function NewBrand() {
 
 createRoot(document.getElementById('root')!).render(
   <div className="bg-[#c0ffee]">
-    <App pages={{ '@x': X, '@moi': () => <Profile />, '@new': NewBrand }} newBrand="@new" profile={false} />
+    <App pages={{ '@x': X, '@moi': () => <Profile />, '@new': NewBrand }} newBrand="@new" newBrandHint="${NEW_BRAND_HINT}" profile={false} />
   </div>,
 );
 `,
@@ -201,7 +202,7 @@ test('a host page opens from the hash, the core Profile too, an unknown page goe
   }
 });
 
-test('the New brand card opens the host page, whose buttons open the repository modal and a build', async (t) => {
+test('the New brand card says what the host page builds from, opens it, and its buttons open the repository modal and a build', async (t) => {
   const browser = await chromium.launch().catch(() => null);
   if (!browser) return t.skip('Chromium missing (npm run setup)');
   try {
@@ -209,7 +210,14 @@ test('the New brand card opens the host page, whose buttons open the repository 
     const dialog = page.getByRole('dialog');
     await page.goto(`${server.config.editorOrigin}/#/`);
     await page.getByRole('button', { name: /^(Créer un projet|Create a project)$/ }).click({ timeout: 30_000 });
-    await dialog.getByRole('button', { name: /Nouvelle marque|New brand/ }).click();
+    const card = dialog.getByRole('button', { name: /Nouvelle marque|New brand/ });
+    assert.ok((await card.textContent())?.includes(NEW_BRAND_HINT));
+    assert.doesNotMatch(
+      (await card.textContent()) ?? '',
+      /Depuis un dépôt GitHub|From a GitHub repository/,
+      'the host hint replaces the core line',
+    );
+    await card.click();
     await page.getByText(NEW_BRAND_PAGE, { exact: true }).waitFor();
     assert.equal(new URL(page.url()).hash, '#/@new');
     assert.equal(await dialog.count(), 0, 'the card closed the new project modal');

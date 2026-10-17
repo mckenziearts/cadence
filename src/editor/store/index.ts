@@ -40,6 +40,12 @@ export interface Toast {
   tone: 'info' | 'success' | 'error';
 }
 
+export interface CaptureHostAsk {
+  projectId: string;
+  host: string;
+  local: boolean;
+}
+
 export interface EditorState {
   // App
   app: AppState | null;
@@ -99,6 +105,10 @@ export interface EditorState {
   voiceOver: { status: VoiceOverStatus };
   versionsTick: number;
   assetsTick: number;
+  /** The host the agent asked to capture, until the person answers. */
+  captureAsk: CaptureHostAsk | null;
+  /** The hosts the person dismissed while the project is open: not asked again. */
+  captureIgnored: string[];
   cost: number | null;
   /** Version to highlight in the Versions panel. */
   focusVersion: string | null;
@@ -119,6 +129,8 @@ export interface EditorState {
   page: string | null;
   /** The host page the "New brand" card opens instead of the core window (App's `newBrand`). */
   newBrand: `@${string}` | null;
+  /** The card's line under its title for that page (App's `newBrandHint`). */
+  newBrandHint: string | null;
 }
 
 /** localStorage can throw (private mode, blocked site data): conveniences only. */
@@ -177,6 +189,8 @@ export const useStore = create<EditorState>()(() => ({
   voiceOver: { status: 'idle' },
   versionsTick: 0,
   assetsTick: 0,
+  captureAsk: null,
+  captureIgnored: [],
   cost: null,
   focusVersion: null,
   artDrafts: {},
@@ -188,6 +202,7 @@ export const useStore = create<EditorState>()(() => ({
   seenBuilds: memory.get('seen-builds')?.split(' ') ?? [],
   page: null,
   newBrand: null,
+  newBrandHint: null,
 }));
 
 /** Stable empty list for selectors (a fresh `[]` per call would re-render forever). */

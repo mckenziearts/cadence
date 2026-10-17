@@ -3,11 +3,14 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { lutimes, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { promisify } from 'node:util';
 import { FfmpegRenderService } from '../../server/capture/render';
-import type { ProjectStore } from '../../server/contracts';
+import type { CadenceConfig, ProjectStore } from '../../server/contracts';
+import { createFrameHandler } from '../../server/frames/frameServer';
 import { HttpError } from '../../server/util';
 import { writeWav } from '../../server/voiceover/wav';
 import type { ProjectFile, ProjectState, RenderJob, ServerEvent } from '../../src/shared/types';
@@ -472,6 +475,47 @@ export default function A({ voiceOver }: SceneProps) {
     }
   });
 
+  it('settles a finished render only once its Chromium host has ended and its temporary files are gone', async () => {
+    const restore = await withSounds({ a: "[{ at: 0.1, sound: 'pop' }]" });
+    try {
+      await renderOne({ formats: ['16:9'], quality: 'draft' });
+      const { stdout } = await run('pgrep', ['-P', String(process.pid), '-f', 'chromium-server.mjs']).catch(() => ({
+        stdout: '',
+      }));
+      assert.equal(stdout, '');
+      const partial = (await readdir(path.join(h.store.dir(id), 'renders'))).filter((n) => n.endsWith('.part'));
+      assert.deepEqual(partial, []);
+      assert.deepEqual(await readdir(path.join(h.store.dir(id), '.cadence', 'sounds')), []);
+    } finally {
+      await restore();
+    }
+  });
+
+  it('fails the render whose page logs more than a string can hold, ends its Chromium, then renders again', async () => {
+    const file = h.store.sceneFile(id, 'b');
+    const code = await readFile(file, 'utf8');
+    await writeFile(
+      file,
+      `export default function Loud() {\n  const big = 'x'.repeat(300_000_000);\n  console.log(big, big);\n  return null;\n}\n`,
+    );
+    try {
+      const [queued] = await renders.start(id, { formats: ['16:9'], quality: 'draft' });
+      const job = await renders.wait(queued.id);
+      assert.equal(job.status, 'error');
+      // The Chromium host process ended (Playwright's own message), the render did not wait for a timeout.
+      assert.match(job.error!, /has been closed/);
+      const leftovers = (await readdir(path.join(h.store.dir(id), 'renders'))).filter((n) => n.endsWith('.part'));
+      assert.deepEqual(leftovers, []);
+      const { stdout } = await run('pgrep', ['-P', String(process.pid), '-f', 'chromium-server.mjs']).catch(() => ({
+        stdout: '',
+      }));
+      assert.equal(stdout, '');
+    } finally {
+      await writeFile(file, code);
+    }
+    await renderOne({ formats: ['16:9'], quality: 'draft' });
+  });
+
   it('cancels a running render and removes the partial file', async () => {
     const [queued] = await renders.start(id, { formats: ['16:9'], quality: 'draft', fps: 120 });
     await new Promise<void>((resolve) => {
@@ -587,5 +631,42 @@ export default function A({ voiceOver }: SceneProps) {
     assert.throws(() => renders.resolveFile(id, '../project.json'), bad);
     assert.throws(() => renders.resolveFile(id, '..mp4'), bad);
     assert.equal(renders.resolveFile(id, 'a.mp4'), path.join(h.store.dir(id), 'renders', 'a.mp4'));
+  });
+});
+
+describe('FfmpegRenderService on a frame origin with a request secret', () => {
+  const SECRET = 'render-request-secret-0123456789abcdef';
+  let server: http.Server;
+  let config: CadenceConfig;
+
+  before(async () => {
+    server = http.createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const framePort = (server.address() as AddressInfo).port;
+    config = { ...h.config, framePort, frameOrigin: `http://localhost:${framePort}`, requestSecret: SECRET };
+    server.on('request', createFrameHandler({ config, vite: h.vite, store: h.store, brands: h.brands }));
+  });
+
+  after(async () => {
+    server?.closeAllConnections();
+    await new Promise((resolve) => server?.close(resolve));
+  });
+
+  it('renders with the secret its pages send, and fails without it', async () => {
+    const { job } = await renderOne(
+      { formats: ['16:9'], quality: 'draft' },
+      new FfmpegRenderService({ config, store: h.store, music, voiceOver, hub }),
+    );
+    assert.deepEqual([job.framesTotal, job.framesDone], [30, 30]);
+
+    const without = new FfmpegRenderService({
+      config: { ...config, requestSecret: undefined },
+      store: h.store,
+      music,
+      voiceOver,
+      hub,
+    });
+    const [queued] = await without.start(id, { formats: ['16:9'], quality: 'draft' });
+    assert.equal((await without.wait(queued.id)).status, 'error');
   });
 });

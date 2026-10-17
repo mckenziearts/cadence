@@ -337,6 +337,14 @@ describe('claudeEnv', () => {
   test('keeps the API key when asked', () => {
     assert.equal(claudeEnv(parent, true).ANTHROPIC_API_KEY, 'sk-test');
   });
+
+  test('drops the empty and relative PATH entries a spawn would resolve inside the turn folder', () => {
+    assert.equal(claudeEnv({ PATH: ':/usr/bin:.:bin::/opt/bin:' }, false).PATH, '/usr/bin:/opt/bin');
+  });
+
+  test('leaves no PATH at all when none of its entries is absolute', () => {
+    for (const value of ['.', 'relative/bin', '']) assert.ok(!('PATH' in claudeEnv({ PATH: value }, false)), value);
+  });
 });
 
 describe('ClaudeCodeProvider (fake claude binary)', () => {
@@ -366,6 +374,8 @@ process.stdin.on('end', () => {
 
   before(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-claude-'));
+    // A package.json with "type": "module" above the temp folder would make the extensionless fake ESM.
+    await fs.writeFile(path.join(dir, 'package.json'), '{"type":"commonjs"}');
     bin = path.join(dir, 'claude');
     await fs.writeFile(bin, script, { mode: 0o755 });
     await fs.writeFile(path.join(dir, 'stream.jsonl'), `${STREAM.join('\n')}\n`);

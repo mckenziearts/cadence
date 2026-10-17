@@ -13,7 +13,9 @@ import type {
   AssetStore,
   BrandStore,
   CadenceConfig,
+  CaptureHostStore,
   CaptureService,
+  Hub,
   McpActivity,
   MusicService,
   ProjectStore,
@@ -22,6 +24,8 @@ import type {
   VersionStore,
   VoiceOverService,
 } from '../../server/contracts';
+import { UnapprovedHost } from '../../server/capture/capture';
+import { type Policy, urlRefusal } from '../../server/capture/policy';
 import { BRAND_TOOLS } from '../../server/mcp/brandTools';
 import { createMcpHandler } from '../../server/mcp/server';
 import { McpTokens } from '../../server/mcp/tokens';
@@ -31,7 +35,15 @@ import { FileProjectStore } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import { HttpError } from '../../server/util';
 import type { AuditFinding } from '../../src/shared/frameProtocol';
-import type { CreateSceneInput, ProjectState, SceneState, ScriptLine, Speaker, VoiceOverSettings } from '../../src/shared/types';
+import type {
+  CreateSceneInput,
+  ProjectState,
+  SceneState,
+  ScriptLine,
+  ServerEvent,
+  Speaker,
+  VoiceOverSettings,
+} from '../../src/shared/types';
 import { makeRoot, type TestRoot } from './helpers';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
@@ -231,7 +243,19 @@ describe('MCP endpoint', () => {
           sceneId ? `Grille de ${sceneId}` : 'Tempo 120\nCuts: intro → outro at 3.334 s: 0.334 s (0.67 beat) after bar 2',
         snapCuts: async (id: string, grid: string, opts: unknown) => (record('snapCuts', [id, grid, opts]), project),
       } as unknown as MusicService,
-      assets: {} as AssetStore,
+      assets: {
+        captureReference: async (...args: unknown[]) => {
+          record('captureReference', args);
+          const [, input, policy] = args as [string, { url: string }, Policy];
+          // As screenshotUrl does, before any lookup.
+          if (urlRefusal(input.url, policy, true) === 'host') throw new UnapprovedHost(new URL(input.url).host);
+          // A redirect to a host the person has not approved.
+          if (input.url === 'https://site.test/r') throw new UnapprovedHost('cdn.test');
+          if (new URL(input.url).host === 'down.test') throw new HttpError(502, 'Le site ne répond pas.');
+          return { path: 'refs/site-desktop.png' };
+        },
+        resolve: (_id: string, rel: string) => `/projets/demo/assets/${rel}`,
+      } as unknown as AssetStore,
       voiceOver: {
         sync: async (id: string) => {
           record('syncVoiceOver', id);
@@ -280,6 +304,10 @@ describe('MCP endpoint', () => {
           };
         },
       } as unknown as VoiceOverService,
+      captureHosts: {
+        list: async (id: string) => (record('captureHosts', id), ['site.test', 'down.test']),
+      } as unknown as CaptureHostStore,
+      hub: { send: (event: ServerEvent) => void record('event', event) } as unknown as Hub,
       diagnose: async () => null,
     };
     const handler = createMcpHandler(deps);
@@ -917,6 +945,40 @@ describe('MCP endpoint', () => {
       const badUrl = await call(client, 'capture_reference', { url: 'file:///etc/passwd' });
       assert.equal(badUrl.isError, true);
       assert.match(texts(badUrl)[0], /seules les adresses http\(s\)/);
+      assert.match(
+        texts(await call(client, 'capture_reference', { url: 'https://site.test/' }))[0],
+        /^Saved assets\/refs\/site-desktop\.png/,
+      );
+      const [id, input, policy] = calls.captureReference.at(-1) as [string, unknown, Policy];
+      assert.deepEqual(
+        [id, input],
+        ['demo', { url: 'https://site.test/', device: 'desktop', fullPage: undefined, name: undefined }],
+      );
+      assert.deepEqual(calls.captureHosts.at(-1), 'demo');
+      // The hosts the person approved for this project, public addresses on the default ports.
+      assert.deepEqual([...policy.hosts!], ['site.test', 'down.test']);
+      assert.deepEqual([policy.allowsPort(443), policy.allowsPort(8080)], [true, false]);
+
+      const unapproved = await call(client, 'capture_reference', { url: 'https://other.test/page' });
+      assert.equal(unapproved.isError, true);
+      assert.match(
+        texts(unapproved)[0],
+        /n’a pas autorisé other\.test pour les captures de ce projet : elle vient de recevoir la demande\. Réessaie à un prochain tour/,
+      );
+      assert.equal((await call(client, 'capture_reference', { url: 'https://site.test/r' })).isError, true);
+      assert.equal((await call(client, 'capture_reference', { url: 'http://192.168.1.10:3000/' })).isError, true);
+      assert.deepEqual(
+        calls.event,
+        [
+          { type: 'capture-host', projectId: 'demo', host: 'other.test', local: false },
+          { type: 'capture-host', projectId: 'demo', host: 'cdn.test', local: false },
+          { type: 'capture-host', projectId: 'demo', host: '192.168.1.10:3000', local: true },
+        ],
+        'the editor asks the person about the host refused, a redirect target included, and says when it is local',
+      );
+      const down = await call(client, 'capture_reference', { url: 'https://down.test/' });
+      assert.equal(down.isError, true);
+      assert.equal(calls.event.length, 3, 'other failures ask nothing');
 
       assert.match(
         texts(await call(client, 'save_version', { label: 'Avant refonte' }))[0],
@@ -933,6 +995,8 @@ describe('MCP endpoint', () => {
     await fs.writeFile(path.join(repoDir, 'public', 'logo.svg'), '<svg viewBox="0 0 1 1"/>');
     await fs.writeFile(path.join(repoDir, '.env'), 'SECRET=1');
     await fs.writeFile(path.join(root, 'outside.svg'), '<svg/>');
+    // A build reserves the brand folder before its turn starts.
+    await fs.mkdir(path.join(root, 'brands', 'acme'), { recursive: true });
     const client = await connect(tokens.issue({ kind: 'brand', brandId: 'acme', repoDir }));
     try {
       const { tools } = await client.listTools();
@@ -957,6 +1021,41 @@ describe('MCP endpoint', () => {
       assert.match(texts(preview)[0], /Button : boom/);
       assert.deepEqual(calls.kitSheet, ['acme']);
       assert.match(texts(await call(client, 'check_brand'))[0], /problem\(s\):\n- brand\.json manquant[\s\S]*Button : boom/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('brand scope: copies and fonts are never written through a brand folder the turn linked out', async (ctx) => {
+    const repoDir = path.join(root, 'clone-linked');
+    await fs.mkdir(path.join(repoDir, 'public'), { recursive: true });
+    await fs.writeFile(path.join(repoDir, 'public', 'logo.svg'), '<svg viewBox="0 0 1 1"/>');
+    const [brandDir, outside] = [path.join(root, 'brands', 'linked'), path.join(root, 'brand-outside')];
+    await fs.mkdir(brandDir, { recursive: true });
+    await fs.mkdir(outside);
+    await fs.symlink(outside, path.join(brandDir, 'assets'));
+    await fs.symlink(outside, path.join(brandDir, 'fonts'));
+    const css =
+      "/* latin */\n@font-face {\n  font-family: 'Inter';\n  font-style: normal;\n  font-weight: 400;\n" +
+      "  src: url(https://fonts.gstatic.com/s/inter/v1/a.woff2) format('woff2');\n  unicode-range: U+0000-00FF;\n}\n";
+    const realFetch = globalThis.fetch;
+    const fetched: string[] = [];
+    ctx.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const href = String(input instanceof Request ? input.url : input);
+      if (href.startsWith('https://fonts.googleapis.com/')) return fetched.push(href) && new Response(css);
+      if (href.startsWith('https://fonts.gstatic.com/')) return fetched.push(href) && new Response(Buffer.from('wOF2'));
+      return realFetch(input, init);
+    });
+    const client = await connect(tokens.issue({ kind: 'brand', brandId: 'linked', repoDir }));
+    try {
+      const copied = await call(client, 'copy_from_repo', { from: 'public/logo.svg', to: 'assets/logo-mark.svg' });
+      assert.equal(copied.isError, true);
+      assert.match(texts(copied)[0], /ELOOP|ENOTDIR|outside/);
+      const font = await call(client, 'add_google_font', { family: 'Inter', weights: [400] });
+      assert.equal(font.isError, true);
+      assert.match(texts(font)[0], /ELOOP|ENOTDIR|outside/);
+      assert.equal(fetched.length, 2, 'the font was downloaded, then refused at the write');
+      assert.deepEqual(await fs.readdir(outside), []);
     } finally {
       await client.close();
     }
