@@ -516,8 +516,10 @@ claude -p --output-format stream-json --verbose --include-partial-messages
 
 The guide and the MCP config are written to a private temp folder (0700, files 0600) removed when the turn ends,
 so neither the bearer token nor the 30 KB guide shows up in `ps`. `--restricted` also means no CLAUDE.md memory
-is loaded (verified with a canary: neither the project's nor the user's global CLAUDE.md reaches the in-app agent),
-which is why the guide is appended to the system prompt.
+is loaded, which is why the guide is appended to the system prompt. Verified with Claude Code 2.1.302 in a real turn
+under the user's own HOME and login, from a cwd whose `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md` and parent
+`CLAUDE.md` each held a canary: none of them and nothing of the user's global CLAUDE.md reached the model, no user hook
+ran and no skill loaded.
 
 Env: remove `ANTHROPIC_API_KEY` unless `config.useApiKey` (use the subscription login); remove `CLAUDECODE` and
 `CLAUDE_CODE_ENTRYPOINT` (nested-session guards); `MCP_TOOL_TIMEOUT=300000`, `MAX_MCP_OUTPUT_TOKENS=120000`.
@@ -556,8 +558,9 @@ codex exec [resume <thread>] --json --skip-git-repo-check --ignore-user-config -
   -c permissions.cadence.filesystem={":minimal"="read",":slash_tmp"="deny","<cwd>"="read","<addDir>"="read",...,
        "<Edit/Write target>"="write",...,"<Read deny target>"="deny",...}
   -c permissions.cadence.network.enabled=false
-  -c project_doc_max_bytes=0 -c tools.web_search=false -c approval_policy="never"
-  -c shell_environment_policy.inherit="core" -c shell_environment_policy.include_only=["PATH","HOME","TMPDIR","LANG","LC_*"]
+  -c project_doc_max_bytes=0 -c tools.web_search=false -c skills.include_instructions=false
+  -c features.multi_agent=false -c features.multi_agent_v2.max_concurrent_threads_per_session=1
+  -c approval_policy="never" -c shell_environment_policy.inherit="core" -c shell_environment_policy.include_only=["PATH","HOME","TMPDIR","LANG","LC_*"]
   [-c model_reasoning_effort="<effort>"] [-m <model>] -
 ```
 
@@ -610,8 +613,10 @@ ok, which takes, in this order, Codex 0.161.0 or later (the first with `sandbox 
 profiles; an older or unparsable version is reason `unconfined` without a probe), a probe that concludes confined,
 then a login (`logged-out` otherwise). The probe runs, in an empty `CODEX_HOME` and `HOME`,
 `codex sandbox -P cadence <the -c profile above, for an empty temp folder <inside>> -C <inside> /bin/cat probe <outside>/probe`
-and must print the inside file and not the outside one (reason `unconfined` otherwise; a probe that cannot run at all
-is reason `error`). A refused turn ends with one error event named after the reason, a `status()` that rejects
+and must print the inside file and not the outside one; two more runs of the same profile, at the same time, must fail
+to create a file beside it (`/bin/sh -c ': > "$1"'`) and to connect to a listener the probe opens on 127.0.0.1
+(`/usr/bin/curl`; without curl that check sees nothing, the other two still run). Reason `unconfined` otherwise; a
+probe that cannot run at all is reason `error`. A refused turn ends with one error event named after the reason, a `status()` that rejects
 included; the agent picker and the Profile card say why Codex stays disabled. No network for commands; the Codex process
 itself still reaches the model and the Cadence MCP server. `project_doc_max_bytes=0` also stops Codex from reading
 `AGENTS.md` up to the git root, a read outside the profile that would fail the turn. `sandbox_mode` is not passed: with
@@ -625,6 +630,24 @@ turn) and `art-direction.md` stay writable and the brand folder readable; a seco
 reached through a symlink, writes its own scene and is refused another one; a brand build writes its brand folder,
 reads its clone and is refused a write to the clone, outside and a read of `accounts.json`. Each turn first runs the
 provider's own probe against the installed binary. Skipped when `codex` is not installed.
+
+What the same tests show of Codex 0.161.0 beyond the shell and `apply_patch`. A sub-agent (the v1 `multi_agent` tools,
+and the v2 `collaboration` ones the gpt-6 models get from the catalogue) stays in the turn's sandbox, but its commands,
+writes and tokens never reach `exec --json`, so the brand build's file list, the chat activity and the usage would miss
+them: `features.multi_agent=false` removes v1, and the v2 tools, which no key removes, fail with "agent thread limit
+reached" while the root is the only thread allowed. Each key alone leaves the other version working. Code mode
+(`functions.exec`, the only tool mode of the gpt-6 models) stays on: its isolate has no `fetch`, `require`, `process` or
+module imports, and its nested `exec_command` and `apply_patch` go through the same profile as direct calls (a nested
+`exec_command` the sandbox refuses shows in no `command_execution` event). Codex refuses to create `.agents`,
+`.codex` or `.git` at the top of a folder it may write; skills another writer puts in a cwd's `.agents/skills` or
+`.codex/skills`, or in `$HOME/.agents/skills`, still reached fresh and resumed turns whatever `--ignore-user-config`
+says, hence `skills.include_instructions=false`. A planted `.codex/config.toml` does not apply under
+`--ignore-user-config`, and no `AGENTS.md`, `.codex/AGENTS.md` or `AGENTS.override.md` reaches the model.
+
+A real turn (Codex 0.161.0, `gpt-6-luna`, the user's own login, `codexArgs` and `codexEnv` as `run()` passes them)
+ran its four steps through code mode: reading `scenes/` worked; reading outside, writing `CLAUDE.md` from the shell and
+deleting it with `apply_patch` were refused. The file stayed unchanged and the outside file's content is in neither the
+events nor the session Codex records. Only the successful read showed as a `command_execution`.
 
 ## MCP (`/mcp`, streamable HTTP, stateless)
 

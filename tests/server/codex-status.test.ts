@@ -11,6 +11,9 @@ import { makeRoot } from './helpers';
 const CONFINED = 'sandbox) cat probe;;';
 /** A CLI that ignores the profile reads both files. */
 const UNCONFINED = 'sandbox) for last; do :; done; cat probe "$last";;';
+/** CLIs that read like a confined one but let the probe's write outside the profile, or its connection, through. */
+const LEAKS_WRITE = 'sandbox) for last; do :; done; case "$last" in */written) : > "$last";; *) cat probe;; esac;;';
+const LEAKS_NETWORK = 'sandbox) for last; do :; done; case "$last" in http*) curl -s -m 3 "$last";; *) cat probe;; esac;;';
 const LOGGED_IN = '*) echo "Logged in using ChatGPT"; exit 0;;';
 const LOGGED_OUT = '*) echo "Not logged in"; exit 1;;';
 const cli = (version: string, sandbox: string, login: string) =>
@@ -88,6 +91,22 @@ test('codexStatus: a sandbox that reads nothing, not even the profile\'s own fol
     await cleanup();
   }
 });
+
+for (const [leak, sandbox] of [
+  ['writes outside the profile', LEAKS_WRITE],
+  ['connects to the network', LEAKS_NETWORK],
+]) {
+  test(`codexStatus: a sandbox that reads like a confined one but ${leak} is reason "unconfined"`, async () => {
+    const { config, cleanup } = await makeRoot();
+    const codexPath = await fakeCodex(cli('0.161.0', sandbox, LOGGED_IN));
+    try {
+      assert.equal((await codexStatus({ ...config, codexPath })).reason, 'unconfined');
+    } finally {
+      await cleanup();
+      await fs.rm(path.dirname(codexPath), { recursive: true, force: true });
+    }
+  });
+}
 
 test('codexStatus: a version older than 0.161.0 is reason "unconfined", whatever its sandbox prints', async () => {
   const { config, cleanup } = await makeRoot();

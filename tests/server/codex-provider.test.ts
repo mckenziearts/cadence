@@ -251,6 +251,26 @@ describe('codexArgs', () => {
       assert.ok(!args.includes('-s'), 'exec resume has no -s: settings go through -c');
     }
   });
+
+  test('fresh and resumed turns start no sub-agent and list no skill', () => {
+    // Every -c under a key: Codex keeps the last value given for a key, so a second one would undo the first.
+    const settings = (args: string[], key: string) =>
+      args.filter((arg, i) => args[i - 1] === '-c' && (arg.startsWith(`${key}=`) || arg.startsWith(`${key}.`)));
+    for (const resume of [false, true]) {
+      const args = codexArgs(turn({ resume }), config(), null);
+      assert.deepEqual(settings(args, 'features.multi_agent'), ['features.multi_agent=false'], `v1 off (resume: ${resume})`);
+      assert.deepEqual(
+        settings(args, 'features.multi_agent_v2'),
+        ['features.multi_agent_v2.max_concurrent_threads_per_session=1'],
+        'v2: the root is the only thread',
+      );
+      assert.deepEqual(
+        settings(args, 'skills'),
+        ['skills.include_instructions=false'],
+        'no skill from the cwd or HOME is listed',
+      );
+    }
+  });
 });
 
 describe('codexEnv', () => {
@@ -383,6 +403,8 @@ process.stdin.on('end', () => {
 
   before(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-codex-'));
+    // A package.json with "type": "module" above the temp folder would make the extensionless fakes ESM.
+    await fs.writeFile(path.join(dir, 'package.json'), '{"type":"commonjs"}');
     bin = path.join(dir, 'codex');
     await fs.writeFile(bin, script, { mode: 0o755 });
     for (const variant of ['codex-unconfined', 'codex-logged-out', 'codex-old', 'codex-lost-thread'])

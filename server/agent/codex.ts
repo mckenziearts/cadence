@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -189,32 +190,52 @@ function profileArgs(turn: Pick<AgentTurn, 'cwd' | 'addDirs' | 'allow' | 'deny'>
 /**
  * Whether this `codex` applies the profile: a CLI that does not know its keys runs the turn under its default sandbox,
  * which reads the whole disk. `codex sandbox` (its `-P` sets `default_permissions`) with the flags a turn gets, in an
- * empty CODEX_HOME, must read a file in the profile's folder and fail on one beside it.
+ * empty CODEX_HOME, must read a file in the profile's folder and fail on one beside it, fail to write beside it, and
+ * fail to connect to a listener of the probe's own on 127.0.0.1.
  */
 async function appliesProfile(bin: string): Promise<boolean> {
   const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cadence-codex-probe-')));
+  let connected = false;
+  const listener = net.createServer((socket) => {
+    connected = true;
+    socket.destroy();
+  });
   try {
     const [inside, outside, home] = ['inside', 'outside', 'home'].map((name) => path.join(root, name));
     for (const dir of [inside, outside, home]) await fs.promises.mkdir(dir);
     await fs.promises.writeFile(path.join(inside, 'probe'), 'readable-marker');
     await fs.promises.writeFile(path.join(outside, 'probe'), 'denied-marker');
+    // `on`, not `once`: an accept error after the listen would otherwise be an uncaught 'error' event.
+    await new Promise<void>((resolve, reject) => listener.on('error', reject).listen(0, '127.0.0.1', resolve));
+    const { port } = listener.address() as net.AddressInfo;
     const profile = profileArgs({ cwd: inside, addDirs: [], allow: [], deny: [] });
-    const args = ['sandbox', '-P', 'cadence', ...profile, '-C', inside, '/bin/cat', 'probe', path.join(outside, 'probe')];
-    const out = await exec(bin, args, { cwd: inside, env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: home } }).catch(
-      () => null,
+    const env = { PATH: process.env.PATH, HOME: home, CODEX_HOME: home };
+    const sandboxed = (command: string[]) =>
+      exec(bin, ['sandbox', '-P', 'cadence', ...profile, '-C', inside, ...command], { cwd: inside, env }).catch(() => null);
+    const written = path.join(outside, 'written');
+    // The listener answers no request and closes each socket: a curl that got through has been seen before it exits.
+    const [read] = await Promise.all([
+      sandboxed(['/bin/cat', 'probe', path.join(outside, 'probe')]),
+      sandboxed(['/bin/sh', '-c', ': > "$1"', 'sh', written]),
+      sandboxed(['/usr/bin/curl', '-s', '-m', '3', `http://127.0.0.1:${port}/`]),
+    ]);
+    const wrote = await fs.promises.lstat(written).then(
+      () => true,
+      () => false,
     );
-    return !!out?.stdout.includes('readable-marker') && !out.stdout.includes('denied-marker');
+    return !!read?.stdout.includes('readable-marker') && !read.stdout.includes('denied-marker') && !wrote && !connected;
   } finally {
+    listener.close();
     await fs.promises.rm(root, { recursive: true, force: true });
   }
 }
 
 /**
  * `codex exec --json` arguments. The `cadence` permission profile (codexFilesystem, no network) confines the shell and
- * apply_patch to the turn's folders, `--ignore-user-config` keeps the user's own config, skills and project docs out of
- * the turn while their login still works, `--ignore-rules` keeps their execpolicy prefixes from approving commands, and
- * the Cadence MCP server is injected inline so no `~/.codex/config.toml` entry is needed. `exec` has no `-P` and
- * `exec resume` no `-s`, so every setting goes through `-c`.
+ * apply_patch to the turn's folders, `--ignore-user-config` keeps the user's own config.toml out of the turn while their
+ * login still works, `--ignore-rules` keeps their execpolicy prefixes from approving commands, and the Cadence MCP
+ * server is injected inline so no `~/.codex/config.toml` entry is needed. `exec` has no `-P` and `exec resume` no `-s`,
+ * so every setting goes through `-c`.
  */
 export function codexArgs(turn: AgentTurn, config: CadenceConfig, model: string | null): string[] {
   const server = ((turn.mcpServers as Record<string, Json>)?.cadence ?? {}) as Json;
@@ -230,6 +251,16 @@ export function codexArgs(turn: AgentTurn, config: CadenceConfig, model: string 
     'project_doc_max_bytes=0',
     '-c',
     'tools.web_search=false',
+    // Skills still load from the cwd's .agents/skills and .codex/skills and from $HOME/.agents/skills whatever
+    // --ignore-user-config says: another writer can put them in a brand folder. This keeps them out of the prompt.
+    '-c',
+    'skills.include_instructions=false',
+    // A sub-agent runs in the same sandbox, but its commands, writes and tokens never reach the turn's events. The v1
+    // tools go with the feature; the v2 ones stay listed while the root is the only thread allowed.
+    '-c',
+    'features.multi_agent=false',
+    '-c',
+    'features.multi_agent_v2.max_concurrent_threads_per_session=1',
     // A model that asks for escalated permissions (sandbox_permissions "require_escalated") is never granted them.
     '-c',
     'approval_policy="never"',

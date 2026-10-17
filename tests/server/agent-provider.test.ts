@@ -374,6 +374,8 @@ process.stdin.on('end', () => {
 
   before(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-claude-'));
+    // A package.json with "type": "module" above the temp folder would make the extensionless fake ESM.
+    await fs.writeFile(path.join(dir, 'package.json'), '{"type":"commonjs"}');
     bin = path.join(dir, 'claude');
     await fs.writeFile(bin, script, { mode: 0o755 });
     await fs.writeFile(path.join(dir, 'stream.jsonl'), `${STREAM.join('\n')}\n`);
