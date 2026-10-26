@@ -21,7 +21,9 @@ import { currentScene, set, useStore } from '../store';
 import { toast } from '../store/ui';
 import { useAgentName } from '../components/agents';
 
-const SOURCES: Record<VersionSource, { icon: LucideIcon; tone: string }> = {
+type ListedSource = Exclude<VersionSource, 'edit' | 'undo' | 'redo'>;
+
+const SOURCES: Record<ListedSource, { icon: LucideIcon; tone: string }> = {
   agent: { icon: Sparkles, tone: 'bg-now text-ink' },
   manual: { icon: Bookmark, tone: 'bg-ink text-white' },
   restore: { icon: RotateCcw, tone: 'bg-warn text-ink' },
@@ -29,6 +31,8 @@ const SOURCES: Record<VersionSource, { icon: LucideIcon; tone: string }> = {
   baseline: { icon: Flag, tone: 'bg-white text-ink-2' },
   template: { icon: LayoutTemplate, tone: 'bg-ok text-white' },
 };
+
+const listed = (source: string): source is ListedSource => Object.hasOwn(SOURCES, source);
 
 export function VersionsPanel() {
   const t = useT();
@@ -161,7 +165,7 @@ function VersionItem(props: {
   const { costs } = useStore((s) => s.app?.features ?? DEFAULT_FEATURES);
   const project = useStore((s) => s.project)!;
   const ref = useRef<HTMLLIElement>(null);
-  const source = SOURCES[entry.source] ? entry.source : 'external';
+  const source = listed(entry.source) ? entry.source : 'external';
   const Icon = SOURCES[source].icon;
   const sourceLabel = source === 'agent' ? t.conversation.chat.author(agent) : texts.sources[source];
   const touched = entry.scenes.map((id) => names.get(id) ?? id);

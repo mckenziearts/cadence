@@ -440,6 +440,8 @@ export function createApi(deps: ApiDeps) {
     const { sceneId } = await body(c, schemas.restore);
     return c.json(await versions.restore(id, c.req.param('vid'), sceneId ? { sceneId } : {}));
   });
+  app.post('/projects/:id/undo', async (c) => c.json({ entry: await versions.undo(await idle(c.req.param('id'))) }));
+  app.post('/projects/:id/redo', async (c) => c.json({ entry: await versions.redo(await idle(c.req.param('id'))) }));
 
   // Chats
   app.get('/projects/:id/chats/:key', async (c) => c.json(await chats.get(c.req.param('id'), chatKey(c))));

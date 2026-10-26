@@ -497,6 +497,21 @@ and project/scene deletion answer 409: the agent's own version would otherwise r
 scene file + its duration), then records a `restore` version. Nothing is ever deleted; object GC is not needed at
 this scale.
 
+Undo and redo add no storage: `foldHistory(index)` (pure, exported from `server/store/versions.ts`) folds the index,
+oldest first, into two stacks. It brings three sources: `edit` (a change made from the editor), `undo` and `redo`.
+An `edit`, like any entry but an undo or a redo, is pushed on `back` and clears `forward`; an `undo` moves the top of
+`back` to `forward`; a `redo` moves it back. The current state is the manifest of `back`'s top. An `undo` with nothing under it or a `redo` with
+nothing ahead is skipped, and an entry with an unknown source counts as a step, so an index written by a later
+version still folds.
+`undo()` and `redo()` take the project lock then the versions mutex (restore's order: a second undo folds an index that
+already ends with the first one) and compare the tracked files on disk with the manifest of the last entry. Unsaved
+changes are the newest step: undo targets `back`'s top, records them as `external` and reverts them (« Annulé :
+Modifications non enregistrées »); otherwise it targets the entry under the top, labelled « Annulé : <label of the
+top> ». Redo targets `forward`'s top (« Rétabli : <label> ») and answers null while the disk has unsaved changes, which
+clear the way forward like any new step. Both answer null, recording nothing, when there is no target. A whole restore
+and undo/redo share one private apply: brand check (400) and linked-folder check before anything else, the `external`
+snapshot, the writes and removals, then a forced record, so each undo or redo is exactly one entry.
+
 ## Agent (Claude Code)
 
 `ClaudeCodeProvider.run(turn)` spawns the local `claude` in print mode, cwd = project folder:
@@ -858,6 +873,8 @@ POST   /api/import                                 the raw .tar.gz body (up to 2
 GET    /api/projects/:id/versions                  ?scene=, answers VersionEntry[]
 POST   /api/projects/:id/versions                  { label }, answers VersionEntry | null
 POST   /api/projects/:id/versions/:vid/restore     { sceneId? }, answers VersionEntry (409 while a turn runs)
+POST   /api/projects/:id/undo                      answers { entry: VersionEntry | null } (409 while a turn runs)
+POST   /api/projects/:id/redo                      answers { entry: VersionEntry | null } (409 while a turn runs)
 GET    /api/projects/:id/chats/:key                ChatState (key = project | scene:<id>)
 POST   /api/projects/:id/chats/:key/messages       SendMessageInput, answers ChatState
 POST   /api/projects/:id/chats/:key/stop

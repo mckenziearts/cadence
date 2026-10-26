@@ -63,6 +63,8 @@ export default {
     untitled: 'Version sans titre',
     restoredScene: (scene: string, version: string) => `Restauration de « ${scene} » (${version})`,
     restored: (version: string) => `Restauration de ${version}`,
+    undone: (label: string) => `Annulé : ${label}`,
+    redone: (label: string) => `Rétabli : ${label}`,
     notSaved: (error: string) => `[cadence] version non enregistrée : ${error}`,
     sceneMissing: (scene: string, version: string) => `La scène « ${scene} » n'existe pas dans la version ${version}`,
     sceneGone: (scene: string) => `La scène « ${scene} » n'existe plus dans le projet : restaurez la version entière`,

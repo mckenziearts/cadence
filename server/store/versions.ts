@@ -99,29 +99,20 @@ export class FileVersionStore implements VersionStore {
           );
         }
 
-        // An imported version can name a brand that never travelled, or one removed here since.
-        const brand = brandOf(manifest['project.json'] ? await this.readObject(projectId, manifest['project.json']) : null);
-        if (brand !== null && !(await this.brands.exists(brand))) throw new HttpError(400, m().api.projects.unknownBrand(brand));
-
-        const current = await readTracked(dir);
-        const writes = Object.entries(manifest).filter(
-          ([rel, hash]) => restorable(rel) && !(current.get(rel) && sha256(current.get(rel)!) === hash),
-        );
-        // Files created after that version; their content goes into the snapshot below.
-        const removals = [...current.keys()].filter((rel) => !(rel in manifest));
-        // All checked before the snapshot and the first write: a refused restore leaves the project and its history as
-        // they were. The helpers below are the race-free guard; this check only makes the refusal clean.
-        for (const rel of [...writes.map(([rel]) => rel), ...removals]) await refuseLinkedFolders(dir, rel);
-        await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
-        for (const [rel, hash] of writes)
-          await writeFileInside(dir, resolveInside(dir, rel), await this.readObject(projectId, hash));
-        for (const rel of removals) await removeFileInside(dir, resolveInside(dir, rel));
-        return this.record(projectId, { label: m().api.versions.restored(versionId), source: 'restore' }, true);
+        return this.apply(projectId, manifest, { label: m().api.versions.restored(versionId), source: 'restore' });
       }),
     );
     await this.store.syncCode(projectId);
     this.store.events.emit('changed', projectId);
     return entry!;
+  }
+
+  undo(projectId: string): Promise<VersionEntry | null> {
+    return this.step(projectId, 'undo');
+  }
+
+  redo(projectId: string): Promise<VersionEntry | null> {
+    return this.step(projectId, 'redo');
   }
 
   async read(projectId: string, versionId: string, file: string): Promise<string | null> {
@@ -131,13 +122,72 @@ export class FileVersionStore implements VersionStore {
     return hash ? (await this.readObject(projectId, hash)).toString('utf8') : null;
   }
 
+  private async step(projectId: string, direction: 'undo' | 'redo'): Promise<VersionEntry | null> {
+    await this.requireProject(projectId);
+    // Lock then mutex, as restore: a second undo waits and folds an index that already ends with the first one.
+    const entry = await this.store.withLock(projectId, () =>
+      this.mutex.run(projectId, async () => {
+        const index = await this.readIndex(projectId);
+        const { back, forward } = foldHistory(index);
+        const last = index.at(-1);
+        // Unsaved changes are the newest step: undo reverts them first, and they clear the way forward like any edit.
+        const dirty = last
+          ? !sameManifest(await this.readManifest(projectId, last.id), hashes(await readTracked(this.store.dir(projectId))))
+          : false;
+        if (direction === 'redo') {
+          const target = dirty ? undefined : forward.at(-1);
+          if (!target) return null;
+          return this.apply(projectId, await this.readManifest(projectId, target.id), {
+            label: m().api.versions.redone(target.label),
+            source: 'redo',
+          });
+        }
+        const target = dirty ? back.at(-1) : back.at(-2);
+        if (!target) return null;
+        const undone = dirty ? m().api.versions.unsaved : back.at(-1)!.label;
+        return this.apply(projectId, await this.readManifest(projectId, target.id), {
+          label: m().api.versions.undone(undone),
+          source: 'undo',
+        });
+      }),
+    );
+    if (entry) {
+      await this.store.syncCode(projectId);
+      this.store.events.emit('changed', projectId);
+    }
+    return entry;
+  }
+
+  /**
+   * Write a whole manifest back, under the project lock and the versions mutex: unsaved changes snapshotted first
+   * ('external'), then a forced record so the step is exactly one entry.
+   */
+  private async apply(projectId: string, manifest: Manifest, meta: SnapshotMeta): Promise<VersionEntry> {
+    const dir = this.store.dir(projectId);
+    // An imported version can name a brand that never travelled, or one removed here since.
+    const brand = brandOf(manifest['project.json'] ? await this.readObject(projectId, manifest['project.json']) : null);
+    if (brand !== null && !(await this.brands.exists(brand))) throw new HttpError(400, m().api.projects.unknownBrand(brand));
+
+    const current = await readTracked(dir);
+    const writes = Object.entries(manifest).filter(
+      ([rel, hash]) => restorable(rel) && !(current.get(rel) && sha256(current.get(rel)!) === hash),
+    );
+    // Files created after that version; their content goes into the snapshot below.
+    const removals = [...current.keys()].filter((rel) => !(rel in manifest));
+    // All checked before the snapshot and the first write: a refused restore leaves the project and its history as
+    // they were. The helpers below are the race-free guard; this check only makes the refusal clean.
+    for (const rel of [...writes.map(([rel]) => rel), ...removals]) await refuseLinkedFolders(dir, rel);
+    await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
+    for (const [rel, hash] of writes) await writeFileInside(dir, resolveInside(dir, rel), await this.readObject(projectId, hash));
+    for (const rel of removals) await removeFileInside(dir, resolveInside(dir, rel));
+    return (await this.record(projectId, meta, true))!;
+  }
+
   /** Snapshot under the project's mutex. Returns null when nothing changed, unless `force` (restores always record). */
   private async record(projectId: string, meta: SnapshotMeta, force: boolean): Promise<VersionEntry | null> {
     const files = await readTracked(this.store.dir(projectId));
-    const manifest: Manifest = {};
-    for (const rel of [...files.keys()].sort()) {
-      const hash = sha256(files.get(rel)!);
-      manifest[rel] = hash;
+    const manifest = hashes(files);
+    for (const [rel, hash] of Object.entries(manifest)) {
       const object = this.path(projectId, 'objects', hash);
       if (!(await pathExists(object))) await writeFileAtomic(object, files.get(rel)!);
     }
@@ -237,6 +287,37 @@ export class FileVersionStore implements VersionStore {
   private async requireProject(projectId: string): Promise<void> {
     if (!(await this.store.exists(projectId))) throw new HttpError(404, m().api.projectNotFound(projectId));
   }
+}
+
+/**
+ * The undo stacks an index describes, oldest first: `back` ends with the current state, `forward` with the next redo.
+ * Every entry is a step except an undo (moves the top of `back` to `forward`) and a redo (the reverse). The index of an
+ * imported project is its own: an undo with nothing under it or a redo with nothing ahead is skipped, never an error.
+ */
+export function foldHistory<T extends { id: string; source: string }>(index: readonly T[]): { back: T[]; forward: T[] } {
+  const back: T[] = [];
+  const forward: T[] = [];
+  for (const entry of index) {
+    if (entry.source === 'undo') {
+      if (back.length >= 2) forward.push(back.pop()!);
+    } else if (entry.source === 'redo') {
+      if (forward.length) back.push(forward.pop()!);
+    } else {
+      back.push(entry);
+      forward.length = 0;
+    }
+  }
+  return { back, forward };
+}
+
+/** `{ relPath: sha256 }` of tracked files, sorted by path. */
+function hashes(files: Map<string, Buffer>): Manifest {
+  return Object.fromEntries([...files.keys()].sort().map((rel) => [rel, sha256(files.get(rel)!)]));
+}
+
+function sameManifest(a: Manifest, b: Manifest): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((rel) => a[rel] === b[rel]);
 }
 
 /** Tracked files of a project folder, keyed by POSIX relative path. */

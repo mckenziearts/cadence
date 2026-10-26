@@ -62,6 +62,8 @@ export default {
     untitled: 'Untitled version',
     restoredScene: (scene: string, version: string) => `Restored "${scene}" (${version})`,
     restored: (version: string) => `Restored ${version}`,
+    undone: (label: string) => `Undone: ${label}`,
+    redone: (label: string) => `Redone: ${label}`,
     notSaved: (error: string) => `[cadence] version not saved: ${error}`,
     sceneMissing: (scene: string, version: string) => `The scene "${scene}" does not exist in version ${version}`,
     sceneGone: (scene: string) => `The scene "${scene}" no longer exists in the project: restore the whole version`,

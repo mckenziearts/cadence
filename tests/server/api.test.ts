@@ -31,6 +31,7 @@ import type {
   VoiceOverService,
 } from '../../server/contracts';
 import { SseHub } from '../../server/hub';
+import { createEditorHandler } from '../../server/http';
 import { setLanguage } from '../../server/i18n';
 import { FileSettingsStore } from '../../server/settings';
 import { FileAssetStore } from '../../server/store/assets';
@@ -1319,6 +1320,67 @@ test('versions: manual save, list, restore', async () => {
     ['v0003', 'v0002', 'v0001'],
   );
   assert.equal((await json('POST', '/api/projects/demo/versions/v0404/restore')).status, 404);
+});
+
+test('undo and redo: { entry } or { entry: null }, 404 for an unknown project, 409 while a turn runs', async () => {
+  assert.deepEqual(await json('POST', '/api/projects/demo/undo'), { status: 200, body: { entry: null } });
+  await json('POST', '/api/projects/demo/versions', {});
+  await fs.writeFile(store.sceneFile('demo', 'titre'), 'export default () => null;\n');
+  await json('POST', '/api/projects/demo/versions', { label: 'Modifié' });
+
+  busy = true;
+  const refused = { status: 409, body: { error: "Claude Code travaille sur ce projet : arrêtez d'abord la réponse en cours." } };
+  assert.deepEqual(await json('POST', '/api/projects/demo/undo'), refused);
+  assert.deepEqual(await json('POST', '/api/projects/demo/redo'), refused);
+  busy = false;
+
+  let res = await json('POST', '/api/projects/demo/undo');
+  assert.equal(res.status, 200);
+  assert.deepEqual([res.body.entry.source, res.body.entry.label], ['undo', 'Annulé : Modifié']);
+  res = await json('POST', '/api/projects/demo/redo');
+  assert.deepEqual([res.body.entry.source, res.body.entry.label], ['redo', 'Rétabli : Modifié']);
+  assert.deepEqual(await json('POST', '/api/projects/demo/redo'), { status: 200, body: { entry: null } });
+  assert.equal(await fs.readFile(store.sceneFile('demo', 'titre'), 'utf8'), 'export default () => null;\n');
+  assert.equal((await json('POST', '/api/projects/absent/undo')).status, 404);
+  assert.equal((await json('POST', '/api/projects/absent/redo')).status, 404);
+
+  setLanguage('en');
+  try {
+    assert.equal((await json('POST', '/api/projects/demo/undo')).body.entry.label, 'Undone: Modifié');
+    assert.equal((await json('POST', '/api/projects/demo/redo')).body.entry.label, 'Redone: Modifié');
+  } finally {
+    setLanguage('fr');
+  }
+});
+
+test('undo and redo need the editor token', async () => {
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  const token = 'editor-token-123';
+  server.on(
+    'request',
+    createEditorHandler({
+      config: { ...t.config, editorPort: port },
+      editorToken: token,
+      tokens: { resolve: () => null },
+      accounts: { callback: async () => ({ ok: false, title: '', detail: '' }) },
+      api: app,
+      mcp: async () => undefined,
+      editor: { html: async () => '', serve: (_req, res) => void res.end() },
+    }),
+  );
+  try {
+    for (const route of ['undo', 'redo']) {
+      const url = `http://127.0.0.1:${port}/api/projects/demo/${route}`;
+      assert.equal((await fetch(url, { method: 'POST' })).status, 403, route);
+      assert.equal((await fetch(url, { method: 'POST', headers: { 'x-cadence-token': `${token}x` } })).status, 403, route);
+      assert.equal((await fetch(url, { method: 'POST', headers: { 'x-cadence-token': token } })).status, 200, route);
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test('chats: keys, messages, stop, clear, cost, agent frames', async () => {
