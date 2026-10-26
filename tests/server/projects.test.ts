@@ -245,6 +245,20 @@ test('update, art direction, remove to .trash', async () => {
   await rejectsWithStatus(store.remove(p.id), 404);
 });
 
+test('a write that changes nothing leaves project.json as it was, updatedAt included', async (ctx) => {
+  const p = await store.create({ ...base, name: 'Pareil' });
+  const file = path.join(store.dir(p.id), 'project.json');
+  const written = await fs.readFile(file, 'utf8');
+  ctx.mock.timers.enable({ apis: ['Date'], now: Date.now() + 60_000 });
+  await store.update(p.id, { name: p.name, tempo: p.tempo });
+  await store.updateScene(p.id, p.scenes[0].id, { duration: p.scenes[0].duration });
+  await store.reorderScenes(
+    p.id,
+    p.scenes.map((s) => s.id),
+  );
+  assert.equal(await fs.readFile(file, 'utf8'), written);
+});
+
 test('music settings are validated and exposed with a stream URL and the provider grid', async () => {
   const p = await store.create({ ...base, name: 'Son' });
   await rejectsWithStatus(store.setMusic(p.id, { file: '../x.mp3', start: 0, volume: 1 }), 400);
@@ -548,6 +562,9 @@ describe('speakers and script lines', () => {
     const p = await store.get('voix');
     await store.update('voix', { voiceOver: p.voiceOver, captions: true });
     for (const s of p.scenes) await store.updateScene('voix', s.id, { name: s.name, voiceOver: s.voiceOver ?? null });
+    // A write that changes nothing is skipped: an edit and its revert make the writer run.
+    await store.updateScene('voix', 'titre', { duration: 5 });
+    await store.updateScene('voix', 'titre', { duration: 4 });
     assert.equal(await fs.readFile(path.join(dir, 'project.json'), 'utf8'), written);
   });
 });

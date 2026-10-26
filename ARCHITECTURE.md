@@ -489,13 +489,21 @@ Content-addressed: `objects/<sha256>` blobs, `manifests/<versionId>.json` = `{ r
 files (project.json, art-direction.md, scenes/**, components/**; text < 2 MB), `index.json` = `VersionEntry[]`
 oldest first (`list()` returns newest first). `FileVersionStore` emits `versions-changed` on the project store's
 events; restores always record a `restore` version, even when nothing changed.
-`snapshot()` after every agent turn (and a `baseline` before the first one), on manual save, on template insert,
-right after a project is created (« État initial », API and CLI) and before a music snap (« Avant le calage des
-coupes »). While a turn runs (`ChatService.busy(id)`), the template-insert and snap versions are skipped, and restore
-and project/scene deletion answer 409: the agent's own version would otherwise record someone else's change.
+`snapshot()` after every agent turn (and a `baseline` before the first one), on manual save, right after a project is
+created (« État initial », API and CLI) and around every editor write. The project, art direction, scene, order and
+music routes (assets and the voice-over sync aside) go through `step()` in `server/api/index.ts`, one at a time per
+project so that writes sent together do not land in each other's versions: an `external` snapshot of unsaved changes
+(« Modifications non enregistrées »; on a clean project it records nothing), the write, then an `edit` version named
+after the change (« Scène modifiée : Titre », « Coupes calées sur la musique »), or `template` for a template insert.
+Manual saves, restores, undo and redo from the API wait behind these steps, so none lands between a write and its
+version. Snapshots are not forced, and `ProjectStore` leaves `project.json` untouched when an edit changes nothing, so a no-op
+patch records nothing. A failed snapshot is logged and the write stands. While a turn
+runs (`ChatService.busy(id)`, checked before and after the write), these versions are skipped, and restore, undo, redo
+and project/scene deletion answer 409, checked again once their turn behind the steps comes: the agent's own version would otherwise record someone else's change.
 `restore()` first snapshots unsaved changes (`external`), writes the files (and for a scene restore: only that
-scene file + its duration), then records a `restore` version. Nothing is ever deleted; object GC is not needed at
-this scale.
+scene file + its duration), then records a `restore` version. Nothing is ever deleted and objects are stored as
+is: each editor write adds a full copy of every file it changed plus a manifest of all tracked files, and the history
+travels in project exports.
 
 Undo and redo add no storage: `foldHistory(index)` (pure, exported from `server/store/versions.ts`) folds the index,
 oldest first, into two stacks. It brings three sources: `edit` (a change made from the editor), `undo` and `redo`.

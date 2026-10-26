@@ -26,13 +26,14 @@ import {
   type ChatKey,
   type FormatId,
   type NetworkId,
+  type VersionSource,
 } from '../../src/shared/types';
 import { LOCAL } from '../capture/policy';
 import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
 import { elevenLabsSpeakersSchema, piperSpeakersSchema, sceneVoiceOverInputSchema } from '../store/projects';
-import { AGENT_FRAME_NAME, HttpError, pathExists, resolveInside } from '../util';
+import { AGENT_FRAME_NAME, HttpError, KeyedMutex, pathExists, resolveInside } from '../util';
 import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
 import { VOICES } from '../voiceover/voices';
 import { dataUrl, sendFile, sendImage } from './files';
@@ -180,6 +181,7 @@ const schemas = {
 export function createApi(deps: ApiDeps) {
   const { config, store, brands, templates, versions, assets, capture, seams, renders, music, chats, settings, hub } = deps;
   const app = new Hono<{ Bindings: HttpBindings }>().basePath('/api');
+  const steps = new KeyedMutex();
 
   app.onError((err, c) => {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status as ContentfulStatusCode);
@@ -232,15 +234,17 @@ export function createApi(deps: ApiDeps) {
       ...(await body(c, schemas.createProject)),
       voiceOver: (await settings.get()).defaultVoice,
     });
-    await versions
-      .snapshot(project.id, { label: m().api.versions.initial, source: 'baseline' })
-      .catch((e: Error) => console.warn(m().api.versions.notSaved(e.message)));
+    await versions.snapshot(project.id, { label: m().api.versions.initial, source: 'baseline' }).catch(notSaved);
     return c.json(project);
   });
   app.patch('/projects/:id', async (c) => {
     const id = c.req.param('id');
     const patch = await body(c, schemas.updateProject);
-    const project = await store.update(id, patch);
+    const project = await step(
+      id,
+      () => store.update(id, patch),
+      () => m().api.versions.projectEdited,
+    );
     if ([patch.formats, patch.brand, patch.tempo, patch.language].some((v) => v !== undefined)) seams.recheck(id);
     return c.json(project);
   });
@@ -256,8 +260,13 @@ export function createApi(deps: ApiDeps) {
   });
   app.get('/projects/:id/art-direction', async (c) => c.json({ text: await store.readArtDirection(c.req.param('id')) }));
   app.put('/projects/:id/art-direction', async (c) => {
+    const id = c.req.param('id');
     const { text } = await body(c, schemas.text);
-    await store.writeArtDirection(c.req.param('id'), text);
+    await step(
+      id,
+      () => store.writeArtDirection(id, text),
+      () => m().api.versions.artDirectionEdited,
+    );
     return c.json({ text });
   });
 
@@ -290,34 +299,56 @@ export function createApi(deps: ApiDeps) {
   app.post('/projects/:id/scenes', async (c) => {
     const id = c.req.param('id');
     const input = await body(c, schemas.createScene);
-    const scene = await store.createScene(id, input);
-    // During a turn this would take Claude's half-done edits along; the turn's own version picks the new scene up.
-    if (input.template && input.code === undefined && !chats.busy(id)) {
-      await versions
-        .snapshot(id, { label: m().api.versions.templateInserted(scene.name), source: 'template' })
-        .catch((e: Error) => console.warn(m().api.versions.notSaved(e.message)));
-    }
+    const fromTemplate = Boolean(input.template) && input.code === undefined;
+    const scene = await step(
+      id,
+      () => store.createScene(id, input),
+      (s) => (fromTemplate ? m().api.versions.templateInserted(s.name) : m().api.versions.sceneAdded(s.name)),
+      fromTemplate ? 'template' : 'edit',
+    );
     return c.json(scene);
   });
   app.patch('/projects/:id/scenes/:sid', async (c) => {
     const id = c.req.param('id');
+    const sid = c.req.param('sid');
     const patch = await body(c, schemas.updateScene);
-    const project = await store.updateScene(id, c.req.param('sid'), patch);
+    const project = await step(
+      id,
+      () => store.updateScene(id, sid, patch),
+      (p) => m().api.versions.sceneEdited(p.scenes.find((s) => s.id === sid)?.name ?? sid),
+    );
     if (patch.duration !== undefined) seams.recheck(id);
     return c.json(project);
   });
-  app.post('/projects/:id/scenes/:sid/duplicate', async (c) =>
-    c.json(await store.duplicateScene(c.req.param('id'), c.req.param('sid'))),
-  );
+  app.post('/projects/:id/scenes/:sid/duplicate', async (c) => {
+    const id = c.req.param('id');
+    return c.json(
+      await step(
+        id,
+        () => store.duplicateScene(id, c.req.param('sid')),
+        (s) => m().api.versions.sceneAdded(s.name),
+      ),
+    );
+  });
   app.delete('/projects/:id/scenes/:sid', async (c) => {
-    const id = await idle(c.req.param('id'));
-    const project = await store.deleteScene(id, c.req.param('sid'));
+    const id = c.req.param('id');
+    const project = await step(
+      id,
+      // Checked inside the step: a turn can start while the deletion waits behind another write.
+      () => idle(id).then(() => store.deleteScene(id, c.req.param('sid'))),
+      () => m().api.versions.sceneDeleted,
+    );
     seams.recheck(id);
     return c.json(project);
   });
   app.put('/projects/:id/order', async (c) => {
     const id = c.req.param('id');
-    const project = await store.reorderScenes(id, (await body(c, schemas.order)).ids);
+    const { ids } = await body(c, schemas.order);
+    const project = await step(
+      id,
+      () => store.reorderScenes(id, ids),
+      () => m().api.versions.scenesReordered,
+    );
     seams.recheck(id);
     return c.json(project);
   });
@@ -354,16 +385,49 @@ export function createApi(deps: ApiDeps) {
   app.get('/projects/:id/music/tracks', async (c) => c.json(await music.tracks(c.req.param('id'))));
   // The body is the audio file itself (its name in the query): it goes to disk as it arrives, never whole in memory.
   app.post('/projects/:id/music', uploadLimit(MUSIC_LIMIT, 200), async (c) => {
+    const id = c.req.param('id');
+    const name = requiredQuery(c, 'name');
     const body = c.req.raw.body ? Readable.fromWeb(c.req.raw.body as WebReadableStream<Uint8Array>) : [];
-    return c.json(await music.upload(c.req.param('id'), { name: requiredQuery(c, 'name'), body }));
+    return c.json(
+      await step(
+        id,
+        () => music.upload(id, { name, body }),
+        (p) => m().api.versions.musicAdded(path.basename(p.music?.file ?? name)),
+      ),
+    );
   });
-  app.put('/projects/:id/music/select', async (c) =>
-    c.json(await music.select(c.req.param('id'), (await body(c, schemas.selectMusic)).file)),
-  );
-  app.patch('/projects/:id/music', async (c) =>
-    c.json(await music.update(c.req.param('id'), await body(c, schemas.updateMusic))),
-  );
-  app.delete('/projects/:id/music', async (c) => c.json(await music.remove(c.req.param('id'))));
+  app.put('/projects/:id/music/select', async (c) => {
+    const id = c.req.param('id');
+    const { file } = await body(c, schemas.selectMusic);
+    return c.json(
+      await step(
+        id,
+        () => music.select(id, file),
+        () => m().api.versions.musicChosen(path.basename(file)),
+      ),
+    );
+  });
+  app.patch('/projects/:id/music', async (c) => {
+    const id = c.req.param('id');
+    const patch = await body(c, schemas.updateMusic);
+    return c.json(
+      await step(
+        id,
+        () => music.update(id, patch),
+        () => m().api.versions.musicEdited,
+      ),
+    );
+  });
+  app.delete('/projects/:id/music', async (c) => {
+    const id = c.req.param('id');
+    return c.json(
+      await step(
+        id,
+        () => music.remove(id),
+        () => m().api.versions.musicRemoved,
+      ),
+    );
+  });
   app.get('/projects/:id/music/audio', async (c) => {
     const file = await music.audioPath(c.req.param('id'));
     if (!file) throw new HttpError(404, m().api.routes.noMusic);
@@ -373,9 +437,11 @@ export function createApi(deps: ApiDeps) {
   app.post('/projects/:id/music/snap', async (c) => {
     const id = c.req.param('id');
     const { grid, keepBars } = await body(c, schemas.snap);
-    // Every duration may change at once: keep the way back (during a turn, the turn's own versions do).
-    if (!chats.busy(id)) await versions.snapshot(id, { label: m().api.versions.beforeSnap, source: 'external' });
-    const project = await music.snapCuts(id, grid, { keepBars });
+    const project = await step(
+      id,
+      () => music.snapCuts(id, grid, { keepBars }),
+      () => m().api.versions.cutsSnapped,
+    );
     seams.recheck(id);
     return c.json(project);
   });
@@ -429,19 +495,29 @@ export function createApi(deps: ApiDeps) {
   app.get('/projects/:id/versions', async (c) =>
     c.json(await versions.list(c.req.param('id'), { sceneId: c.req.query('scene') || undefined })),
   );
+  // Behind the editor's steps: one landing between a write and its snapshot would take that write as its own.
   app.post('/projects/:id/versions', async (c) => {
+    const id = c.req.param('id');
     const { label } = await body(c, schemas.saveVersion);
     return c.json(
-      await versions.snapshot(c.req.param('id'), { label: label?.trim() || m().api.versions.manual, source: 'manual' }),
+      await steps.run(id, () => versions.snapshot(id, { label: label?.trim() || m().api.versions.manual, source: 'manual' })),
     );
   });
   app.post('/projects/:id/versions/:vid/restore', async (c) => {
     const id = await idle(c.req.param('id'));
     const { sceneId } = await body(c, schemas.restore);
-    return c.json(await versions.restore(id, c.req.param('vid'), sceneId ? { sceneId } : {}));
+    return c.json(
+      await steps.run(id, () => idle(id).then(() => versions.restore(id, c.req.param('vid'), sceneId ? { sceneId } : {}))),
+    );
   });
-  app.post('/projects/:id/undo', async (c) => c.json({ entry: await versions.undo(await idle(c.req.param('id'))) }));
-  app.post('/projects/:id/redo', async (c) => c.json({ entry: await versions.redo(await idle(c.req.param('id'))) }));
+  app.post('/projects/:id/undo', async (c) => {
+    const id = await idle(c.req.param('id'));
+    return c.json({ entry: await steps.run(id, () => idle(id).then(() => versions.undo(id))) });
+  });
+  app.post('/projects/:id/redo', async (c) => {
+    const id = await idle(c.req.param('id'));
+    return c.json({ entry: await steps.run(id, () => idle(id).then(() => versions.redo(id))) });
+  });
 
   // Chats
   app.get('/projects/:id/chats/:key', async (c) => c.json(await chats.get(c.req.param('id'), chatKey(c))));
@@ -609,6 +685,22 @@ export function createApi(deps: ApiDeps) {
     return id;
   }
 
+  /**
+   * An editor write as one undo step. Changes made outside Cadence get their own 'external' step first, so undo reverts
+   * the write alone. During a turn the turn's version holds the write and a snapshot would take the agent's half-done
+   * edits along, so busy is checked again after the write. A failed snapshot keeps the write, which is then not undoable.
+   * Steps of one project run one at a time: writes sent together would otherwise land in each other's versions.
+   */
+  function step<T>(id: string, write: () => Promise<T>, label: (done: T) => string, source: VersionSource = 'edit') {
+    return steps.run(id, async () => {
+      if (chats.busy(id)) return write();
+      await versions.snapshot(id, { label: m().api.versions.unsaved, source: 'external' }).catch(notSaved);
+      const done = await write();
+      if (!chats.busy(id)) await versions.snapshot(id, { label: label(done), source }).catch(notSaved);
+      return done;
+    });
+  }
+
   async function existingProject(c: Context): Promise<string> {
     const id = c.req.param('id')!;
     if (!(await store.exists(id))) throw new HttpError(404, m().api.projectNotFound(id));
@@ -674,6 +766,10 @@ function download(c: Context, archive: Readable, name: string): Response {
     return c.body(null, 200, headers);
   }
   return c.body(Readable.toWeb(archive) as ReadableStream, 200, headers);
+}
+
+function notSaved(e: Error): void {
+  console.warn(m().api.versions.notSaved(e.message));
 }
 
 /** The server's local date, YYYY-MM-DD. */
