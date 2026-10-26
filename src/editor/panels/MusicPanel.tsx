@@ -275,7 +275,7 @@ function TrackHeader({ file, analysis }: { file: string; analysis: MusicAnalysis
           <BeatPills className="text-ink" /> {t.production.music.track.analyzing}
         </p>
       ) : status.status === 'error' ? (
-        <p className="mt-1 flex items-start gap-1.5 text-xs text-alert">
+        <p className="mt-1 flex items-start gap-1.5 text-xs text-alert select-text">
           <AlertTriangle className="mt-px size-3 shrink-0" /> {status.error ?? t.production.music.track.failed}
         </p>
       ) : grid ? (

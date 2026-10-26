@@ -123,7 +123,7 @@ export function NewProjectModal({ brand: initialBrand }: { brand?: string | null
                     aria-pressed={on}
                     onClick={() => setBrand(b.id)}
                     className={clsx(
-                      'focus-ring relative flex size-full items-center gap-3 rounded-xl p-2.5 text-left ring-inset transition-shadow',
+                      'focus-ring relative flex size-full items-center gap-3 rounded-xl p-2.5 text-left ring-inset',
                       on ? 'bg-wash ring-2 ring-ink' : 'ring-1 ring-rule hover:ring-track',
                     )}
                   >
@@ -304,7 +304,7 @@ function TemplateOption(props: {
       aria-pressed={props.active}
       onClick={props.onClick}
       className={clsx(
-        'focus-ring flex items-start gap-3 rounded-xl p-3 text-left ring-inset transition-shadow',
+        'focus-ring flex items-start gap-3 rounded-xl p-3 text-left ring-inset',
         props.active ? 'bg-wash ring-2 ring-ink' : 'ring-1 ring-rule hover:ring-track',
       )}
     >

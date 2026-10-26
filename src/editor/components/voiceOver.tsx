@@ -63,7 +63,7 @@ export function ElevenLabsVoiceSelect(props: {
 
   if (error) {
     return (
-      <p role="alert" className="flex items-start gap-1.5 text-xs text-alert">
+      <p role="alert" className="flex items-start gap-1.5 text-xs text-alert select-text">
         <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
       </p>
     );

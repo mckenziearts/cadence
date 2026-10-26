@@ -58,7 +58,11 @@ export function TopBar({ framed = false, profile = true }: { framed?: boolean; p
       )}
     >
       <Tooltip label={t.shell.topBar.home}>
-        <a href="#/" aria-label={t.shell.topBar.homeLink} className="focus-ring flex items-center gap-2.5 pr-2 pl-1 text-ink">
+        <a
+          href="#/"
+          aria-label={t.shell.topBar.homeLink}
+          className="focus-ring flex cursor-(--control-cursor) items-center gap-2.5 pr-2 pl-1 text-ink"
+        >
           <Logo className="size-7" />
           <span className="display-caps text-[22px]/none">Cadence</span>
         </a>
@@ -394,7 +398,10 @@ function ProjectSwitcher() {
                     aria-selected={index === active}
                     onPointerEnter={() => setActive(index)}
                     onClick={() => choose(p.id)}
-                    className={clsx('flex cursor-pointer items-center gap-2 px-2 py-1.5', index === active && 'bg-wash')}
+                    className={clsx(
+                      'flex cursor-(--control-cursor) items-center gap-2 px-2 py-1.5',
+                      index === active && 'bg-wash',
+                    )}
                   >
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[13px] font-semibold text-ink">{p.name}</p>

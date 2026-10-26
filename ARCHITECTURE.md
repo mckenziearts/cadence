@@ -1170,6 +1170,15 @@ contract: removing or reshaping one is a major version.
   `--titlebar-max-width` on `:root` (`none`) to keep the box the window's width less its 24 px sides, so it does not move
   as the window widens. A host whose window buttons sit at the top left places them for the bar it shows.
   `tests/editor/ui.test.ts` checks both in Chromium.
+- Controls and chrome: a desktop host can make the editor feel native with two more `:root` variables, CSS as well.
+  `--control-cursor` (default `pointer`) is the cursor of buttons, `[role='button']`, `label[for]`, `summary` and the
+  few other clickable surfaces (scrubbers, the project list, the render preview); a host sets `default`.
+  `--chrome-select` (default `auto`) is the `user-select` of `body`; a host sets `none` so labels and buttons do not
+  select like a page, while chat messages, command blocks and error texts carry `select-text` and stay copyable. The
+  defaults sit in the editor stylesheet's base layer, so an unlayered host `:root` rule wins over them.
+  `tests/editor/ui.test.ts` checks the web defaults and the opt-in in Chromium.
+- Reduced motion: under `prefers-reduced-motion: reduce` the editor stylesheet brings every transition and animation to
+  near zero, spinners (`animate-spin`) excepted. Frames and renders do not load that stylesheet and are unchanged.
 - `requestSecret`: `startServer({ requestSecret })` (32 characters or more, else `startServer()` throws) makes both
   servers answer 403 to any request without `X-Cadence-Secret` equal to it, compared in constant time over SHA-256
   digests (`hasRequestSecret()` in `server/http.ts`), before any other guard. `GET /oauth/<network>/callback` and `/mcp`

@@ -17,7 +17,7 @@ export const AGENTS: AgentSpec[] = [
     id: 'claude-code',
     name: AGENT_NAMES['claude-code'],
     cli: 'claude',
-    installCmd: 'npm install -g @anthropic-ai/claude-code',
+    installCmd: 'curl -fsSL https://claude.ai/install.sh | bash',
     loginCmd: 'claude',
     docs: 'https://docs.claude.com/en/docs/claude-code/overview',
   },

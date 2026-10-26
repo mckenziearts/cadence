@@ -91,7 +91,7 @@ export function App({
           <div className="max-w-sm text-center">
             <CircleAlert className="mx-auto mb-3 size-6 text-alert" />
             <p className="display-caps text-[22px]/7 text-ink">{t.shell.app.down}</p>
-            <p className="mt-1 text-[13px] text-ink-3">{appError}</p>
+            <p className="mt-1 text-[13px] text-ink-3 select-text">{appError}</p>
             <Button className="mt-4" onClick={() => void loadApp().then(openInitialProject).catch(ignore)}>
               {t.shell.app.retry}
             </Button>
@@ -217,7 +217,7 @@ function Toasts() {
           ) : (
             <Info className="mt-px size-4 shrink-0 text-ink-4" />
           )}
-          <p className="min-w-0 [overflow-wrap:anywhere]">{notification.text}</p>
+          <p className="min-w-0 [overflow-wrap:anywhere] select-text">{notification.text}</p>
           <button
             type="button"
             onClick={() => dismissToast(notification.id)}

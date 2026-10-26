@@ -237,7 +237,7 @@ function FrameErrorBanner() {
     prefill(chatKeyForScene(target.id), t.shell.stage.fixPrompt(errors.join('\n\n').slice(0, 4000)));
   };
   return (
-    <div className="absolute inset-x-4 top-3 z-10 animate-pop-in border-2 border-l-8 border-ink border-l-alert bg-white shadow-float">
+    <div className="absolute inset-x-4 top-3 z-10 animate-pop-in border-2 border-l-8 border-ink border-l-alert bg-white shadow-float select-text">
       <div className="flex items-start gap-3 px-3.5 py-2.5">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-alert" aria-hidden />
         <div className="min-w-0 flex-1">

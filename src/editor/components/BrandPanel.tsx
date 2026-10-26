@@ -145,7 +145,7 @@ export function BrandPanel({ brandId }: { brandId: string }) {
               />
             </div>
           ) : (
-            <p className="text-xs text-alert">{texts.kitFailed(kitError)}</p>
+            <p className="text-xs text-alert select-text">{texts.kitFailed(kitError)}</p>
           )}
           <p className="text-[11px] leading-relaxed text-ink-4">{texts.kitHint}</p>
         </section>

@@ -73,7 +73,7 @@ export function Home() {
             />
           </label>
           <div className="flex gap-3">
-            <a href={api.exportUrl()} download className={buttonClass('secondary', 'lg')}>
+            <a href={api.exportUrl()} download className={clsx(buttonClass('secondary', 'lg'), 'cursor-(--control-cursor)')}>
               <Download className="size-4" aria-hidden />
               {t.shell.home.exportAll}
             </a>
@@ -156,7 +156,7 @@ function ProjectCard({ project, brand }: { project: ProjectSummary; brand: Brand
   return (
     <a
       href={`#/${encodeURIComponent(project.id)}`}
-      className="focus-ring press flex size-full flex-col border-2 border-ink bg-white hover:bg-wash"
+      className="focus-ring press flex size-full cursor-(--control-cursor) flex-col border-2 border-ink bg-white hover:bg-wash"
     >
       <Cover project={project} />
       <span className="flex flex-1 flex-col px-3.5 pt-3 pb-3.5">
@@ -185,7 +185,7 @@ function ProjectActions({ project }: { project: ProjectSummary }) {
         download
         aria-label={label}
         title={label}
-        className={buttonClass('secondary', 'sm', true)}
+        className={clsx(buttonClass('secondary', 'sm', true), 'cursor-(--control-cursor)')}
       >
         <Download className="size-3.5" aria-hidden />
       </a>

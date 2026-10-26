@@ -80,7 +80,7 @@ export function SeamModal({ from, to, format }: { from: string; to: string; form
       }
     >
       {error ? (
-        <p className="py-10 text-center text-[13px] text-alert">{error}</p>
+        <p className="py-10 text-center text-[13px] text-alert select-text">{error}</p>
       ) : !detail ? (
         <div className="flex h-64 flex-col items-center justify-center gap-2 text-[13px] text-ink-3">
           <Spinner className="size-5" />
@@ -97,7 +97,7 @@ export function SeamModal({ from, to, format }: { from: string; to: string; form
             <span className={clsx('font-mono text-xl font-semibold tabular-nums', clean ? 'text-ok' : 'text-warn-ink')}>
               {percent(value)}
             </span>
-            <p className="text-[13px] text-ink-2">
+            <p className="text-[13px] text-ink-2 select-text">
               {detail.result.error
                 ? t.timeline.seams.checkFailed(detail.result.error)
                 : clean

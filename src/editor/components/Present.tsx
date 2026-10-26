@@ -181,7 +181,7 @@ export function Present() {
       {project.voiceOverUrl && <audio ref={voice} src={project.voiceOverUrl} preload="auto" />}
       <div
         className={clsx(
-          'absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-8 pt-16 pb-6 transition-opacity duration-300',
+          'absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-8 pt-16 pb-6 transition-opacity duration-200',
           idle && playing ? 'opacity-0' : 'opacity-100',
         )}
       >
@@ -201,7 +201,7 @@ export function Present() {
             )}
           </button>
           <div
-            className="relative h-1.5 flex-1 cursor-pointer rounded-full bg-white/25"
+            className="relative h-1.5 flex-1 cursor-(--control-cursor) rounded-full bg-white/25"
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               jump(((e.clientX - rect.left) / rect.width) * total);

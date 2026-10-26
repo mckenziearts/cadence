@@ -370,7 +370,7 @@ function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: 
         )}
 
         {build.status === 'error' && (
-          <div className="space-y-2 border-2 border-ink bg-alert/10 px-3 py-3 text-[13px] text-ink">
+          <div className="space-y-2 border-2 border-ink bg-alert/10 px-3 py-3 text-[13px] text-ink select-text">
             <p className="font-semibold">{build.error}</p>
             {build.problems && (
               <ul className="list-disc space-y-0.5 pl-5 text-xs text-ink-2">
@@ -406,9 +406,7 @@ function Progress({ build, onRestart }: { build: BrandBuild; onRestart: (build: 
 
         {build.files.length > 0 && build.status !== 'cancelled' && (
           <details className="text-[13px] text-ink-2" open={live}>
-            <summary className="cursor-pointer font-semibold text-ink">
-              {t.dialogs.newBrand.progress.files(build.files.length)}
-            </summary>
+            <summary className="font-semibold text-ink">{t.dialogs.newBrand.progress.files(build.files.length)}</summary>
             <ul className="mt-1.5 max-h-36 overflow-y-auto font-mono text-xs text-ink-3">
               {build.files.map((file) => (
                 <li key={file}>{file}</li>
