@@ -30,6 +30,7 @@ import {
   type MusicGridData,
   type ProjectState,
   type ProjectSummary,
+  type RenderJob,
   type ScriptLine,
 } from '../../src/shared/types';
 import { fakeNetwork, makeRoot } from '../server/helpers';
@@ -804,6 +805,53 @@ describe('editor', () => {
         .first()
         .click();
       assert.notEqual(await picked(page.getByText('Vérification impossible : capture refusée')), '', 'the seam check error');
+      await page.context().close();
+    },
+  );
+
+  it(
+    'keeps the agent-down banner, a failed render and a setup command selectable when the host turns chrome selection off',
+    { timeout: 90_000 },
+    async () => {
+      const page = await newPage();
+      await page.route('**/api/state', async (route) => {
+        const response = await route.fetch();
+        const state = (await response.json()) as AppState;
+        return route.fulfill({
+          response,
+          json: { ...state, agent: { ok: false, label: 'Agent factice', detail: 'Session expirée' } },
+        });
+      });
+      const job: RenderJob = {
+        id: 'e2e-failed-render',
+        projectId: A,
+        format: '16:9',
+        status: 'error',
+        progress: 0,
+        framesDone: 0,
+        framesTotal: 30,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        request: { formats: ['16:9'], quality: 'standard' },
+        createdAt: new Date().toISOString(),
+        error: 'encodeur introuvable',
+      };
+      await page.route(`**/api/projects/${A}/renders`, (route) =>
+        route.request().method() === 'GET' ? route.fulfill({ json: { jobs: [job], files: [] } }) : route.fallback(),
+      );
+      await open(`${A}/titre`, page);
+      await hostStyle(page, ':root { --chrome-select: none }');
+      assert.notEqual(await picked(page.getByText('Session expirée')), '', 'the agent-down banner');
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      assert.notEqual(await picked(page.getByText('encodeur introuvable')), '', 'a failed render job');
+
+      await page.goto(`${server.config.editorOrigin}/#/@profil`);
+      await page.getByRole('heading', { name: 'Profil', exact: true }).waitFor({ timeout: 60_000 });
+      await hostStyle(page, ':root { --chrome-select: none }');
+      await page.getByRole('listitem', { name: 'Grok' }).getByRole('button', { name: 'Comment connecter' }).click();
+      const install = page.getByRole('dialog').locator('code', { hasText: 'x.ai/cli/install.sh' });
+      assert.notEqual(await picked(install), '', 'the install command');
       await page.context().close();
     },
   );
