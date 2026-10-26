@@ -180,6 +180,9 @@ export const api = {
   saveVersion: (id: string, label: string) => post<VersionEntry | null>(`${p(id)}/versions`, { label }),
   restoreVersion: (id: string, versionId: string, sceneId?: string | null) =>
     post<VersionEntry>(`${p(id)}/versions/${versionId}/restore`, sceneId ? { sceneId } : {}),
+  /** The version the step recorded, null when there was nothing to undo (or redo). */
+  undo: (id: string) => post<{ entry: VersionEntry | null }>(`${p(id)}/undo`),
+  redo: (id: string) => post<{ entry: VersionEntry | null }>(`${p(id)}/redo`),
 
   chat: (id: string, key: ChatKey) => get<ChatState>(`${p(id)}/chats/${key}`),
   send: (id: string, key: ChatKey, input: SendMessageInput) => post<ChatState>(`${p(id)}/chats/${key}/messages`, input),

@@ -36,11 +36,18 @@ async function writeHost(dir: string): Promise<void> {
   await fs.writeFile(
     path.join(src, 'main.tsx'),
     `import { createRoot } from 'react-dom/client';
-import { App, Profile, api, openNewBrand } from '${core}/index';
+import { App, Profile, api, openNewBrand, redo, undo } from '${core}/index';
 import './styles.css';
 
+// A host Edit menu calls the core steps: the build fails if index.ts stops exporting them.
 function X() {
-  return <p>${HOST_PAGE}</p>;
+  return (
+    <div>
+      <p>${HOST_PAGE}</p>
+      <button onClick={() => void undo()}>Undo</button>
+      <button onClick={() => void redo()}>Redo</button>
+    </div>
+  );
 }
 
 const build = (input: Parameters<typeof api.startBrandBuild>[0]) =>

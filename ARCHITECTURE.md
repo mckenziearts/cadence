@@ -520,6 +520,15 @@ clear the way forward like any new step. Both answer null, recording nothing, wh
 and undo/redo share one private apply: brand check (400) and linked-folder check before anything else, the `external`
 snapshot, the writes and removals, then a forced record, so each undo or redo is exactly one entry.
 
+In the editor, Cmd-Z (Ctrl-Z) calls `POST /undo` and Shift-Cmd-Z `POST /redo` on the scenes view of an open project,
+without a modal or the presentation; in a text field the browser undoes the typing instead. The letter is read from
+`e.key`, never `e.code`, so it follows the keyboard layout. One request runs at a time (a press meanwhile is dropped),
+a toast shows the returned label or « Rien à annuler » / « Rien à rétablir », a 409 shows the agent-busy message, and
+the project is refetched after each call. The versions panel hides `edit`, `undo` and `redo` entries (Cmd-Z reaches
+them); the row it shows on top keeps its restore button when a hidden step is newer. `tests/editor/shortcuts.test.ts`
+checks the keys, the guard and the one-at-a-time rule, `tests/editor/helpers.test.tsx` the panel filter and
+`tests/editor/ui.test.ts` both shortcuts in Chromium.
+
 ## Agent (Claude Code)
 
 `ClaudeCodeProvider.run(turn)` spawns the local `claude` in print mode, cwd = project folder:
@@ -1104,7 +1113,7 @@ contract: removing or reshaping one is a major version.
 - `editorRoot`: a folder with the host's own `index.html`, built instead of the core's at every start (the same
   in-memory production build, `server/editor.ts`) and served with the same token, frame-origin metas and guards. Its
   scripts import the core editor through `src/editor/index.ts`, which exports `App`, `Profile`, `api`, `ApiError`,
-  `useStore`, `useT` and `openNewBrand` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
+  `useStore`, `useT`, `openNewBrand`, `undo` and `redo` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
   the core's `@profil` page, for a host page that wraps it rather than replacing it.
 - `pages`: `<App pages={{ '@compte': Account }} />` adds the host's screens to the editor's hash router. A page id
   starts with `@`, which no project id can, so a page never shadows a project; `#/@compte` opens it in place of the
@@ -1127,6 +1136,11 @@ contract: removing or reshaping one is a major version.
   argument, the progress of that build with one (a build started with `api.startBrandBuild({ source, ref, name })`,
   say). The progress of a build that has a `source` offers no "Start over", since its `ref` never reaches the editor;
   a repository build still does. `tests/server/editor-root.test.ts` checks both in Chromium.
+- `undo()` and `redo()`: a host menu's Undo and Redo items call them, the same steps as Cmd-Z and Shift-Cmd-Z (see
+  "Versions"). They check the editor's state themselves and do nothing without an open project, outside the scenes
+  view, behind a modal or while presenting, and a call while one runs is dropped. The text-field check stays in the
+  editor's keyboard handler: a host menu sees its own focus and keeps the field's undo when one has it. Both resolve
+  once the project is refetched. `tests/editor/shortcuts.test.ts` checks the guard.
 - CSS: the host stylesheet imports the core's (`@import '<core>/src/editor/styles.css';`) and adds `@source './';` for
   its own files. Tailwind only generates the classes it finds in scanned sources, and the core stylesheet scans
   `src/editor/` only: without its own `@source`, the host's screens come out unstyled.

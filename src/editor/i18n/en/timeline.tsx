@@ -78,6 +78,8 @@ export default {
       { keys: ['Shift', '\u2190 \u2192'], label: 'Back / forward one second' },
       { keys: ['\u2191', '\u2193'], label: 'Previous / next scene' },
       { keys: ['L'], label: 'Loop playback' },
+      { keys: ['⌘', 'Z'], label: 'Undo the last change' },
+      { keys: ['Shift', '⌘', 'Z'], label: 'Redo' },
       { keys: ['⌘', 'Enter'], label: 'Send the message' },
       { keys: ['Alt', '\u2190 \u2192'], label: 'Move the selected scene' },
       { keys: ['Esc'], label: 'Close' },

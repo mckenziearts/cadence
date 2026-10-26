@@ -17,6 +17,7 @@ import { api, ignore } from '../api';
 import { Button, ConfirmButton, EmptyState, Segmented, inputClass } from '../components/ui';
 import { useT } from '../i18n';
 import { relative, usd } from '../lib/format';
+import { shownVersions } from '../lib/versions';
 import { currentScene, set, useStore } from '../store';
 import { toast } from '../store/ui';
 import { useAgentName } from '../components/agents';
@@ -69,6 +70,7 @@ export function VersionsPanel() {
   };
 
   const names = new Map(project.scenes.map((s) => [s.id, s.name]));
+  const shown = entries && shownVersions(entries);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -121,23 +123,23 @@ export function VersionsPanel() {
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {entries === null ? (
+        {shown === null ? (
           <div className="space-y-2 p-4">
             {[0, 1, 2].map((i) => (
               <div key={i} className="skeleton h-16 rounded-xl" />
             ))}
           </div>
-        ) : entries.length === 0 ? (
+        ) : shown.length === 0 ? (
           <EmptyState icon={<History className="size-5" />} title={t.conversation.versions.emptyTitle}>
             {t.conversation.versions.empty(agent)}
           </EmptyState>
         ) : (
           <ol className="relative space-y-1 px-2 py-3 xl:px-3">
-            {entries.map((entry, i) => (
+            {shown.map(({ entry, latest }) => (
               <VersionItem
                 key={entry.id}
                 entry={entry}
-                latest={i === 0}
+                latest={latest}
                 names={names}
                 focused={entry.id === focus}
                 sceneId={scene?.id ?? null}

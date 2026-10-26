@@ -16,6 +16,7 @@ import { Modals } from './modals/Modals';
 import { SidePanel } from './panels/SidePanel';
 import { get, set, useStore } from './store';
 import { parseHash, resolvePage, type Pages } from './lib/routing';
+import { isTyping, undoKey } from './lib/shortcuts';
 import { restoreDrafts } from './store/chat';
 import { isAudioFile, uploadMusic } from './store/music';
 import {
@@ -24,9 +25,11 @@ import {
   openInitialProject,
   openProject,
   PROFILE_PAGE,
+  redo,
   setPlaying,
   stepFrame,
   stepScene,
+  undo,
 } from './store/project';
 import { dismissToast, toast } from './store/ui';
 
@@ -273,16 +276,6 @@ function ConnectionBadge() {
 
 // Keyboard
 
-function isTyping(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null;
-  if (!el) return false;
-  const tag = el.tagName;
-  if (tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) return true;
-  if (tag !== 'INPUT') return false;
-  const type = (el as HTMLInputElement).type;
-  return !['checkbox', 'radio', 'range', 'button', 'submit'].includes(type);
-}
-
 function useShortcuts() {
   useEffect(() => {
     // Whether focus last moved with Tab (then Space activates the focused control) or with the pointer.
@@ -292,6 +285,13 @@ function useShortcuts() {
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Tab') tabbed = true;
+      const step = undoKey(e);
+      // undo() and redo() check the editor's state themselves, for a host menu too.
+      if (step) {
+        e.preventDefault();
+        void (step === 'undo' ? undo() : redo());
+        return;
+      }
       const s = get();
       if (e.defaultPrevented || s.presenting || s.modal || !s.project || s.view !== 'scenes') return;
       if (isTyping(e.target) || e.metaKey || e.ctrlKey) return;

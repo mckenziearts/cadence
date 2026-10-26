@@ -7,6 +7,7 @@ export type { Pages } from './lib/routing';
 export { api, ApiError } from './api';
 export { useStore } from './store';
 export { useT } from './i18n';
+export { undo, redo } from './store/project';
 
 /** The core's "New brand" window: the repository picker, or the progress of the build `buildId`. */
 export function openNewBrand(buildId?: string): void {

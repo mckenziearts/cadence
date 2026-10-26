@@ -76,6 +76,8 @@ export default {
       { keys: ['Maj', '\u2190 \u2192'], label: 'Reculer / avancer d’une seconde' },
       { keys: ['\u2191', '\u2193'], label: 'Scène précédente / suivante' },
       { keys: ['L'], label: 'Lecture en boucle' },
+      { keys: ['⌘', 'Z'], label: 'Annuler la dernière modification' },
+      { keys: ['Maj', '⌘', 'Z'], label: 'Rétablir' },
       { keys: ['⌘', 'Entrée'], label: 'Envoyer le message' },
       { keys: ['Alt', '\u2190 \u2192'], label: 'Déplacer la scène sélectionnée' },
       { keys: ['Échap'], label: 'Fermer' },

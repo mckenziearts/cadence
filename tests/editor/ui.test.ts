@@ -2474,6 +2474,114 @@ describe('editor', () => {
     await page.context().close();
   });
 
+  /** A project with a 3 s scene « Durée », and the duration of that scene in its project.json. */
+  async function undoProject(id: string): Promise<() => Promise<number>> {
+    await api('POST', '/api/projects', { name: 'Annuler', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    await api('POST', `/api/projects/${id}/scenes`, { name: 'Durée', duration: 3 });
+    return async () => {
+      const project = JSON.parse(await readFile(path.join(server.config.projectsDir, id, 'project.json'), 'utf8')) as {
+        scenes: { id: string; duration: number }[];
+      };
+      return project.scenes.find((s) => s.id === 'duree')!.duration;
+    };
+  }
+
+  it(
+    'undoes a scene duration with Cmd-Z and redoes it with Shift-Cmd-Z, never from a text field',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-undo`;
+      const duration = await undoProject(id);
+      // Without the events stream, only the refetch after each step brings the card up to date.
+      const page = await newPage();
+      await page.route('**/api/events', (route) => route.abort());
+      await open(`${id}/duree`, page);
+      const undos: string[] = [];
+      page.on('request', (r) => /\/(undo|redo)$/.test(r.url()) && undos.push(r.url().split('/').at(-1)!));
+      // Registered after the editor's own listener: whether it kept the browser's undo for itself.
+      await page.evaluate(() =>
+        window.addEventListener('keydown', (e) => document.body.setAttribute('data-prevented', String(e.defaultPrevented))),
+      );
+      const prevented = () => page.locator('body').getAttribute('data-prevented');
+      const card = page.getByRole('listitem').filter({ has: page.getByRole('button', { name: 'Scène 2 : Durée' }) });
+      await card.getByRole('button', { name: /^Durée/ }).click();
+      await card.getByRole('textbox').fill('5');
+      await Promise.all([
+        page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith('/scenes/duree')),
+        card.getByRole('textbox').press('Enter'),
+      ]);
+      assert.equal(await duration(), 5);
+
+      // In a text field the browser undoes the typing; the project stays as it is.
+      const composer = page.getByRole('textbox', { name: 'Message pour la scène' });
+      await composer.fill('Brouillon');
+      await composer.press('ControlOrMeta+z');
+      assert.equal(await prevented(), 'false');
+      await composer.press('Shift+ControlOrMeta+z');
+      assert.equal(await prevented(), 'false');
+      await page.waitForTimeout(500);
+      assert.deepEqual(undos, []);
+      assert.equal(await duration(), 5);
+
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith('/undo')), page.keyboard.press('ControlOrMeta+z')]);
+      assert.equal(await duration(), 3);
+      assert.equal(await prevented(), 'true');
+      await page.getByText(/^Annulé\s:\s/).waitFor({ timeout: 10_000 });
+      await card.locator('[aria-label^="Durée : 3,00"]').waitFor({ timeout: 10_000 });
+
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith('/redo')), page.keyboard.press('Shift+ControlOrMeta+z')]);
+      assert.equal(await duration(), 5);
+      await page.getByText(/^Rétabli\s:\s/).waitFor({ timeout: 10_000 });
+      await card.locator('[aria-label^="Durée : 5,00"]').waitFor({ timeout: 10_000 });
+
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith('/redo')), page.keyboard.press('Shift+ControlOrMeta+z')]);
+      await page.getByText('Rien à rétablir', { exact: true }).waitFor({ timeout: 10_000 });
+      assert.equal(await duration(), 5);
+      assert.deepEqual(undos, ['undo', 'redo', 'redo']);
+      await page.context().close();
+    },
+  );
+
+  it('sends one undo at a time while Cmd-Z is held, and none from the render view', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-undo-held`;
+    const duration = await undoProject(id);
+    await api('PATCH', `/api/projects/${id}/scenes/duree`, { duration: 4 });
+    await api('PATCH', `/api/projects/${id}/scenes/duree`, { duration: 5 });
+    const page = await open(`${id}/duree`);
+    let undos = 0;
+    page.on('request', (r) => r.url().endsWith('/undo') && undos++);
+
+    await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.waitForTimeout(500);
+    assert.equal(undos, 0, 'no undo outside the scenes view');
+    await page.getByRole('button', { name: 'Scènes', exact: true }).click();
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(`**/api/projects/${id}/undo`, async (route) => {
+      await held;
+      await route.fallback();
+    });
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.waitForTimeout(500);
+    assert.equal(undos, 1);
+    release();
+    await page.getByText(/^Annulé\s:\s/).waitFor({ timeout: 10_000 });
+    assert.equal(await duration(), 4, 'one step back, not three');
+
+    await page.unroute(`**/api/projects/${id}/undo`);
+    await page.route(`**/api/projects/${id}/undo`, (route) =>
+      route.fulfill({ status: 409, json: { error: 'Agent factice travaille sur ce projet' } }),
+    );
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.getByText('Agent factice travaille sur ce projet', { exact: true }).waitFor({ timeout: 10_000 });
+    await page.context().close();
+  });
+
   it('offers "Garder les mesures" first, next to a "régularité" badge', { timeout: 90_000 }, async () => {
     const beats = Array.from({ length: 61 }, (_, i) => i / 2);
     const grid: MusicGridData = {
