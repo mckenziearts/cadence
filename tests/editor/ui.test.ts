@@ -2543,6 +2543,24 @@ describe('editor', () => {
     },
   );
 
+  it(
+    'moves the selection and the focus to the card now in place of a scene that Cmd-Z takes away',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-undo-focus`;
+      await undoProject(id);
+      const { scenes } = await api<{ scenes: { id: string }[] }>('GET', `/api/projects/${id}`);
+      await api('POST', `/api/projects/${id}/scenes`, { name: 'Milieu', duration: 2, after: scenes[0].id });
+      const page = await open(`${id}/milieu`);
+      await page.getByRole('button', { name: 'Scène 2 : Milieu' }).focus();
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith('/undo')), page.keyboard.press('ControlOrMeta+z')]);
+      const duree = page.getByRole('button', { name: 'Scène 2 : Durée' });
+      await page.waitForFunction((card) => document.activeElement === card, await duree.elementHandle(), { timeout: 10_000 });
+      assert.equal(await duree.getAttribute('aria-current'), 'true');
+      await page.context().close();
+    },
+  );
+
   it('sends one undo at a time while Cmd-Z is held, and none from the render view', { timeout: 90_000 }, async () => {
     const id = `${PREFIX}-undo-held`;
     const duration = await undoProject(id);

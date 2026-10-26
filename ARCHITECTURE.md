@@ -517,17 +517,23 @@ changes are the newest step: undo targets `back`'s top, records them as `externa
 Modifications non enregistrées »); otherwise it targets the entry under the top, labelled « Annulé : <label of the
 top> ». Redo targets `forward`'s top (« Rétabli : <label> ») and answers null while the disk has unsaved changes, which
 clear the way forward like any new step. Both answer null, recording nothing, when there is no target. A whole restore
-and undo/redo share one private apply: brand check (400) and linked-folder check before anything else, the `external`
-snapshot, the writes and removals, then a forced record, so each undo or redo is exactly one entry.
+and undo/redo share one private apply: brand check (400), linked-folder check and a read of every stored file it puts
+back (500 when one is missing) before anything else, the `external` snapshot, the writes and removals, then a forced
+record, so each undo or redo is exactly one entry. A scene restore reads its file before its snapshot too. Restore,
+undo and redo then call `seams.recheck`: durations and order come back with the files.
 
 In the editor, Cmd-Z (Ctrl-Z) calls `POST /undo` and Shift-Cmd-Z `POST /redo` on the scenes view of an open project,
 without a modal or the presentation; in a text field the browser undoes the typing instead. The letter is read from
-`e.key`, never `e.code`, so it follows the keyboard layout. One request runs at a time (a press meanwhile is dropped),
-a toast shows the returned label or « Rien à annuler » / « Rien à rétablir », a 409 shows the agent-busy message, and
-the project is refetched after each call. The versions panel hides `edit`, `undo` and `redo` entries (Cmd-Z reaches
-them); the row it shows on top keeps its restore button when a hidden step is newer. `tests/editor/shortcuts.test.ts`
-checks the keys, the guard and the one-at-a-time rule, `tests/editor/helpers.test.tsx` the panel filter and
-`tests/editor/ui.test.ts` both shortcuts in Chromium.
+`e.key`, never `e.code`, so it follows the keyboard layout. A music change still waiting for calm is sent first, and
+the call waits until every music change sent is answered, so it reverts that change rather than the step before. One
+request runs at a time (a press meanwhile is dropped), a toast shows the returned label or « Rien à annuler » /
+« Rien à rétablir », a 409 shows the agent-busy message, and the project is refetched after each call. A step that
+takes the selected scene away (undoing an added one) hands the selection, and the focus if its card had it, to the
+next scene still there, else the one before (`sceneInPlace`). The versions panel hides `edit`, `undo` and `redo`
+entries (Cmd-Z reaches them); the row it shows on top keeps its restore button when a hidden step is newer.
+`tests/editor/shortcuts.test.ts` checks the keys, the guard, the one-at-a-time rule and the scene in place,
+`tests/editor/history.test.ts` the store steps and the wait for music changes, `tests/editor/helpers.test.tsx` the
+panel filter and `tests/editor/ui.test.ts` both shortcuts and the focus in Chromium.
 
 ## Agent (Claude Code)
 

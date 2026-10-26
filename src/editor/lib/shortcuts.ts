@@ -1,4 +1,5 @@
-// Keyboard rules of the editor that a test can prove without a browser: text fields, the undo keys and their guard.
+// Keyboard rules of the editor that a test can prove without a browser: text fields, the undo keys and their guard, and
+// where the selection and the focus go when a step removes their scene.
 import type { EditorState } from '../store';
 
 /** Focus in a field that takes text: the browser owns the keys there (Space, arrows, its own undo). */
@@ -42,4 +43,15 @@ export function oneAtATime<A extends unknown[]>(step: (...args: A) => Promise<vo
       running = false;
     }
   };
+}
+
+/**
+ * The scene that takes the place of `id` when a step removes it (undoing an added scene), by the order `before` the step:
+ * the next one still there, else the one before it, as deleting a scene does. Null when `id` is still there.
+ */
+export function sceneInPlace(before: string[], after: string[], id: string): string | null {
+  if (after.includes(id)) return null;
+  const at = before.indexOf(id);
+  const left = (ids: string[]) => ids.find((x) => after.includes(x));
+  return left(before.slice(at + 1)) ?? left(before.slice(0, Math.max(at, 0)).reverse()) ?? null;
 }

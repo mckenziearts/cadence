@@ -136,7 +136,7 @@ function SceneCard(props: {
   return (
     <div
       ref={ref}
-      data-scene-card=""
+      data-scene-card={scene.id}
       role="listitem"
       className={clsx(
         'group relative shrink-0 transition-opacity',

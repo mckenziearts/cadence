@@ -819,6 +819,43 @@ test('an undo through a folder swapped for a link out of the project is refused,
   assert.deepEqual(await versions.list(id), history);
 });
 
+test('an undo, a redo or a restore to a version whose history object is missing writes nothing and records nothing', async () => {
+  const titre = await read('scenes/titre.tsx');
+  await baseline();
+  await write('art-direction.md', 'changed\n');
+  await write('scenes/titre.tsx', 'export default () => "titre v2";\n');
+  await versions.snapshot(id, { label: 'Deux', source: 'edit' });
+  const objects = path.join(dir, '.cadence', 'versions', 'objects');
+  const hide = async (content: string) => {
+    const object = path.join(objects, sha256(content));
+    await fs.rename(object, `${object}.gone`);
+    return () => fs.rename(`${object}.gone`, object);
+  };
+  const refused = async (attempt: () => Promise<unknown>) => {
+    const before = await trackedBytes();
+    const history = await versions.list(id);
+    await rejectsWithStatus(attempt(), 500, /Contenu manquant/);
+    assert.deepEqual(await trackedBytes(), before);
+    assert.deepEqual(await versions.list(id), history);
+  };
+
+  let unhide = await hide(titre);
+  await refused(() => versions.undo(id));
+  // Left unsaved, so a refused restore that still recorded them as "external" would show in the history.
+  await write('components/extra.ts', 'export const EXTRA = 1;\n');
+  await refused(() => versions.restore(id, 'v0001'));
+  await refused(() => versions.restore(id, 'v0001', { sceneId: 'titre' }));
+  await unhide();
+  await fs.rm(path.join(dir, 'components', 'extra.ts'));
+  await versions.undo(id);
+
+  unhide = await hide('export default () => "titre v2";\n');
+  await refused(() => versions.redo(id));
+  await unhide();
+  assert.equal((await versions.redo(id))?.source, 'redo');
+  assert.equal(await read('scenes/titre.tsx'), 'export default () => "titre v2";\n');
+});
+
 test('two concurrent undos revert two different steps', async () => {
   await baseline();
   const original = await read('scenes/titre.tsx');

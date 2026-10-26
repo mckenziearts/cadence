@@ -5,8 +5,9 @@ import { browserLanguage, t } from '../i18n';
 import type { AgentId, CreateSceneInput, FormatId, ProjectState, SeamResult } from '../../shared/types';
 import { seamTone } from '../lib/format';
 import { parseHash } from '../lib/routing';
-import { oneAtATime, undoAllowed } from '../lib/shortcuts';
+import { oneAtATime, sceneInPlace, undoAllowed } from '../lib/shortcuts';
 import { clamp, currentScene, get, previewDuration, sceneAt, set, useStore, type PreviewMode } from '.';
+import { flushMusic } from './music';
 import { toast } from './ui';
 
 // App
@@ -399,10 +400,21 @@ const historyRequest = oneAtATime(async (id: string, direction: 'undo' | 'redo')
 });
 
 async function historyStep(direction: 'undo' | 'redo'): Promise<void> {
+  await flushMusic();
   const s = get();
   if (!undoAllowed(s)) return;
+  const before = s.project!.scenes.map((x) => x.id);
+  const card = document.activeElement?.closest<HTMLElement>('[data-scene-card]');
   // A dropped press has nothing to refetch.
-  if (await historyRequest(s.project!.id, direction)) await refreshProject();
+  if (!(await historyRequest(s.project!.id, direction))) return;
+  await refreshProject();
+  // A step that removes a scene (undoing an added one) takes its card away: the selection, and the focus if it was there,
+  // go to the card now in its place rather than to the first scene and the top of the page.
+  const after = get().project?.scenes.map((x) => x.id) ?? [];
+  const selected = s.sceneId && sceneInPlace(before, after, s.sceneId);
+  if (selected) selectScene(selected);
+  const focused = card && !card.isConnected && sceneInPlace(before, after, card.dataset.sceneCard!);
+  if (focused) document.querySelector<HTMLElement>(`[data-scene-card="${focused}"] button`)?.focus();
 }
 
 /**

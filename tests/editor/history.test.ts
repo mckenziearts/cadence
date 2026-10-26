@@ -10,8 +10,14 @@ import type { ProjectState, VersionEntry } from '../../src/shared/types';
 const { api } = await import('../../src/editor/api');
 const { get, set } = await import('../../src/editor/store');
 const { redo, undo } = await import('../../src/editor/store/project');
+const { patchMusic } = await import('../../src/editor/store/music');
 
-const open = { project: { id: 'p' } as ProjectState, view: 'scenes', modal: null, presenting: false } as const;
+const open = {
+  project: { id: 'p', scenes: [] } as unknown as ProjectState,
+  view: 'scenes',
+  modal: null,
+  presenting: false,
+} as const;
 const step = (label: string) => ({ entry: { label } as VersionEntry });
 
 /** The undo, redo and refetch calls; the refetch fails, which leaves the state as it is (applying it needs a page). */
@@ -95,4 +101,35 @@ test('a refused undo (a running turn answers 409) resolves, adds no toast of its
   assert.equal(calls.project.mock.callCount(), 1);
   await undo();
   assert.equal(calls.undo.mock.callCount(), 2, 'the next press goes through');
+});
+
+test('an undo waits for the music changes in flight or still waiting for calm, so it reverts the last one', async (t) => {
+  const calls = mockApi(t);
+  const order: string[] = [];
+  calls.undo.mock.mockImplementation(async () => {
+    order.push('undo');
+    return { entry: null };
+  });
+  const answers: (() => void)[] = [];
+  const updateMusic = t.mock.method(api, 'updateMusic', (id: string, input: unknown) => {
+    order.push(`music ${id} ${JSON.stringify(input)}`);
+    return new Promise((_, reject) => answers.push(() => reject(new Error('offline'))));
+  });
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  set({ project: { id: 'p', scenes: [], music: { start: 0, volume: 1 } } as unknown as ProjectState });
+  patchMusic({ start: 2 }, 250);
+  t.mock.timers.tick(250);
+  patchMusic({ volume: 0.5 }, 250);
+  const pressed = undo();
+  await settle();
+  assert.deepEqual(order, ['music p {"start":2}'], 'the waiting change goes out once the one in flight is answered');
+  answers[0]();
+  await settle();
+  assert.deepEqual(order, ['music p {"start":2}', 'music p {"volume":0.5}']);
+  answers[1]();
+  await pressed;
+  assert.deepEqual(order, ['music p {"start":2}', 'music p {"volume":0.5}', 'undo']);
+  t.mock.timers.tick(250);
+  await settle();
+  assert.equal(updateMusic.mock.callCount(), 2, 'a change sent is not sent again');
 });

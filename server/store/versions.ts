@@ -89,8 +89,9 @@ export class FileVersionStore implements VersionStore {
           }
 
           await refuseLinkedFolders(dir, rel);
+          const code = await this.readObject(projectId, manifest[rel]);
           await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
-          await writeFileInside(dir, path.join(dir, rel), await this.readObject(projectId, manifest[rel]));
+          await writeFileInside(dir, path.join(dir, rel), code);
           if (Object.keys(patch).length) await this.store.updateScene(projectId, sceneId, patch);
           return this.record(
             projectId,
@@ -177,8 +178,9 @@ export class FileVersionStore implements VersionStore {
     // All checked before the snapshot and the first write: a refused restore leaves the project and its history as
     // they were. The helpers below are the race-free guard; this check only makes the refusal clean.
     for (const rel of [...writes.map(([rel]) => rel), ...removals]) await refuseLinkedFolders(dir, rel);
+    const contents = await Promise.all(writes.map(([, hash]) => this.readObject(projectId, hash)));
     await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
-    for (const [rel, hash] of writes) await writeFileInside(dir, resolveInside(dir, rel), await this.readObject(projectId, hash));
+    for (const [i, [rel]] of writes.entries()) await writeFileInside(dir, resolveInside(dir, rel), contents[i]);
     for (const rel of removals) await removeFileInside(dir, resolveInside(dir, rel));
     return (await this.record(projectId, meta, true))!;
   }

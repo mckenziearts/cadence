@@ -1,11 +1,12 @@
-// The editor's undo keys: which press undoes or redoes, when the editor lets it, and one request at a time.
+// The editor's undo keys: which press undoes or redoes, when the editor lets it, one request at a time, and the scene
+// that takes the place of one a step removes.
 // node --import tsx --test tests/editor/shortcuts.test.ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ProjectState } from '../../src/shared/types';
 import en from '../../src/editor/i18n/en/timeline';
 import fr from '../../src/editor/i18n/fr/timeline';
-import { isTyping, oneAtATime, undoAllowed, undoKey } from '../../src/editor/lib/shortcuts';
+import { isTyping, oneAtATime, sceneInPlace, undoAllowed, undoKey } from '../../src/editor/lib/shortcuts';
 
 const press = (key: string, mods: { meta?: boolean; ctrl?: boolean; shift?: boolean; alt?: boolean } = {}, target?: object) =>
   ({
@@ -113,4 +114,14 @@ test('the shortcuts help lists undo and redo, in French and English', () => {
     assert.ok(label('\u2318 Z'), shift);
     assert.ok(label(`${shift} \u2318 Z`), shift);
   }
+});
+
+test('a step that removes a scene hands its place to the next scene still there, else to the one before it', () => {
+  const before = ['intro', 'copie', 'milieu', 'fin'];
+  assert.equal(sceneInPlace(before, ['intro', 'milieu', 'fin'], 'copie'), 'milieu');
+  assert.equal(sceneInPlace(before, ['intro', 'fin'], 'copie'), 'fin', 'two scenes gone: the first one left after them');
+  assert.equal(sceneInPlace(before, ['intro', 'copie'], 'fin'), 'copie', 'the last scene gone: the one before it');
+  assert.equal(sceneInPlace(before, ['milieu', 'intro', 'fin'], 'copie'), 'milieu', 'by the old order, whatever the new one');
+  assert.equal(sceneInPlace(before, before, 'copie'), null, 'still there: nothing moves');
+  assert.equal(sceneInPlace(before, ['autre'], 'copie'), null, 'none of the old scenes left');
 });

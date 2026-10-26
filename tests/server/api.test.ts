@@ -1487,6 +1487,20 @@ test('editor writes: nothing recorded for a write that changes nothing, or durin
   );
 });
 
+test('editor writes: a write the store refuses records no step, so undo never reverts an edit that did not land', async () => {
+  await baseline();
+  const refused: [string, string, unknown, number][] = [
+    ['DELETE', '/api/projects/demo/scenes/titre', undefined, 400],
+    ['PATCH', '/api/projects/demo/scenes/absent', { duration: 2 }, 404],
+    ['POST', '/api/projects/demo/scenes/absent/duplicate', undefined, 404],
+    ['PUT', '/api/projects/demo/order', { ids: ['absent'] }, 400],
+  ];
+  for (const [method, url, payload, status] of refused) {
+    assert.equal((await json(method, url, payload)).status, status, `${method} ${url}`);
+  }
+  assert.deepEqual(await history(), [['baseline', 'État initial']]);
+});
+
 test('editor writes: undo and redo walk through a duration change, a reorder, a snap, a music removal and a scene deletion', async () => {
   musicOnDisk();
   await store.createScene('demo', { name: 'Fin' });
@@ -1936,6 +1950,10 @@ test('seams are checked again after edits that move or change cuts', async () =>
     ['PATCH', '/api/projects/demo', { brand: 'orbit' }, 1],
     ['POST', '/api/projects/demo/music/snap', { grid: 'beat' }, 1],
     ['DELETE', '/api/projects/demo/scenes/fin', undefined, 1],
+    ['POST', '/api/projects/demo/undo', undefined, 1],
+    ['POST', '/api/projects/demo/redo', undefined, 1],
+    ['POST', '/api/projects/demo/redo', undefined, 0],
+    ['POST', '/api/projects/demo/versions/v0001/restore', undefined, 1],
   ];
   for (const [method, url, payload, expected] of edits) {
     const before = checks();

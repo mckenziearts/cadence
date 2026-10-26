@@ -506,17 +506,24 @@ export function createApi(deps: ApiDeps) {
   app.post('/projects/:id/versions/:vid/restore', async (c) => {
     const id = await idle(c.req.param('id'));
     const { sceneId } = await body(c, schemas.restore);
-    return c.json(
-      await steps.run(id, () => idle(id).then(() => versions.restore(id, c.req.param('vid'), sceneId ? { sceneId } : {}))),
+    const entry = await steps.run(id, () =>
+      idle(id).then(() => versions.restore(id, c.req.param('vid'), sceneId ? { sceneId } : {})),
     );
+    // Durations and the order come back with the files: the seam verdicts on screen were measured on other cuts.
+    seams.recheck(id);
+    return c.json(entry);
   });
   app.post('/projects/:id/undo', async (c) => {
     const id = await idle(c.req.param('id'));
-    return c.json({ entry: await steps.run(id, () => idle(id).then(() => versions.undo(id))) });
+    const entry = await steps.run(id, () => idle(id).then(() => versions.undo(id)));
+    if (entry) seams.recheck(id);
+    return c.json({ entry });
   });
   app.post('/projects/:id/redo', async (c) => {
     const id = await idle(c.req.param('id'));
-    return c.json({ entry: await steps.run(id, () => idle(id).then(() => versions.redo(id))) });
+    const entry = await steps.run(id, () => idle(id).then(() => versions.redo(id)));
+    if (entry) seams.recheck(id);
+    return c.json({ entry });
   });
 
   // Chats
