@@ -31,6 +31,7 @@ import type {
   VoiceOverService,
 } from '../../server/contracts';
 import { SseHub } from '../../server/hub';
+import { createEditorHandler } from '../../server/http';
 import { setLanguage } from '../../server/i18n';
 import { FileSettingsStore } from '../../server/settings';
 import { FileAssetStore } from '../../server/store/assets';
@@ -383,7 +384,10 @@ test('scenes: create (template insert is versioned), update, duplicate, order, d
   const versions = (await json('GET', '/api/projects/demo/versions')).body;
   assert.deepEqual(
     versions.map((v: { source: string; label: string }) => [v.source, v.label]),
-    [['template', 'Modèle inséré : Logo']],
+    [
+      ['template', 'Modèle inséré : Logo'],
+      ['external', 'Modifications non enregistrées'],
+    ],
   );
   res = await json('PATCH', '/api/projects/demo/scenes/logo', { duration: 2.5 });
   assert.equal(res.body.scenes[1].duration, 2.5);
@@ -458,8 +462,8 @@ test('music: upload (the file as the body), select, settings, snap, audio stream
   ]);
   assert.deepEqual(
     (await json('GET', '/api/projects/demo/versions')).body.map((v: { source: string; label: string }) => [v.source, v.label]),
-    [['external', 'Avant le calage des coupes']],
-    'a version before snapping (then nothing changed in between)',
+    [['external', 'Modifications non enregistrées']],
+    'the fake music service changes nothing on disk: only the starting point of a project without history',
   );
   assert.equal((await json('DELETE', '/api/projects/demo/music')).status, 200);
   assert.equal((await json('GET', '/api/projects/demo/music/analysis')).body, null);
@@ -1321,6 +1325,329 @@ test('versions: manual save, list, restore', async () => {
   assert.equal((await json('POST', '/api/projects/demo/versions/v0404/restore')).status, 404);
 });
 
+test('undo and redo: { entry } or { entry: null }, 404 for an unknown project, 409 while a turn runs', async () => {
+  assert.deepEqual(await json('POST', '/api/projects/demo/undo'), { status: 200, body: { entry: null } });
+  await json('POST', '/api/projects/demo/versions', {});
+  await fs.writeFile(store.sceneFile('demo', 'titre'), 'export default () => null;\n');
+  await json('POST', '/api/projects/demo/versions', { label: 'Modifié' });
+
+  busy = true;
+  const refused = { status: 409, body: { error: "Claude Code travaille sur ce projet : arrêtez d'abord la réponse en cours." } };
+  assert.deepEqual(await json('POST', '/api/projects/demo/undo'), refused);
+  assert.deepEqual(await json('POST', '/api/projects/demo/redo'), refused);
+  busy = false;
+
+  let res = await json('POST', '/api/projects/demo/undo');
+  assert.equal(res.status, 200);
+  assert.deepEqual([res.body.entry.source, res.body.entry.label], ['undo', 'Annulé : Modifié']);
+  res = await json('POST', '/api/projects/demo/redo');
+  assert.deepEqual([res.body.entry.source, res.body.entry.label], ['redo', 'Rétabli : Modifié']);
+  assert.deepEqual(await json('POST', '/api/projects/demo/redo'), { status: 200, body: { entry: null } });
+  assert.equal(await fs.readFile(store.sceneFile('demo', 'titre'), 'utf8'), 'export default () => null;\n');
+  assert.equal((await json('POST', '/api/projects/absent/undo')).status, 404);
+  assert.equal((await json('POST', '/api/projects/absent/redo')).status, 404);
+
+  setLanguage('en');
+  try {
+    assert.equal((await json('POST', '/api/projects/demo/undo')).body.entry.label, 'Undone: Modifié');
+    assert.equal((await json('POST', '/api/projects/demo/redo')).body.entry.label, 'Redone: Modifié');
+  } finally {
+    setLanguage('fr');
+  }
+});
+
+test('undo and redo need the editor token', async () => {
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  const token = 'editor-token-123';
+  server.on(
+    'request',
+    createEditorHandler({
+      config: { ...t.config, editorPort: port },
+      editorToken: token,
+      tokens: { resolve: () => null },
+      accounts: { callback: async () => ({ ok: false, title: '', detail: '' }) },
+      api: app,
+      mcp: async () => undefined,
+      editor: { html: async () => '', serve: (_req, res) => void res.end() },
+    }),
+  );
+  try {
+    for (const route of ['undo', 'redo']) {
+      const url = `http://127.0.0.1:${port}/api/projects/demo/${route}`;
+      assert.equal((await fetch(url, { method: 'POST' })).status, 403, route);
+      assert.equal((await fetch(url, { method: 'POST', headers: { 'x-cadence-token': `${token}x` } })).status, 403, route);
+      assert.equal((await fetch(url, { method: 'POST', headers: { 'x-cadence-token': token } })).status, 200, route);
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+const history = async () =>
+  (await json('GET', '/api/projects/demo/versions')).body.map((v: { source: string; label: string }) => [v.source, v.label]);
+const baseline = () => deps.versions.snapshot('demo', { label: 'État initial', source: 'baseline' });
+
+/** Music routes that change project.json as the real service does, so they leave something to version. */
+function musicOnDisk(): void {
+  const track = (file: string) => ({ file, start: 0, volume: 1 });
+  Object.assign(deps.music, {
+    upload: async (id: string, file: Upload) => {
+      for await (const chunk of file.body) assert.ok(chunk.length);
+      // Like the real service, the file is not stored under the name it was sent with.
+      return store.setMusic(id, track(`music/${file.name.toLowerCase()}`));
+    },
+    select: async (id: string, file: string) => store.setMusic(id, track(file)),
+    update: async (id: string, patch: { volume?: number }) => store.setMusic(id, { ...(await store.get(id)).music!, ...patch }),
+    remove: async (id: string) => store.setMusic(id, null),
+    snapCuts: async (id: string) =>
+      store.setDurations(id, Object.fromEntries((await store.get(id)).scenes.map((s) => [s.id, 3]))),
+  } satisfies Partial<MusicService>);
+}
+
+test('editor writes: each one is one undo step saying what changed; a clean project gets no "external" step', async () => {
+  musicOnDisk();
+  await store.createScene('demo', { name: 'Fin' });
+  await baseline();
+  const order = async () => ({ ids: (await store.get('demo')).scenes.map((s) => s.id).reverse() });
+  const steps: [string, string, unknown, [string, string]][] = [
+    ['PATCH', '/api/projects/demo', { tempo: 128 }, ['edit', 'Projet modifié']],
+    ['PUT', '/api/projects/demo/art-direction', { text: '# Ton\n' }, ['edit', 'Direction artistique modifiée']],
+    ['POST', '/api/projects/demo/scenes', { name: 'Logo', template: 'logo-reveal' }, ['template', 'Modèle inséré : Logo']],
+    [
+      'POST',
+      '/api/projects/demo/scenes',
+      { name: 'Code', template: 'logo-reveal', code: 'export default () => null;\n' },
+      ['edit', 'Scène ajoutée : Code'],
+    ],
+    ['POST', '/api/projects/demo/scenes', { name: 'Pause' }, ['edit', 'Scène ajoutée : Pause']],
+    ['PATCH', '/api/projects/demo/scenes/fin', { duration: 2.5 }, ['edit', 'Scène modifiée : Fin']],
+    ['PATCH', '/api/projects/demo/scenes/fin', { name: 'Clôture' }, ['edit', 'Scène modifiée : Clôture']],
+    ['POST', '/api/projects/demo/scenes/fin/duplicate', undefined, ['edit', 'Scène ajoutée : Clôture (copie)']],
+    ['PUT', '/api/projects/demo/order', order, ['edit', 'Scènes réordonnées']],
+    ['POST', '/api/projects/demo/music?name=Theme.MP3', new Blob(['ID3']), ['edit', 'Musique ajoutée : theme.mp3']],
+    ['PUT', '/api/projects/demo/music/select', { file: 'music/autre.mp3' }, ['edit', 'Musique choisie : autre.mp3']],
+    ['PATCH', '/api/projects/demo/music', { volume: 0.5 }, ['edit', 'Réglages de la musique modifiés']],
+    ['POST', '/api/projects/demo/music/snap', { grid: 'bar' }, ['edit', 'Coupes calées sur la musique']],
+    ['DELETE', '/api/projects/demo/music', undefined, ['edit', 'Musique retirée']],
+    ['DELETE', '/api/projects/demo/scenes/pause', undefined, ['edit', 'Scène supprimée']],
+  ];
+  for (const [method, url, payload, step] of steps) {
+    const before = await history();
+    const res = await json(method, url, typeof payload === 'function' ? await payload() : payload);
+    assert.equal(res.status, 200, `${method} ${url}`);
+    assert.deepEqual(await history(), [step, ...before], `${method} ${url}`);
+  }
+  assert.ok(!(await history()).some(([source]: string[]) => source === 'external'));
+});
+
+test('editor writes: edits made outside Cadence first get their own "external" step, so undo reverts the edit alone', async () => {
+  await baseline();
+  const file = store.sceneFile('demo', 'titre');
+  await fs.writeFile(file, 'export default () => "dehors";\n');
+  await json('PATCH', '/api/projects/demo/scenes/titre', { duration: 2.5 });
+  assert.deepEqual(await history(), [
+    ['edit', 'Scène modifiée : Titre'],
+    ['external', 'Modifications non enregistrées'],
+    ['baseline', 'État initial'],
+  ]);
+  await json('POST', '/api/projects/demo/undo');
+  assert.equal((await store.get('demo')).scenes[0].duration, 4);
+  assert.equal(await fs.readFile(file, 'utf8'), 'export default () => "dehors";\n');
+});
+
+test('editor writes: nothing recorded for a write that changes nothing, or during a turn, even one starting mid-write', async () => {
+  await baseline();
+  await json('PATCH', '/api/projects/demo/scenes/titre', { duration: 4 });
+  await json('PATCH', '/api/projects/demo', { name: 'Démo' });
+  await json('PUT', '/api/projects/demo/order', { ids: ['titre'] });
+  await json('PUT', '/api/projects/demo/art-direction', { text: await store.readArtDirection('demo') });
+  assert.equal((await history()).length, 1, 'nothing changed');
+
+  busy = true;
+  // The agent's half-done edit must not become an "external" step either.
+  await fs.writeFile(store.sceneFile('demo', 'titre'), 'export default () => "en cours";\n');
+  assert.equal((await json('PATCH', '/api/projects/demo/scenes/titre', { duration: 2.5 })).status, 200);
+  assert.equal((await store.get('demo')).scenes[0].duration, 2.5);
+  assert.equal((await history()).length, 1, "the turn's own version takes it");
+  busy = false;
+
+  await deps.versions.snapshot('demo', { label: 'Tour', source: 'agent' });
+  Object.assign(deps.music, {
+    snapCuts: async (id: string) => ((busy = true), store.setDurations(id, { titre: 3 })),
+  } satisfies Partial<MusicService>);
+  assert.equal((await json('POST', '/api/projects/demo/music/snap', { grid: 'bar' })).status, 200);
+  assert.equal((await store.get('demo')).scenes[0].duration, 3);
+  assert.deepEqual(
+    (await history()).map(([source]: string[]) => source),
+    ['agent', 'baseline'],
+    'a turn started between the write and its snapshot',
+  );
+});
+
+test('editor writes: a write the store refuses records no step, so undo never reverts an edit that did not land', async () => {
+  await baseline();
+  const refused: [string, string, unknown, number][] = [
+    ['DELETE', '/api/projects/demo/scenes/titre', undefined, 400],
+    ['PATCH', '/api/projects/demo/scenes/absent', { duration: 2 }, 404],
+    ['POST', '/api/projects/demo/scenes/absent/duplicate', undefined, 404],
+    ['PUT', '/api/projects/demo/order', { ids: ['absent'] }, 400],
+  ];
+  for (const [method, url, payload, status] of refused) {
+    assert.equal((await json(method, url, payload)).status, status, `${method} ${url}`);
+  }
+  assert.deepEqual(await history(), [['baseline', 'État initial']]);
+});
+
+test('editor writes: undo and redo walk through a duration change, a reorder, a snap, a music removal and a scene deletion', async () => {
+  musicOnDisk();
+  await store.createScene('demo', { name: 'Fin' });
+  await store.setMusic('demo', { file: 'music/theme.mp3', start: 0, volume: 1 });
+  await baseline();
+  const dir = store.dir('demo');
+  const disk = async () => ({
+    project: await fs.readFile(path.join(dir, 'project.json'), 'utf8'),
+    scenes: Object.fromEntries(
+      await Promise.all(
+        (await fs.readdir(path.join(dir, 'scenes')))
+          .sort()
+          .map(async (f) => [f, await fs.readFile(path.join(dir, 'scenes', f), 'utf8')]),
+      ),
+    ),
+  });
+  const states = [await disk()];
+  const edits: [string, string, unknown?][] = [
+    ['PATCH', '/api/projects/demo/scenes/titre', { duration: 2.5 }],
+    ['PUT', '/api/projects/demo/order', { ids: ['fin', 'titre'] }],
+    ['POST', '/api/projects/demo/music/snap', { grid: 'bar' }],
+    ['DELETE', '/api/projects/demo/music'],
+    ['DELETE', '/api/projects/demo/scenes/fin'],
+  ];
+  for (const [method, url, payload] of edits) {
+    assert.equal((await json(method, url, payload)).status, 200, `${method} ${url}`);
+    states.push(await disk());
+  }
+  assert.deepEqual(Object.keys(states.at(-1)!.scenes), ['titre.tsx']);
+  for (let i = states.length - 2; i >= 0; i--) {
+    assert.equal((await json('POST', '/api/projects/demo/undo')).body.entry.source, 'undo');
+    assert.deepEqual(await disk(), states[i], `undo back to state ${i}`);
+  }
+  assert.equal((await json('POST', '/api/projects/demo/undo')).body.entry, null);
+  for (let i = 1; i < states.length; i++) {
+    assert.equal((await json('POST', '/api/projects/demo/redo')).body.entry.source, 'redo');
+    assert.deepEqual(await disk(), states[i], `redo forward to state ${i}`);
+  }
+  assert.equal((await json('POST', '/api/projects/demo/redo')).body.entry, null);
+});
+
+test('editor writes: writes sent together each record their own step, none of them as "external"', async () => {
+  await baseline();
+  const sent = await Promise.all([
+    json('PUT', '/api/projects/demo/art-direction', { text: '# Ton\n' }),
+    json('PATCH', '/api/projects/demo/scenes/titre', { duration: 2.5 }),
+    json('PATCH', '/api/projects/demo', { tempo: 100 }),
+  ]);
+  assert.deepEqual(
+    sent.map((r) => r.status),
+    [200, 200, 200],
+  );
+  const steps = await history();
+  assert.deepEqual(steps.pop(), ['baseline', 'État initial']);
+  assert.deepEqual(steps.sort(), [
+    ['edit', 'Direction artistique modifiée'],
+    ['edit', 'Projet modifié'],
+    ['edit', 'Scène modifiée : Titre'],
+  ]);
+});
+
+/** Sends a request while a duration change (4 then 3 then 2.5) is between its write and its 'edit' snapshot. */
+async function duringEditSnapshot(method: string, url: string, payload?: unknown) {
+  await baseline();
+  assert.equal((await json('PATCH', '/api/projects/demo/scenes/titre', { duration: 3 })).status, 200);
+  let entered!: () => void;
+  let release!: () => void;
+  const recording = new Promise<void>((resolve) => (entered = resolve));
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const snapshot = deps.versions.snapshot.bind(deps.versions);
+  deps.versions.snapshot = async (id, meta) => {
+    if (meta.source === 'edit') (entered(), await held);
+    return snapshot(id, meta);
+  };
+  const write = json('PATCH', '/api/projects/demo/scenes/titre', { duration: 2.5 });
+  await recording;
+  const sent = json(method, url, payload);
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal((await write).status, 200);
+  return sent;
+}
+
+test('editor writes: an undo sent while a write is being recorded undoes that write under its own label', async () => {
+  const undo = await duringEditSnapshot('POST', '/api/projects/demo/undo');
+  assert.equal(undo.body.entry.label, 'Annulé : Scène modifiée : Titre');
+  assert.equal((await store.get('demo')).scenes[0].duration, 3);
+  assert.ok(!(await history()).some(([source]: string[]) => source === 'external'));
+});
+
+test('editor writes: a restore sent while a write is being recorded leaves that write its own step', async () => {
+  assert.equal((await duringEditSnapshot('POST', '/api/projects/demo/versions/v0001/restore')).status, 200);
+  assert.equal((await store.get('demo')).scenes[0].duration, 4);
+  assert.deepEqual(
+    (await history()).slice(1).map(([source]: string[]) => source),
+    ['edit', 'edit', 'baseline'],
+  );
+});
+
+test('editor writes: a manual save sent while a write is being recorded comes after its step', async () => {
+  assert.equal((await duringEditSnapshot('POST', '/api/projects/demo/versions', { label: 'Moi' })).body, null);
+  assert.deepEqual((await history())[0], ['edit', 'Scène modifiée : Titre']);
+});
+
+test('editor writes: a deletion, undo, redo or restore waiting behind another write is refused when a turn starts meanwhile', async () => {
+  await store.createScene('demo', { name: 'Fin' });
+  await baseline();
+  let entered!: () => void;
+  let release!: () => void;
+  const snapping = new Promise<void>((resolve) => (entered = resolve));
+  const held = new Promise<void>((resolve) => (release = resolve));
+  Object.assign(deps.music, {
+    snapCuts: async (id: string) => (entered(), await held, store.get(id)),
+  } satisfies Partial<MusicService>);
+  const snap = json('POST', '/api/projects/demo/music/snap', { grid: 'bar' });
+  await snapping;
+  const waiting = [
+    json('DELETE', '/api/projects/demo/scenes/fin'),
+    json('POST', '/api/projects/demo/undo'),
+    json('POST', '/api/projects/demo/redo'),
+    json('POST', '/api/projects/demo/versions/v0001/restore'),
+  ];
+  await new Promise((resolve) => setImmediate(resolve));
+  busy = true;
+  release();
+  assert.equal((await snap).status, 200);
+  assert.deepEqual(
+    (await Promise.all(waiting)).map((r) => r.status),
+    [409, 409, 409, 409],
+  );
+  assert.ok((await store.get('demo')).scenes.some((s) => s.id === 'fin'));
+  assert.deepEqual(await history(), [['baseline', 'État initial']]);
+});
+
+test('editor writes: a snapshot that fails leaves the edit saved and logs it', async (ctx) => {
+  const warn = ctx.mock.method(console, 'warn', () => undefined);
+  deps.versions.snapshot = async () => {
+    throw new Error('disque plein');
+  };
+  assert.equal((await json('PATCH', '/api/projects/demo/scenes/titre', { duration: 2.5 })).status, 200);
+  assert.equal((await store.get('demo')).scenes[0].duration, 2.5);
+  assert.deepEqual(
+    warn.mock.calls.map((c) => c.arguments),
+    [['[cadence] version non enregistrée : disque plein'], ['[cadence] version non enregistrée : disque plein']],
+  );
+});
+
 test('chats: keys, messages, stop, clear, cost, agent frames', async () => {
   assert.equal((await json('GET', '/api/projects/demo/chats/project')).body.key, 'project');
   assert.equal((await json('GET', '/api/projects/demo/chats/scene:titre')).body.key, 'scene:titre');
@@ -1589,6 +1916,7 @@ test('GET /api/events streams hub events when served by Node', async () => {
 test('while the agent works on the project: no restore or deletion, no template-insert version; no deletion mid-render', async () => {
   await json('POST', '/api/projects/demo/scenes', { name: 'Fin' });
   await json('POST', '/api/projects/demo/versions', { label: 'Départ' });
+  const recorded = (await json('GET', '/api/projects/demo/versions')).body.length;
   busy = true;
   const refused = { status: 409, body: { error: "Claude Code travaille sur ce projet : arrêtez d'abord la réponse en cours." } };
   assert.deepEqual(await json('POST', '/api/projects/demo/versions/v0001/restore'), refused);
@@ -1596,7 +1924,7 @@ test('while the agent works on the project: no restore or deletion, no template-
   assert.deepEqual(await json('DELETE', '/api/projects/demo'), refused);
   assert.equal((await json('POST', '/api/projects/demo/scenes', { name: 'Logo', template: 'logo-reveal' })).status, 200);
   assert.equal((await json('POST', '/api/projects/demo/music/snap', { grid: 'bar' })).status, 200);
-  assert.equal((await json('GET', '/api/projects/demo/versions')).body.length, 1, "the turn's own version takes them");
+  assert.equal((await json('GET', '/api/projects/demo/versions')).body.length, recorded, "the turn's own version takes them");
   busy = false;
   assert.equal((await json('DELETE', '/api/projects/demo/scenes/fin')).status, 200);
   assert.equal((await json('POST', '/api/projects/demo/versions/v0001/restore')).status, 200);
@@ -1622,6 +1950,10 @@ test('seams are checked again after edits that move or change cuts', async () =>
     ['PATCH', '/api/projects/demo', { brand: 'orbit' }, 1],
     ['POST', '/api/projects/demo/music/snap', { grid: 'beat' }, 1],
     ['DELETE', '/api/projects/demo/scenes/fin', undefined, 1],
+    ['POST', '/api/projects/demo/undo', undefined, 1],
+    ['POST', '/api/projects/demo/redo', undefined, 1],
+    ['POST', '/api/projects/demo/redo', undefined, 0],
+    ['POST', '/api/projects/demo/versions/v0001/restore', undefined, 1],
   ];
   for (const [method, url, payload, expected] of edits) {
     const before = checks();

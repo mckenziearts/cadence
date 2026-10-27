@@ -234,6 +234,12 @@
 }
 
 @layer base {
+  /* Host hooks: a desktop app sets these on :root (unlayered, so its rule wins) for an arrow on controls and chrome
+     that does not select like a page. The web keeps the defaults. */
+  :root {
+    --control-cursor: pointer;
+    --chrome-select: auto;
+  }
   html,
   body,
   #root {
@@ -254,6 +260,8 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+    -webkit-user-select: var(--chrome-select);
+    user-select: var(--chrome-select);
   }
   ::selection {
     background: color-mix(in oklab, var(--color-now) 32%, transparent);
@@ -262,7 +270,7 @@
   [role='button'],
   label[for],
   summary {
-    cursor: pointer;
+    cursor: var(--control-cursor);
   }
   button:disabled {
     cursor: default;
@@ -315,6 +323,16 @@
     border-radius: 0;
     background: var(--color-white);
   }
+  /* Motion ends at once for those who ask for less; a spinner keeps turning: it says work is running. */
+  @media (prefers-reduced-motion: reduce) {
+    *:not(.animate-spin),
+    ::before,
+    ::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
   /* Thin, quiet scrollbars: panels scroll a lot. */
   * {
     scrollbar-width: thin;
@@ -351,12 +369,6 @@
     }
     33.333% {
       opacity: 0.25;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .beat-pills > span {
-      animation: none;
-      opacity: 0.6;
     }
   }
   /* Light markdown in chat replies. */

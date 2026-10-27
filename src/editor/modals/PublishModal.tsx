@@ -183,7 +183,7 @@ export function PublishModal({ file }: { file: string }) {
                 <p className="text-xs text-ink-3">{texts.hint}</p>
               )}
               {job?.status === 'error' && (
-                <p className="flex items-start gap-1.5 text-[13px] text-alert">
+                <p className="flex items-start gap-1.5 text-[13px] text-alert select-text">
                   <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
                   {job.error}
                 </p>

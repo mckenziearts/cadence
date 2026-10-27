@@ -113,7 +113,7 @@ function Subtitles() {
 function PiperMissing() {
   const texts = useT().production.voiceOver.piper;
   return (
-    <div role="alert" className="space-y-2 border border-warn/30 bg-warn/8 px-3 py-2.5 text-[13px] text-warn-ink">
+    <div role="alert" className="space-y-2 border border-warn/30 bg-warn/8 px-3 py-2.5 text-[13px] text-warn-ink select-text">
       <p className="flex items-start gap-2 font-semibold">
         <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
         {texts.missing}
@@ -424,7 +424,7 @@ function Speakers(props: { voices: VoicesState | null; catalog: ElevenLabsCatalo
       <p className="text-xs text-ink-3">{texts.speakers.hint}</p>
       <SpeakerList speakers={speakers} options={options} save={save} onRemove={remove} />
       {error && (
-        <p role="alert" className="flex items-start gap-1.5 text-xs text-alert">
+        <p role="alert" className="flex items-start gap-1.5 text-xs text-alert select-text">
           <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
         </p>
       )}
@@ -489,7 +489,7 @@ function SpeakerRow(props: {
             setColor(null);
             if (color !== speaker.color) onChange({ color });
           }}
-          className="size-8 shrink-0 cursor-pointer border border-ink bg-white p-0.5"
+          className="size-8 shrink-0 cursor-(--control-cursor) border border-ink bg-white p-0.5"
         />
         <input
           aria-label={texts.nameLabel(speaker.name)}
@@ -544,7 +544,7 @@ function Status() {
   }
   if (!project.voiceOverError || !project.voiceOverPending.length) return null;
   return (
-    <p role="alert" className="flex items-start gap-1.5 text-xs text-alert">
+    <p role="alert" className="flex items-start gap-1.5 text-xs text-alert select-text">
       <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {project.voiceOverError}
     </p>
   );
@@ -689,7 +689,7 @@ function SceneVoice({ scene }: { scene: SceneState }) {
         />
       )}
       {error && (
-        <p role="alert" className="flex items-start gap-1.5 text-xs text-alert">
+        <p role="alert" className="flex items-start gap-1.5 text-xs text-alert select-text">
           <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
         </p>
       )}

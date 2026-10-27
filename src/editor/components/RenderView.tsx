@@ -286,7 +286,12 @@ function JobRow({ job }: { job: RenderJob }) {
             {NBSP}×{NBSP}
             {job.height} · {texts.fps(job.fps)}
           </p>
-          <p className={clsx('flex items-center gap-1.5 text-xs', job.status === 'error' ? 'text-alert' : 'text-ink-3')}>
+          <p
+            className={clsx(
+              'flex items-center gap-1.5 text-xs select-text',
+              job.status === 'error' ? 'text-alert' : 'text-ink-3',
+            )}
+          >
             {live && <Loader2 className="size-3 animate-spin" aria-hidden />}
             {texts.status[job.status]}
             {job.status === 'rendering' && ` · ${texts.frames(job.framesDone, job.framesTotal)}`}
@@ -397,7 +402,7 @@ function FileCard(props: {
               href={file.url}
               download={file.name}
               aria-label={texts.download}
-              className="focus-ring grid size-7 place-items-center text-ink-2 hover:bg-wash hover:text-ink"
+              className="focus-ring grid size-7 cursor-(--control-cursor) place-items-center text-ink-2 hover:bg-wash hover:text-ink"
             >
               <Download className="size-3.5" />
             </a>
@@ -481,7 +486,7 @@ function Player({ src, label }: { src: string; label: string }) {
           ref={video}
           src={`${src}#t=1.2`}
           preload="metadata"
-          className="absolute inset-0 size-full cursor-pointer object-contain"
+          className="absolute inset-0 size-full cursor-(--control-cursor) object-contain"
           aria-label={label}
           onClick={toggle}
           onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
@@ -514,7 +519,7 @@ function Player({ src, label }: { src: string; label: string }) {
           aria-valuemax={Math.round(duration * 100) / 100}
           aria-valuenow={Math.round(shown * 100) / 100}
           aria-valuetext={secsLabel(shown)}
-          className="focus-ring relative h-6 cursor-pointer touch-none select-none"
+          className="focus-ring relative h-6 cursor-(--control-cursor) touch-none select-none"
           onPointerDown={(e) => {
             if (e.button !== 0) return;
             e.currentTarget.setPointerCapture(e.pointerId);

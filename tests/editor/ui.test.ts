@@ -30,6 +30,7 @@ import {
   type MusicGridData,
   type ProjectState,
   type ProjectSummary,
+  type RenderJob,
   type ScriptLine,
 } from '../../src/shared/types';
 import { fakeNetwork, makeRoot } from '../server/helpers';
@@ -184,6 +185,22 @@ async function open(hash: string, page?: Page): Promise<Page> {
   await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
   return page;
 }
+
+/** The text a double click on `target` selects. */
+async function picked(target: Locator): Promise<string> {
+  const page = target.page();
+  await page.evaluate(() => getSelection()?.removeAllRanges());
+  await target.dblclick();
+  return page.evaluate(() => getSelection()?.toString() ?? '');
+}
+
+/** A host app's stylesheet (its insertCSS), placed before the editor's: it wins only where the core defaults sit in a layer. */
+const hostStyle = (page: Page, css: string) =>
+  page.evaluate((text) => {
+    const host = document.createElement('style');
+    host.textContent = text;
+    document.head.prepend(host);
+  }, css);
 
 const panel = (page: Page, name: string) => page.getByRole('group', { name: 'Panneau' }).getByRole('button', { name }).click();
 
@@ -680,6 +697,203 @@ describe('editor', () => {
     await page.context().close();
   });
 
+  it('lets a host app set the control cursor and the chrome selection', { timeout: 90_000 }, async () => {
+    const page = await newPage();
+    await page.route(`**/api/projects/${A}/chats/scene:titre`, (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      const chat: ChatState = {
+        key: 'scene:titre',
+        running: false,
+        queued: false,
+        totalCostUsd: 0,
+        messages: [
+          { id: 'e2e-ask', role: 'user', text: 'Question factice.', createdAt: '2026-10-01T09:59:00.000Z' },
+          {
+            id: 'e2e-reply',
+            role: 'assistant',
+            text: 'Réponse factice.',
+            createdAt: '2026-10-01T10:00:00.000Z',
+            status: 'done',
+          },
+        ],
+      };
+      return route.fulfill({ json: chat });
+    });
+    await page.route(`**/api/projects/${A}/capture-hosts`, (route) =>
+      route.request().method() === 'GET' ? route.fulfill({ status: 500, json: { error: 'Liste illisible' } }) : route.fallback(),
+    );
+    await open(`${A}/titre`, page);
+    const message = page.getByText('Réponse factice.');
+    await message.waitFor({ timeout: 30_000 });
+    const header = page.locator('header', { has: page.getByRole('link', { name: 'Cadence, accueil des projets' }) });
+    const settings = header.getByRole('button', { name: 'Réglages', exact: true });
+    const costLabel = header.getByText('Coût', { exact: true });
+    const homeLink = header.getByRole('link', { name: 'Cadence, accueil des projets' });
+    const cursor = (target: Locator) => target.evaluate((el) => getComputedStyle(el).cursor);
+    assert.equal(await cursor(settings), 'pointer');
+    assert.equal(await cursor(homeLink), 'pointer');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.body).userSelect), 'auto');
+    assert.match(await picked(costLabel), /^coût$/i);
+    await hostStyle(page, ':root { --control-cursor: default; --chrome-select: none }');
+    assert.equal(await cursor(settings), 'default');
+    assert.equal(await cursor(homeLink), 'default', 'a link styled as a control follows it too');
+    assert.equal(await picked(costLabel), '', 'the top bar text is not selectable');
+    assert.notEqual(await picked(message), '', 'a chat message still is');
+    assert.notEqual(await picked(page.getByText('Question factice.')), '', "so is the person's own message");
+
+    // Scene code can post its own errors: the banner shows them.
+    await page.frameLocator('iframe[src*="/frame.html"]').locator('#root > *').first().waitFor({ state: 'attached' });
+    const origin = await frameOriginOf(server.config.frameOrigin, 'project', A);
+    const preview = page.frames().find((frame) => frame.url().startsWith(`${origin}/frame.html`))!;
+    await preview.evaluate(() =>
+      parent.postMessage({ source: 'cadence-frame', type: 'errors', errors: ['Scène factice cassée\nligne 3'] }, '*'),
+    );
+    assert.notEqual(await picked(page.getByText('Scène factice cassée')), '', 'the frame error banner');
+
+    await panel(page, 'Médias');
+    assert.notEqual(await picked(page.getByText('Liste illisible')), '', 'an error toast');
+
+    await page.goto(`${server.config.editorOrigin}/#/`);
+    await hostStyle(page, ':root { --control-cursor: default }');
+    assert.equal(await cursor(page.getByRole('link', { name: 'Tout exporter' })), 'default');
+    assert.equal(await cursor(page.getByRole('link', { name: /^Exporter le projet/ }).first()), 'default');
+    await page.context().close();
+  });
+
+  it(
+    'keeps a failed brand build and a failed seam check selectable when the host turns chrome selection off',
+    { timeout: 90_000 },
+    async () => {
+      const page = await newPage();
+      const failed: BrandBuild = {
+        ...BUILD,
+        id: 'e2e-failed',
+        status: 'error',
+        error: 'Le kit ne passe pas la vérification.',
+        problems: ['La police Inter manque.'],
+      };
+      await page.route('**/api/state', async (route) => {
+        const response = await route.fetch();
+        return route.fulfill({ response, json: { ...((await response.json()) as AppState), brandBuilds: [failed] } });
+      });
+      await page.route('**/seams/detail?**', (route) =>
+        route.fulfill({
+          json: {
+            result: {
+              from: 'titre',
+              to: 'deuxieme',
+              format: '16:9',
+              diffPercent: 0,
+              checkedAt: BUILD.createdAt,
+              error: 'capture refusée',
+            },
+            fromUrl: '',
+            toUrl: '',
+            diffUrl: '',
+          },
+        }),
+      );
+      await open(`${A}/titre`, page);
+      await hostStyle(page, ':root { --chrome-select: none }');
+      await page.getByRole('button', { name: 'Marque « Orbit » : Échec' }).click();
+      assert.notEqual(await picked(page.getByText('Le kit ne passe pas la vérification.')), '', 'the build error');
+      assert.notEqual(await picked(page.getByText('La police Inter manque.')), '', 'a problem the check found');
+      await page.keyboard.press('Escape');
+      await page.getByRole('dialog').waitFor({ state: 'detached' });
+      await page
+        .getByRole('button', { name: /Titre \u2192 Deuxième/ })
+        .first()
+        .click();
+      assert.notEqual(await picked(page.getByText('Vérification impossible : capture refusée')), '', 'the seam check error');
+      await page.context().close();
+    },
+  );
+
+  it(
+    'keeps the agent-down banner, a failed render and a setup command selectable when the host turns chrome selection off',
+    { timeout: 90_000 },
+    async () => {
+      const page = await newPage();
+      await page.route('**/api/state', async (route) => {
+        const response = await route.fetch();
+        const state = (await response.json()) as AppState;
+        return route.fulfill({
+          response,
+          json: { ...state, agent: { ok: false, label: 'Agent factice', detail: 'Session expirée' } },
+        });
+      });
+      const job: RenderJob = {
+        id: 'e2e-failed-render',
+        projectId: A,
+        format: '16:9',
+        status: 'error',
+        progress: 0,
+        framesDone: 0,
+        framesTotal: 30,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        request: { formats: ['16:9'], quality: 'standard' },
+        createdAt: new Date().toISOString(),
+        error: 'encodeur introuvable',
+      };
+      await page.route(`**/api/projects/${A}/renders`, (route) =>
+        route.request().method() === 'GET' ? route.fulfill({ json: { jobs: [job], files: [] } }) : route.fallback(),
+      );
+      await open(`${A}/titre`, page);
+      await hostStyle(page, ':root { --chrome-select: none }');
+      assert.notEqual(await picked(page.getByText('Session expirée')), '', 'the agent-down banner');
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      assert.notEqual(await picked(page.getByText('encodeur introuvable')), '', 'a failed render job');
+
+      await page.goto(`${server.config.editorOrigin}/#/@profil`);
+      await page.getByRole('heading', { name: 'Profil', exact: true }).waitFor({ timeout: 60_000 });
+      await hostStyle(page, ':root { --chrome-select: none }');
+      await page.getByRole('listitem', { name: 'Grok' }).getByRole('button', { name: 'Comment connecter' }).click();
+      const install = page.getByRole('dialog').locator('code', { hasText: 'x.ai/cli/install.sh' });
+      assert.notEqual(await picked(install), '', 'the install command');
+      await page.context().close();
+    },
+  );
+
+  it('fades the presentation veil in 200 ms, at once when motion is reduced', { timeout: 90_000 }, async () => {
+    const page = await open(A);
+    const veilDuration = async () => {
+      await page.getByRole('button', { name: 'Présenter', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Présentation' });
+      const veil = dialog.getByRole('button', { name: 'Quitter la présentation (Échap)' }).locator('../..');
+      const duration = await veil.evaluate((el) => getComputedStyle(el).transitionDuration);
+      await page.keyboard.press('Escape');
+      await dialog.waitFor({ state: 'detached' });
+      return duration;
+    };
+    /** The animation of the `[data-probe]` element in `markup`, mounted for the reading. */
+    const animation = (markup: string) =>
+      page.evaluate((html) => {
+        const host = document.body.appendChild(document.createElement('div'));
+        host.innerHTML = html;
+        const { animationDuration, animationIterationCount } = getComputedStyle(host.querySelector('[data-probe]')!);
+        host.remove();
+        return [animationDuration, animationIterationCount];
+      }, markup);
+    const spinner = '<span data-probe class="animate-spin"></span>';
+    const popIn = '<span data-probe class="animate-pop-in"></span>';
+    const pills = '<span class="beat-pills"><span data-probe></span></span>';
+    assert.equal(await veilDuration(), '0.2s');
+    assert.deepEqual(await animation(popIn), ['0.125s', '1']);
+    assert.deepEqual(await animation(pills), ['1.5s', 'infinite']);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const reduced = await veilDuration();
+    assert.ok(Number.parseFloat(reduced) < 0.001, reduced);
+    for (const markup of [popIn, pills]) {
+      const [duration, count] = await animation(markup);
+      assert.ok(Number.parseFloat(duration) < 0.001, `${markup}: ${duration}`);
+      assert.equal(count, '1', markup);
+    }
+    assert.deepEqual(await animation(spinner), ['1s', 'infinite']);
+    await page.context().close();
+  });
+
   it('keeps the presentation and the lightbox out of the window drag', { timeout: 90_000 }, async () => {
     const page = await newPage();
     // A past turn whose tool call looked at a frame, so the chat offers to enlarge it.
@@ -882,14 +1096,14 @@ describe('editor', () => {
       const text = page.getByRole('textbox', { name: /^Voix off de/ }).first();
       await text.fill('Bonjour. Deux phrases.');
       await text.blur();
-      await page.getByText(`2${NBSP}phrases, de 0,00${NBSP}s à 2,00${NBSP}s`).waitFor({ timeout: 30_000 });
+      await page.getByText(`2${NBSP}phrases, de 0,00${NBSP}s à 2,15${NBSP}s`).waitFor({ timeout: 30_000 });
       assert.deepEqual(spoken.at(-1), ['Bonjour.', 'Deux phrases.']);
       await page.locator('audio[src*="/voice-over/audio"]').waitFor({ state: 'attached' });
 
       const start = page.getByRole('textbox', { name: /^Départ de la voix dans/ }).first();
       await start.fill('0,5');
       await start.press('Enter');
-      await page.getByText(`2${NBSP}phrases, de 0,50${NBSP}s à 2,50${NBSP}s`).waitFor();
+      await page.getByText(`2${NBSP}phrases, de 0,50${NBSP}s à 2,65${NBSP}s`).waitFor();
       assert.equal(spoken.length, 1, 'moving the voice speaks nothing again');
 
       await text.fill('');
@@ -2257,6 +2471,132 @@ describe('editor', () => {
       { timeout: 10_000 },
     );
     assert.ok(!(await duration.getAttribute('aria-label'))!.includes('La coupe tombe'));
+    await page.context().close();
+  });
+
+  /** A project with a 3 s scene « Durée », and the duration of that scene in its project.json. */
+  async function undoProject(id: string): Promise<() => Promise<number>> {
+    await api('POST', '/api/projects', { name: 'Annuler', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    await api('POST', `/api/projects/${id}/scenes`, { name: 'Durée', duration: 3 });
+    return async () => {
+      const project = JSON.parse(await readFile(path.join(server.config.projectsDir, id, 'project.json'), 'utf8')) as {
+        scenes: { id: string; duration: number }[];
+      };
+      return project.scenes.find((s) => s.id === 'duree')!.duration;
+    };
+  }
+
+  it(
+    'undoes a scene duration with Cmd-Z and redoes it with Shift-Cmd-Z, never from a text field',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-undo`;
+      const duration = await undoProject(id);
+      // Without the events stream, only the refetch after each step brings the card up to date.
+      const page = await newPage();
+      await page.route('**/api/events', (route) => route.abort());
+      await open(`${id}/duree`, page);
+      const undos: string[] = [];
+      page.on('request', (r) => /\/(undo|redo)$/.test(r.url()) && undos.push(r.url().split('/').at(-1)!));
+      // Registered after the editor's own listener: whether it kept the browser's undo for itself.
+      await page.evaluate(() =>
+        window.addEventListener('keydown', (e) => document.body.setAttribute('data-prevented', String(e.defaultPrevented))),
+      );
+      const prevented = () => page.locator('body').getAttribute('data-prevented');
+      const card = page.getByRole('listitem').filter({ has: page.getByRole('button', { name: 'Scène 2 : Durée' }) });
+      await card.getByRole('button', { name: /^Durée/ }).click();
+      await card.getByRole('textbox').fill('5');
+      await Promise.all([
+        page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith('/scenes/duree')),
+        card.getByRole('textbox').press('Enter'),
+      ]);
+      assert.equal(await duration(), 5);
+
+      // In a text field the browser undoes the typing; the project stays as it is.
+      const composer = page.getByRole('textbox', { name: 'Message pour la scène' });
+      await composer.fill('Brouillon');
+      await composer.press('ControlOrMeta+z');
+      assert.equal(await prevented(), 'false');
+      await composer.press('Shift+ControlOrMeta+z');
+      assert.equal(await prevented(), 'false');
+      await page.waitForTimeout(500);
+      assert.deepEqual(undos, []);
+      assert.equal(await duration(), 5);
+
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith('/undo')), page.keyboard.press('ControlOrMeta+z')]);
+      assert.equal(await duration(), 3);
+      assert.equal(await prevented(), 'true');
+      await page.getByText(/^Annulé\s:\s/).waitFor({ timeout: 10_000 });
+      await card.locator('[aria-label^="Durée : 3,00"]').waitFor({ timeout: 10_000 });
+
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith('/redo')), page.keyboard.press('Shift+ControlOrMeta+z')]);
+      assert.equal(await duration(), 5);
+      await page.getByText(/^Rétabli\s:\s/).waitFor({ timeout: 10_000 });
+      await card.locator('[aria-label^="Durée : 5,00"]').waitFor({ timeout: 10_000 });
+
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith('/redo')), page.keyboard.press('Shift+ControlOrMeta+z')]);
+      await page.getByText('Rien à rétablir', { exact: true }).waitFor({ timeout: 10_000 });
+      assert.equal(await duration(), 5);
+      assert.deepEqual(undos, ['undo', 'redo', 'redo']);
+      await page.context().close();
+    },
+  );
+
+  it(
+    'moves the selection and the focus to the card now in place of a scene that Cmd-Z takes away',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-undo-focus`;
+      await undoProject(id);
+      const { scenes } = await api<{ scenes: { id: string }[] }>('GET', `/api/projects/${id}`);
+      await api('POST', `/api/projects/${id}/scenes`, { name: 'Milieu', duration: 2, after: scenes[0].id });
+      const page = await open(`${id}/milieu`);
+      await page.getByRole('button', { name: 'Scène 2 : Milieu' }).focus();
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith('/undo')), page.keyboard.press('ControlOrMeta+z')]);
+      const duree = page.getByRole('button', { name: 'Scène 2 : Durée' });
+      await page.waitForFunction((card) => document.activeElement === card, await duree.elementHandle(), { timeout: 10_000 });
+      assert.equal(await duree.getAttribute('aria-current'), 'true');
+      await page.context().close();
+    },
+  );
+
+  it('sends one undo at a time while Cmd-Z is held, and none from the render view', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-undo-held`;
+    const duration = await undoProject(id);
+    await api('PATCH', `/api/projects/${id}/scenes/duree`, { duration: 4 });
+    await api('PATCH', `/api/projects/${id}/scenes/duree`, { duration: 5 });
+    const page = await open(`${id}/duree`);
+    let undos = 0;
+    page.on('request', (r) => r.url().endsWith('/undo') && undos++);
+
+    await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.waitForTimeout(500);
+    assert.equal(undos, 0, 'no undo outside the scenes view');
+    await page.getByRole('button', { name: 'Scènes', exact: true }).click();
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(`**/api/projects/${id}/undo`, async (route) => {
+      await held;
+      await route.fallback();
+    });
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.waitForTimeout(500);
+    assert.equal(undos, 1);
+    release();
+    await page.getByText(/^Annulé\s:\s/).waitFor({ timeout: 10_000 });
+    assert.equal(await duration(), 4, 'one step back, not three');
+
+    await page.unroute(`**/api/projects/${id}/undo`);
+    await page.route(`**/api/projects/${id}/undo`, (route) =>
+      route.fulfill({ status: 409, json: { error: 'Agent factice travaille sur ce projet' } }),
+    );
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.getByText('Agent factice travaille sur ce projet', { exact: true }).waitFor({ timeout: 10_000 });
     await page.context().close();
   });
 

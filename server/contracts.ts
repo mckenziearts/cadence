@@ -376,6 +376,13 @@ export interface VersionStore {
    * snapshotted first (source 'external'), and the restore itself becomes a new version (source 'restore').
    */
   restore(projectId: string, versionId: string, opts?: { sceneId?: string }): Promise<VersionEntry>;
+  /**
+   * Put back the state before the last step (see `foldHistory`), recorded as an 'undo' version. Unsaved changes on disk
+   * are that step: snapshotted first ('external'), then reverted. Null when there is nothing to undo.
+   */
+  undo(projectId: string): Promise<VersionEntry | null>;
+  /** Bring back the last undone step, recorded as a 'redo' version. Null when nothing was undone or the disk changed since. */
+  redo(projectId: string): Promise<VersionEntry | null>;
   /** Content of one tracked file at a version (for previews/diffs), or null if absent in that version. */
   read(projectId: string, versionId: string, file: string): Promise<string | null>;
 }

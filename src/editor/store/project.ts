@@ -5,7 +5,9 @@ import { browserLanguage, t } from '../i18n';
 import type { AgentId, CreateSceneInput, FormatId, ProjectState, SeamResult } from '../../shared/types';
 import { seamTone } from '../lib/format';
 import { parseHash } from '../lib/routing';
+import { oneAtATime, sceneInPlace, undoAllowed } from '../lib/shortcuts';
 import { clamp, currentScene, get, previewDuration, sceneAt, set, useStore, type PreviewMode } from '.';
+import { flushMusic } from './music';
 import { toast } from './ui';
 
 // App
@@ -383,6 +385,44 @@ export async function reorderScenes(ids: string[]): Promise<void> {
     await refreshProject();
   }
 }
+
+// Undo
+
+// The refetch stays out of the one-at-a-time window: events keep it going, and a press made meanwhile would be lost.
+const historyRequest = oneAtATime(async (id: string, direction: 'undo' | 'redo') => {
+  const texts = t().shell.project;
+  try {
+    const { entry } = await api[direction](id);
+    toast(entry?.label ?? (direction === 'undo' ? texts.nothingToUndo : texts.nothingToRedo), 'info');
+  } catch {
+    // toast shown (a running agent turn answers 409)
+  }
+});
+
+async function historyStep(direction: 'undo' | 'redo'): Promise<void> {
+  await flushMusic();
+  const s = get();
+  if (!undoAllowed(s)) return;
+  const before = s.project!.scenes.map((x) => x.id);
+  const card = document.activeElement?.closest<HTMLElement>('[data-scene-card]');
+  // A dropped press has nothing to refetch.
+  if (!(await historyRequest(s.project!.id, direction))) return;
+  await refreshProject();
+  // A step that removes a scene (undoing an added one) takes its card away: the selection, and the focus if it was there,
+  // go to the card now in its place rather than to the first scene and the top of the page.
+  const after = get().project?.scenes.map((x) => x.id) ?? [];
+  const selected = s.sceneId && sceneInPlace(before, after, s.sceneId);
+  if (selected) selectScene(selected);
+  const focused = card && !card.isConnected && sceneInPlace(before, after, card.dataset.sceneCard!);
+  if (focused) document.querySelector<HTMLElement>(`[data-scene-card="${focused}"] button`)?.focus();
+}
+
+/**
+ * One step back (or forward again) in the open project's history: Cmd-Z, or a host app's menu. Does nothing outside the
+ * scenes view of an open project, behind a modal or while presenting, since a menu does not know where the editor is.
+ */
+export const undo = (): Promise<void> => historyStep('undo');
+export const redo = (): Promise<void> => historyStep('redo');
 
 // Seams, renders, cost
 

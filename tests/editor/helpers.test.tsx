@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { MusicGridData, ProjectState, SceneState, ScriptLine, Speaker } from '../../src/shared/types';
+import type { MusicGridData, ProjectState, SceneState, ScriptLine, Speaker, VersionEntry } from '../../src/shared/types';
 import { frameErrors } from '../../src/editor/components/FrameView';
 import en from '../../src/editor/i18n/en/shell';
 import fr from '../../src/editor/i18n/fr/shell';
@@ -28,6 +28,7 @@ import {
 import { allowedAsk, dismissedAsk, raisedAsk } from '../../src/editor/lib/captureAsk';
 import { Markdown } from '../../src/editor/lib/markdown';
 import { projectsPage } from '../../src/editor/lib/pages';
+import { shownVersions } from '../../src/editor/lib/versions';
 import { barDrift, frameStart, playbackTime, rulerStep, sceneBars, timelineMarks } from '../../src/editor/lib/timeline';
 import {
   editLine,
@@ -415,4 +416,33 @@ test('a dismissed host is not asked again in the project, and an allowed ask cle
   // Another project was opened while the approval was on its way, maybe with its own ask.
   assert.equal(allowedAsk({ captureAsk: { ...ask, projectId: 'b' }, captureIgnored: [] }, ask), null);
   assert.equal(allowedAsk({ captureAsk: null, captureIgnored: [] }, ask), null);
+});
+
+test('the versions panel hides editor steps, undos and redos, and keeps restore on a row older than a hidden step', () => {
+  const entry = (id: string, source: VersionEntry['source']): VersionEntry => ({
+    id,
+    createdAt: '2026-10-26T10:00:00.000Z',
+    label: id,
+    source,
+    scenes: [],
+    files: [],
+  });
+  // Newest first, as the API lists them.
+  const list = [entry('v5', 'redo'), entry('v4', 'undo'), entry('v3', 'edit'), entry('v2', 'agent'), entry('v1', 'baseline')];
+  assert.deepEqual(
+    shownVersions(list).map(({ entry, latest }) => [entry.id, latest]),
+    [
+      ['v2', false],
+      ['v1', false],
+    ],
+  );
+  assert.deepEqual(
+    shownVersions(list.slice(3)).map(({ entry, latest }) => [entry.id, latest]),
+    [
+      ['v2', true],
+      ['v1', false],
+    ],
+  );
+  assert.deepEqual(shownVersions([entry('v1', 'edit')]), []);
+  assert.deepEqual(shownVersions([]), []);
 });

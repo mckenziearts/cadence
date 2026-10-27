@@ -238,7 +238,7 @@ function Scrubber() {
   return (
     <div
       ref={ref}
-      className="group relative h-10 min-w-0 flex-1 cursor-pointer touch-none select-none"
+      className="group relative h-10 min-w-0 flex-1 cursor-(--control-cursor) touch-none select-none"
       role="slider"
       aria-label={playhead}
       aria-valuemin={0}

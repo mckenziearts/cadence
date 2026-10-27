@@ -156,6 +156,8 @@ export default {
   },
   project: {
     gone: 'Ce projet n’existe plus.',
+    nothingToUndo: 'Rien à annuler',
+    nothingToRedo: 'Rien à rétablir',
     badDuration: 'Durée invalide : indiquez des secondes (2,5) ou des mesures (2 mes.).',
     sceneAdded: (name: string) => `Scène « ${name} » ajoutée`,
     sceneDeleted: (name: string) => `Scène « ${name} » supprimée (le fichier est dans .cadence/trash)`,

@@ -787,9 +787,13 @@ export class FileProjectStore implements ProjectStore {
   private async mutate<T>(id: string, fn: (data: ProjectFile) => T | Promise<T>): Promise<T> {
     const result = await this.withLock(id, async () => {
       const data = await this.read(id);
+      const before = JSON.stringify(data);
       const value = await fn(data);
-      data.updatedAt = nowIso();
-      await this.write(id, data);
+      // A new updatedAt alone would make an edit that changes nothing an undo step that shows nothing.
+      if (JSON.stringify(data) !== before) {
+        data.updatedAt = nowIso();
+        await this.write(id, data);
+      }
       return value;
     });
     this.events.emit('changed', id);

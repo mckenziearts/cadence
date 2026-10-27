@@ -163,7 +163,7 @@ export function TemplateGallery() {
   );
 }
 
-const cardClass = 'focus-ring flex h-full w-full flex-col rounded-xl p-2.5 text-left ring-inset transition-shadow';
+const cardClass = 'focus-ring flex h-full w-full flex-col rounded-xl p-2.5 text-left ring-inset';
 const selectedClass = 'bg-wash ring-2 ring-ink';
 const idleClass = 'ring-1 ring-rule hover:ring-track';
 

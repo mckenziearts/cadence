@@ -270,7 +270,7 @@ function Command({ text }: { text: string }) {
   const t = useT();
   return (
     <div className="flex items-center gap-2 border-2 border-ink bg-paper pl-3">
-      <code className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink">{text}</code>
+      <code className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink select-text">{text}</code>
       <IconButton
         label={t.common.copyCommand(text)}
         size="sm"
@@ -413,7 +413,7 @@ function ElevenLabsCard({
   return (
     <Card logo={<ElevenLabsLogo className="size-7" />} title="ElevenLabs" status={status}>
       {error && (
-        <p className="flex items-start gap-1.5 text-xs text-alert">
+        <p className="flex items-start gap-1.5 text-xs text-alert select-text">
           <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
         </p>
       )}
@@ -470,7 +470,7 @@ function ElevenLabsKeyForm({ onSaved }: { onSaved: () => void }) {
         />
       </Field>
       {error && (
-        <p id={`${id}-error`} className="flex items-start gap-1.5 text-xs text-alert">
+        <p id={`${id}-error`} className="flex items-start gap-1.5 text-xs text-alert select-text">
           <AlertTriangle className="mt-px size-3 shrink-0" aria-hidden /> {error}
         </p>
       )}

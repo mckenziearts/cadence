@@ -60,7 +60,10 @@ export function Chat({ chatKey, header }: { chatKey: ChatKey; header?: ReactNode
     <div className="flex min-h-0 flex-1 flex-col">
       {header}
       {agent && !agent.ok && (
-        <div role="alert" className="flex shrink-0 gap-2.5 border-b border-warn/30 bg-warn/8 px-4 py-3 text-[13px] text-warn-ink">
+        <div
+          role="alert"
+          className="flex shrink-0 gap-2.5 border-b border-warn/30 bg-warn/8 px-4 py-3 text-[13px] text-warn-ink select-text"
+        >
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden />
           <div className="min-w-0">
             <p className="font-medium">{t.conversation.chat.agentDown(named ? agent.label : null)}</p>
@@ -249,7 +252,7 @@ const UserMessage = memo(function UserMessage({ message }: { message: ChatMessag
   const playhead = message.playhead;
   return (
     <div className="flex flex-col items-end gap-1 pl-8">
-      <div className="border-2 border-ink bg-white px-3 py-2 text-[14px]/[22px] whitespace-pre-wrap text-ink shadow-hard-sm [overflow-wrap:anywhere]">
+      <div className="border-2 border-ink bg-white px-3 py-2 text-[14px]/[22px] whitespace-pre-wrap select-text text-ink shadow-hard-sm [overflow-wrap:anywhere]">
         {message.text}
       </div>
       {playhead && (
@@ -289,7 +292,7 @@ const AssistantMessage = memo(function AssistantMessage({ message, queued }: { m
   const model = models?.find((m) => m.id === message.model)?.label ?? message.model;
 
   return (
-    <article className="text-ink-2">
+    <article className="text-ink-2 select-text">
       <p className="label-caps mb-1.5 text-[10px] text-ink-3">{t.conversation.chat.author(agent)}</p>
       {activity.length > 0 && <Activity items={activity} streaming={streaming} />}
       {notes.length > 0 && <Reasoning notes={notes} />}

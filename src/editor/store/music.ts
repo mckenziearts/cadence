@@ -28,7 +28,9 @@ export async function uploadMusic(file: File): Promise<void> {
 }
 
 let pending: MusicSettingsPatch = {};
+let pendingProject = '';
 let timer: ReturnType<typeof setTimeout> | undefined;
+let saving: Promise<void> = Promise.resolve();
 
 /** Start and volume show immediately; the PATCH goes out after `delay` ms of calm (sliders, drags). */
 export function patchMusic(patch: MusicSettingsPatch, delay = 0): void {
@@ -39,16 +41,29 @@ export function patchMusic(patch: MusicSettingsPatch, delay = 0): void {
   if (patch.volume !== undefined) music.volume = patch.volume;
   set({ project: { ...project, music } });
   pending = { ...pending, ...patch };
+  pendingProject = project.id;
   clearTimeout(timer);
-  timer = setTimeout(async () => {
-    const body = pending;
+  timer = setTimeout(() => void flushMusic(), delay);
+}
+
+/**
+ * Sends a change still waiting for calm at once, and resolves once every change sent is answered: an undo pressed meanwhile
+ * must revert that change, not the step before it.
+ */
+export function flushMusic(): Promise<void> {
+  clearTimeout(timer);
+  if (Object.keys(pending).length) {
+    const [id, body] = [pendingProject, pending];
     pending = {};
-    try {
-      applyProject(await api.updateMusic(project.id, body));
-    } catch {
-      await refreshProject();
-    }
-  }, delay);
+    saving = saving.then(async () => {
+      try {
+        applyProject(await api.updateMusic(id, body));
+      } catch {
+        await refreshProject();
+      }
+    });
+  }
+  return saving;
 }
 
 /**

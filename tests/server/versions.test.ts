@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, test, type TestContext } from 'node:test';
 import { FileBrandStore } from '../../server/store/brands';
 import { FileProjectStore } from '../../server/store/projects';
-import { FileVersionStore } from '../../server/store/versions';
+import { FileVersionStore, foldHistory } from '../../server/store/versions';
 import { sha256 } from '../../server/util';
 import { makeRoot, nextEvent, rejectsWithStatus, writeCompleteBrand, type TestRoot } from './helpers';
 
@@ -556,4 +556,413 @@ test('a scene restore whose scenes folder becomes a link after its check writes 
   await assert.rejects(versions.restore(id, v1.id, { sceneId: 'deux' }), /ELOOP|ENOTDIR|outside/);
   assert.ok(state.swapped, 'the folder became a link after its check');
   assert.deepEqual(await fs.readdir(outside), []);
+});
+
+test('foldHistory: steps go back on undo and forward on redo, an odd index never throws', () => {
+  const e = (id: string, source: string) => ({ id, source });
+  const fold = (index: { id: string; source: string }[]) => {
+    const { back, forward } = foldHistory(index);
+    return { back: back.map((x) => x.id), forward: forward.map((x) => x.id) };
+  };
+  const cases: [string, { id: string; source: string }[], string[], string[]][] = [
+    ['empty index', [], [], []],
+    ['baseline only', [e('v1', 'baseline')], ['v1'], []],
+    [
+      'a chain of steps',
+      [
+        e('v1', 'baseline'),
+        e('v2', 'agent'),
+        e('v3', 'manual'),
+        e('v4', 'external'),
+        e('v5', 'template'),
+        e('v6', 'restore'),
+        e('v7', 'edit'),
+      ],
+      ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7'],
+      [],
+    ],
+    [
+      'undo then redo then undo',
+      [e('v1', 'baseline'), e('v2', 'edit'), e('v3', 'edit'), e('v4', 'undo'), e('v5', 'redo'), e('v6', 'undo')],
+      ['v1', 'v2'],
+      ['v3'],
+    ],
+    [
+      'two undos in a row',
+      [e('v1', 'baseline'), e('v2', 'edit'), e('v3', 'edit'), e('v4', 'undo'), e('v5', 'undo')],
+      ['v1'],
+      ['v3', 'v2'],
+    ],
+    ['a new step clears redo', [e('v1', 'baseline'), e('v2', 'edit'), e('v3', 'undo'), e('v4', 'edit')], ['v1', 'v4'], []],
+    [
+      'an undo with nothing under it and a redo with nothing ahead are skipped',
+      [e('v1', 'undo'), e('v2', 'baseline'), e('v3', 'undo'), e('v4', 'edit'), e('v5', 'redo')],
+      ['v2', 'v4'],
+      [],
+    ],
+    [
+      'an unknown source is a step',
+      [e('v1', 'baseline'), e('v2', 'edit'), e('v3', 'undo'), e('v4', 'mystery')],
+      ['v1', 'v4'],
+      [],
+    ],
+  ];
+  for (const [name, index, back, forward] of cases) assert.deepEqual(fold(index), { back, forward }, name);
+});
+
+/** Every tracked file of the project with its bytes. */
+async function trackedBytes(): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const rel of ['project.json', 'art-direction.md']) out[rel] = (await fs.readFile(path.join(dir, rel))).toString('base64');
+  for (const sub of ['scenes', 'components']) {
+    const entries = await fs.readdir(path.join(dir, sub), { recursive: true, withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const file = path.join(entry.parentPath, entry.name);
+      out[path.relative(dir, file)] = (await fs.readFile(file)).toString('base64');
+    }
+  }
+  return out;
+}
+
+const historyFiles = async () => ({
+  manifests: await fs.readdir(path.join(dir, '.cadence', 'versions', 'manifests')),
+  objects: await fs.readdir(path.join(dir, '.cadence', 'versions', 'objects')),
+});
+
+test('undo and redo with nothing to undo or redo answer null and record nothing', async () => {
+  assert.equal(await versions.undo(id), null, 'no history at all');
+  await baseline();
+  const changed: unknown[] = [];
+  store.events.on('changed', (project) => changed.push(project));
+  assert.equal(await versions.undo(id), null);
+  assert.equal(await versions.redo(id), null);
+  assert.equal((await versions.list(id)).length, 1);
+  assert.deepEqual(changed, [], 'nothing for the editor to reload');
+  await rejectsWithStatus(versions.undo('absent'), 404);
+  await rejectsWithStatus(versions.redo('absent'), 404);
+});
+
+test('undo then redo gives back the exact bytes of every tracked file; the history only grows', async () => {
+  await write('components/keep.ts', 'export const KEEP = 1;\n');
+  await baseline();
+  const before = await trackedBytes();
+  await write('scenes/titre.tsx', 'export default () => "titre v2";\n');
+  await fs.rm(path.join(dir, 'components', 'keep.ts'));
+  await write('components/extra.ts', 'export const EXTRA = 2;\n');
+  await store.updateScene(id, 'deux', { duration: 7 });
+  await versions.snapshot(id, { label: 'Tour 2', source: 'agent' });
+  const after = await trackedBytes();
+  const index = await versions.list(id);
+  const files = await historyFiles();
+
+  const generation = store.generation(id);
+  const undone = await versions.undo(id);
+  assert.equal(undone?.source, 'undo');
+  assert.equal(undone?.label, 'Annulé : Tour 2');
+  assert.deepEqual(await trackedBytes(), before);
+  assert.ok(store.generation(id) > generation, 'frames reload the code put back');
+
+  const redone = await versions.redo(id);
+  assert.equal(redone?.source, 'redo');
+  assert.equal(redone?.label, 'Rétabli : Tour 2');
+  assert.deepEqual(await trackedBytes(), after);
+  assert.equal(await versions.redo(id), null, 'nothing further ahead');
+
+  const now = await versions.list(id);
+  assert.deepEqual(
+    now.map((v) => [v.id, v.source]),
+    [
+      ['v0004', 'redo'],
+      ['v0003', 'undo'],
+      ['v0002', 'agent'],
+      ['v0001', 'baseline'],
+    ],
+  );
+  assert.deepEqual(now.slice(2), index, 'earlier entries untouched');
+  const grown = await historyFiles();
+  for (const name of files.manifests) assert.ok(grown.manifests.includes(name), name);
+  for (const name of files.objects) assert.ok(grown.objects.includes(name), name);
+});
+
+test('an undo that changes only project.json still tells the editor to reload the project', async () => {
+  await baseline();
+  await store.updateScene(id, 'deux', { duration: 7 });
+  await versions.snapshot(id, { label: 'Durée', source: 'edit' });
+  const changed = nextEvent(store.events, 'changed', 1000);
+  await versions.undo(id);
+  assert.deepEqual(await changed, [id]);
+  assert.equal((await store.get(id)).scenes.find((s) => s.id === 'deux')!.duration, 2);
+});
+
+test('undo records unsaved changes as an "external" step and reverts them; redo brings them back', async () => {
+  await baseline();
+  await write('scenes/titre.tsx', 'export default () => "saved";\n');
+  await versions.snapshot(id, { label: 'Durée', source: 'edit' });
+  await write('scenes/titre.tsx', 'export default () => "edited in my editor";\n');
+
+  const undone = await versions.undo(id);
+  assert.equal(undone?.label, 'Annulé : Modifications non enregistrées');
+  assert.deepEqual(
+    (await versions.list(id)).map((v) => [v.id, v.source]),
+    [
+      ['v0004', 'undo'],
+      ['v0003', 'external'],
+      ['v0002', 'edit'],
+      ['v0001', 'baseline'],
+    ],
+  );
+  assert.equal(await read('scenes/titre.tsx'), 'export default () => "saved";\n', 'only the unsaved changes are undone');
+
+  const redone = await versions.redo(id);
+  assert.equal(redone?.source, 'redo');
+  assert.equal(redone?.label, 'Rétabli : Modifications non enregistrées');
+  assert.equal((await versions.list(id)).length, 5, 'the redo is one entry, nothing else recorded');
+  assert.equal(await read('scenes/titre.tsx'), 'export default () => "edited in my editor";\n');
+});
+
+test('every restore, undo and redo is exactly one entry, even when it writes nothing', async () => {
+  await baseline();
+  const original = await read('scenes/titre.tsx');
+  await write('scenes/titre.tsx', 'export default () => "un";\n');
+  const v2 = await versions.snapshot(id, { label: 'Un', source: 'edit' });
+  const count = async () => (await versions.list(id)).length;
+
+  const restored = await versions.restore(id, v2!.id);
+  assert.equal(restored.source, 'restore');
+  assert.equal(await count(), 3, 'restoring the current version is still a step');
+  // The state under the restore is v0002 itself: this undo writes nothing and must still be recorded.
+  const first = await versions.undo(id);
+  assert.equal(first?.source, 'undo');
+  assert.equal(first?.label, 'Annulé : Restauration de v0002');
+  assert.equal(await count(), 4);
+  const second = await versions.undo(id);
+  assert.equal(second?.label, 'Annulé : Un');
+  assert.equal(await count(), 5);
+  assert.equal(await read('scenes/titre.tsx'), original);
+
+  assert.equal((await versions.redo(id))?.label, 'Rétabli : Un');
+  assert.equal(await count(), 6);
+  // Same state as the step under it: the second redo writes nothing either.
+  const last = await versions.redo(id);
+  assert.equal(last?.source, 'redo');
+  assert.equal(last?.label, 'Rétabli : Restauration de v0002');
+  assert.equal(await count(), 7);
+  assert.equal(await read('scenes/titre.tsx'), 'export default () => "un";\n');
+});
+
+test('redo with unsaved changes answers null and records nothing', async () => {
+  await baseline();
+  await write('scenes/titre.tsx', 'export default () => "saved";\n');
+  await versions.snapshot(id, { label: 'Durée', source: 'edit' });
+  await versions.undo(id);
+  await write('components/new.ts', 'export const NEW = 1;\n');
+  const history = await versions.list(id);
+  assert.equal(await versions.redo(id), null, 'a new file is a change too');
+  assert.deepEqual(await versions.list(id), history);
+  assert.equal(await read('components/new.ts'), 'export const NEW = 1;\n');
+});
+
+test('a file moved on disk with the same bytes is an unsaved change: redo answers null, undo records it as "external"', async () => {
+  await write('components/a.ts', 'export const A = 1;\n');
+  await baseline();
+  await write('scenes/titre.tsx', 'export default () => "un";\n');
+  await versions.snapshot(id, { label: 'Un', source: 'edit' });
+  await versions.undo(id);
+  await fs.rename(path.join(dir, 'components', 'a.ts'), path.join(dir, 'components', 'b.ts'));
+  const history = await versions.list(id);
+
+  assert.equal(await versions.redo(id), null, 'same bytes under another path is still a change');
+  assert.deepEqual(await versions.list(id), history);
+
+  const undone = await versions.undo(id);
+  assert.equal(undone?.label, 'Annulé : Modifications non enregistrées');
+  assert.deepEqual(
+    (await versions.list(id)).map((v) => v.source),
+    ['undo', 'external', 'undo', 'edit', 'baseline'],
+  );
+  assert.equal(await read('components/a.ts'), 'export const A = 1;\n');
+  await assert.rejects(fs.access(path.join(dir, 'components', 'b.ts')), { code: 'ENOENT' });
+});
+
+test('an undo to a brand not installed here is refused by name, the project and its history left as they were', async () => {
+  await baseline();
+  await writeCompleteBrand(t.root, 'orbit');
+  await store.update(id, { brand: 'orbit' });
+  await versions.snapshot(id, { label: 'Orbit', source: 'edit' });
+  await store.update(id, { brand: null });
+  await versions.snapshot(id, { label: 'Sans marque', source: 'edit' });
+  await fs.rm(path.join(t.root, 'brands/orbit'), { recursive: true });
+  const before = await trackedBytes();
+  const history = await versions.list(id);
+
+  await rejectsWithStatus(versions.undo(id), 400, /Marque inconnue : orbit/);
+  assert.deepEqual(await trackedBytes(), before);
+  assert.deepEqual(await versions.list(id), history);
+});
+
+test('an undo through a folder swapped for a link out of the project is refused, nothing written or recorded', async () => {
+  const outside = path.join(t.root, 'outside');
+  await fs.mkdir(outside, { recursive: true });
+  await write('components/sub/x.ts', 'export const X = 1;\n');
+  await baseline();
+  await write('components/sub/x.ts', 'export const X = 2;\n');
+  await write('art-direction.md', 'changed\n');
+  await versions.snapshot(id, { label: 'Deux', source: 'edit' });
+  const history = await versions.list(id);
+  await fs.rm(path.join(dir, 'components', 'sub'), { recursive: true });
+  await fs.symlink(outside, path.join(dir, 'components', 'sub'));
+
+  await rejectsWithStatus(versions.undo(id), 409, /components\/sub\/x\.ts.*lien symbolique/);
+  assert.deepEqual(await fs.readdir(outside), []);
+  assert.equal(await read('art-direction.md'), 'changed\n');
+  assert.deepEqual(await versions.list(id), history);
+});
+
+test('an undo, a redo or a restore to a version whose history object is missing writes nothing and records nothing', async () => {
+  const titre = await read('scenes/titre.tsx');
+  await baseline();
+  await write('art-direction.md', 'changed\n');
+  await write('scenes/titre.tsx', 'export default () => "titre v2";\n');
+  await versions.snapshot(id, { label: 'Deux', source: 'edit' });
+  const objects = path.join(dir, '.cadence', 'versions', 'objects');
+  const hide = async (content: string) => {
+    const object = path.join(objects, sha256(content));
+    await fs.rename(object, `${object}.gone`);
+    return () => fs.rename(`${object}.gone`, object);
+  };
+  const refused = async (attempt: () => Promise<unknown>) => {
+    const before = await trackedBytes();
+    const history = await versions.list(id);
+    await rejectsWithStatus(attempt(), 500, /Contenu manquant/);
+    assert.deepEqual(await trackedBytes(), before);
+    assert.deepEqual(await versions.list(id), history);
+  };
+
+  let unhide = await hide(titre);
+  await refused(() => versions.undo(id));
+  // Left unsaved, so a refused restore that still recorded them as "external" would show in the history.
+  await write('components/extra.ts', 'export const EXTRA = 1;\n');
+  await refused(() => versions.restore(id, 'v0001'));
+  await refused(() => versions.restore(id, 'v0001', { sceneId: 'titre' }));
+  await unhide();
+  await fs.rm(path.join(dir, 'components', 'extra.ts'));
+  await versions.undo(id);
+
+  unhide = await hide('export default () => "titre v2";\n');
+  await refused(() => versions.redo(id));
+  await unhide();
+  assert.equal((await versions.redo(id))?.source, 'redo');
+  assert.equal(await read('scenes/titre.tsx'), 'export default () => "titre v2";\n');
+});
+
+test('two concurrent undos revert two different steps', async () => {
+  await baseline();
+  const original = await read('scenes/titre.tsx');
+  await write('scenes/titre.tsx', 'export default () => "un";\n');
+  await versions.snapshot(id, { label: 'Un', source: 'edit' });
+  await write('scenes/titre.tsx', 'export default () => "deux";\n');
+  await versions.snapshot(id, { label: 'Deux', source: 'edit' });
+
+  const entries = await Promise.all([versions.undo(id), versions.undo(id)]);
+  assert.deepEqual(entries.map((e) => e?.label).sort(), ['Annulé : Deux', 'Annulé : Un']);
+  assert.equal(await read('scenes/titre.tsx'), original);
+});
+
+test('an undo waits for the project lock, so an edit made under it is recorded before being undone', async () => {
+  await baseline();
+  await write('scenes/titre.tsx', 'export default () => "un";\n');
+  await versions.snapshot(id, { label: 'Un', source: 'edit' });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const locked = store.withLock(id, async () => {
+    await gate;
+    await store.updateScene(id, 'titre', { name: 'Renommée' });
+  });
+  // Called from outside the locked context: withLock is re-entrant only within the async context that holds it.
+  const undo = versions.undo(id);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal((await versions.list(id)).length, 2, 'nothing recorded while the lock is held');
+  release();
+  await locked;
+
+  const entry = await undo;
+  assert.equal(entry?.label, 'Annulé : Modifications non enregistrées');
+  const recorded = await Promise.all((await versions.list(id)).map((v) => versions.read(id, v.id, 'project.json')));
+  assert.ok(recorded.some((json) => json!.includes('"Renommée"')));
+});
+
+/** A brand store whose next exists() call stops until released: a restore, undo or redo checks the brand there. */
+class PausingBrandStore extends FileBrandStore {
+  private next: { reached: () => void; gate: Promise<void> } | null = null;
+
+  pause(): { reached: Promise<void>; release: () => void } {
+    let reached!: () => void;
+    let release!: () => void;
+    const at = new Promise<void>((resolve) => (reached = resolve));
+    this.next = { reached, gate: new Promise<void>((resolve) => (release = resolve)) };
+    return { reached: at, release };
+  }
+
+  async exists(brand: string): Promise<boolean> {
+    const next = this.next;
+    this.next = null;
+    if (next) {
+      next.reached();
+      await next.gate;
+    }
+    return super.exists(brand);
+  }
+}
+
+async function brandedHistory(): Promise<{ brands: PausingBrandStore; paused: FileVersionStore }> {
+  const brands = new PausingBrandStore(t.config);
+  const paused = new FileVersionStore(store, brands);
+  await writeCompleteBrand(t.root, 'orbit');
+  await store.update(id, { brand: 'orbit' });
+  await paused.snapshot(id, { label: 'Point de départ', source: 'baseline' });
+  await write('scenes/titre.tsx', 'export default () => "un";\n');
+  await paused.snapshot(id, { label: 'Un', source: 'edit' });
+  return { brands, paused };
+}
+
+test('a snapshot waits for an undo, a redo or a restore to finish, so each lands in the history', async () => {
+  const { brands, paused } = await brandedHistory();
+  for (const [step, run] of [
+    ['undo', () => paused.undo(id)],
+    ['redo', () => paused.redo(id)],
+    ['restore', () => paused.restore(id, 'v0001')],
+  ] as const) {
+    const { reached, release } = brands.pause();
+    const entry = run();
+    await reached;
+    // Written behind the store while the step is paused: only the step's own "external" snapshot may record it.
+    const rel = `components/pendant-${step}.ts`;
+    await write(rel, `export const STEP = '${step}';\n`);
+    const snapshot = paused.snapshot(id, { label: 'Pendant', source: 'manual' });
+    release();
+    assert.equal((await entry)?.source, step);
+    assert.equal(await snapshot, null, `runs after the ${step}, which already recorded the state`);
+    const [top, under] = await paused.list(id);
+    assert.deepEqual([top.source, under.source], [step, 'external'], `the ${step} recorded the file, not the snapshot`);
+    assert.ok(under.files.includes(rel));
+  }
+  assert.deepEqual(
+    (await paused.list(id)).map((v) => v.source),
+    ['restore', 'external', 'redo', 'external', 'undo', 'external', 'edit', 'baseline'],
+  );
+});
+
+test('an edit waits for a whole-project restore to finish writing, then lands on top of it', async () => {
+  const { brands, paused } = await brandedHistory();
+  const { reached, release } = brands.pause();
+  const restore = paused.restore(id, 'v0001');
+  await reached;
+  const edit = store.updateScene(id, 'titre', { name: 'Renommée' });
+  release();
+  await Promise.all([restore, edit]);
+  assert.equal(await read('scenes/titre.tsx'), (await paused.read(id, 'v0001', 'scenes/titre.tsx'))!);
+  assert.equal((await store.get(id)).scenes.find((s) => s.id === 'titre')?.name, 'Renommée');
+  const recorded = await Promise.all((await paused.list(id)).map((v) => paused.read(id, v.id, 'project.json')));
+  assert.ok(!recorded.some((json) => json!.includes('"Renommée"')), 'the edit landed after the restore, not inside it');
 });

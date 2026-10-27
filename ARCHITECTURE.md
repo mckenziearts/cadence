@@ -489,13 +489,51 @@ Content-addressed: `objects/<sha256>` blobs, `manifests/<versionId>.json` = `{ r
 files (project.json, art-direction.md, scenes/**, components/**; text < 2 MB), `index.json` = `VersionEntry[]`
 oldest first (`list()` returns newest first). `FileVersionStore` emits `versions-changed` on the project store's
 events; restores always record a `restore` version, even when nothing changed.
-`snapshot()` after every agent turn (and a `baseline` before the first one), on manual save, on template insert,
-right after a project is created (« État initial », API and CLI) and before a music snap (« Avant le calage des
-coupes »). While a turn runs (`ChatService.busy(id)`), the template-insert and snap versions are skipped, and restore
-and project/scene deletion answer 409: the agent's own version would otherwise record someone else's change.
+`snapshot()` after every agent turn (and a `baseline` before the first one), on manual save, right after a project is
+created (« État initial », API and CLI) and around every editor write. The project, art direction, scene, order and
+music routes (assets and the voice-over sync aside) go through `step()` in `server/api/index.ts`, one at a time per
+project so that writes sent together do not land in each other's versions: an `external` snapshot of unsaved changes
+(« Modifications non enregistrées »; on a clean project it records nothing), the write, then an `edit` version named
+after the change (« Scène modifiée : Titre », « Coupes calées sur la musique »), or `template` for a template insert.
+Manual saves, restores, undo and redo from the API wait behind these steps, so none lands between a write and its
+version. Snapshots are not forced, and `ProjectStore` leaves `project.json` untouched when an edit changes nothing, so a no-op
+patch records nothing. A failed snapshot is logged and the write stands. While a turn
+runs (`ChatService.busy(id)`, checked before and after the write), these versions are skipped, and restore, undo, redo
+and project/scene deletion answer 409, checked again once their turn behind the steps comes: the agent's own version would otherwise record someone else's change.
 `restore()` first snapshots unsaved changes (`external`), writes the files (and for a scene restore: only that
-scene file + its duration), then records a `restore` version. Nothing is ever deleted; object GC is not needed at
-this scale.
+scene file + its duration), then records a `restore` version. Nothing is ever deleted and objects are stored as
+is: each editor write adds a full copy of every file it changed plus a manifest of all tracked files, and the history
+travels in project exports.
+
+Undo and redo add no storage: `foldHistory(index)` (pure, exported from `server/store/versions.ts`) folds the index,
+oldest first, into two stacks. It brings three sources: `edit` (a change made from the editor), `undo` and `redo`.
+An `edit`, like any entry but an undo or a redo, is pushed on `back` and clears `forward`; an `undo` moves the top of
+`back` to `forward`; a `redo` moves it back. The current state is the manifest of `back`'s top. An `undo` with nothing under it or a `redo` with
+nothing ahead is skipped, and an entry with an unknown source counts as a step, so an index written by a later
+version still folds.
+`undo()` and `redo()` take the project lock then the versions mutex (restore's order: a second undo folds an index that
+already ends with the first one) and compare the tracked files on disk with the manifest of the last entry. Unsaved
+changes are the newest step: undo targets `back`'s top, records them as `external` and reverts them (« Annulé :
+Modifications non enregistrées »); otherwise it targets the entry under the top, labelled « Annulé : <label of the
+top> ». Redo targets `forward`'s top (« Rétabli : <label> ») and answers null while the disk has unsaved changes, which
+clear the way forward like any new step. Both answer null, recording nothing, when there is no target. A whole restore
+and undo/redo share one private apply: brand check (400), linked-folder check and a read of every stored file it puts
+back (500 when one is missing) before anything else, the `external` snapshot, the writes and removals, then a forced
+record, so each undo or redo is exactly one entry. A scene restore reads its file before its snapshot too. Restore,
+undo and redo then call `seams.recheck`: durations and order come back with the files.
+
+In the editor, Cmd-Z (Ctrl-Z) calls `POST /undo` and Shift-Cmd-Z `POST /redo` on the scenes view of an open project,
+without a modal or the presentation; in a text field the browser undoes the typing instead. The letter is read from
+`e.key`, never `e.code`, so it follows the keyboard layout. A music change still waiting for calm is sent first, and
+the call waits until every music change sent is answered, so it reverts that change rather than the step before. One
+request runs at a time (a press meanwhile is dropped), a toast shows the returned label or « Rien à annuler » /
+« Rien à rétablir », a 409 shows the agent-busy message, and the project is refetched after each call. A step that
+takes the selected scene away (undoing an added one) hands the selection, and the focus if its card had it, to the
+next scene still there, else the one before (`sceneInPlace`). The versions panel hides `edit`, `undo` and `redo`
+entries (Cmd-Z reaches them); the row it shows on top keeps its restore button when a hidden step is newer.
+`tests/editor/shortcuts.test.ts` checks the keys, the guard, the one-at-a-time rule and the scene in place,
+`tests/editor/history.test.ts` the store steps and the wait for music changes, `tests/editor/helpers.test.tsx` the
+panel filter and `tests/editor/ui.test.ts` both shortcuts and the focus in Chromium.
 
 ## Agent (Claude Code)
 
@@ -858,6 +896,8 @@ POST   /api/import                                 the raw .tar.gz body (up to 2
 GET    /api/projects/:id/versions                  ?scene=, answers VersionEntry[]
 POST   /api/projects/:id/versions                  { label }, answers VersionEntry | null
 POST   /api/projects/:id/versions/:vid/restore     { sceneId? }, answers VersionEntry (409 while a turn runs)
+POST   /api/projects/:id/undo                      answers { entry: VersionEntry | null } (409 while a turn runs)
+POST   /api/projects/:id/redo                      answers { entry: VersionEntry | null } (409 while a turn runs)
 GET    /api/projects/:id/chats/:key                ChatState (key = project | scene:<id>)
 POST   /api/projects/:id/chats/:key/messages       SendMessageInput, answers ChatState
 POST   /api/projects/:id/chats/:key/stop
@@ -1079,7 +1119,7 @@ contract: removing or reshaping one is a major version.
 - `editorRoot`: a folder with the host's own `index.html`, built instead of the core's at every start (the same
   in-memory production build, `server/editor.ts`) and served with the same token, frame-origin metas and guards. Its
   scripts import the core editor through `src/editor/index.ts`, which exports `App`, `Profile`, `api`, `ApiError`,
-  `useStore`, `useT` and `openNewBrand` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
+  `useStore`, `useT`, `openNewBrand`, `undo` and `redo` (and the `Pages` type) and nothing else; an export is added when a host needs it. `Profile` is
   the core's `@profil` page, for a host page that wraps it rather than replacing it.
 - `pages`: `<App pages={{ '@compte': Account }} />` adds the host's screens to the editor's hash router. A page id
   starts with `@`, which no project id can, so a page never shadows a project; `#/@compte` opens it in place of the
@@ -1102,6 +1142,11 @@ contract: removing or reshaping one is a major version.
   argument, the progress of that build with one (a build started with `api.startBrandBuild({ source, ref, name })`,
   say). The progress of a build that has a `source` offers no "Start over", since its `ref` never reaches the editor;
   a repository build still does. `tests/server/editor-root.test.ts` checks both in Chromium.
+- `undo()` and `redo()`: a host menu's Undo and Redo items call them, the same steps as Cmd-Z and Shift-Cmd-Z (see
+  "Versions"). They check the editor's state themselves and do nothing without an open project, outside the scenes
+  view, behind a modal or while presenting, and a call while one runs is dropped. The text-field check stays in the
+  editor's keyboard handler: a host menu sees its own focus and keeps the field's undo when one has it. Both resolve
+  once the project is refetched. `tests/editor/shortcuts.test.ts` checks the guard.
 - CSS: the host stylesheet imports the core's (`@import '<core>/src/editor/styles.css';`) and adds `@source './';` for
   its own files. Tailwind only generates the classes it finds in scanned sources, and the core stylesheet scans
   `src/editor/` only: without its own `@source`, the host's screens come out unstyled.
@@ -1170,6 +1215,15 @@ contract: removing or reshaping one is a major version.
   `--titlebar-max-width` on `:root` (`none`) to keep the box the window's width less its 24 px sides, so it does not move
   as the window widens. A host whose window buttons sit at the top left places them for the bar it shows.
   `tests/editor/ui.test.ts` checks both in Chromium.
+- Controls and chrome: a desktop host can make the editor feel native with two more `:root` variables, CSS as well.
+  `--control-cursor` (default `pointer`) is the cursor of buttons, `[role='button']`, `label[for]`, `summary` and the
+  few other clickable surfaces (scrubbers, the project list, the render preview); a host sets `default`.
+  `--chrome-select` (default `auto`) is the `user-select` of `body`; a host sets `none` so labels and buttons do not
+  select like a page, while chat messages, command blocks and error texts carry `select-text` and stay copyable. The
+  defaults sit in the editor stylesheet's base layer, so an unlayered host `:root` rule wins over them.
+  `tests/editor/ui.test.ts` checks the web defaults and the opt-in in Chromium.
+- Reduced motion: under `prefers-reduced-motion: reduce` the editor stylesheet brings every transition and animation to
+  near zero, spinners (`animate-spin`) excepted. Frames and renders do not load that stylesheet and are unchanged.
 - `requestSecret`: `startServer({ requestSecret })` (32 characters or more, else `startServer()` throws) makes both
   servers answer 403 to any request without `X-Cadence-Secret` equal to it, compared in constant time over SHA-256
   digests (`hasRequestSecret()` in `server/http.ts`), before any other guard. `GET /oauth/<network>/callback` and `/mcp`

@@ -668,7 +668,7 @@ export interface ProjectTemplateMeta {
 
 // Versions (projects/<id>/.cadence/versions)
 
-export type VersionSource = 'baseline' | 'agent' | 'manual' | 'restore' | 'external' | 'template';
+export type VersionSource = 'baseline' | 'agent' | 'manual' | 'restore' | 'external' | 'template' | 'edit' | 'undo' | 'redo';
 
 export interface VersionEntry {
   /** Sortable id, e.g. "v0001". */
