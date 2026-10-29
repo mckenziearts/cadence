@@ -7,6 +7,8 @@ import { z } from 'zod';
 import {
   FORMAT_IDS,
   ID_PATTERN,
+  TRANSITION_DIRECTIONS,
+  TRANSITION_KINDS,
   isFormatId,
   type CreateProjectInput,
   type CreateSceneInput,
@@ -18,6 +20,7 @@ import {
   type ProjectSummary,
   type SceneFile,
   type SceneState,
+  type SceneTransition,
   type SceneVoiceOver,
   type SceneVoiceOverInput,
   type ScriptLine,
@@ -66,6 +69,8 @@ const MAX_CODE_BYTES = 1024 * 1024;
 const FPS_VALUES = [24, 30, 60];
 const WATCH_DEBOUNCE_MS = 60;
 const MAX_VOICE_OVER_CHARS = 2000;
+const MIN_TRANSITION = 0.1;
+const MAX_TRANSITION = 5;
 
 const musicSchema = z.object({
   file: z
@@ -207,6 +212,29 @@ export const sceneVoiceOverInputSchema = sceneVoiceOverFields
   .refine((v) => (v.text === undefined) !== (v.lines === undefined), { error: () => m().api.projects.textOrLines })
   .transform(toSceneVoiceOver);
 
+/** Shared with the API. A fade has no direction; the other kinds go left unless told otherwise. */
+export const sceneTransitionSchema = z
+  .object(
+    {
+      kind: z.enum(TRANSITION_KINDS, { error: () => m().api.projects.transitionKind }),
+      direction: z.enum(TRANSITION_DIRECTIONS, { error: () => m().api.projects.transitionDirection }).optional(),
+      duration: z
+        .number({ error: () => m().api.projects.transitionDuration(MIN_TRANSITION, MAX_TRANSITION) })
+        .min(MIN_TRANSITION)
+        .max(MAX_TRANSITION),
+    },
+    { error: () => m().api.projects.transitionObject },
+  )
+  .refine((t) => t.kind !== 'fade' || t.direction === undefined, {
+    error: () => m().api.projects.fadeDirection,
+    path: ['direction'],
+  })
+  .transform(({ kind, direction, duration }): SceneTransition =>
+    kind === 'fade'
+      ? { kind, duration: roundMs(duration) }
+      : { kind, direction: direction ?? 'left', duration: roundMs(duration) },
+  );
+
 export const projectFileSchema = z.object({
   version: z.literal(1).default(1),
   name: z.string().trim().min(1),
@@ -223,6 +251,7 @@ export const projectFileSchema = z.object({
         duration: z.number().refine(Number.isFinite),
         template: z.string().nullish(),
         voiceOver: sceneVoiceOverSchema.optional(),
+        transition: sceneTransitionSchema.optional(),
       }),
     )
     .superRefine((scenes, ctx) => {
@@ -328,7 +357,7 @@ export class FileProjectStore implements ProjectStore {
           brand: data.brand,
           formats: data.formats,
           sceneCount: data.scenes.length,
-          duration: roundMs(data.scenes.reduce((sum, s) => sum + s.duration, 0)),
+          duration: sceneTimeline(data.scenes).duration,
           updatedAt: data.updatedAt,
           cover: data.scenes[0]?.id ?? null,
         });
@@ -344,20 +373,22 @@ export class FileProjectStore implements ProjectStore {
     const data = await this.read(id);
     const dir = this.dir(id);
     await this.ensureCodeBaseline(id, data.brand);
-    let start = 0;
+    const timeline = sceneTimeline(data.scenes);
     const scenes: SceneState[] = [];
-    for (const [index, scene] of data.scenes.entries()) {
+    for (const [index, { transition: declared, ...scene }] of data.scenes.entries()) {
       const file = this.sceneFile(id, scene.id);
       const code = await readFileNoFollow(dir, file).catch(() => null);
+      const { start, transition } = timeline.scenes[index];
       scenes.push({
         ...scene,
         index,
-        start: roundMs(start),
+        start,
+        ...(transition ? { transition } : {}),
+        ...(declared ? { declaredTransition: declared } : {}),
         file,
         url: `/@fs${file}`,
         codeVersion: code ? shortHash(code) : 'missing',
       });
-      start += scene.duration;
     }
     return {
       id,
@@ -369,7 +400,7 @@ export class FileProjectStore implements ProjectStore {
       tempo: data.tempo,
       language: data.language ?? null,
       scenes,
-      duration: roundMs(start),
+      duration: timeline.duration,
       music: data.music,
       musicUrl: data.music ? `/api/projects/${id}/music/audio?file=${encodeURIComponent(data.music.file)}` : null,
       musicGrid: data.music ? await this.resolveMusicGrid(id) : null,
@@ -539,6 +570,10 @@ export class FileProjectStore implements ProjectStore {
   // Scenes
 
   async createScene(id: string, input: CreateSceneInput): Promise<SceneState> {
+    return this.insertScene(id, input);
+  }
+
+  private async insertScene(id: string, input: CreateSceneInput, transition?: SceneTransition): Promise<SceneState> {
     const name = requireName(input.name, 'scene');
     let code = input.code;
     let template: { id: string; bars: number; components: TemplateComponent[] } | null = null;
@@ -573,7 +608,13 @@ export class FileProjectStore implements ProjectStore {
       await this.ownFolder(id, 'scenes');
       if (template) await this.copyComponents(id, template.components);
       await this.writeScene(id, sceneId, code ?? blankScene(name));
-      data.scenes.splice(at, 0, { id: sceneId, name, duration: seconds, ...(template ? { template: template.id } : {}) });
+      data.scenes.splice(at, 0, {
+        id: sceneId,
+        name,
+        duration: seconds,
+        ...(template ? { template: template.id } : {}),
+        ...(transition ? { transition } : {}),
+      });
     });
     await this.syncCode(id);
     return this.sceneState(id, sceneId);
@@ -604,12 +645,11 @@ export class FileProjectStore implements ProjectStore {
     const code = await readFileNoFollow(this.dir(id), this.sceneFile(id, sceneId), 'utf8').catch(() => {
       throw new HttpError(404, m().api.projects.sceneFileNotFound(`scenes/${sceneId}.tsx`));
     });
-    return this.createScene(id, {
-      name: m().api.projects.copy(scene.name.slice(0, 110)),
-      after: sceneId,
-      duration: scene.duration,
-      code,
-    });
+    return this.insertScene(
+      id,
+      { name: m().api.projects.copy(scene.name.slice(0, 110)), after: sceneId, duration: scene.duration, code },
+      scene.transition,
+    );
   }
 
   async deleteScene(id: string, sceneId: string): Promise<ProjectState> {
@@ -649,6 +689,17 @@ export class FileProjectStore implements ProjectStore {
   async setDurations(id: string, durations: Record<string, number>): Promise<ProjectState> {
     await this.mutate(id, (data) => {
       for (const [sceneId, seconds] of Object.entries(durations)) requireScene(data, sceneId).duration = parseDuration(seconds);
+    });
+    return this.get(id);
+  }
+
+  async setTransition(id: string, sceneId: string, transition: SceneTransition | null): Promise<ProjectState> {
+    const value = transition && parseTransition(transition);
+    await this.mutate(id, (data) => {
+      const scene = requireScene(data, sceneId);
+      if (value && scene === data.scenes[0]) throw new HttpError(400, m().api.projects.firstSceneTransition);
+      if (value) scene.transition = value;
+      else delete scene.transition;
     });
     return this.get(id);
   }
@@ -741,6 +792,7 @@ export class FileProjectStore implements ProjectStore {
         duration: clampDuration(s.duration),
         ...(s.template ? { template: s.template } : {}),
         ...(s.voiceOver?.lines || s.voiceOver?.text.trim() ? { voiceOver: s.voiceOver } : {}),
+        ...(s.transition ? { transition: s.transition } : {}),
       })),
       music: data.music ? { ...data.music, start: roundMs(data.music.start) } : null,
       ...(data.voiceOver ? { voiceOver: data.voiceOver } : {}),
@@ -1021,6 +1073,34 @@ function parseDuration(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
     throw new HttpError(400, m().api.projects.duration(value));
   return clampDuration(value);
+}
+
+function parseTransition(value: unknown): SceneTransition {
+  const parsed = sceneTransitionSchema.safeParse(value);
+  if (!parsed.success) throw new HttpError(400, m().api.projects.transition(formatIssues(parsed.error)));
+  return parsed.data;
+}
+
+/**
+ * Each scene starts where the previous one ends minus its transition, which never takes more than half of either
+ * scene: a neighbour shortened later clamps it here, and nothing cascades on disk. Without transitions, the starts
+ * are the running sums of the durations.
+ */
+function sceneTimeline(scenes: SceneFile[]): {
+  scenes: { start: number; transition?: SceneTransition }[];
+  duration: number;
+} {
+  // Rounded down from whole ms: two cuts at the cap around a scene of 2.345 s would take 2.346 s otherwise.
+  const half = (seconds: number) => Math.floor(Math.round(seconds * 1000) / 2) / 1000;
+  let end = 0;
+  const out = scenes.map((scene, i) => {
+    const declared = i > 0 ? scene.transition : undefined;
+    const overlap = declared ? roundMs(Math.min(declared.duration, half(scenes[i - 1].duration), half(scene.duration))) : 0;
+    const start = end - overlap;
+    end = start + scene.duration;
+    return { start: roundMs(start), ...(declared ? { transition: { ...declared, duration: overlap } } : {}) };
+  });
+  return { scenes: out, duration: roundMs(end) };
 }
 
 function clampDuration(seconds: number): number {

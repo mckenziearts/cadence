@@ -318,8 +318,8 @@ so imports are fresh.
 
 ```
 projects/<id>/
-  project.json          ProjectFile (name, brand, fps, formats, tempo, language, scenes[] (voiceOver?), music,
-                        voiceOver, captions)
+  project.json          ProjectFile (name, brand, fps, formats, tempo, language, scenes[] (voiceOver?,
+                        transition?), music, voiceOver, captions)
   art-direction.md      the look every scene follows (copied from the brand, then edited)
   scenes/<scene>.tsx    one component per scene (default export)
   components/           shared components/constants for this project (relative imports)
@@ -339,6 +339,16 @@ they do not exist: one that does not parse is a 500 naming the file (`readJsonOr
 what it held. Caches (`seams.json`, `<file>.analysis.json`) are measured again instead.
 
 Scene durations: seconds rounded to the ms, min 0.1. Scene order = `project.json` order.
+A scene's `transition` (`{ kind: fade | slide | wipe | flip, direction?: left | right | up | down, duration }`, 0.1 to
+5 s, direction for slide, wipe and flip only, `left` when left out) is the cut into it: the scene starts that much
+before the previous one ends. `ProjectStore.setTransition` writes it (null removes it, the first scene is refused);
+duplicating a scene copies it, moving or deleting a scene leaves it on disk, and on the first scene it draws nothing.
+`get()` clamps it to half of the scene and of the previous one, rounded down to the ms so the two cuts around a scene
+never take more than the scene (`sceneTimeline` in `server/store/projects.ts`):
+`SceneState.transition` is that effective cut (absent on the first scene), `declaredTransition` what `project.json`
+holds, so a scene shortened later never breaks the timeline and nothing cascades on disk. `start` = previous start +
+previous duration - effective transition, rounded to the ms; `ProjectState.duration` and the project list's duration
+subtract the overlaps. Without transitions, starts and durations are the running sums they always were.
 `tempo` (default 120) is the fallback beat grid and converts template bars to seconds (1 bar = 240 / tempo s).
 `language` (`fr` | `en` | null = the brand's) sets the on-screen language: the frame passes
 `{ ...kit, language }` to scenes, and the agent's turn context names it.
@@ -501,7 +511,8 @@ patch records nothing. A failed snapshot is logged and the write stands. While a
 runs (`ChatService.busy(id)`, checked before and after the write), these versions are skipped, and restore, undo, redo
 and project/scene deletion answer 409, checked again once their turn behind the steps comes: the agent's own version would otherwise record someone else's change.
 `restore()` first snapshots unsaved changes (`external`), writes the files (and for a scene restore: only that
-scene file + its duration), then records a `restore` version. Nothing is ever deleted and objects are stored as
+scene file, its duration, voice-over and the transition into it, left as is when the scene is now first or the version's
+cannot be read), then records a `restore` version. A version that only changes a transition is listed under that scene. Nothing is ever deleted and objects are stored as
 is: each editor write adds a full copy of every file it changed plus a manifest of all tracked files, and the history
 travels in project exports.
 

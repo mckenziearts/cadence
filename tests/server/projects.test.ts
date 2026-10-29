@@ -19,7 +19,7 @@ import {
   writeFileAtomic,
   writeFileInside,
 } from '../../server/util';
-import type { SceneVoiceOver, VoiceOverSettings } from '../../src/shared/types';
+import type { ProjectState, SceneTransition, SceneVoiceOver, VoiceOverSettings } from '../../src/shared/types';
 import { makeRoot, nextEvent, rejectsWithStatus, SCENE_TEMPLATE_CODE, type TestRoot } from './helpers';
 
 let t: TestRoot;
@@ -36,6 +36,7 @@ afterEach(async () => {
 });
 
 const base = { brand: null, formats: ['16:9' as const], fps: 60 };
+const fileOf = async (dir: string) => JSON.parse(await fs.readFile(path.join(dir, 'project.json'), 'utf8'));
 
 describe('create', () => {
   test('without template: one branded title scene, folders and art direction from the brand', async () => {
@@ -294,6 +295,173 @@ test('withLock is re-entrant, so store methods can run inside a critical section
   assert.equal(state.scenes[0].duration, 2);
 });
 
+describe('transitions', () => {
+  /** Scenes titre (4 s), b (3 s) and c (5 s), as in the plan's design. */
+  async function threeScenes() {
+    const p = await store.create({ ...base, name: 'Coupes' });
+    await store.updateScene(p.id, 'titre', { duration: 4 });
+    await store.createScene(p.id, { name: 'B', duration: 3, code: 'export default () => null;\n' });
+    await store.createScene(p.id, { name: 'C', duration: 5, code: 'export default () => null;\n' });
+    return p;
+  }
+  const starts = (p: ProjectState) => p.scenes.map((s) => [s.id, s.start]);
+
+  test('a transition is stored as declared; anything but fade, slide, wipe or flip within 0.1-5 s is refused, translated', async () => {
+    const p = await threeScenes();
+    await store.setTransition(p.id, 'b', { kind: 'fade', duration: 0.5004 });
+    await store.setTransition(p.id, 'c', { kind: 'slide', duration: 1 });
+    let file = await fileOf(p.dir);
+    assert.deepEqual(file.scenes[1].transition, { kind: 'fade', duration: 0.5 });
+    assert.deepEqual(file.scenes[2].transition, { kind: 'slide', direction: 'left', duration: 1 }, 'left by default');
+    await store.setTransition(p.id, 'c', { kind: 'wipe', direction: 'up', duration: 0.1 });
+    await store.setTransition(p.id, 'b', { kind: 'flip', direction: 'right', duration: 5 });
+    file = await fileOf(p.dir);
+    assert.deepEqual(file.scenes[2].transition, { kind: 'wipe', direction: 'up', duration: 0.1 });
+    assert.deepEqual(file.scenes[1].transition, { kind: 'flip', direction: 'right', duration: 5 });
+
+    const refusals: [unknown, RegExp][] = [
+      [{ kind: 'iris', duration: 1 }, /^Transition invalide : kind \(fade, slide, wipe ou flip\)$/],
+      [{ duration: 1 }, /kind \(fade, slide, wipe ou flip\)/],
+      [{ kind: 'fade', duration: 0.09 }, /^Transition invalide : duration \(entre 0,1 et 5 s\)$/],
+      [{ kind: 'fade', duration: 5.001 }, /duration \(entre 0,1 et 5 s\)/],
+      [{ kind: 'fade', duration: '1' }, /duration \(entre 0,1 et 5 s\)/],
+      [{ kind: 'fade', duration: Number.NaN }, /duration \(entre 0,1 et 5 s\)/],
+      [{ kind: 'fade', direction: 'left', duration: 1 }, /^Transition invalide : direction \(un fondu n'a pas de direction\)$/],
+      [{ kind: 'wipe', direction: 'diagonal', duration: 1 }, /direction \(left, right, up ou down\)/],
+      ['fade', /^Transition invalide : racine \(un objet \{ kind, direction\?, duration \}\)$/],
+    ];
+    for (const [transition, message] of refusals) {
+      await rejectsWithStatus(store.setTransition(p.id, 'c', transition as SceneTransition), 400, message);
+    }
+    assert.deepEqual((await fileOf(p.dir)).scenes[2].transition, { kind: 'wipe', direction: 'up', duration: 0.1 });
+
+    // A hand-edited project.json is read through the same schema.
+    file.scenes[2].transition = { kind: 'iris', duration: 1 };
+    await fs.writeFile(path.join(p.dir, 'project.json'), JSON.stringify(file));
+    await rejectsWithStatus(store.get(p.id), 500, /project\.json invalide.*fade, slide, wipe ou flip/);
+  });
+
+  test('setTransition writes under the project lock; null removes it; the first scene and unknown scenes are refused', async () => {
+    const p = await threeScenes();
+    await Promise.all([
+      store.setTransition(p.id, 'b', { kind: 'fade', duration: 0.5 }),
+      store.setTransition(p.id, 'c', { kind: 'wipe', direction: 'down', duration: 1 }),
+    ]);
+    assert.deepEqual(
+      (await fileOf(p.dir)).scenes.map((s: { transition?: unknown }) => s.transition),
+      [undefined, { kind: 'fade', duration: 0.5 }, { kind: 'wipe', direction: 'down', duration: 1 }],
+    );
+    await rejectsWithStatus(store.setTransition(p.id, 'titre', { kind: 'fade', duration: 0.5 }), 400, /première scène/);
+    await rejectsWithStatus(store.setTransition(p.id, 'absente', { kind: 'fade', duration: 0.5 }), 404);
+    await rejectsWithStatus(store.setTransition(p.id, 'absent', null), 404);
+
+    const state = await store.setTransition(p.id, 'b', null);
+    assert.equal(state.scenes[1].transition, undefined);
+    assert.ok(!('transition' in (await fileOf(p.dir)).scenes[1]), 'no key left in project.json');
+    await store.setTransition(p.id, 'titre', null);
+  });
+
+  test('get() starts a scene earlier by its transition, clamped to half of either neighbour; the video gets shorter', async () => {
+    const p = await threeScenes();
+    let state = await store.setTransition(p.id, 'b', { kind: 'fade', duration: 0.5 });
+    assert.deepEqual(starts(state), [
+      ['titre', 0],
+      ['b', 3.5],
+      ['c', 6.5],
+    ]);
+    assert.equal(state.duration, 11.5);
+    assert.deepEqual(state.scenes[1].transition, { kind: 'fade', duration: 0.5 });
+    assert.deepEqual(state.scenes[1].declaredTransition, { kind: 'fade', duration: 0.5 });
+    assert.equal(state.scenes[2].transition, undefined);
+
+    // Half of b (3 s) is shorter than the 5 s declared, and than half of c.
+    state = await store.setTransition(p.id, 'c', { kind: 'slide', direction: 'up', duration: 5 });
+    assert.deepEqual(state.scenes[2].transition, { kind: 'slide', direction: 'up', duration: 1.5 });
+    assert.deepEqual(state.scenes[2].declaredTransition, { kind: 'slide', direction: 'up', duration: 5 });
+    assert.deepEqual(starts(state), [
+      ['titre', 0],
+      ['b', 3.5],
+      ['c', 5],
+    ]);
+    assert.equal(state.duration, 10);
+
+    // A neighbour shortened later clamps the effective value only: nothing changes on disk.
+    state = await store.updateScene(p.id, 'titre', { duration: 0.401 });
+    assert.deepEqual(state.scenes[1].transition, { kind: 'fade', duration: 0.2 }, 'half of 0.401 s, rounded down');
+    assert.deepEqual(starts(state), [
+      ['titre', 0],
+      ['b', 0.201],
+      ['c', 1.701],
+    ]);
+    assert.equal(state.duration, 6.701);
+    assert.equal((await fileOf(p.dir)).scenes[1].transition.duration, 0.5);
+    assert.equal((await store.list()).find((s) => s.id === p.id)!.duration, 6.701, 'the project list agrees');
+
+    // Half of the incoming scene clamps it too.
+    state = await store.updateScene(p.id, 'c', { duration: 1 });
+    assert.deepEqual(state.scenes[2].transition, { kind: 'slide', direction: 'up', duration: 0.5 });
+    assert.equal(state.duration, 3.701);
+  });
+
+  test('never lets the two cuts around a scene take more than the scene, even at an odd ms duration', async () => {
+    const p = await threeScenes();
+    await store.setTransition(p.id, 'b', { kind: 'fade', duration: 5 });
+    await store.setTransition(p.id, 'c', { kind: 'fade', duration: 5 });
+    for (const middle of [3.001, 2.345, 0.101]) {
+      const state = await store.updateScene(p.id, 'b', { duration: middle });
+      const [a, b, c] = state.scenes;
+      assert.ok(c.start >= a.start + a.duration, `${middle} s: c starts at ${c.start}, before titre ends`);
+      assert.ok(b.transition!.duration + c.transition!.duration <= b.duration, `${middle} s: both cuts fit in b`);
+    }
+    assert.deepEqual(
+      (await store.get(p.id)).scenes[2].transition,
+      { kind: 'fade', duration: 0.05 },
+      'half of 0.101 s, rounded down',
+    );
+  });
+
+  test('a project without transitions keeps the starts and duration it had', async () => {
+    const dir = path.join(t.config.projectsDir, 'images');
+    await fs.mkdir(dir);
+    await fs.copyFile(path.join(import.meta.dirname, '../fixtures/projects/frames/project.json'), path.join(dir, 'project.json'));
+    const p = await store.get('images');
+    assert.deepEqual(
+      p.scenes.map((s) => s.start),
+      [0, 1, 1.5, 2, 3, 4],
+    );
+    assert.equal(p.duration, 5);
+    assert.ok(p.scenes.every((s) => !('transition' in s) && !('declaredTransition' in s)));
+  });
+
+  test('duplicate copies the transition, a move keeps it (inactive first), a delete leaves the next one as is', async () => {
+    const p = await threeScenes();
+    const wipe = { kind: 'wipe', direction: 'right', duration: 0.5 } as const;
+    await store.setTransition(p.id, 'b', wipe);
+    const copy = await store.duplicateScene(p.id, 'b');
+    assert.deepEqual(copy.transition, wipe);
+    assert.deepEqual((await fileOf(p.dir)).scenes[2].transition, wipe);
+
+    let state = await store.reorderScenes(p.id, ['b', 'titre', copy.id, 'c']);
+    assert.equal(state.scenes[0].transition, undefined, 'the first scene draws no transition');
+    assert.deepEqual(state.scenes[0].declaredTransition, wipe);
+    assert.deepEqual((await fileOf(p.dir)).scenes[0].transition, wipe, 'kept on disk');
+    assert.deepEqual(starts(state), [
+      ['b', 0],
+      ['titre', 3],
+      [copy.id, 6.5],
+      ['c', 9.5],
+    ]);
+
+    state = await store.deleteScene(p.id, 'titre');
+    assert.deepEqual(state.scenes[1].transition, wipe);
+    assert.deepEqual(starts(state), [
+      ['b', 0],
+      [copy.id, 2.5],
+      ['c', 5.5],
+    ]);
+  });
+});
+
 describe('code generations', () => {
   test('syncCode bumps the generation once per real change and invalidates project + brand dirs', async () => {
     const invalidated: string[][] = [];
@@ -370,7 +538,6 @@ describe('speakers and script lines', () => {
   const camille = { id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium', color: '#ff2e88' };
   const leo = { id: 'leo', name: 'Léo', voice: 'fr_FR-tom-medium' };
   const refused = (e: unknown) => e instanceof HttpError && e.status === 400;
-  const fileOf = async (dir: string) => JSON.parse(await fs.readFile(path.join(dir, 'project.json'), 'utf8'));
 
   test('speakers are written with the voice settings, and an empty list writes no key', async () => {
     const p = await store.create({ ...base, name: 'Dialogue' });

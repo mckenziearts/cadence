@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   ID_PATTERN,
   type ChatKey,
+  type SceneTransition,
   type SceneVoiceOver,
   type VersionEntry,
   type VersionSource,
@@ -10,7 +11,7 @@ import {
 } from '../../src/shared/types';
 import type { BrandStore, ProjectStore, VersionStore } from '../contracts';
 import { m } from '../i18n';
-import { parseSceneVoiceOver, unknownSpeaker } from './projects';
+import { parseSceneVoiceOver, sceneTransitionSchema, unknownSpeaker } from './projects';
 import {
   HttpError,
   KeyedMutex,
@@ -87,12 +88,15 @@ export class FileVersionStore implements VersionStore {
           if (voiceOver !== undefined && JSON.stringify(voiceOver) !== JSON.stringify(scene.voiceOver ?? null)) {
             patch.voiceOver = voiceOver;
           }
+          // The cut into the scene; a scene now first takes none, and its declared one stays as is.
+          const transition = old && scene !== current.scenes[0] ? snapshotTransition(old.transition) : undefined;
 
           await refuseLinkedFolders(dir, rel);
           const code = await this.readObject(projectId, manifest[rel]);
           await this.record(projectId, { label: m().api.versions.unsaved, source: 'external' }, false);
           await writeFileInside(dir, path.join(dir, rel), code);
           if (Object.keys(patch).length) await this.store.updateScene(projectId, sceneId, patch);
+          if (transition !== undefined) await this.store.setTransition(projectId, sceneId, transition);
           return this.record(
             projectId,
             { label: m().api.versions.restoredScene(scene.name, versionId), source: 'restore' },
@@ -217,7 +221,10 @@ export class FileVersionStore implements VersionStore {
     return entry;
   }
 
-  /** Scenes whose file changed, plus scenes whose duration or voice-over changed (or that appeared or went) in project.json. */
+  /**
+   * Scenes whose file changed, plus scenes whose duration, voice-over or transition changed (or that appeared or went)
+   * in project.json.
+   */
   private async changedScenes(
     projectId: string,
     changed: string[],
@@ -234,8 +241,8 @@ export class FileVersionStore implements VersionStore {
       const b = sceneFields(files.get('project.json') ?? null);
       for (const id of new Set([...a.keys(), ...b.keys()])) {
         const [x, y] = [a.get(id), b.get(id)];
-        if (!x || !y || x.duration !== y.duration || JSON.stringify(x.voiceOver ?? null) !== JSON.stringify(y.voiceOver ?? null))
-          ids.add(id);
+        const differ = (key: 'voiceOver' | 'transition') => JSON.stringify(x?.[key] ?? null) !== JSON.stringify(y?.[key] ?? null);
+        if (!x || !y || x.duration !== y.duration || differ('voiceOver') || differ('transition')) ids.add(id);
       }
     }
     return [...ids].sort();
@@ -374,7 +381,7 @@ async function refuseLinkedFolders(dir: string, rel: string): Promise<void> {
   }
 }
 
-type SceneFields = { duration?: unknown; voiceOver?: unknown };
+type SceneFields = { duration?: unknown; voiceOver?: unknown; transition?: unknown };
 
 /** The brand a project.json snapshot names (null when it names none or cannot be read). */
 function brandOf(data: Buffer | null): string | null {
@@ -386,13 +393,19 @@ function brandOf(data: Buffer | null): string | null {
   }
 }
 
-/** Each scene id with its duration and voice-over in a project.json snapshot (empty when absent or unreadable). */
+/**
+ * Each scene id with its duration, voice-over and transition in a project.json snapshot (empty when absent or
+ * unreadable).
+ */
 function sceneFields(data: Buffer | null): Map<string, SceneFields> {
   try {
     const scenes = (JSON.parse(data?.toString('utf8') ?? 'null') as { scenes?: unknown } | null)?.scenes;
     return new Map(
       Array.isArray(scenes)
-        ? scenes.map((s: { id?: string } & SceneFields) => [String(s?.id), { duration: s?.duration, voiceOver: s?.voiceOver }])
+        ? scenes.map((s: { id?: string } & SceneFields) => [
+            String(s?.id),
+            { duration: s?.duration, voiceOver: s?.voiceOver, transition: s?.transition },
+          ])
         : [],
     );
   } catch {
@@ -412,4 +425,11 @@ function snapshotVoiceOver(value: unknown, settings: VoiceOverSettings): SceneVo
   } catch {
     return undefined;
   }
+}
+
+/** A snapshot's transition as the store accepts it today: null when it had none, undefined when it cannot be read. */
+function snapshotTransition(value: unknown): SceneTransition | null | undefined {
+  if (value === undefined || value === null) return null;
+  const parsed = sceneTransitionSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }

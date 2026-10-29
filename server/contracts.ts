@@ -44,6 +44,7 @@ import type {
   RenderRequest,
   RepoListing,
   SceneState,
+  SceneTransition,
   SceneTemplateMeta,
   SceneVoiceOver,
   SceneVoiceOverInput,
@@ -156,6 +157,8 @@ export interface ProjectStore {
   reorderScenes(id: string, sceneIds: string[]): Promise<ProjectState>;
   /** Set scene durations in one write (used by snap-to-music). */
   setDurations(id: string, durations: Record<string, number>): Promise<ProjectState>;
+  /** The cut into the scene; null removes it. Refused (400) on the first scene, whose transition draws nothing. */
+  setTransition(id: string, sceneId: string, transition: SceneTransition | null): Promise<ProjectState>;
   setMusic(id: string, music: MusicSettings | null): Promise<ProjectState>;
   readArtDirection(id: string): Promise<string>;
   writeArtDirection(id: string, text: string): Promise<void>;

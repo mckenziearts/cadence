@@ -121,6 +121,14 @@ export default {
     tempo: (value: unknown) => `Tempo invalide : ${value} (entre 30 et 300 BPM)`,
     captions: (value: unknown) => `Sous-titres invalides : ${String(value)} (true ou false)`,
     duration: (value: unknown) => `Durée invalide : ${value}`,
+    transition: (issues: string) => `Transition invalide : ${issues}`,
+    transitionObject: 'un objet { kind, direction?, duration }',
+    transitionKind: 'fade, slide, wipe ou flip',
+    transitionDirection: 'left, right, up ou down',
+    transitionDuration: (min: number, max: number) =>
+      `entre ${String(min).replace('.', ',')} et ${String(max).replace('.', ',')} s`,
+    fadeDirection: "un fondu n'a pas de direction",
+    firstSceneTransition: "La première scène n'a pas de transition : aucune scène ne la précède",
     /** Path of a validation issue on the whole file. */
     root: 'racine',
     /** art-direction.md of a new project whose brand has none. */

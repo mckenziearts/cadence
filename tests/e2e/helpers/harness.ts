@@ -147,6 +147,7 @@ export class FixtureProjectStore implements ProjectStore {
   deleteScene = unused;
   reorderScenes = unused;
   setDurations = unused;
+  setTransition = unused;
   setMusic = unused;
   readArtDirection = unused;
   writeArtDirection = unused;

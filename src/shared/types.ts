@@ -97,6 +97,21 @@ export interface SceneFile {
   template?: string | null;
   /** What the project's voice says over this scene; absent = no voice-over. */
   voiceOver?: SceneVoiceOver;
+  /** The cut into this scene, as declared; the first scene's has no effect. Absent = a hard cut. */
+  transition?: SceneTransition;
+}
+
+export const TRANSITION_KINDS = ['fade', 'slide', 'wipe', 'flip'] as const;
+export type TransitionKind = (typeof TRANSITION_KINDS)[number];
+export const TRANSITION_DIRECTIONS = ['left', 'right', 'up', 'down'] as const;
+export type TransitionDirection = (typeof TRANSITION_DIRECTIONS)[number];
+
+/** The incoming scene overlaps the previous one by `duration` seconds (0.1-5, ms precision). */
+export interface SceneTransition {
+  kind: TransitionKind;
+  /** Slide, wipe and flip only: written as `left` when sent without one. A fade has none. */
+  direction?: TransitionDirection;
+  duration: number;
 }
 
 /** A scene's voice-over: spoken sentence by sentence by the project's voice, from `at`. */
@@ -284,8 +299,15 @@ export interface ProjectFile {
 
 export interface SceneState extends SceneFile {
   index: number;
-  /** Global start time in the video, seconds. */
+  /** Global start time in the video, seconds: the previous scene's end minus this scene's transition. */
   start: number;
+  /**
+   * The cut as drawn: the declared duration clamped to half of this scene and of the previous one, rounded to the ms.
+   * Absent on the first scene and without a declared transition.
+   */
+  transition?: SceneTransition;
+  /** SceneFile.transition, as project.json declares it. */
+  declaredTransition?: SceneTransition;
   /** Absolute path of `scenes/<id>.tsx`. */
   file: string;
   /** Module URL the frame page imports (e.g. `/@fs/abs/path/scenes/intro.tsx`), without cache-busting query. */
@@ -307,7 +329,7 @@ export interface ProjectState {
   /** See ProjectFile.language (null = the brand's language). */
   language: 'fr' | 'en' | null;
   scenes: SceneState[];
-  /** Sum of scene durations, seconds. */
+  /** Sum of scene durations minus the transitions' overlaps, seconds. */
   duration: number;
   music: MusicSettings | null;
   /** URL (editor origin) the browser can stream the audio from, or null. */

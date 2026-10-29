@@ -118,6 +118,13 @@ export default {
     tempo: (value: unknown) => `Invalid tempo: ${value} (between 30 and 300 BPM)`,
     captions: (value: unknown) => `Invalid captions setting: ${String(value)} (true or false)`,
     duration: (value: unknown) => `Invalid duration: ${value}`,
+    transition: (issues: string) => `Invalid transition: ${issues}`,
+    transitionObject: 'an object { kind, direction?, duration }',
+    transitionKind: 'fade, slide, wipe or flip',
+    transitionDirection: 'left, right, up or down',
+    transitionDuration: (min: number, max: number) => `between ${min} and ${max} s`,
+    fadeDirection: 'a fade has no direction',
+    firstSceneTransition: 'The first scene has no transition: no scene comes before it',
     root: 'root',
     artDirection: `# Art direction
 

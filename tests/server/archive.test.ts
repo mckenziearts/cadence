@@ -349,6 +349,18 @@ test('import round trip: two projects and their shared brand come back byte for 
   assert.deepEqual(await stagingLeft(), []);
 });
 
+test('export then import keeps the transitions of a project', async () => {
+  await store.createScene('libre', { name: 'Suite', duration: 2, code: 'export default () => null;\n' });
+  const flip = { kind: 'flip', direction: 'down', duration: 0.75 } as const;
+  await store.setTransition('libre', 'suite', flip);
+  const archive = await exported(['libre']);
+  await fs.rm(store.dir('libre'), { recursive: true });
+  await importBuffer(archive);
+  const [, suite] = (await store.get('libre')).scenes;
+  assert.deepEqual(suite.declaredTransition, flip);
+  assert.deepEqual(suite.transition, flip);
+});
+
 test('stylesheets importing their own files and the archive brand by path pass, and leave the frame build working', async () => {
   await writeCompleteBrand(t.root, 'orbit');
   await write('brands/orbit/extras.css', '.extra {}\n');
