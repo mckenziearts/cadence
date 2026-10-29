@@ -29,6 +29,7 @@ import type {
   MusicGridData,
   MusicSettings,
   MusicSettingsPatch,
+  MusicSpectrum,
   NetworkAccount,
   NetworkId,
   ProjectFile,
@@ -172,8 +173,8 @@ export interface ProjectStore {
   withLock<T>(id: string, fn: () => Promise<T>): Promise<T>;
   /** Injected by server/index.ts: called with the project dir (and brand dir) before 'code-changed' is emitted. */
   setModuleInvalidator(fn: (dirs: string[]) => void): void;
-  /** Injected by server/index.ts: resolves the music grid for ProjectState.musicGrid. */
-  setMusicGridProvider(fn: (id: string) => Promise<MusicGridData | null>): void;
+  /** Injected by server/index.ts: resolves ProjectState.musicGrid and ProjectState.music.spectrum. */
+  setMusicGridProvider(fn: (id: string) => Promise<AnalysedMusic | null>): void;
   /** Injected by server/index.ts: resolves the voice-over fields of ProjectState from what is already generated. */
   setVoiceOverProvider(fn: VoiceOverProvider): void;
   /**
@@ -517,12 +518,20 @@ export interface RenderService {
 
 // server/music/service.ts: export class LocalMusicService implements MusicService
 //   constructor(deps: { config: CadenceConfig; store: ProjectStore; hub: Hub })
-// Tracks live in projects/<id>/music/; analysis cached next to them as <file>.analysis.json.
+// Tracks live in projects/<id>/music/; analysis cached next to them as <file>.analysis.json, band spectrum bytes as
+// <file>.spectrum.bin.
 
 /** An uploaded file: its bytes as they arrive, so a large one is written to disk without being held in memory. */
 export interface Upload {
   name: string;
   body: AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
+}
+
+/** What the analysis of the selected track gives the project state. */
+export interface AnalysedMusic {
+  grid: MusicGridData;
+  /** Null when the spectrum file could not be written. */
+  spectrum: MusicSpectrum | null;
 }
 
 export interface MusicService {
@@ -534,8 +543,8 @@ export interface MusicService {
   update(projectId: string, patch: MusicSettingsPatch): Promise<ProjectState>;
   remove(projectId: string): Promise<ProjectState>;
   analysis(projectId: string): Promise<MusicAnalysis | null>;
-  /** Analysis with the project's overrides applied (bpm, beatsPerBar, barOffset, gridOffset). */
-  grid(projectId: string): Promise<MusicGridData | null>;
+  /** Analysis with the project's overrides applied (bpm, beatsPerBar, barOffset, gridOffset), and its spectrum file. */
+  grid(projectId: string): Promise<AnalysedMusic | null>;
   /**
    * Move every cut to the nearest grid point (video time); each scene keeps >= 0.4 s.
    * keepBars: keep each scene's bar count (round(duration × tempo / 240), at least 1) and lay the cuts on the

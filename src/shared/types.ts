@@ -264,6 +264,24 @@ export interface MusicSettings {
   gridOffset?: number;
 }
 
+/**
+ * Band levels of the track, frame-major: byte `frame * bands + band`, frame i at i / rate seconds of TRACK time,
+ * 0..255 for -80..0 dB. Bands are log-spaced from 40 Hz to 11 kHz.
+ */
+export interface MusicSpectrum {
+  bands: number;
+  rate: number;
+  /** Path relative to the project folder, e.g. `music/track.mp3.spectrum.bin`. */
+  file: string;
+  /** Bytes in the file. */
+  size: number;
+}
+
+export interface ProjectMusic extends MusicSettings {
+  /** null without an analysis yet (running, failed or never started). */
+  spectrum: MusicSpectrum | null;
+}
+
 /** PATCH /api/projects/:id/music body. null resets an override to the detected value. */
 export interface MusicSettingsPatch {
   start?: number;
@@ -331,7 +349,7 @@ export interface ProjectState {
   scenes: SceneState[];
   /** Sum of scene durations minus the transitions' overlaps, seconds. */
   duration: number;
-  music: MusicSettings | null;
+  music: ProjectMusic | null;
   /** URL (editor origin) the browser can stream the audio from, or null. */
   musicUrl: string | null;
   /** Beat grid after manual overrides, in TRACK seconds; null without music or while analysing. */
@@ -425,7 +443,7 @@ export interface CreateSceneInput {
 
 /** Output of the music analyzer. All times are seconds of TRACK time. */
 export interface MusicAnalysis {
-  version: 2;
+  version: 3;
   duration: number;
   sampleRate: number;
   bpm: number;
@@ -441,6 +459,8 @@ export interface MusicAnalysis {
   accents: { t: number; strength: number }[];
   /** Evenly spaced peak amplitudes 0..1 across the whole track (about 1000 points), for drawing. */
   waveform: number[];
+  /** Layout of the band spectrum stored beside the analysis: `frames` rows of `bands` bytes, `rate` rows per second. */
+  spectrum: { bands: number; rate: number; frames: number };
   /** 0..1, how regular the beat grid is. */
   confidence: number;
 }

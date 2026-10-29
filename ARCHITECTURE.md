@@ -324,7 +324,7 @@ projects/<id>/
   scenes/<scene>.tsx    one component per scene (default export)
   components/           shared components/constants for this project (relative imports)
   assets/               images, SVGs, fonts; assets/refs/ = reference screenshots for the agent
-  music/                audio tracks + <file>.analysis.json caches
+  music/                audio tracks + <file>.analysis.json caches and <file>.spectrum.bin band levels
   renders/              exported MP4s (gitignored)
   .cadence/             internal, gitignored: chats/ (project.json, scene-<id>.json, archive/), versions/,
                         thumbs/ (<scene>-<16x9>-<t>-g<run>.<gen>-<sig>.jpg), frames/ (what the agent rendered),

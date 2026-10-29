@@ -3,10 +3,10 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
-import type { CadenceConfig, Hub, ProjectStore } from '../../server/contracts';
+import type { AnalysedMusic, CadenceConfig, Hub, ProjectStore } from '../../server/contracts';
 import { LocalMusicService } from '../../server/music/service';
 import { HttpError, KeyedMutex, roundMs } from '../../server/util';
-import type { MusicAnalysis, MusicGridData, MusicSettings, ProjectFile, ProjectState, ServerEvent } from '../../src/shared/types';
+import type { MusicAnalysis, MusicSettings, ProjectFile, ProjectState, ServerEvent } from '../../src/shared/types';
 import { encodeWav, hasFfmpeg, steadyAnalysis, synthTrack, tempDir } from './synth';
 
 const ID = 'demo';
@@ -15,7 +15,7 @@ const ID = 'demo';
 class FakeStore {
   readonly events = new EventEmitter();
   readonly durationWrites: Record<string, number>[] = [];
-  provider: (id: string) => Promise<MusicGridData | null> = async () => null;
+  provider: (id: string) => Promise<AnalysedMusic | null> = async () => null;
   private mutex = new KeyedMutex();
 
   constructor(
@@ -45,6 +45,7 @@ class FakeStore {
       return scene;
     });
     const { music } = this.data;
+    const analysed = music ? await this.provider(id) : null;
     return {
       ...this.data,
       language: this.data.language ?? null,
@@ -52,8 +53,9 @@ class FakeStore {
       dir: this.dir(id),
       scenes,
       duration: roundMs(start),
+      music: music ? { ...music, spectrum: analysed?.spectrum ?? null } : null,
       musicUrl: null,
-      musicGrid: music ? await this.provider(id) : null,
+      musicGrid: analysed?.grid ?? null,
       voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
       voiceOverUrl: null,
       voiceOverLines: [],
@@ -128,8 +130,12 @@ async function cachedTrack(musicDir: string, name: string, analysis: MusicAnalys
   await fs.writeFile(file, Buffer.from(`fake audio ${name}`));
   const stat = await fs.stat(file);
   await fs.writeFile(`${file}.analysis.json`, JSON.stringify({ size: stat.size, mtimeMs: stat.mtimeMs, analysis }));
+  await fs.writeFile(`${file}.spectrum.bin`, Buffer.alloc(analysis.spectrum.frames * analysis.spectrum.bands));
   return file;
 }
+
+/** What ProjectState.music.spectrum says of a cached steadyAnalysis() track. */
+const steadySpectrum = (file: string) => ({ bands: 24, rate: 25, file: `${file}.spectrum.bin`, size: 851 * 24 });
 
 async function rejects(promise: Promise<unknown>, status: number, message: RegExp) {
   await assert.rejects(promise, (e: unknown) => e instanceof HttpError && e.status === status && message.test(e.message));
@@ -140,7 +146,7 @@ test('select, grid with overrides, validated updates, remove keeps the files', a
   await cachedTrack(musicDir, 'theme.mp3');
 
   let state = await music.select(ID, 'music/theme.mp3');
-  assert.deepEqual(state.music, { file: 'music/theme.mp3', start: 0, volume: 1 });
+  assert.deepEqual(state.music, { file: 'music/theme.mp3', start: 0, volume: 1, spectrum: steadySpectrum('music/theme.mp3') });
   assert.equal(state.musicGrid?.bpm, 120);
   assert.equal(hub.count('analyzing'), 0, 'a fresh cache is not analysed again');
   assert.deepEqual(await music.tracks(ID), [{ file: 'music/theme.mp3', size: 20, analysed: true }]);
@@ -155,6 +161,7 @@ test('select, grid with overrides, validated updates, remove keeps the files', a
     beatsPerBar: 3,
     barOffset: 2,
     gridOffset: 0.012,
+    spectrum: steadySpectrum('music/theme.mp3'),
   });
   assert.equal(state.musicGrid?.bpm, 100);
   assert.equal(state.musicGrid?.beatsPerBar, 3);
@@ -169,7 +176,13 @@ test('select, grid with overrides, validated updates, remove keeps the files', a
   state = await music.update(ID, { beatsPerBar: 4 });
   assert.equal(state.music?.barOffset, 2);
   state = await music.update(ID, { bpm: null, beatsPerBar: null, barOffset: null, gridOffset: null });
-  assert.deepEqual(state.music, { file: 'music/theme.mp3', start: 1.235, volume: 0.5, bpm: null });
+  assert.deepEqual(state.music, {
+    file: 'music/theme.mp3',
+    start: 1.235,
+    volume: 0.5,
+    bpm: null,
+    spectrum: steadySpectrum('music/theme.mp3'),
+  });
 
   // Selecting the selected track keeps its settings.
   assert.equal((await music.select(ID, 'theme.mp3')).music?.start, 1.235);
@@ -182,6 +195,7 @@ test('select, grid with overrides, validated updates, remove keeps the files', a
   assert.equal(await music.analysis(ID), null);
   await fs.access(path.join(musicDir, 'theme.mp3'));
   await fs.access(path.join(musicDir, 'theme.mp3.analysis.json'));
+  await fs.access(path.join(musicDir, 'theme.mp3.spectrum.bin'));
   await rejects(music.update(ID, { volume: 1 }), 400, /pas de musique/);
   assert.equal(store.durationWrites.length, 0);
 });
@@ -292,7 +306,7 @@ test(
 
     const ready = hub.next('ready');
     let state = await music.upload(ID, { name: 'Mon Morceau (final).WAV', body: [wav] });
-    assert.deepEqual(state.music, { file: 'music/mon-morceau-final.wav', start: 0, volume: 1 });
+    assert.deepEqual(state.music, { file: 'music/mon-morceau-final.wav', start: 0, volume: 1, spectrum: null });
     assert.equal(state.musicGrid, null, 'no grid while analysing');
     const [a1, a2] = await Promise.all([music.analysis(ID), music.analysis(ID), music.grid(ID)]);
     await ready;
@@ -303,8 +317,8 @@ test(
     const file = path.join(musicDir, 'mon-morceau-final.wav');
     const stat = await fs.stat(file);
     const cache = JSON.parse(await fs.readFile(`${file}.analysis.json`, 'utf8'));
-    assert.deepEqual([cache.size, cache.mtimeMs, cache.analysis.version], [stat.size, stat.mtimeMs, 2]);
-    assert.ok((await music.grid(ID))?.downbeats.length);
+    assert.deepEqual([cache.size, cache.mtimeMs, cache.analysis.version], [stat.size, stat.mtimeMs, 3]);
+    assert.ok((await music.grid(ID))?.grid.downbeats.length);
 
     // Re-uploading the same bytes reuses the file and keeps the settings; other bytes never replace it.
     await music.update(ID, { start: 2 });
@@ -312,7 +326,7 @@ test(
     assert.equal(state.music?.start, 2);
     const second = hub.next('ready');
     state = await music.upload(ID, { name: 'Mon Morceau (final).wav', body: [Buffer.concat([wav, Buffer.alloc(2)])] });
-    assert.deepEqual(state.music, { file: 'music/mon-morceau-final-2.wav', start: 0, volume: 1 });
+    assert.deepEqual(state.music, { file: 'music/mon-morceau-final-2.wav', start: 0, volume: 1, spectrum: null });
     await second;
     const names = await fs.readdir(musicDir);
     assert.deepEqual(names.filter((n) => n.endsWith('.wav')).sort(), ['mon-morceau-final-2.wav', 'mon-morceau-final.wav']);
@@ -324,6 +338,96 @@ test(
     await fs.utimes(file, new Date(), new Date(Date.now() + 5000));
     assert.ok(await music.analysis(ID));
     assert.equal(hub.count('analyzing'), before + 1);
+  },
+);
+
+test(
+  'a version 2 cache is analysed again once; the spectrum is written beside the analysis',
+  { skip: !hasFfmpeg && 'ffmpeg introuvable' },
+  async () => {
+    const { store, music, musicDir, hub } = await setup();
+    const track = synthTrack({ bpm: 120, beatsPerBar: 4, bars: 4, kick: [0], hat: 0.5 });
+    await fs.mkdir(musicDir, { recursive: true });
+    const file = path.join(musicDir, 'theme.wav');
+    await fs.writeFile(file, encodeWav(track.samples, track.sampleRate));
+    const stat = await fs.stat(file);
+    const { spectrum: _, ...v2 } = steadyAnalysis();
+    await fs.writeFile(
+      `${file}.analysis.json`,
+      JSON.stringify({ size: stat.size, mtimeMs: stat.mtimeMs, analysis: { ...v2, version: 2 } }),
+    );
+
+    const ready = hub.next('ready');
+    let state = await music.select(ID, 'music/theme.wav');
+    assert.deepEqual([state.music?.spectrum, state.musicGrid], [null, null], 'no spectrum while the analysis runs');
+    await ready;
+
+    const cache = JSON.parse(await fs.readFile(`${file}.analysis.json`, 'utf8'));
+    assert.equal(cache.analysis.version, 3);
+    const bytes = await fs.readFile(`${file}.spectrum.bin`);
+    assert.equal(bytes.length, cache.analysis.spectrum.frames * 24);
+    assert.ok(
+      bytes.some((v) => v > 0),
+      'the drums show in the spectrum',
+    );
+    state = await store.get(ID);
+    assert.deepEqual(state.music?.spectrum, { bands: 24, rate: 25, file: 'music/theme.wav.spectrum.bin', size: bytes.length });
+    assert.ok(state.musicGrid);
+    await store.get(ID);
+    assert.equal(hub.count('analyzing'), 1, 'analysed once');
+
+    // After a restart the version 3 cache on disk is fresh.
+    const restarted = new LocalMusicService({
+      config: { ffmpegPath: 'ffmpeg' } as CadenceConfig,
+      store: store as unknown as ProjectStore,
+      hub: hub as unknown as Hub,
+    });
+    assert.equal((await restarted.grid(ID))?.spectrum?.size, bytes.length);
+    assert.equal(hub.count('analyzing'), 1);
+  },
+);
+
+test(
+  'an analysis whose spectrum file cannot be written is not cached on disk',
+  { skip: !hasFfmpeg && 'ffmpeg introuvable' },
+  async (t) => {
+    t.mock.method(console, 'warn', () => undefined);
+    const { store, music, musicDir, hub } = await setup();
+    const track = synthTrack({ bpm: 120, beatsPerBar: 4, bars: 4, kick: [0], hat: 0.5 });
+    const file = path.join(musicDir, 'theme.wav');
+    // A folder with content where the spectrum goes: the rename onto it fails.
+    await fs.mkdir(`${file}.spectrum.bin/keep`, { recursive: true });
+    await fs.writeFile(file, encodeWav(track.samples, track.sampleRate));
+
+    const ready = hub.next('ready');
+    await music.select(ID, 'music/theme.wav');
+    await ready;
+    assert.equal(await fs.stat(`${file}.analysis.json`).catch(() => null), null, 'no disk cache without the spectrum');
+    const state = await store.get(ID);
+    assert.ok(state.musicGrid, 'the grid still serves this run');
+    assert.equal(state.music?.spectrum, null, 'no spectrum file to report');
+    assert.equal(hub.count('analyzing'), 1);
+  },
+);
+
+test(
+  'a link where the spectrum goes is replaced, never written through',
+  { skip: !hasFfmpeg && 'ffmpeg introuvable' },
+  async () => {
+    const { root, music, musicDir, hub } = await setup();
+    const track = synthTrack({ bpm: 120, beatsPerBar: 4, bars: 4, kick: [0], hat: 0.5 });
+    await fs.mkdir(musicDir, { recursive: true });
+    const file = path.join(musicDir, 'theme.wav');
+    await fs.writeFile(file, encodeWav(track.samples, track.sampleRate));
+    const secret = path.join(root, 'secret.txt');
+    await fs.writeFile(secret, 'TOPSECRET');
+    await fs.symlink(secret, `${file}.spectrum.bin`);
+
+    const ready = hub.next('ready');
+    await music.select(ID, 'music/theme.wav');
+    await ready;
+    assert.equal(await fs.readFile(secret, 'utf8'), 'TOPSECRET');
+    assert.ok((await fs.lstat(`${file}.spectrum.bin`)).isFile(), 'the link gave way to the spectrum file');
   },
 );
 

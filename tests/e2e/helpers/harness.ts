@@ -93,7 +93,7 @@ export class FixtureProjectStore implements ProjectStore {
       language: null,
       scenes,
       duration: roundMs(start),
-      music: file.music,
+      music: file.music ? { ...file.music, spectrum: null } : null,
       musicUrl: null,
       musicGrid: null,
       voiceOver: file.voiceOver ?? { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },

@@ -1,20 +1,23 @@
 // Adapted from saeedvaziry/caleb-video-editor (MIT)
-// Music analysis: tempo, beats, downbeats, phrases, sections, accents and a drawable waveform,
+// Music analysis: tempo, beats, downbeats, phrases, sections, accents, a drawable waveform and a band spectrum,
 // computed from any audio (or video) file ffmpeg can read.
 import type { MusicAnalysis } from '../../src/shared/types';
 import { ANALYSIS_SAMPLE_RATE, decodeAudio } from './decode';
-import { computeFeatures } from './features';
+import { bandSpectrum, computeFeatures, SPECTRUM_BANDS, SPECTRUM_RATE, spectrumFrames } from './features';
 import { onsetEnvelope, refineToAttack, trackBeats } from './beats';
 import { analyzeStructure, BEATS_PER_BAR, detectAccents, detectMeter, waveformPeaks } from './structure';
 
-export async function analyzeMusic(file: string, ffmpegPath: string): Promise<MusicAnalysis> {
-  return analyzeSignal(await decodeAudio(file, ffmpegPath), ANALYSIS_SAMPLE_RATE);
+/** The analysis plus its band spectrum bytes (`analysis.spectrum` describes their layout). */
+export async function analyzeMusic(file: string, ffmpegPath: string): Promise<{ analysis: MusicAnalysis; spectrum: Uint8Array }> {
+  const signal = await decodeAudio(file, ffmpegPath);
+  return { analysis: analyzeSignal(signal, ANALYSIS_SAMPLE_RATE), spectrum: bandSpectrum(signal, ANALYSIS_SAMPLE_RATE) };
 }
 
 /** Analyze mono PCM samples (any sample rate; 22.05 kHz is what the tuning assumes). */
 export function analyzeSignal(signal: Float32Array, sampleRate: number): MusicAnalysis {
   const duration = round3(signal.length / sampleRate);
   const waveform = waveformPeaks(signal);
+  const spectrum = { bands: SPECTRUM_BANDS, rate: SPECTRUM_RATE, frames: spectrumFrames(signal.length, sampleRate) };
 
   let peak = 0;
   for (let i = 0; i < signal.length; i++) {
@@ -23,7 +26,7 @@ export function analyzeSignal(signal: Float32Array, sampleRate: number): MusicAn
   }
   if (duration < 1 || peak < 1e-4) {
     return {
-      version: 2,
+      version: 3,
       duration,
       sampleRate,
       bpm: 120,
@@ -34,6 +37,7 @@ export function analyzeSignal(signal: Float32Array, sampleRate: number): MusicAn
       sections: [{ start: 0, end: duration, label: 'silence', energy: 0 }],
       accents: [],
       waveform,
+      spectrum,
       confidence: 0,
     };
   }
@@ -52,7 +56,7 @@ export function analyzeSignal(signal: Float32Array, sampleRate: number): MusicAn
   const accents = detectAccents(features, env, (t) => refineToAttack(features, t));
 
   return {
-    version: 2,
+    version: 3,
     duration,
     sampleRate,
     bpm: track.bpm,
@@ -63,6 +67,7 @@ export function analyzeSignal(signal: Float32Array, sampleRate: number): MusicAn
     sections: structure.sections,
     accents,
     waveform,
+    spectrum,
     confidence: track.confidence,
   };
 }

@@ -2617,13 +2617,15 @@ describe('editor', () => {
     // A track without an audio file: the server's project, analysis and track answers get one.
     const withTrack = (project: ProjectState) => ({
       ...project,
-      music: { file: 'music/a.wav', start: 0, volume: 1 },
+      music: { file: 'music/a.wav', start: 0, volume: 1, spectrum: null },
       musicGrid: grid,
     });
     const page = await newPage();
     await rewriteProject(page, withTrack);
     await page.route('**/music/analysis', (route) =>
-      route.fulfill({ json: { version: 2, sampleRate: 44100, ...grid } satisfies MusicAnalysis }),
+      route.fulfill({
+        json: { version: 3, sampleRate: 44100, spectrum: { bands: 24, rate: 25, frames: 0 }, ...grid } satisfies MusicAnalysis,
+      }),
     );
     await page.route('**/music/tracks', (route) =>
       route.fulfill({ json: [{ file: 'music/a.wav', size: 1000, analysed: true }] }),
@@ -2684,7 +2686,7 @@ describe('editor', () => {
     // A track without an audio file: the editor's <audio> still takes a volume.
     const withTrack = (project: ProjectState, volume = 1): ProjectState => ({
       ...project,
-      music: { file: 'music/a.wav', start: 0, volume },
+      music: { file: 'music/a.wav', start: 0, volume, spectrum: null },
       musicUrl: `/api/projects/${A}/music/audio?file=music%2Fa.wav`,
     });
     const page = await newPage();
@@ -3005,7 +3007,7 @@ describe('preview', () => {
       page,
       (project) => ({
         ...project,
-        music: { file: 'music/a.wav', start: 0, volume: 1 },
+        music: { file: 'music/a.wav', start: 0, volume: 1, spectrum: null },
         musicUrl: `/api/projects/${id}/music/audio?file=music%2Fa.wav`,
       }),
       id,

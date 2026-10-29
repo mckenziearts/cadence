@@ -27,7 +27,7 @@ for (const preset of presets) {
     /** Distance to the nearest multiple of `unit`. */
     const off = (t: number, unit: number) => Math.min(t % unit, unit - (t % unit));
     for (const version of preset.versions) {
-      const a = await analyzeMusic(path.join(DIR, version.file), 'ffmpeg');
+      const { analysis: a } = await analyzeMusic(path.join(DIR, version.file), 'ffmpeg');
       // The final bar rings out without a beat: judge the grid before it.
       const before = (times: number[]) => times.filter((t) => t < version.duration - 4 * beat);
       assert.ok(Math.abs(a.bpm - preset.bpm) < 0.5, `${version.file} : ${a.bpm} BPM`);

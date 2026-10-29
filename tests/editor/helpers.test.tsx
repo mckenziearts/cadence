@@ -151,7 +151,7 @@ function project(durations: number[], musicGrid: MusicGridData | null = null, st
     language: null,
     scenes,
     duration: t,
-    music: musicGrid ? { file: 'music/a.mp3', start, volume: 1 } : null,
+    music: musicGrid ? { file: 'music/a.mp3', start, volume: 1, spectrum: null } : null,
     musicUrl: null,
     musicGrid,
     voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },

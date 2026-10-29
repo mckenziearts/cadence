@@ -162,7 +162,7 @@ export function steadyAnalysis(): MusicAnalysis {
   const beats = Array.from({ length: 65 }, (_, i) => 1 + i * 0.5);
   const downbeats = beats.filter((_, i) => i % 4 === 0);
   return {
-    version: 2,
+    version: 3,
     duration: 34,
     sampleRate: 22050,
     bpm: 120,
@@ -177,5 +177,6 @@ export function steadyAnalysis(): MusicAnalysis {
     accents: [{ t: 9, strength: 1 }],
     waveform: [0, 0.5, 1],
     confidence: 0.9,
+    spectrum: { bands: 24, rate: 25, frames: 851 },
   };
 }

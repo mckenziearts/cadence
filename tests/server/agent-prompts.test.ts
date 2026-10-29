@@ -81,7 +81,7 @@ test('the turn context: timing in bars, playhead in video time, brief only when 
       codeVersion: '',
     })),
     duration: 8,
-    music: { file: 'music/a.mp3', start: 0, volume: 1 },
+    music: { file: 'music/a.mp3', start: 0, volume: 1, spectrum: null },
     musicUrl: null,
     musicGrid: {
       bpm: 90,

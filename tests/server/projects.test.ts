@@ -265,10 +265,13 @@ test('music settings are validated and exposed with a stream URL and the provide
   await rejectsWithStatus(store.setMusic(p.id, { file: '../x.mp3', start: 0, volume: 1 }), 400);
   await rejectsWithStatus(store.setMusic(p.id, { file: 'music/a.mp3', start: 0, volume: 3 }), 400);
   let nested: unknown = 'unset';
+  let analysing = false;
+  const spectrum = { bands: 24, rate: 25, file: 'music/a b.mp3.spectrum.bin', size: 24 * 251 };
   store.setMusicGridProvider(async (id) => {
     // The music service reads the project through get(): it must not recurse forever.
     nested = (await store.get(id)).musicGrid;
-    return {
+    if (analysing) return null;
+    const grid = {
       bpm: 128,
       beatsPerBar: 4,
       beats: [0],
@@ -280,12 +283,20 @@ test('music settings are validated and exposed with a stream URL and the provide
       duration: 10,
       confidence: 1,
     };
+    return { grid, spectrum };
   });
-  const state = await store.setMusic(p.id, { file: 'music/a b.mp3', start: 1.23456, volume: 0.5 });
-  assert.equal(state.music!.start, 1.235);
+  let state = await store.setMusic(p.id, { file: 'music/a b.mp3', start: 1.23456, volume: 0.5 });
+  assert.deepEqual(state.music, { file: 'music/a b.mp3', start: 1.235, volume: 0.5, spectrum });
   assert.equal(state.musicUrl, `/api/projects/son/music/audio?file=${encodeURIComponent('music/a b.mp3')}`);
   assert.equal(state.musicGrid!.bpm, 128);
   assert.equal(nested, null);
+  // ProjectState's spectrum never reaches project.json, even when a caller hands the state's music back.
+  state = await store.setMusic(p.id, state.music);
+  const file = JSON.parse(await fs.readFile(path.join(state.dir, 'project.json'), 'utf8'));
+  assert.deepEqual(file.music, { file: 'music/a b.mp3', start: 1.235, volume: 0.5 });
+  analysing = true;
+  state = await store.get(p.id);
+  assert.deepEqual([state.music?.spectrum, state.musicGrid], [null, null], 'no spectrum while the analysis runs');
   assert.equal((await store.setMusic(p.id, null)).musicUrl, null);
 });
 

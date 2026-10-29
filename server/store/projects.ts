@@ -13,7 +13,6 @@ import {
   type CreateProjectInput,
   type CreateSceneInput,
   type FormatId,
-  type MusicGridData,
   type MusicSettings,
   type ProjectFile,
   type ProjectState,
@@ -29,6 +28,7 @@ import {
   type VoiceOverSettings,
 } from '../../src/shared/types';
 import type {
+  AnalysedMusic,
   BrandStore,
   CadenceConfig,
   FileEvents,
@@ -288,7 +288,7 @@ export class FileProjectStore implements ProjectStore {
   private generations = new Map<string, number>();
   private codeHashes = new Map<string, string>();
   private invalidate: (dirs: string[]) => void = () => undefined;
-  private musicGrid: ((id: string) => Promise<MusicGridData | null>) | null = null;
+  private musicGrid: ((id: string) => Promise<AnalysedMusic | null>) | null = null;
   private voiceOver: VoiceOverProvider | null = null;
   private unwatch: (() => void) | null = null;
   private timers = new Map<string, NodeJS.Timeout>();
@@ -330,7 +330,7 @@ export class FileProjectStore implements ProjectStore {
     this.invalidate = fn;
   }
 
-  setMusicGridProvider(fn: (id: string) => Promise<MusicGridData | null>): void {
+  setMusicGridProvider(fn: (id: string) => Promise<AnalysedMusic | null>): void {
     this.musicGrid = fn;
   }
 
@@ -390,6 +390,7 @@ export class FileProjectStore implements ProjectStore {
         codeVersion: code ? shortHash(code) : 'missing',
       });
     }
+    const analysed = data.music ? await this.resolveMusicGrid(id) : null;
     return {
       id,
       dir,
@@ -401,9 +402,9 @@ export class FileProjectStore implements ProjectStore {
       language: data.language ?? null,
       scenes,
       duration: timeline.duration,
-      music: data.music,
+      music: data.music ? { ...data.music, spectrum: analysed?.spectrum ?? null } : null,
       musicUrl: data.music ? `/api/projects/${id}/music/audio?file=${encodeURIComponent(data.music.file)}` : null,
-      musicGrid: data.music ? await this.resolveMusicGrid(id) : null,
+      musicGrid: analysed?.grid ?? null,
       ...(await this.resolveVoiceOver(id, data, scenes)),
       captions: data.captions ?? false,
       codeGeneration: this.generation(id),
@@ -858,7 +859,7 @@ export class FileProjectStore implements ProjectStore {
     return scene;
   }
 
-  private async resolveMusicGrid(id: string): Promise<MusicGridData | null> {
+  private async resolveMusicGrid(id: string): Promise<AnalysedMusic | null> {
     const resolving = this.resolvingGrid.getStore();
     // The provider (music service) may itself call get(id): answer that nested call without a grid.
     if (!this.musicGrid || resolving?.has(id)) return null;
