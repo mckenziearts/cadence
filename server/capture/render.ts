@@ -227,6 +227,10 @@ export class FfmpegRenderService implements RenderService {
     // Sentences Piper has not spoken yet are spoken now, before the pages load the project: their times are props of
     // the scenes. If Piper cannot, the editor already says why and the MP4 goes out with what is generated.
     await voiceOver.sync(job.projectId).catch(() => undefined);
+    // A running music analysis ends before the pages load the project, so scenes get its spectrum, not a pending error.
+    // A failed one blocks only the scenes that call music.spectrum(): their pages fail the render with the frame's text.
+    // The analyzer has no timeout: a cancel must not wait for it.
+    await Promise.race([music.analysis(job.projectId).catch(() => undefined), rejectOnAbort(abort.signal)]);
     let project = await store.get(job.projectId);
     let { from, total } = frameRange(project, request, job.fps);
     const preset = PRESETS[request.quality];

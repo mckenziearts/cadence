@@ -66,3 +66,11 @@ test('API.md documents the voice-over line fields and voiceLevel', () => {
     assert.ok(section.includes(rule), rule);
   }
 });
+
+test('API.md documents music.spectrum, its band count and its pending error', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## Music'), api.indexOf('## Voice-over'));
+  for (const rule of ['music.spectrum(t, bands = 24)', 'from 1 to 24', '40 Hz to 11 kHz', 'MusicAnalysisPending', 'zeros']) {
+    assert.ok(section.includes(rule), rule);
+  }
+});

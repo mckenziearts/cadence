@@ -307,6 +307,8 @@ export class LocalMusicService implements MusicService {
     if (written) await writeJsonAtomic(`${file}.analysis.json`, entry).catch(warn);
     this.memory.set(file, { ...entry, noSpectrum: !written });
     hub.send({ type: 'music', projectId, status: 'ready' });
+    // Frames hold the project they loaded while the analysis ran (no spectrum yet): they re-fetch it.
+    hub.send({ type: 'project-changed', projectId });
     return analysis;
   }
 }

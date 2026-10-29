@@ -361,6 +361,8 @@ test(
     let state = await music.select(ID, 'music/theme.wav');
     assert.deepEqual([state.music?.spectrum, state.musicGrid], [null, null], 'no spectrum while the analysis runs');
     await ready;
+    // Open frames hold the project they loaded while the analysis ran: they reload on project-changed.
+    assert.deepEqual(hub.events.at(-1), { type: 'project-changed', projectId: ID });
 
     const cache = JSON.parse(await fs.readFile(`${file}.analysis.json`, 'utf8'));
     assert.equal(cache.analysis.version, 3);

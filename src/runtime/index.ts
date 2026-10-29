@@ -19,7 +19,14 @@ export {
 } from './animate';
 export { parseColor, toHex, mixColor, interpolateColor, withAlpha, type RGBA } from './color';
 export { random, randomRange, noise, noise2 } from './random';
-export { createMusic, type CreateMusicInput, type Music, type MusicGrid, type MusicSection } from './music';
+export {
+  createMusic,
+  type CreateMusicInput,
+  type Music,
+  type MusicGrid,
+  type MusicSection,
+  type MusicSpectrumData,
+} from './music';
 export { voiceLevel } from './voice';
 export {
   Fill,

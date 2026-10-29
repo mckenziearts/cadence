@@ -185,3 +185,65 @@ describe('music with a track', () => {
     close(m.beat(1), 0.5);
   });
 });
+
+describe('music.spectrum', () => {
+  // 5 frames at 25 per second of track time: band b of frame f is f * 50 + b.
+  const bytes = Uint8Array.from({ length: 5 * 24 }, (_, i) => Math.floor(i / 24) * 50 + (i % 24));
+  const spectrum = { bands: 24, rate: 25, bytes };
+  // The scene starts 0.04 s into the video, the video 0.02 s into the track: scene time t is track time t + 0.06.
+  const m = createMusic({ grid, tempo: 120, musicStart: 0.02, sceneStart: 0.04, sceneDuration: 1, spectrum });
+  const level = (frame: number, band: number) => (frame * 50 + band) / 255;
+
+  test('gives the 24 bands 0 to 1 at a scene time, shifted like the beat grid and interpolated between frames', () => {
+    const at = m.spectrum(0.01); // track 0.07 s: frame 1.75
+    assert.equal(at.length, 24);
+    close(at[0], (0.25 * 50 + 0.75 * 100) / 255);
+    close(at[23], (0.25 * 73 + 0.75 * 123) / 255);
+    const first = m.spectrum(-0.06); // track 0 s: frame 0
+    close(first[0], 0);
+    close(first[5], level(0, 5));
+    const last = m.spectrum(0.1); // track 0.16 s: the last frame
+    close(last[23], level(4, 23));
+  });
+
+  test('is all zeros before and after the track', () => {
+    assert.deepEqual(m.spectrum(-0.07), Array(24).fill(0));
+    assert.deepEqual(m.spectrum(0.11), Array(24).fill(0));
+  });
+
+  test('averages the bands into 1 to 24 groups, lowest first', () => {
+    const frame = 2;
+    const t = frame / 25 - 0.06;
+    const four = m.spectrum(t, 4);
+    assert.equal(four.length, 4);
+    for (const [g, value] of four.entries()) close(value, level(frame, 6 * g + 2.5));
+    const five = m.spectrum(t, 5); // groups of 4, 5, 5, 5, 5 bands
+    close(five[0], level(frame, 1.5));
+    close(five[4], level(frame, 21));
+    close(m.spectrum(t, 1)[0], level(frame, 11.5));
+    assert.deepEqual(m.spectrum(t, 24), m.spectrum(t));
+  });
+
+  test('refuses a band count outside 1 to 24', () => {
+    for (const bands of [0, 25, 2.5, Number.NaN]) assert.throws(() => m.spectrum(0, bands), RangeError);
+  });
+
+  test('comes from the track even when its beat grid is unusable', () => {
+    const noGrid = createMusic({ grid: null, tempo: 120, musicStart: 0, sceneStart: 0, sceneDuration: 1, spectrum });
+    assert.equal(noGrid.hasTrack, false);
+    close(noGrid.spectrum(0.08)[3], level(2, 3));
+  });
+
+  test('is all zeros without a track', () => {
+    const silent = createMusic({ grid: null, tempo: 120, musicStart: 0, sceneStart: 0, sceneDuration: 1 });
+    assert.deepEqual(silent.spectrum(0.5), Array(24).fill(0));
+    assert.deepEqual(silent.spectrum(0.5, 3), [0, 0, 0]);
+  });
+
+  test('throws the error it is given while the analysis runs', () => {
+    const pending = Object.assign(new Error('analysis running'), { name: 'MusicAnalysisPending' });
+    const waiting = createMusic({ grid: null, tempo: 120, musicStart: 0, sceneStart: 0, sceneDuration: 1, spectrum: pending });
+    assert.throws(() => waiting.spectrum(0), { name: 'MusicAnalysisPending', message: 'analysis running' });
+    assert.throws(() => waiting.spectrum(0, 4), { name: 'MusicAnalysisPending' });
+  });
+});

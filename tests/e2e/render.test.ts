@@ -141,12 +141,15 @@ async function withSounds(cues: Record<string, string>): Promise<() => Promise<v
 }
 
 /** A render service whose store reads go through `onRead` (read 1: start(), read 2: the job itself). */
-function renderingWith(onRead: (read: number, project: ProjectState) => Promise<ProjectState>): FfmpegRenderService {
+function renderingWith(
+  onRead: (read: number, project: ProjectState) => Promise<ProjectState>,
+  musicService: FixtureMusicService = music,
+): FfmpegRenderService {
   let reads = 0;
   const store: ProjectStore = Object.assign(Object.create(h.store) as FixtureProjectStore, {
     get: async (projectId: string) => onRead(++reads, await h.store.get(projectId)),
   });
-  return new FfmpegRenderService({ config: h.config, store, music, voiceOver, hub });
+  return new FfmpegRenderService({ config: h.config, store, music: musicService, voiceOver, hub });
 }
 
 describe('FfmpegRenderService', () => {
@@ -284,6 +287,111 @@ export default function A({ voiceOver }: SceneProps) {
       h.store.voiceOverLines.delete(id);
       await writeFile(sceneFile, code);
     }
+  });
+
+  it('waits for the music analysis before the pages load the project, and fails with the frame text when it failed', async () => {
+    // Scene a turns green on a loud spectrum. The spectrum reaches the project state only when analysis() ends, as when
+    // the analyzer still runs as the export starts.
+    const dir = h.store.dir(id);
+    const projectFile = path.join(dir, 'project.json');
+    const sceneFile = h.store.sceneFile(id, 'a');
+    const [savedProject, code] = await Promise.all([readFile(projectFile, 'utf8'), readFile(sceneFile, 'utf8')]);
+    await writeFile(
+      sceneFile,
+      `import type { SceneProps } from 'cadence';
+
+export default function A({ t, music }: SceneProps) {
+  return <div style={{ position: 'absolute', inset: 0, background: music.spectrum(t, 1)[0] > 0.5 ? '#00ff00' : '#ff0000' }} />;
+}
+`,
+    );
+    await mkdir(path.join(dir, 'music'), { recursive: true });
+    const track = path.join(dir, 'music', 'tone.wav');
+    // -y: the soundtrack test leaves this file behind, and ffmpeg would wait on stdin to overwrite it.
+    await run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4', '-ar', '44100', track]);
+    const spectrum = new Uint8Array(4 * 25 * 24).fill(255);
+    await writeFile(`${track}.spectrum.bin`, spectrum);
+    const project = JSON.parse(savedProject) as ProjectFile;
+    await writeFile(projectFile, JSON.stringify({ ...project, music: { file: 'music/tone.wav', start: 0, volume: 1 } }));
+    const grid = {
+      bpm: 120,
+      beatsPerBar: 4,
+      beats: [0, 0.5, 1],
+      downbeats: [0],
+      phrases: [0],
+      sections: [],
+      accents: [],
+      waveform: [],
+      duration: 4,
+      confidence: 1,
+    };
+    const analysing = Object.assign(new FixtureMusicService(), {
+      analysis: async (projectId: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        h.store.analysedMusic.set(projectId, {
+          grid,
+          spectrum: { bands: 24, rate: 25, file: 'music/tone.wav.spectrum.bin', size: spectrum.length },
+        });
+        return null;
+      },
+    });
+    const failing = Object.assign(new FixtureMusicService(), {
+      analysis: async () => {
+        throw new HttpError(422, 'analysis failed');
+      },
+    });
+    analysing.audio.set(id, track);
+    failing.audio.set(id, track);
+    try {
+      let spectrumAtStart: unknown = null;
+      const waiting = renderingWith(async (read, state) => {
+        if (read === 2) spectrumAtStart = state.music?.spectrum ?? null;
+        return state;
+      }, analysing);
+      const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' }, waiting);
+      assert.ok(spectrumAtStart, 'the job reads the project once the analysis has ended');
+      assert.ok(near(pixel(await frameAt(file, 0.2), 1500, 800), [0, 255, 0], 6), 'green: scene a has its spectrum');
+
+      h.store.analysedMusic.delete(id);
+      const failed = new FfmpegRenderService({ config: h.config, store: h.store, music: failing, voiceOver, hub });
+      const [queued] = await failed.start(id, { formats: ['16:9'], quality: 'draft' });
+      const job = await failed.wait(queued.id);
+      assert.equal(job.status, 'error');
+      assert.match(job.error!, /music\.spectrum\(\) n’est pas encore disponible/);
+    } finally {
+      h.store.analysedMusic.delete(id);
+      await writeFile(projectFile, savedProject);
+      await writeFile(sceneFile, code);
+      await rm(path.join(dir, 'music'), { recursive: true, force: true });
+    }
+  });
+
+  it('cancels a render still waiting for the music analysis, without opening a page', { timeout: 10_000 }, async () => {
+    let asked!: () => void;
+    const analysing = new Promise<void>((resolve) => (asked = resolve));
+    const stuck = Object.assign(new FixtureMusicService(), {
+      analysis: () => {
+        asked();
+        return new Promise<never>(() => {});
+      },
+    });
+    let launched = false;
+    const service = new FfmpegRenderService({
+      config: h.config,
+      store: h.store,
+      music: stuck,
+      voiceOver,
+      hub,
+      browserServer: async () => {
+        launched = true;
+        throw new Error('no browser while the analysis runs');
+      },
+    });
+    const [queued] = await service.start(id, { formats: ['16:9'], quality: 'draft' });
+    await analysing;
+    service.cancel(queued.id);
+    assert.equal((await service.wait(queued.id)).status, 'cancelled');
+    assert.equal(launched, false);
   });
 
   it('burns the captions into the MP4 when the project has them on', async () => {

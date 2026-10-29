@@ -6,7 +6,16 @@ import '@fontsource-variable/geist-mono';
 import '@fontsource-variable/inter';
 import '@fontsource-variable/inter/wght-italic.css';
 import '@fontsource-variable/jetbrains-mono';
-import { BrandContext, SceneContext, createMusic, setAssetBase, type Music, type SceneProps, type VoiceOverInfo } from 'cadence';
+import {
+  BrandContext,
+  SceneContext,
+  createMusic,
+  setAssetBase,
+  type Music,
+  type MusicSpectrumData,
+  type SceneProps,
+  type VoiceOverInfo,
+} from 'cadence';
 import { Component, type ComponentType, type ErrorInfo, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
@@ -18,6 +27,7 @@ import { FORMATS, isFormatId, type FormatId, type FormatSpec, type ProjectState,
 import { auditStage } from './audit';
 import { Captions } from './captions';
 import { editorOrigins, postToEditor } from './editor';
+import { readSpectrum, spectrumFor, spectrumUrl } from './spectrum';
 import { texts } from './texts';
 import { sceneVoiceOver, tidy } from './voiceOver';
 
@@ -74,6 +84,8 @@ let brandError: string | null = null;
 let loadError: string | null = null;
 let loadedGeneration = 0;
 let scenes = new Map<string, LoadedScene>();
+/** The band levels of the selected track, loaded with the project; null without music or while it is analysed. */
+let spectrum: MusicSpectrumData | null = null;
 const musicCache = new Map<string, Music>();
 const voiceOverCache = new Map<string, VoiceOverInfo>();
 /** Per scene and format, like the props `sounds()` gets; cleared with the music on every load. */
@@ -251,12 +263,20 @@ async function loadScenes(project: ProjectState, current: Map<string, LoadedScen
   return next;
 }
 
+/** The spectrum file the analysis wrote beside the track, read from this frame's origin. */
+async function fetchSpectrum(project: ProjectState): Promise<MusicSpectrumData | null> {
+  const file = project.music?.spectrum;
+  return file ? readSpectrum(file, await fetch(spectrumUrl(project.dir, file), { cache: 'no-store' }), texts) : null;
+}
+
 /** Fetch the project, then swap everything at once so a render never mixes two versions. */
 async function load(): Promise<void> {
   const next = await fetchProjectData();
+  const nextSpectrum = await fetchSpectrum(next.project);
   await loadBrand(next);
   const nextScenes = await loadScenes(next.project, scenes);
   data = next;
+  spectrum = nextSpectrum;
   scenes = nextScenes;
   // Scenes pick their copy with brand.language: the project's setting wins (a language change is no code change).
   kit = brandKit && { ...brandKit, language: next.project.language ?? brandKit.language };
@@ -321,6 +341,7 @@ function musicFor(project: ProjectState, scene: SceneState): Music {
       musicStart: project.music?.start ?? 0,
       sceneStart: scene.start,
       sceneDuration: scene.duration,
+      spectrum: spectrumFor(project.music, spectrum, texts),
     });
     musicCache.set(key, music);
   }

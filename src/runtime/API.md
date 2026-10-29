@@ -16,15 +16,15 @@ interface SceneProps {
   format: '16:9' | '9:16' | '1:1' | '4:5';
   orientation: 'landscape' | 'portrait' | 'square';   // 4:5 is portrait
   fps: number;
-  music: Music;         // beat grid in scene seconds (see Music)
+  music: Music;         // beat grid and spectrum in scene seconds (see Music)
   voiceOver: VoiceOverInfo;  // { text, lines: { text, start, end, speaker, words, level, gesture? }[] } in scene seconds (see Voice-over)
   scene: SceneInfo;     // { id, name, index, count, start (video seconds) }
   brand: BrandKit;      // same object as useBrand()
 }
 ```
-Types exported: `SceneProps, SceneInfo, VoiceOverInfo, Music, MusicGrid, MusicSection, Easing, Point ({x, y}), BrandKit, FormatId,
-Orientation, FormatInfo, SafeArea, Anchor, CursorKey, Stage3DPose, RGBA, SoundProps, SoundCue, SoundName` and every
-component's `<Name>Props`.
+Types exported: `SceneProps, SceneInfo, VoiceOverInfo, Music, MusicGrid, MusicSection, MusicSpectrumData, Easing, Point ({x, y}),
+BrandKit, FormatId, Orientation, FormatInfo, SafeArea, Anchor, CursorKey, Stage3DPose, RGBA, SoundProps, SoundCue,
+SoundName` and every component's `<Name>Props`.
 
 ## Time & animation
 
@@ -167,6 +167,11 @@ const L = f.pick({
   has no beats). Without a track it pulses on the steady grid: gate it with `music.hasTrack` so a silent video stays
   still.
 - `music.beatPhase(t)`: 0 to 1 through the current beat.
+- `music.spectrum(t, bands = 24)`: loudness 0 to 1 of the track at t in 24 log-spaced bands from 40 Hz to 11 kHz
+  (lowest first), interpolated between the analysis rows (25 a second), or averaged into `bands` groups (an integer
+  from 1 to 24, else a RangeError). All zeros before and after the track, and without one. While the analysis runs
+  (or after it failed) it throws `MusicAnalysisPending`: the scene shows the error, a render waits for the analysis.
+  It follows the audio (music start and scene start), not the manual grid offset.
 
 ```tsx
 const hit = music.bar(1);                                              // second downbeat of the scene
@@ -174,6 +179,9 @@ const pop = spring(t - hit, { from: 0.85, to: 1, ...springs.bouncy });
 const thump = music.hasTrack ? 1 + 0.03 * music.pulse(t, { grid: 'beat', decay: 9 }) : 1;
 const click = music.snap(1.2, 'half');                                 // cursor click on a half-beat
 const cardIn = progress(t, music.beat(0), music.beat(2), ease.outExpo);
+const bars = music.spectrum(t, 12).map((level, i) => (               // equalizer: 12 bars, bass on the left
+  <div key={i} style={{ width: 40, height: 20 + level * 400, background: brand.colors.accent }} />
+));
 ```
 
 ## Voice-over (scene seconds)

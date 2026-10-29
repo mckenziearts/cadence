@@ -13,7 +13,7 @@ import type { CadenceConfig } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { frameOriginOf } from '../../src/shared/frameOrigin';
-import type { ProjectFile } from '../../src/shared/types';
+import type { MusicGridData, ProjectFile } from '../../src/shared/types';
 import { near, pixel, startHarness, type Harness } from './helpers/harness';
 
 let h: Harness;
@@ -1792,5 +1792,156 @@ describe('scene voice-over', () => {
     } finally {
       h.store.voiceOverLines.delete(id);
     }
+  });
+});
+
+describe('music spectrum', () => {
+  const track = 'music/track.mp3';
+  const grid: MusicGridData = {
+    bpm: 120,
+    beatsPerBar: 4,
+    beats: [0, 0.5, 1],
+    downbeats: [0],
+    phrases: [0],
+    sections: [],
+    accents: [],
+    waveform: [],
+    duration: 60,
+    confidence: 1,
+  };
+  // 60 s at 25 rows a second; band b of row r is (r % 64) * 2 + b.
+  const rows = 60 * 25;
+  const bytes = Uint8Array.from({ length: rows * 24 }, (_, i) => (Math.floor(i / 24) % 64) * 2 + (i % 24));
+  let start = 0;
+
+  before(async () => {
+    await addScene(
+      'bars',
+      'export default ({ t, music }) => <div id="bars" data-levels={JSON.stringify(music.spectrum(t, 4))} />;\n',
+    );
+    await addScene(
+      'bars-name',
+      `export default function Name({ t, music }) {
+  try {
+    music.spectrum(t);
+    return <div id="name" data-name="" />;
+  } catch (e) {
+    return <div id="name" data-name={e.name} />;
+  }
+}
+`,
+    );
+    await h.store.syncCode(id);
+    start = (await h.store.get(id)).scenes.find((s) => s.id === 'bars')!.start;
+  });
+
+  /** Selects a track whose spectrum file holds `content` (none: no file), analysed or not; gives the project back after. */
+  async function withTrack(content: Uint8Array | null, analysed: boolean, run: () => Promise<void>): Promise<void> {
+    const dir = h.store.dir(id);
+    const file = path.join(dir, 'project.json');
+    const saved = await readFile(file, 'utf8');
+    await mkdir(path.join(dir, 'music'), { recursive: true });
+    await writeFile(path.join(dir, track), 'not really audio');
+    if (content) await writeFile(path.join(dir, `${track}.spectrum.bin`), content);
+    await writeFile(file, JSON.stringify({ ...(JSON.parse(saved) as ProjectFile), music: { file: track, start: 0, volume: 1 } }));
+    if (analysed) {
+      h.store.analysedMusic.set(id, {
+        grid,
+        spectrum: { bands: 24, rate: 25, file: `${track}.spectrum.bin`, size: bytes.length },
+      });
+    }
+    try {
+      await run();
+    } finally {
+      h.store.analysedMusic.delete(id);
+      await writeFile(file, saved);
+      await rm(path.join(dir, 'music'), { recursive: true, force: true });
+    }
+  }
+
+  /** No error at scene time `t`, and the 4 groups of the 'bars' scene read `bytes` at that time, interpolated between
+   * rows: earlier suites add scenes of 0.25 s, so the scene start is not always on a row. */
+  async function assertRowAt(page: Page, t: number): Promise<void> {
+    assert.deepEqual((await seek(page, t)).errors, []);
+    const at = videoTime(start, t) * 25;
+    const row = Math.floor(at);
+    const w = at - row;
+    const levels = JSON.parse((await page.getAttribute('#bars', 'data-levels'))!) as number[];
+    assert.equal(levels.length, 4);
+    for (const [g, level] of levels.entries()) {
+      const band = (r: number) => ((r % 64) * 2 + 6 * g + 2.5) / 255;
+      assert.ok(Math.abs(level - (band(row) * (1 - w) + band(row + 1) * w)) < 1e-6, `group ${g}: ${level}`);
+    }
+  }
+
+  it('reads the spectrum file from the frame origin and gives music.spectrum(t) in scene time', async () => {
+    await withTrack(bytes, true, async () => {
+      const page = await open({ scene: 'bars' });
+      const fetched: string[] = [];
+      page.on('request', (r) => fetched.push(r.url()));
+      await page.evaluate(() => window.__cadence!.reload());
+      assert.ok(
+        fetched.some((url) => url.startsWith(`${projectOrigin}/@fs${h.store.dir(id)}/${track}.spectrum.bin`)),
+        fetched.join('\n'),
+      );
+      await assertRowAt(page, 0.4);
+      await page.context().close();
+    });
+  });
+
+  it('gives zeros without a track', async () => {
+    const page = await open({ scene: 'bars' });
+    assert.deepEqual((await seek(page, 0.4)).errors, []);
+    assert.deepEqual(JSON.parse((await page.getAttribute('#bars', 'data-levels'))!), [0, 0, 0, 0]);
+    await page.context().close();
+  });
+
+  it('drops the pending error on reload once the analysis wrote the spectrum', async () => {
+    await withTrack(bytes, false, async () => {
+      const page = await open({ scene: 'bars' });
+      const { errors } = await seek(page, 0.4);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0], /l’analyse de la musique est en cours/);
+      h.store.analysedMusic.set(id, {
+        grid,
+        spectrum: { bands: 24, rate: 25, file: `${track}.spectrum.bin`, size: bytes.length },
+      });
+      await page.evaluate(() => window.__cadence!.reload());
+      await assertRowAt(page, 0.4);
+      await page.context().close();
+    });
+  });
+
+  it('turns a missing or truncated spectrum file into a translated load error', async () => {
+    for (const [content, reason] of [
+      [null, /HTTP 40\d/],
+      [bytes.subarray(1), new RegExp(`${bytes.length - 1} octets au lieu de ${bytes.length}`)],
+    ] as const) {
+      await withTrack(content, true, async () => {
+        const page = await open({ scene: 'green' });
+        const { errors } = await seek(page, 0.2);
+        assert.equal(errors.length, 1);
+        assert.match(errors[0], /Impossible de charger le projet/);
+        assert.match(errors[0], /Impossible de lire le spectre de la musique music\/track\.mp3\.spectrum\.bin/);
+        assert.match(errors[0], reason);
+        await page.context().close();
+      });
+    }
+  });
+
+  it('makes music.spectrum throw a named error while the analysis runs, and leaves other scenes alone', async () => {
+    await withTrack(null, false, async () => {
+      const page = await open({ scene: 'bars' });
+      const { errors } = await seek(page, 0.4);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0], /Erreur d’exécution · scenes\/bars\.tsx/);
+      assert.match(errors[0], /music\.spectrum\(\) n’est pas encore disponible : l’analyse de la musique est en cours/);
+      await page.evaluate(() => window.__cadence!.setScene('bars-name'));
+      assert.deepEqual((await seek(page, 0.4)).errors, []);
+      assert.equal(await page.getAttribute('#name', 'data-name'), 'MusicAnalysisPending');
+      await page.evaluate(() => window.__cadence!.setScene('green'));
+      assert.deepEqual((await seek(page, 0.2)).errors, []);
+      await page.context().close();
+    });
   });
 });

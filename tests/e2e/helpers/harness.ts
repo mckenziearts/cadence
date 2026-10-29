@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import type { ViteDevServer } from 'vite';
 import type {
+  AnalysedMusic,
   BrandStore,
   CadenceConfig,
   Hub,
@@ -22,7 +23,15 @@ import type {
 import { createFrameHandler } from '../../../server/frames/frameServer';
 import { createVite, invalidateDirs } from '../../../server/frames/vite';
 import { HttpError, KeyedMutex, pathExists, readJson, roundMs, sha256, shortHash } from '../../../server/util';
-import type { BrandFile, ProjectFile, ProjectState, SceneState, ServerEvent, VoiceOverLine } from '../../../src/shared/types';
+import type {
+  BrandFile,
+  MusicAnalysis,
+  ProjectFile,
+  ProjectState,
+  SceneState,
+  ServerEvent,
+  VoiceOverLine,
+} from '../../../src/shared/types';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const FIXTURES = path.join(ROOT, 'tests/fixtures');
@@ -36,6 +45,8 @@ export class FixtureProjectStore implements ProjectStore {
   readonly events = new EventEmitter();
   /** ProjectState.voiceOverLines, per project: the sentences generated so far. */
   readonly voiceOverLines = new Map<string, VoiceOverLine[]>();
+  /** ProjectState.musicGrid and music.spectrum, per project with music: none while its analysis runs. */
+  readonly analysedMusic = new Map<string, AnalysedMusic>();
   private hashes = new Map<string, string>();
   private generations = new Map<string, number>();
   private invalidate: (dirs: string[]) => void = () => undefined;
@@ -93,9 +104,9 @@ export class FixtureProjectStore implements ProjectStore {
       language: null,
       scenes,
       duration: roundMs(start),
-      music: file.music ? { ...file.music, spectrum: null } : null,
+      music: file.music ? { ...file.music, spectrum: this.analysedMusic.get(id)?.spectrum ?? null } : null,
       musicUrl: null,
-      musicGrid: null,
+      musicGrid: file.music ? (this.analysedMusic.get(id)?.grid ?? null) : null,
       voiceOver: file.voiceOver ?? { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
       voiceOverUrl: null,
       voiceOverLines: this.voiceOverLines.get(id) ?? [],
@@ -190,15 +201,19 @@ export class RecordingHub implements Hub {
 export class FixtureMusicService implements MusicService {
   /** Absolute path returned by audioPath(), per project. */
   audio = new Map<string, string>();
+  /** What analysis() gives: no analysis by default, or a pending one a test settles. */
+  analyses = new Map<string, Promise<MusicAnalysis | null>>();
   async audioPath(projectId: string): Promise<string | null> {
     return this.audio.get(projectId) ?? null;
+  }
+  async analysis(projectId: string): Promise<MusicAnalysis | null> {
+    return this.analyses.get(projectId) ?? null;
   }
   upload = unused;
   tracks = unused;
   select = unused;
   update = unused;
   remove = unused;
-  analysis = unused;
   grid = unused;
   snapCuts = unused;
   context = unused;

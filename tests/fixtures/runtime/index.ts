@@ -1,6 +1,7 @@
 // Stand-in for the `cadence` module (src/runtime) in the frame e2e harness: the frame page only needs these exports,
 // and frame tests should not break when the real runtime changes.
 import { createContext } from 'react';
+import { createMusic as createRuntimeMusic, type CreateMusicInput } from '../../../src/runtime/music';
 
 export const SceneContext = createContext<unknown>(null);
 export const BrandContext = createContext<unknown>(null);
@@ -15,13 +16,7 @@ export function asset(file: string): string {
   return assetBase + file;
 }
 
-export function createMusic(input: {
-  grid: unknown;
-  tempo: number;
-  musicStart: number;
-  sceneStart: number;
-  sceneDuration: number;
-}) {
+export function createMusic(input: CreateMusicInput) {
   const beatLength = 60 / input.tempo;
   return {
     hasTrack: input.grid !== null,
@@ -30,5 +25,7 @@ export function createMusic(input: {
     sceneStart: input.sceneStart,
     // The real runtime without a track: a steady grid that starts with the scene.
     beat: (n: number) => n * beatLength,
+    // The real one: the frame tests check what the frame loads for it.
+    spectrum: createRuntimeMusic(input).spectrum,
   };
 }
