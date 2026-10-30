@@ -34,7 +34,12 @@ import { ACCEPTED_OUTPUTS } from '../capture/render';
 import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
-import { elevenLabsSpeakersSchema, piperSpeakersSchema, sceneVoiceOverInputSchema } from '../store/projects';
+import {
+  elevenLabsSpeakersSchema,
+  piperSpeakersSchema,
+  sceneTransitionSchema,
+  sceneVoiceOverInputSchema,
+} from '../store/projects';
 import { AGENT_FRAME_NAME, HttpError, KeyedMutex, pathExists, resolveInside } from '../util';
 import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
 import { VOICES } from '../voiceover/voices';
@@ -108,6 +113,7 @@ const schemas = {
     duration: z.number().positive().max(600).optional(),
     voiceOver: sceneVoiceOverInputSchema.nullable().optional(),
   }),
+  transition: z.object({ transition: sceneTransitionSchema.nullable() }),
   order: z.object({ ids: z.array(idSchema) }),
   checkSeams: z.object({ sceneId: idSchema.optional(), format: formatSchema.optional() }),
   selectMusic: z.object({ file: z.string().min(1).max(300) }),
@@ -321,6 +327,18 @@ export function createApi(deps: ApiDeps) {
       (p) => m().api.versions.sceneEdited(p.scenes.find((s) => s.id === sid)?.name ?? sid),
     );
     if (patch.duration !== undefined) seams.recheck(id);
+    return c.json(project);
+  });
+  app.put('/projects/:id/scenes/:sid/transition', async (c) => {
+    const id = c.req.param('id');
+    const sid = c.req.param('sid');
+    const { transition } = await body(c, schemas.transition);
+    const project = await step(
+      id,
+      () => store.setTransition(id, sid, transition),
+      (p) => m().api.versions.transitionSet(p.scenes.find((s) => s.id === sid)?.name ?? sid),
+    );
+    seams.recheck(id);
     return c.json(project);
   });
   app.post('/projects/:id/scenes/:sid/duplicate', async (c) => {

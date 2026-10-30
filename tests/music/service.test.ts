@@ -5,8 +5,16 @@ import path from 'node:path';
 import { test } from 'node:test';
 import type { AnalysedMusic, CadenceConfig, Hub, ProjectStore } from '../../server/contracts';
 import { LocalMusicService } from '../../server/music/service';
+import { sceneTimeline } from '../../server/store/projects';
 import { HttpError, KeyedMutex, roundMs } from '../../server/util';
-import type { MusicAnalysis, MusicSettings, ProjectFile, ProjectState, ServerEvent } from '../../src/shared/types';
+import type {
+  MusicAnalysis,
+  MusicSettings,
+  ProjectFile,
+  ProjectState,
+  SceneTransition,
+  ServerEvent,
+} from '../../src/shared/types';
 import { encodeWav, hasFfmpeg, steadyAnalysis, synthTrack, tempDir } from './synth';
 
 const ID = 'demo';
@@ -38,12 +46,17 @@ class FakeStore {
   }
   async get(id: string): Promise<ProjectState> {
     if (id !== ID) throw new HttpError(404, 'Projet introuvable');
-    let start = 0;
-    const scenes = this.data.scenes.map((s, index) => {
-      const scene = { ...s, index, start: roundMs(start), file: '', url: '', codeVersion: '' };
-      start += s.duration;
-      return scene;
-    });
+    // Starts and transitions as FileProjectStore.get() projects them.
+    const timeline = sceneTimeline(this.data.scenes);
+    const scenes = this.data.scenes.map(({ transition: declared, ...s }, index) => ({
+      ...s,
+      index,
+      ...timeline.scenes[index],
+      ...(declared ? { declaredTransition: declared } : {}),
+      file: '',
+      url: '',
+      codeVersion: '',
+    }));
     const { music } = this.data;
     const analysed = music ? await this.provider(id) : null;
     return {
@@ -52,7 +65,7 @@ class FakeStore {
       id,
       dir: this.dir(id),
       scenes,
-      duration: roundMs(start),
+      duration: timeline.duration,
       music: music ? { ...music, spectrum: analysed?.spectrum ?? null } : null,
       musicUrl: null,
       musicGrid: analysed?.grid ?? null,
@@ -101,7 +114,7 @@ class FakeHub {
   }
 }
 
-async function setup(scenes: { id: string; duration: number }[] = [{ id: 'intro', duration: 4 }]) {
+async function setup(scenes: { id: string; duration: number; transition?: SceneTransition }[] = [{ id: 'intro', duration: 4 }]) {
   const root = tempDir();
   const store = new FakeStore(root, {
     version: 1,
@@ -266,6 +279,99 @@ test('snapCuts keepBars: scenes keep their bars, cuts land on the bar lines, sna
   assert.deepEqual(await durations(), [9.2, 4, 6, 20]);
   await music.snapCuts(ID, 'bar', { keepBars: true });
   assert.deepEqual(await durations(), [9.2, 4, 6, 20]);
+});
+
+test('snapCuts with a transition: every scene start, overlaps included, lands on a beat; snapping again changes nothing', async () => {
+  // b fades in over the last 0.3 s of a: it starts at 1.5 s, c at 3.8 s. d's fade is capped at half its length: it
+  // starts at 6.2 s, the video ends at 7.6 s.
+  const { store, music, musicDir } = await setup([
+    { id: 'a', duration: 1.8 },
+    { id: 'b', duration: 2.3, transition: { kind: 'fade', duration: 0.3 } },
+    { id: 'c', duration: 3.1 },
+    { id: 'd', duration: 1.4, transition: { kind: 'fade', duration: 2 } },
+  ]);
+  await cachedTrack(musicDir, 'theme.wav');
+  await music.select(ID, 'music/theme.wav');
+  // Beats every 0.5 s from 0.5 s of video.
+  await music.update(ID, { start: 0.5 });
+  const timing = (state: ProjectState) => state.scenes.map((s) => [s.start, s.duration, s.transition?.duration ?? 0]);
+  const snapped = [
+    [0, 1.8, 0],
+    [1.5, 2.5, 0.3],
+    [4, 2.75, 0],
+    [6, 1.5, 0.75],
+  ];
+
+  const state = await music.snapCuts(ID, 'beat');
+  assert.deepEqual(timing(state), snapped);
+  assert.equal(state.duration, 7.5);
+  await music.snapCuts(ID, 'beat');
+  assert.deepEqual(timing(await store.get(ID)), snapped);
+});
+
+test('snapCuts with a transition after a short scene: the scene before caps the overlap, the start still lands on a beat', async () => {
+  // c declares 2 s but b is 0.6 s: c fades in over 0.3 s of it, from 2.3 s.
+  const { store, music, musicDir } = await setup([
+    { id: 'a', duration: 2 },
+    { id: 'b', duration: 0.6 },
+    { id: 'c', duration: 4, transition: { kind: 'fade', duration: 2 } },
+  ]);
+  await cachedTrack(musicDir, 'theme.wav');
+  await music.select(ID, 'music/theme.wav');
+  await music.update(ID, { start: 0.5 });
+  const timing = (state: ProjectState) => state.scenes.map((s) => [s.start, s.duration, s.transition?.duration ?? 0]);
+  const snapped = [
+    [0, 2, 0],
+    [2, 1, 0],
+    [2.5, 4, 0.5],
+  ];
+
+  assert.deepEqual(timing(await music.snapCuts(ID, 'beat')), snapped);
+  await music.snapCuts(ID, 'beat');
+  assert.deepEqual(timing(await store.get(ID)), snapped);
+});
+
+test('snapCuts with a transition into an odd-ms scene: the overlap is half of it rounded down, as the timeline caps it', async () => {
+  // b ends past the grid (32.5 s), so it keeps its 5.001 s; its 5 s fade plays 2.5 s and it starts on the 28.5 s beat.
+  const { store, music, musicDir } = await setup([
+    { id: 'a', duration: 31 },
+    { id: 'b', duration: 5.001, transition: { kind: 'fade', duration: 5 } },
+  ]);
+  await cachedTrack(musicDir, 'theme.wav');
+  await music.select(ID, 'music/theme.wav');
+  await music.update(ID, { start: 0.5 });
+  const timing = (state: ProjectState) => state.scenes.map((s) => [s.start, s.duration, s.transition?.duration ?? 0]);
+  const snapped = [
+    [0, 31, 0],
+    [28.5, 5.001, 2.5],
+  ];
+
+  assert.deepEqual(timing(await music.snapCuts(ID, 'beat')), snapped);
+  await music.snapCuts(ID, 'beat');
+  assert.deepEqual(timing(await store.get(ID)), snapped);
+});
+
+test('snapCuts keepBars with a transition: bars count from start to start, every start lands on a bar line', async () => {
+  // b starts 1 s before a ends (3 s), c at 7 s; tempo 120 makes a bar 2 s.
+  const { store, music, musicDir } = await setup([
+    { id: 'a', duration: 4 },
+    { id: 'b', duration: 4, transition: { kind: 'fade', duration: 1 } },
+    { id: 'c', duration: 2 },
+  ]);
+  await cachedTrack(musicDir, 'theme.wav');
+  await music.select(ID, 'music/theme.wav');
+  // Bar lines at 0.5, 2.5, 4.5, 6.5, 8.5 s of video.
+  await music.update(ID, { start: 0.5 });
+  const timing = (state: ProjectState) => state.scenes.map((s) => [s.start, s.duration, s.transition?.duration ?? 0]);
+  const snapped = [
+    [0, 5.5, 0],
+    [4.5, 4, 1],
+    [8.5, 2, 0],
+  ];
+
+  assert.deepEqual(timing(await music.snapCuts(ID, 'bar', { keepBars: true })), snapped);
+  await music.snapCuts(ID, 'bar', { keepBars: true });
+  assert.deepEqual(timing(await store.get(ID)), snapped);
 });
 
 test('context: tempo, bars, cuts and scene-local times for the agent', async () => {

@@ -411,6 +411,37 @@ test('scenes: create (template insert is versioned), update, duplicate, order, d
   assert.equal(res.status, 404);
 });
 
+test('scenes: a transition is set on a cut, read back declared and effective, removed with null; bad bodies are refused', async () => {
+  await json('PATCH', '/api/projects/demo/scenes/titre', { duration: 4 });
+  await json('POST', '/api/projects/demo/scenes', { name: 'Fin', duration: 5 });
+  const url = '/api/projects/demo/scenes/fin/transition';
+  let res = await json('PUT', url, { transition: { kind: 'slide', duration: 3 } });
+  assert.equal(res.status, 200);
+  const fin = res.body.scenes[1];
+  // Capped at half of the 4 s scene before it; slide goes left when no direction is given.
+  assert.deepEqual(fin.declaredTransition, { kind: 'slide', direction: 'left', duration: 3 });
+  assert.deepEqual(fin.transition, { kind: 'slide', direction: 'left', duration: 2 });
+  assert.equal(fin.start, 2);
+  assert.equal(res.body.duration, 7);
+  assert.deepEqual((await json('GET', '/api/projects/demo')).body.scenes[1].declaredTransition, fin.declaredTransition);
+
+  res = await json('PUT', url, { transition: null });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.scenes[1].transition, undefined);
+  assert.equal(res.body.scenes[1].declaredTransition, undefined);
+
+  res = await json('PUT', url, { transition: { kind: 'zoom', duration: 1 } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /^Requête invalide/);
+  assert.equal((await json('PUT', url, {})).status, 400);
+  assert.equal((await json('PUT', url, { transition: { kind: 'fade', duration: -1 } })).status, 400);
+  res = await json('PUT', '/api/projects/demo/scenes/titre/transition', { transition: { kind: 'fade', duration: 0.5 } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /première scène/);
+  assert.equal((await json('PUT', '/api/projects/demo/scenes/absente/transition', { transition: null })).status, 404);
+  assert.equal((await json('PUT', '/api/projects/absent/scenes/fin/transition', { transition: null })).status, 404);
+});
+
 test('thumbnails are JPEGs with an ETag; diagnostics are relative to the project', async () => {
   let res = await call('GET', '/api/projects/demo/scenes/titre/thumbnail?t=1.5&format=16:9');
   assert.equal(res.status, 200);
@@ -1361,7 +1392,7 @@ test('undo and redo: { entry } or { entry: null }, 404 for an unknown project, 4
   }
 });
 
-test('undo and redo need the editor token', async () => {
+test('undo, redo and transitions need the editor token', async () => {
   const server = http.createServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
@@ -1385,6 +1416,16 @@ test('undo and redo need the editor token', async () => {
       assert.equal((await fetch(url, { method: 'POST', headers: { 'x-cadence-token': `${token}x` } })).status, 403, route);
       assert.equal((await fetch(url, { method: 'POST', headers: { 'x-cadence-token': token } })).status, 200, route);
     }
+    await store.createScene('demo', { name: 'Fin' });
+    const transition = (headers: Record<string, string>) =>
+      fetch(`http://127.0.0.1:${port}/api/projects/demo/scenes/fin/transition`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ transition: { kind: 'fade', duration: 0.5 } }),
+      });
+    assert.equal((await transition({})).status, 403);
+    assert.equal((await store.get('demo')).scenes[1].transition, undefined);
+    assert.equal((await transition({ 'x-cadence-token': token })).status, 200);
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -1430,6 +1471,12 @@ test('editor writes: each one is one undo step saying what changed; a clean proj
     ['POST', '/api/projects/demo/scenes', { name: 'Pause' }, ['edit', 'Scène ajoutée : Pause']],
     ['PATCH', '/api/projects/demo/scenes/fin', { duration: 2.5 }, ['edit', 'Scène modifiée : Fin']],
     ['PATCH', '/api/projects/demo/scenes/fin', { name: 'Clôture' }, ['edit', 'Scène modifiée : Clôture']],
+    [
+      'PUT',
+      '/api/projects/demo/scenes/fin/transition',
+      { transition: { kind: 'wipe', direction: 'up', duration: 0.5 } },
+      ['edit', 'Transition modifiée : Clôture'],
+    ],
     ['POST', '/api/projects/demo/scenes/fin/duplicate', undefined, ['edit', 'Scène ajoutée : Clôture (copie)']],
     ['PUT', '/api/projects/demo/order', order, ['edit', 'Scènes réordonnées']],
     ['POST', '/api/projects/demo/music?name=Theme.MP3', new Blob(['ID3']), ['edit', 'Musique ajoutée : theme.mp3']],
@@ -1498,6 +1545,8 @@ test('editor writes: a write the store refuses records no step, so undo never re
     ['DELETE', '/api/projects/demo/scenes/titre', undefined, 400],
     ['PATCH', '/api/projects/demo/scenes/absent', { duration: 2 }, 404],
     ['POST', '/api/projects/demo/scenes/absent/duplicate', undefined, 404],
+    ['PUT', '/api/projects/demo/scenes/titre/transition', { transition: { kind: 'fade', duration: 0.5 } }, 400],
+    ['PUT', '/api/projects/demo/scenes/absent/transition', { transition: null }, 404],
     ['PUT', '/api/projects/demo/order', { ids: ['absent'] }, 400],
   ];
   for (const [method, url, payload, status] of refused) {
@@ -2220,6 +2269,7 @@ test('seams are checked again after edits that move or change cuts', async () =>
     ['PATCH', '/api/projects/demo/scenes/fin', { name: 'Clôture' }, 0],
     ['PATCH', '/api/projects/demo/scenes/fin', { duration: 2.5 }, 1],
     ['PUT', '/api/projects/demo/order', { ids: ['fin', 'titre'] }, 1],
+    ['PUT', '/api/projects/demo/scenes/titre/transition', { transition: { kind: 'flip', duration: 0.4 } }, 1],
     ['PATCH', '/api/projects/demo', { name: 'Démo 2', fps: 30 }, 0],
     ['PATCH', '/api/projects/demo', { formats: ['16:9', '9:16'] }, 1],
     ['PATCH', '/api/projects/demo', { language: 'en' }, 1],

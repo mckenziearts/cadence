@@ -716,14 +716,15 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `get_music_context` | yes | yes | tempo, bars, phrases in scene-local seconds |
 | `list_templates` | yes | yes | scene + campaign templates |
 | `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images and, per frame, text checks from the frame page (clipped, off canvas, outside the safe area, low contrast, under the captions; at most 6, never an error); or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
-| `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 % |
+| `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 %; a cut with a transition is listed as one, never compared |
 | `check_motion` | own scene | any (every scene by default) | half-size PNG samples every 0.25 s (≤ 120 per scene, ≤ 600 per call, the step widens beyond), captured 12 at a time and diffed as they arrive (memory holds one batch, and `render_frames` can take the capture slot in between), odd samples one video frame late so a beat pulse is not sampled on its hits, consecutive samples diffed like `check_seams`; lists still stretches of about 2 s or more, measured between samples (under 0.01 % of pixels changing), an error when a scene of ≥ 2 s never moves; a render error stops that scene; a 240 s budget (`deadline` on `CaptureService.frames`) stops the scene in progress ("out of time") and the next ones ("not checked"); also an error when no scene could be checked |
 | `set_scene_duration` | own scene | any | ms precision |
 | `set_voice_over` | own scene | any | `text` or `lines` (`{ speaker, text, gesture? }`, exclusive) + `at` (kept when left out); speaks it, answers each line's start and end in scene seconds with its speaker; refuses a text over a scene written in lines |
 | `list_voices` | no | yes | the voices of the project's engine (installed Piper voices, or the ElevenLabs catalogue of the account or the host app) with id, name, language; without an ElevenLabs key, the message saying where to add one |
 | `set_speakers` | no | yes | replaces the project speakers through `ProjectStore.update` (its checks: voice per engine, at most 10, no removing a speaker a line uses) |
 | `create_scene`, `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene` | no | yes | `create_scene` takes a template id or TSX code |
-| `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns |
+| `set_transition` | no | yes | the cut into a scene (null cuts hard); answers declared and effective duration and the scene table |
+| `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns; every scene start lands on the grid, overlaps included |
 | `capture_reference` | no | yes | screenshot an http(s) page into assets/refs/, from a host the person approved for the project only |
 | `save_version` | yes | yes | named snapshot |
 
@@ -874,6 +875,7 @@ PATCH  /api/projects/:id/scenes/:sid               { name?, duration?, voiceOver
 POST   /api/projects/:id/scenes/:sid/duplicate     answers SceneState
 DELETE /api/projects/:id/scenes/:sid               answers ProjectState (409 while a turn runs)
 PUT    /api/projects/:id/order                     { ids }, answers ProjectState
+PUT    /api/projects/:id/scenes/:sid/transition    { transition: SceneTransition | null }, answers ProjectState (400 on the first scene)
 GET    /api/projects/:id/scenes/:sid/thumbnail     ?t=&format=, answers image/jpeg
 GET    /api/projects/:id/scenes/:sid/diagnostics   { error: string | null }
 GET    /api/projects/:id/seams                     SeamResult[] (cached)
@@ -1026,7 +1028,10 @@ plus: overrides (`bpm`, `beatsPerBar`, `barOffset`, `gridOffset`) applied in `gr
 click tracks with known tempo and downbeats. A reading of 140 BPM or more is halved when nothing sits between the
 beats (a backbeat read as beats). `snapCuts` moves each cut to the nearest grid point in video time; with
 `keepBars` each scene keeps its bar count (round(duration × tempo / 240), at least 1), cuts land on the detected
-downbeats (the lead-in joins the first scene) and `project.tempo` becomes 240 / bar length.
+downbeats (the lead-in joins the first scene) and `project.tempo` becomes 240 / bar length. With transitions, both snap
+the slots from one start to the next, then add each overlap back to the scene before it (`withOverlaps`), so every
+scene start lands on the grid; each overlap is worked out again from its declared length with the half-scene caps of the
+new lengths, so it can grow back or shrink.
 
 The analysis runs in a worker thread (`server/music/worker.mjs`, JavaScript so that it loads tsx itself: Node 22.12
 starts a worker without the parent's `--import` hooks): its DSP would hold the server for about 1 s per 10 minutes of
@@ -1044,7 +1049,9 @@ Seams (`PixelSeamService`): the last frame of a scene and the first of the next,
 format, compared with `pixelmatch({ threshold: 0.01, includeAA: true })`. Under 0.05 % of pixels the cut is
 invisible. Structural changes (duration, order, deletion, snap, formats, brand, tempo, language) re-check in the
 background once the edits settle (`recheck`: 1.5 s after the last one, one check for a burst). Only the seam dialog
-(`detail`) draws the diff image.
+(`detail`) draws the diff image. A cut into a scene with a transition captures nothing: its result carries the
+effective `transition` and a `diffPercent` of 0, in its place among the other cuts. `detail` still draws such a cut
+for the dialog but leaves that cached result in place.
 
 ## Voice-over
 

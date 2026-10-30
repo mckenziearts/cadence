@@ -59,6 +59,7 @@ export default {
     artDirectionEdited: 'Direction artistique modifiée',
     sceneAdded: (scene: string) => `Scène ajoutée : ${scene}`,
     sceneEdited: (scene: string) => `Scène modifiée : ${scene}`,
+    transitionSet: (scene: string) => `Transition modifiée : ${scene}`,
     sceneDeleted: 'Scène supprimée',
     scenesReordered: 'Scènes réordonnées',
     musicAdded: (file: string) => `Musique ajoutée : ${file}`,

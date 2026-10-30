@@ -834,10 +834,12 @@ export interface SeamResult {
   from: string;
   to: string;
   format: FormatId;
-  /** Percentage of pixels that differ (0..100). */
+  /** Percentage of pixels that differ (0..100); 0 for a cut with a transition, which is never compared. */
   diffPercent: number;
   checkedAt: string;
   error?: string;
+  /** The transition drawn across this cut (as it plays, capped): both scenes show at once, so no frame must match. */
+  transition?: SceneTransition;
 }
 
 export type RenderQuality = 'draft' | 'standard' | 'master';

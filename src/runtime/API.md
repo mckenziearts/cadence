@@ -153,6 +153,21 @@ const L = f.pick({
 </ui.Card>
 ```
 
+## Transitions
+
+A scene can come in over the end of the scene before it instead of cutting hard. The project chat sets it with
+`set_transition` (`{ kind, direction?, duration }`, or null to cut hard again):
+
+- `kind`: `fade` (cross-fade), `slide` (the new scene pushes the old one out), `wipe` (a moving edge reveals the new
+  scene) or `flip` (a card turn). `direction` (`left`, `right`, `up`, `down`; `left` by default) is where the motion
+  goes, for slide, wipe and flip: `left` brings the new scene in from the right.
+- `duration`: 0.1 to 5 s. The incoming scene starts that much before the previous one ends, so the video gets shorter
+  by it. It is capped at half of either scene; `get_project` lists the declared and the effective duration.
+- The first scene takes none. Each scene keeps its own `t`: the incoming one plays from `t = 0` during the overlap,
+  the outgoing one plays its last seconds. Design both to look finished there; the runtime draws the transition.
+- `check_seams` reports a transition cut as a transition without comparing frames. `snap_cuts_to_music` lands every
+  scene start, overlaps included, on the grid.
+
 ## Music (scene seconds; key moments to the grid, never to hard-coded seconds)
 
 `music`: `hasTrack` (false = steady 4/4 grid at the project tempo from t = 0, phrases of 4 bars), `bpm`, `beatLength`,
@@ -388,7 +403,8 @@ const onSave = progress(t, 1.6, 1.8);                                  // the cu
 
 ## Seam checklist
 
-Consecutive scenes cut hard: when something continues across a cut, the last frame (t = duration) must equal the
+Consecutive scenes cut hard unless the next scene declares a transition (see Transitions; nothing has to match
+across one): when something continues across a hard cut, the last frame (t = duration) must equal the
 next scene's first frame (t = 0). Share positions/sizes/copy through `components/`; end 3D moves, camera moves and
 swaps exactly at rest (progress 0 or 1): Stage3D, Camera, SwapWords and TypeOn then render exactly what a plain
 flat layout renders; no leftover filters, transforms or opacity at the cut. `check_seams` measures the share of

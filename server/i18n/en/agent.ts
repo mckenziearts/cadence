@@ -19,7 +19,7 @@ export default {
     outsideChanges: 'Changes outside the chat',
     failed: (agent: string | null) => `${agent ?? 'Our AI'} stopped on an error.`,
     seam: (r: SeamResult) =>
-      `${r.from} to ${r.to} (${r.format}): ${r.diffPercent.toFixed(2)}%${r.error ? ` (error: ${r.error})` : ''}`,
+      `${r.from} to ${r.to} (${r.format}): ${r.transition ? 'transition, not compared' : `${r.diffPercent.toFixed(2)}%`}${r.error ? ` (error: ${r.error})` : ''}`,
     notSaved: '[cadence] Chat not saved:',
     turnFailed: '[cadence] Chat turn failed:',
     wrapUpFailed: (projectId: string, key: string) => `[cadence] End of turn (${projectId}, ${key}):`,
@@ -50,6 +50,7 @@ export default {
       remove: (scene: string) => `Deleting ${scene}`,
       move: (scene: string, position: string) => `Moving ${scene} to position ${position}`,
       rename: (scene: string, name: string) => `Renaming ${scene} to "${name}"`,
+      transition: (scene: string, removed: boolean) => (removed ? `Hard cut into ${scene}` : `Transition into ${scene}`),
       grids: { beat: 'beats', bar: 'bars', phrase: 'phrases' },
       grid: 'the grid',
       snap: (grid: string) => `Cuts snapped to ${grid}`,

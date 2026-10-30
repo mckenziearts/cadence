@@ -32,6 +32,7 @@ import type {
   RenderRequest,
   RepoListing,
   SceneState,
+  SceneTransition,
   SceneVoiceOverInput,
   SeamResult,
   SendMessageInput,
@@ -139,6 +140,8 @@ export const api = {
     input: { name?: string; duration?: number; voiceOver?: SceneVoiceOverInput | null },
     options?: Options,
   ) => patch<ProjectState>(`${p(id)}/scenes/${sceneId}`, input, options),
+  setTransition: (id: string, sceneId: string, transition: SceneTransition | null) =>
+    put<ProjectState>(`${p(id)}/scenes/${sceneId}/transition`, { transition }),
   duplicateScene: (id: string, sceneId: string) => post<SceneState>(`${p(id)}/scenes/${sceneId}/duplicate`),
   deleteScene: (id: string, sceneId: string) => del<ProjectState>(`${p(id)}/scenes/${sceneId}`),
   reorder: (id: string, ids: string[]) => put<ProjectState>(`${p(id)}/order`, { ids }),

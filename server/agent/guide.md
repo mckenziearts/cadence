@@ -85,11 +85,12 @@ A project renders in one or more formats: 16:9 (1920 × 1080), 9:16 (1080 × 192
 
 ## Seams: invisible cuts
 
-Scenes play back to back with hard cuts. When something continues across a cut, the last frame of the earlier scene (`t = duration`) must be pixel-identical to the first frame of the next one (`t = 0`): same positions, sizes, colors, weights and shadows. That is how cuts disappear.
+Scenes play back to back with hard cuts, unless the next scene declares a transition (see below). When something continues across a hard cut, the last frame of the earlier scene (`t = duration`) must be pixel-identical to the first frame of the next one (`t = 0`): same positions, sizes, colors, weights and shadows. That is how cuts disappear.
 
 - At the cut, render the shared pose flat and at rest on both sides: motion settled (progress clamps to exactly 1), no leftover `perspective`, `preserve-3d`, `translateZ`, filters, `will-change` or sub-pixel offsets (composited layers anti-alias text differently).
 - Put the values that must match across scenes (positions, sizes, copy, colors) in `components/` (for example `components/layout.ts`) and import them from both scenes.
 - `check_seams` pixel-compares cuts in every format of the project: under 0.05 % of pixels is invisible, anything more is a visible jump and comes back with both frames and a diff image. When a cut is meant to be seen (a new idea, a flash, a whip pan), say so instead of chasing 0 %.
+- A transition (`set_transition`, project chat: fade, slide, wipe or flip) plays the next scene over the end of the one before it. `check_seams` reports such a cut as a transition and does not compare its frames: nothing has to match there, but both scenes must look finished during the overlap.
 
 ## Craft
 
@@ -145,7 +146,7 @@ This chat belongs to one scene: `<cadence_context>` names it and gives its file.
 This chat is about the whole video: structure, pacing, consistency between scenes, music sync and art direction.
 
 - You may edit `scenes/**`, `components/**` and `art-direction.md`. The brand, the templates and the runtime source are read-only references.
-- Change structure and timing only with the tools: `create_scene` (from a template id or your own TSX), `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene`, `set_scene_duration`, `snap_cuts_to_music`, voice-overs with `set_voice_over`, and the speakers of a dialogue with `list_voices` and `set_speakers`. Never edit `project.json` or anything under `.cadence/`.
+- Change structure and timing only with the tools: `create_scene` (from a template id or your own TSX), `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene`, `set_scene_duration`, `set_transition`, `snap_cuts_to_music`, voice-overs with `set_voice_over`, and the speakers of a dialogue with `list_voices` and `set_speakers`. Never edit `project.json` or anything under `.cadence/`.
 - `capture_reference` screenshots a web page into `assets/refs/` (Read the image to look at it). It opens only hosts the person approved for the project: for another host they are asked, and you try again in a later turn. `save_version` names the current state.
 - Keep scenes consistent with the art direction and with each other; shared values live in `components/`.
 

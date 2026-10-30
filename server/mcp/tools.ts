@@ -7,7 +7,16 @@ import { setImmediate } from 'node:timers/promises';
 import { PNG } from 'pngjs';
 import { z } from 'zod';
 import type { AuditFinding, AuditKind } from '../../src/shared/frameProtocol';
-import { FORMAT_IDS, FORMATS, type FormatId, type ProjectState, type SceneState, type SeamResult } from '../../src/shared/types';
+import {
+  FORMAT_IDS,
+  FORMATS,
+  TRANSITION_DIRECTIONS,
+  TRANSITION_KINDS,
+  type FormatId,
+  type ProjectState,
+  type SceneState,
+  type SeamResult,
+} from '../../src/shared/types';
 import type {
   AssetStore,
   BrandStore,
@@ -25,7 +34,15 @@ import type {
   VersionStore,
   VoiceOverService,
 } from '../contracts';
-import { barSeconds, projectOverview, sceneTable, speakerLine, voiceOverSummary } from '../agent/prompts';
+import {
+  barSeconds,
+  projectOverview,
+  sceneTable,
+  speakerLine,
+  transitionLength,
+  transitionName,
+  voiceOverSummary,
+} from '../agent/prompts';
 import { UnapprovedHost } from '../capture/capture';
 import { approved, isLocalHost } from '../capture/policy';
 import { diffPercent } from '../capture/seams';
@@ -81,6 +98,7 @@ export const PROJECT_TOOLS = [
   'delete_scene',
   'move_scene',
   'rename_scene',
+  'set_transition',
   'snap_cuts_to_music',
   'capture_reference',
   'list_voices',
@@ -199,6 +217,9 @@ function findScene(p: ProjectState, sceneId: string): SceneState {
 }
 
 function describeSeam(r: SeamResult): string {
+  if (r.transition) {
+    return `${r.from} \u2192 ${r.to} (${r.format}): ${transitionName(r.transition)} transition of ${r.transition.duration.toFixed(3)} s, frames not compared`;
+  }
   const d = r.diffPercent;
   const verdict = d < SEAM_IMAGE_THRESHOLD ? 'invisible' : d < 5 ? 'a small visible jump' : 'a visible cut';
   return `${r.from} → ${r.to} (${r.format}): ${d.toFixed(2)} % of pixels differ, ${verdict}${r.error ? ` (error: ${r.error})` : ''}`;
@@ -775,6 +796,34 @@ export function createToolServer(ctx: ToolContext): McpServer {
       const p = await project(args.projectId);
       await deps.store.updateScene(p.id, findScene(p, args.sceneId).id, { name: args.name });
       return text(`Renamed ${args.sceneId} to "${args.name}".`);
+    },
+  );
+
+  tool(
+    'set_transition',
+    'Set the transition into a scene: it comes in over the last `duration` seconds of the scene before it (0.1-5 s, capped at half of either scene), so the video gets shorter by that overlap. null cuts hard again. The first scene takes none.',
+    {
+      projectId,
+      sceneId: z.string().describe('The scene that comes in.'),
+      transition: z
+        .object({
+          kind: z.enum(TRANSITION_KINDS),
+          direction: z.enum(TRANSITION_DIRECTIONS).optional().describe('Slide, wipe and flip; default left. A fade has none.'),
+          duration: z.number().describe('Seconds of overlap.'),
+        })
+        .nullable(),
+    },
+    async (args) => {
+      const p = await project(args.projectId);
+      const next = await deps.store.setTransition(p.id, findScene(p, args.sceneId).id, args.transition);
+      const scene = next.scenes.find((s) => s.id === args.sceneId)!;
+      const prev = next.scenes[scene.index - 1]?.id;
+      const done = scene.transition
+        ? `${scene.id} now comes in over the end of ${prev} with a ${transitionName(scene.transition)} of ${transitionLength(scene)}.`
+        : prev
+          ? `${scene.id} now cuts hard from ${prev}.`
+          : `${scene.id} is the first scene: it takes no transition.`;
+      return text(`${done}\n\n${sceneTable(next)}`);
     },
   );
 

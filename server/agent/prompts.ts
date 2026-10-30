@@ -5,6 +5,7 @@ import {
   type Playhead,
   type ProjectState,
   type SceneState,
+  type SceneTransition,
   type SeamResult,
   type Speaker,
 } from '../../src/shared/types';
@@ -75,10 +76,34 @@ export function sceneTable(p: ProjectState, current?: string | null): string {
   return ['| # | id | name | start (s) | duration (s) | bars |', '|---|---|---|---|---|---|', ...rows].join('\n');
 }
 
+/** "fade", "wipe up": the kind, then the direction when it has one. */
+export function transitionName(t: SceneTransition): string {
+  return t.direction ? `${t.kind} ${t.direction}` : t.kind;
+}
+
+/** The effective overlap, with the declared one when the half-scene cap shortened it. */
+export function transitionLength(s: SceneState): string {
+  const { transition, declaredTransition } = s;
+  if (!transition) return '';
+  const declared = declaredTransition && declaredTransition.duration !== transition.duration;
+  return `${transition.duration.toFixed(3)} s${declared ? ` (declared ${declaredTransition.duration.toFixed(3)} s, capped at half a scene)` : ''}`;
+}
+
+function transitionSummary(p: ProjectState): string {
+  const rows = p.scenes.flatMap((s) => {
+    if (!s.declaredTransition) return [];
+    const name = transitionName(s.declaredTransition);
+    if (!s.transition)
+      return [`- ${s.id}: ${name}, declared ${s.declaredTransition.duration.toFixed(3)} s, no effect on the first scene`];
+    return [`- ${s.id}: ${name}, ${transitionLength(s)}`];
+  });
+  return rows.length ? ['Transitions (each one plays over the end of the scene before it):', ...rows].join('\n') : '';
+}
+
 /** get_project output and the head of every turn's context. */
 export function projectOverview(p: ProjectState): string {
-  const voiceOver = voiceOverSummary(p);
-  return `${projectHeader(p)}\n\n${sceneTable(p)}${voiceOver ? `\n\n${voiceOver}` : ''}`;
+  const blocks = [projectHeader(p), sceneTable(p), transitionSummary(p), voiceOverSummary(p)];
+  return blocks.filter(Boolean).join('\n\n');
 }
 
 /**
@@ -139,7 +164,8 @@ function playheadLine(ph: Playhead, p: ProjectState, scene: SceneState | null): 
 function seamLine(results: SeamResult[]): string {
   if (!results.length) return 'Seams: not checked yet.';
   const items = results.map(
-    (r) => `${r.from} → ${r.to} (${r.format}) ${r.diffPercent.toFixed(2)} %${r.error ? `, error: ${r.error}` : ''}`,
+    (r) =>
+      `${r.from} \u2192 ${r.to} (${r.format}) ${r.transition ? `${transitionName(r.transition)} transition, not compared` : `${r.diffPercent.toFixed(2)} %`}${r.error ? `, error: ${r.error}` : ''}`,
   );
   return `Seams at the last check (may be stale): ${items.join(' · ')}`;
 }

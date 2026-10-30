@@ -39,6 +39,7 @@ import type {
   CreateSceneInput,
   ProjectState,
   SceneState,
+  SceneTransition,
   ScriptLine,
   ServerEvent,
   Speaker,
@@ -168,6 +169,21 @@ describe('MCP endpoint', () => {
         record('reorderScenes', [id, ids]);
         return { ...project, scenes: ids.map((sid) => project.scenes.find((s) => s.id === sid)!) };
       },
+      // As the real store caps it here: never more than 1 s, half of a 2 s neighbour.
+      setTransition: async (id: string, sceneId: string, transition: SceneTransition | null) => {
+        record('setTransition', [id, sceneId, transition]);
+        const set = (s: SceneState): SceneState => {
+          const { transition: _effective, declaredTransition: _declared, ...scene } = s;
+          if (s.id !== sceneId || !transition) return s.id === sceneId ? scene : s;
+          return {
+            ...scene,
+            declaredTransition: transition,
+            transition: { ...transition, duration: Math.min(transition.duration, 1) },
+          };
+        };
+        project = { ...project, scenes: project.scenes.map(set) };
+        return project;
+      },
     } as unknown as ProjectStore;
     const capture = {
       frames: async (
@@ -211,6 +227,13 @@ describe('MCP endpoint', () => {
     const seams = {
       check: async (id: string, opts: unknown) => {
         record('seams', [id, opts]);
+        const into = project.scenes.find((s) => s.id === 'outro')?.transition;
+        if (into) {
+          return [
+            { from: 'intro', to: 'outro', format: '9:16', diffPercent: 0, checkedAt: '', transition: into },
+            { from: 'outro', to: 'logo', format: '9:16', diffPercent: 0.06, checkedAt: '' },
+          ];
+        }
         return [
           { from: 'intro', to: 'outro', format: '9:16', diffPercent: 0.06, checkedAt: '' },
           { from: 'outro', to: 'logo', format: '9:16', diffPercent: 0.04, checkedAt: '' },
@@ -893,6 +916,58 @@ describe('MCP endpoint', () => {
       assert.equal(texts(result)[0].split('\n').at(-1), '- intro: still from 2.500 s to 5.500 s.');
     } finally {
       motion = null;
+      project = saved;
+      await client.close();
+    }
+  });
+
+  test('set_transition: project chats only; the cut into a scene, shown declared and effective; another project refused', async () => {
+    assert.ok(PROJECT_TOOLS.includes('set_transition') && !SCENE_TOOLS.includes('set_transition'));
+    const saved = project;
+    const client = await connect(tokens.issue({ kind: 'project', projectId: 'demo' }));
+    try {
+      const wipe = { kind: 'wipe', direction: 'up', duration: 1.5 };
+      const set = await call(client, 'set_transition', { sceneId: 'outro', transition: wipe });
+      assert.ok(!set.isError, texts(set)[0]);
+      assert.deepEqual(calls.setTransition.at(-1), ['demo', 'outro', wipe]);
+      assert.match(
+        texts(set)[0],
+        /^outro now comes in over the end of intro with a wipe up of 1\.000 s \(declared 1\.500 s, capped at half a scene\)\.\n\n\| # \| id \|/,
+      );
+
+      const overview = texts(await call(client, 'get_project'))[0];
+      assert.match(
+        overview,
+        /\n\nTransitions \(each one plays over the end of the scene before it\):\n- outro: wipe up, 1\.000 s \(declared 1\.500 s, capped at half a scene\)(\n\n|$)/,
+      );
+
+      // A transition cut is reported, never compared, so it sends no images.
+      const seams = await call(client, 'check_seams', {});
+      assert.match(
+        texts(seams)[0],
+        /^intro \u2192 outro \(9:16\): wipe up transition of 1\.000 s, frames not compared\noutro \u2192 logo \(9:16\): 0\.06 %/,
+      );
+      assert.equal(seams.content.filter((c) => c.type === 'image').length, 3);
+
+      const removed = await call(client, 'set_transition', { sceneId: 'outro', transition: null });
+      assert.ok(!removed.isError, texts(removed)[0]);
+      assert.deepEqual(calls.setTransition.at(-1), ['demo', 'outro', null]);
+      assert.match(texts(removed)[0], /^outro now cuts hard from intro\./);
+      assert.doesNotMatch(texts(await call(client, 'get_project'))[0], /Transitions/);
+      // A first scene can hold one after a move: clearing it names no scene before it.
+      const first = await call(client, 'set_transition', { sceneId: 'intro', transition: null });
+      assert.match(texts(first)[0], /^intro is the first scene: it takes no transition\./);
+
+      const count = calls.setTransition.length;
+      const other = await call(client, 'set_transition', { projectId: 'autre', sceneId: 'outro', transition: null });
+      assert.equal(other.isError, true);
+      assert.match(texts(other)[0], /projet « demo »/);
+      const ghost = await call(client, 'set_transition', { sceneId: 'ghost', transition: null });
+      assert.match(texts(ghost)[0], /Aucune scène « ghost »/);
+      const zoom = await call(client, 'set_transition', { sceneId: 'outro', transition: { kind: 'zoom', duration: 1 } });
+      assert.equal(zoom.isError, true);
+      assert.equal(calls.setTransition.length, count);
+    } finally {
       project = saved;
       await client.close();
     }

@@ -171,13 +171,19 @@ export class LocalMusicService implements MusicService {
       const video = (points: number[]) => points.map((t) => t - music.start);
       if (opts.keepBars) {
         const bar = (data.beatsPerBar * 60) / data.bpm;
-        await store.setDurations(projectId, barDurations(scenes, video(data.downbeats), bar, tempo));
+        await store.setDurations(
+          projectId,
+          withOverlaps(scenes, (slots) => barDurations(slots, video(data.downbeats), bar, tempo)),
+        );
         // Scene lengths are now bars of the track: count them at its tempo from now on (a second snap keeps them,
         // inserted templates get its bar length). 240 / tempo is one bar, whatever the track's beats per bar.
         return store.update(projectId, { tempo: Math.min(300, Math.max(30, 240 / bar)) });
       }
       const points = grid === 'beat' ? data.beats : grid === 'bar' || data.phrases.length < 2 ? data.downbeats : data.phrases;
-      return store.setDurations(projectId, snapDurations(scenes, video(points)));
+      return store.setDurations(
+        projectId,
+        withOverlaps(scenes, (slots) => snapDurations(slots, video(points))),
+      );
     });
   }
 
@@ -397,6 +403,33 @@ function mergeSettings(current: MusicSettings, patch: SettingsPatch, detectedBea
     } else next.gridOffset = roundMs(patch.gridOffset);
   }
   return next;
+}
+
+/**
+ * Snaps scene starts rather than scene ends: `snap` gets each scene's slot (its start to the next start, the last
+ * scene's duration) and moves them; each scene then gets back the part its successor's transition overlaps, capped as
+ * sceneTimeline caps it, so the starts it computes are the snapped ones.
+ */
+function withOverlaps(
+  scenes: Pick<SceneState, 'id' | 'start' | 'duration' | 'declaredTransition'>[],
+  snap: (slots: Pick<SceneState, 'id' | 'duration'>[]) => Record<string, number>,
+): Record<string, number> {
+  const ms = (seconds: number) => Math.round(seconds * 1000);
+  const slots = snap(
+    scenes.map((s, i) => ({ id: s.id, duration: i + 1 < scenes.length ? roundMs(scenes[i + 1].start - s.start) : s.duration })),
+  );
+  const durations: Record<string, number> = {};
+  let overlap = 0;
+  for (let i = scenes.length - 1; i >= 0; i--) {
+    const { id, declaredTransition } = scenes[i];
+    const duration = ms(slots[id]) + overlap;
+    durations[id] = duration / 1000;
+    overlap =
+      i > 0 && declaredTransition
+        ? Math.min(ms(declaredTransition.duration), ms(slots[scenes[i - 1].id]), Math.floor(duration / 2))
+        : 0;
+  }
+  return durations;
 }
 
 /**
