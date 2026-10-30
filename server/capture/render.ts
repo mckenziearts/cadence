@@ -1,5 +1,5 @@
 // Video export: headless frame pages capture frames in parallel, ffmpeg encodes them in order (H.264 MP4, VP9 WebM,
-// ProRes MOV or GIF, with the soundtrack but on a GIF).
+// ProRes MOV or GIF, with the soundtrack but on a GIF), or writes one PNG frame or a folder of numbered PNG frames.
 // Adapted from saeedvaziry/caleb-video-editor (MIT)
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -65,12 +65,11 @@ const ERROR_CHARS = 200;
  */
 const TRACK_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.wav(\.\d+\.[0-9a-f]{8}\.tmp)?$/;
 
-/** The outputs a request may ask for; T19 adds the PNG ones. */
-export const ACCEPTED_OUTPUTS = ['mp4', 'webm', 'mov', 'gif'] as const satisfies readonly RenderOutput[];
-type AcceptedOutput = (typeof ACCEPTED_OUTPUTS)[number];
+/** The outputs a request may ask for. */
+export const ACCEPTED_OUTPUTS = RENDER_OUTPUTS;
 const ALPHA_OUTPUTS: readonly RenderOutput[] = ['webm', 'mov', 'png', 'png-sequence'];
 
-export function isAcceptedOutput(value: unknown): value is AcceptedOutput {
+export function isAcceptedOutput(value: unknown): value is RenderOutput {
   return (ACCEPTED_OUTPUTS as readonly unknown[]).includes(value);
 }
 
@@ -166,10 +165,11 @@ export class FfmpegRenderService implements RenderService {
         const file: RenderFile = {
           name,
           url: renderUrl(projectId, name),
-          size: output === 'png-sequence' ? await folderSize(project, path.join(dir, name)) : stat.size,
+          size: stat.size,
           createdAt: stat.mtime.toISOString(),
           format: formatFromName(name),
           output,
+          ...(output === 'png-sequence' ? await sequenceFiles(project, path.join(dir, name)) : {}),
         };
         return file;
       }),
@@ -224,7 +224,7 @@ export class FfmpegRenderService implements RenderService {
       status: 'queued',
       progress: 0,
       framesDone: 0,
-      framesTotal: Math.max(0, Math.round(span * fps)),
+      framesTotal: request.output === 'png' ? 1 : Math.max(0, Math.round(span * fps)),
       width: even(width * scale),
       height: even(height * scale),
       fps,
@@ -286,12 +286,16 @@ export class FfmpegRenderService implements RenderService {
     let { from, total } = frameRange(project, request, job.fps);
     const preset = PRESETS[request.quality];
     // normalizeRequest lets accepted outputs only through.
-    const kind = (request.output ?? 'mp4') as AcceptedOutput;
+    const kind = request.output ?? 'mp4';
     const transparent = Boolean(request.transparent);
+    // A PNG output is captured losslessly, as ffmpegArgs expects; JPEG would blur its edges and its chroma.
+    const pngFrames = transparent || kind === 'png' || kind === 'png-sequence';
 
     const dir = this.rendersDir(job.projectId);
     await fs.mkdir(dir, { recursive: true });
-    const name = await freeName(dir, `${project.id}-${job.format.replace(':', 'x')}-${stamp(new Date())}`, kind);
+    const ext = kind === 'png-sequence' ? '' : `.${kind}`;
+    const name = await freeName(dir, `${project.id}-${job.format.replace(':', 'x')}-${stamp(new Date())}`, ext);
+    // A PNG sequence's partial is the folder its frames go to.
     const partial = path.join(dir, `${name}.part`);
     // A GIF's frames go to a lossless file first, then get their palette in a second pass (see gifArgs).
     const frames = kind === 'gif' ? path.join(dir, `${name}.frames.part`) : null;
@@ -315,9 +319,9 @@ export class FfmpegRenderService implements RenderService {
           }),
         ),
       );
-      // A transparent frame goes through CDP: Playwright's PNG screenshot would set and reset the background on every frame,
+      // A PNG frame goes through CDP: Playwright's PNG screenshot would set and reset the background on every frame,
       // without optimizeForSpeed (about 5 times slower in 1080p).
-      const cdp = transparent ? await Promise.all(pages.map(({ page }) => page.context().newCDPSession(page))) : null;
+      const cdp = pngFrames ? await Promise.all(pages.map(({ page }) => page.context().newCDPSession(page))) : null;
       if (cdp) {
         const background = { color: { r: 0, g: 0, b: 0, a: 0 } };
         // A session without its own metrics override captures at a pixel ratio of 1 whatever the context's is.
@@ -326,7 +330,7 @@ export class FfmpegRenderService implements RenderService {
             const { width, height } = pages[i]!.page.viewportSize()!;
             const metrics = { width, height, deviceScaleFactor: pixelRatio, mobile: false };
             return Promise.all([
-              session.send('Emulation.setDefaultBackgroundColorOverride', background),
+              transparent && session.send('Emulation.setDefaultBackgroundColorOverride', background),
               session.send('Emulation.setDeviceMetricsOverride', metrics),
             ]);
           }),
@@ -358,6 +362,7 @@ export class FfmpegRenderService implements RenderService {
       this.emit(state, true);
       abort.signal.throwIfAborted();
 
+      if (kind === 'png-sequence') await fs.mkdir(partial);
       const ffmpeg = spawn(
         config.ffmpegPath,
         ffmpegArgs({
@@ -398,7 +403,7 @@ export class FfmpegRenderService implements RenderService {
       // Pages take blocks of consecutive frames; the writer feeds ffmpeg strictly in order.
       const images: (Deferred<Buffer> | null)[] = Array.from({ length: total }, () => deferred<Buffer>());
       let cursor = 0;
-      const ahead = captureWindow(workers, transparent, job.width * job.height * (request.supersample ? 4 : 1));
+      const ahead = captureWindow(workers, pngFrames, job.width * job.height * (request.supersample ? 4 : 1));
       let wakeCapture = deferred<void>();
       abort.signal.addEventListener('abort', () => wakeCapture.resolve(), { once: true });
 
@@ -463,7 +468,7 @@ export class FfmpegRenderService implements RenderService {
     } finally {
       kill();
       await browser.close().catch(() => undefined);
-      await fs.rm(partial, { force: true });
+      await fs.rm(partial, { force: true, recursive: true });
       if (frames) await fs.rm(frames, { force: true });
       if (sounds) await fs.rm(sounds, { force: true });
     }
@@ -497,28 +502,34 @@ export async function soundCues(page: Page, project: ProjectState) {
   return parsed.cues;
 }
 
-/** Bytes of the plain files in a PNG sequence folder. */
-async function folderSize(root: string, folder: string): Promise<number> {
+/** Bytes and number of the plain files in a PNG sequence folder. */
+async function sequenceFiles(root: string, folder: string): Promise<{ size: number; frames: number }> {
   const names = await listInside(root, folder).catch(() => [] as string[]);
   const stats = await Promise.all(names.map((name) => fs.lstat(path.join(folder, name)).catch(() => null)));
-  return stats.reduce((sum, stat) => sum + (stat?.isFile() ? stat.size : 0), 0);
+  const files = stats.filter((stat) => stat?.isFile());
+  return { size: files.reduce((sum, stat) => sum + stat!.size, 0), frames: files.length };
 }
 
 /**
- * A render killed with its process (crash, SIGKILL) leaves its .part file, its sounds track and maybe the temporary file
- * of that track. A live render, even from another Cadence on the same folder, writes its .part every few seconds: a
- * file untouched for an hour is left over. A track that old may still feed a long render, but ffmpeg opened it when it
- * started, and removing an open file does not cut it off (Cadence refuses to run on Windows). Only plain files go: a
- * link or a folder under one of these names stays.
+ * A render killed with its process (crash, SIGKILL) leaves its .part file (a folder for a PNG sequence), its sounds track
+ * and maybe the temporary file of that track. A live render, even from another Cadence on the same folder, writes its
+ * .part every few seconds, and each frame added to a sequence folder touches it: one untouched for an hour is left over.
+ * A track that old may still feed a long render, but ffmpeg opened it when it started, and removing an open file does
+ * not cut it off (Cadence refuses to run on Windows). Only plain files and folders named like a sequence's .part go, the
+ * folder with what it holds (rm does not follow the links inside); a link, or any other folder, stays.
  */
 async function dropStale(file: string): Promise<void> {
   const stat = await fs.lstat(file).catch(() => null);
-  if (stat?.isFile() && Date.now() - stat.mtimeMs > 60 * 60_000) await fs.rm(file, { force: true });
+  const sequence = stat?.isDirectory() && RENDER_NAMES['png-sequence'].test(path.basename(file, '.part'));
+  if ((stat?.isFile() || sequence) && Date.now() - stat!.mtimeMs > 60 * 60_000) {
+    await fs.rm(file, { recursive: true, force: true });
+  }
 }
 
-/** Frames of the request in this state of the project (the range is clamped to the video). */
+/** Frames of the request in this state of the project (the range is clamped to the video); a still PNG is one frame. */
 function frameRange(project: ProjectState, request: RenderRequest, fps: number): { from: number; total: number } {
   const from = Math.min(request.range?.from ?? 0, project.duration);
+  if (request.output === 'png') return { from, total: 1 };
   const to = Math.min(request.range?.to ?? project.duration, project.duration);
   const total = Math.round((to - from) * fps);
   if (total < 1) throw new Error(m().media.render.nothing);
@@ -590,10 +601,10 @@ const BT709 = ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc'
 
 /**
  * What an output changes in the ffmpeg arguments; a GIF has no audio, and its own colors (see ffmpegArgs). The GIF
- * arguments write its frames losslessly, for gifArgs.
+ * arguments write its frames losslessly, for gifArgs. PNG outputs have no audio and stay RGB.
  */
 const OUTPUT_ARGS: Record<
-  AcceptedOutput,
+  RenderOutput,
   {
     pixels: ((transparent: boolean) => string) | null;
     video: (o: { preset: string; crf: number; transparent: boolean }) => string[];
@@ -630,6 +641,18 @@ const OUTPUT_ARGS: Record<
     audio: null,
     container: ['-f', 'matroska'],
   },
+  png: {
+    pixels: (transparent) => (transparent ? 'rgba' : 'rgb24'),
+    video: () => ['-c:v', 'png'],
+    audio: null,
+    container: ['-frames:v', '1', '-update', '1', '-f', 'image2'],
+  },
+  'png-sequence': {
+    pixels: (transparent) => (transparent ? 'rgba' : 'rgb24'),
+    video: () => ['-c:v', 'png'],
+    audio: null,
+    container: ['-f', 'image2'],
+  },
 };
 
 export function ffmpegArgs(o: {
@@ -639,8 +662,8 @@ export function ffmpegArgs(o: {
   /** Frames are captured at twice the output size. */
   supersample: boolean;
   /** An opaque MP4 by default. */
-  kind?: AcceptedOutput;
-  /** Frames come as PNG with their alpha instead of JPEG. */
+  kind?: RenderOutput;
+  /** Frames carry their alpha. They come as PNG then, as for a PNG output, and as JPEG otherwise. */
   transparent?: boolean;
   /** WebM audio takes libopus, or ffmpeg's own opus without it. */
   libopus?: boolean;
@@ -654,11 +677,15 @@ export function ffmpegArgs(o: {
   sounds: string | null;
   /** Seconds: frames / fps. */
   duration: number;
+  /** The file, or the folder of a PNG sequence. */
   output: string;
 }): string[] {
   const kind = o.kind ?? 'mp4';
   const out = OUTPUT_ARGS[kind];
   const transparent = Boolean(o.transparent);
+  const pixels = out.pixels?.(transparent);
+  const rgb = Boolean(pixels?.startsWith('rgb'));
+  const pngIn = transparent || rgb;
   const { audio, voice, sounds } = out.audio ? o : { audio: null, voice: null, sounds: null };
   const args = [
     '-y',
@@ -670,7 +697,7 @@ export function ffmpegArgs(o: {
     '-framerate',
     String(o.fps),
     '-c:v',
-    transparent ? 'png' : 'mjpeg',
+    pngIn ? 'png' : 'mjpeg',
     '-i',
     'pipe:0',
   ];
@@ -695,14 +722,16 @@ export function ffmpegArgs(o: {
   // gifArgs turns them into RGB.
   // PNG alpha is straight: resized as it is, the black of the transparent pixels darkens the edges of shapes, so the
   // resize runs on premultiplied pixels. ProRes 4444 and VP9 take straight alpha back.
+  // A PNG output keeps the page's RGB: no BT.709 conversion and no tags.
   const colors = transparent
-    ? `format=rgba,premultiply=inplace=1,${resize},unpremultiply=inplace=1,scale=out_color_matrix=bt709:out_range=tv`
-    : `${resize}:in_color_matrix=bt601:in_range=full:out_color_matrix=bt709:out_range=tv`;
+    ? `format=rgba,premultiply=inplace=1,${resize},unpremultiply=inplace=1${rgb ? '' : ',scale=out_color_matrix=bt709:out_range=tv'}`
+    : rgb
+      ? resize
+      : `${resize}:in_color_matrix=bt601:in_range=full:out_color_matrix=bt709:out_range=tv`;
+  const tags = rgb ? '' : ',setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv';
   args.push(
     '-vf',
-    out.pixels
-      ? `${colors},format=${out.pixels(transparent)},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv`
-      : resize,
+    pixels ? `${colors},format=${pixels}${tags}` : resize,
     ...out.video({ preset: o.preset, crf: o.crf, transparent }),
     '-r',
     kind === 'gif' ? gifRate(o.fps) : String(o.fps),
@@ -739,7 +768,9 @@ export function ffmpegArgs(o: {
     chains.push(`${labels.join('')}${mix}${limiter},${fadeOut}[audio]`);
     args.push('-filter_complex', chains.join(';'), '-map', '[audio]', ...audioCodec);
   }
-  args.push('-t', o.duration.toFixed(6), ...out.container, o.output);
+  // image2 reads the whole path as a pattern: a % in the folder must not make every frame the same file.
+  const output = kind === 'png-sequence' ? path.join(o.output.replaceAll('%', '%%'), '%06d.png') : o.output;
+  args.push('-t', o.duration.toFixed(6), ...out.container, output);
   return args;
 }
 
@@ -754,14 +785,13 @@ function gifRate(fps: number): string {
 
 /**
  * How many frames the pages may capture before ffmpeg takes them, and how many a page takes in a row. A JPEG frame stays
- * under about 300 KB, a PNG one (transparent) is five to fifty times larger: its window follows the captured pixels,
- * never under one frame per page, and blocks shrink so every page works inside it, passing it by `block - 1` at most.
+ * under about 300 KB, a PNG one (transparent, or for a PNG output) is five to fifty times larger: its window follows the
+ * captured pixels, never under one frame per page, and blocks shrink so every page works inside it, passing it by
+ * `block - 1` at most.
  */
-export function captureWindow(workers: number, transparent: boolean, pixels: number): { frames: number; block: number } {
+export function captureWindow(workers: number, png: boolean, pixels: number): { frames: number; block: number } {
   const most = workers * BLOCK * 2;
-  const frames = transparent
-    ? Math.max(workers, Math.min(most, Math.floor(AHEAD_PNG_BYTES / (pixels * PNG_BYTES_PER_PIXEL))))
-    : most;
+  const frames = png ? Math.max(workers, Math.min(most, Math.floor(AHEAD_PNG_BYTES / (pixels * PNG_BYTES_PER_PIXEL)))) : most;
   return { frames, block: Math.max(1, Math.min(BLOCK, Math.floor(frames / workers))) };
 }
 
@@ -825,9 +855,10 @@ function stamp(date: Date): string {
   return `${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}-${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}`;
 }
 
+/** `ext` with its dot, or '' for a folder. */
 async function freeName(dir: string, base: string, ext: string): Promise<string> {
   for (let i = 1; ; i++) {
-    const name = i === 1 ? `${base}.${ext}` : `${base}-${i}.${ext}`;
+    const name = i === 1 ? `${base}${ext}` : `${base}-${i}${ext}`;
     if (!(await pathExists(path.join(dir, name))) && !(await pathExists(path.join(dir, `${name}.part`)))) return name;
   }
 }

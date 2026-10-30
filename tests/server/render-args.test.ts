@@ -1,5 +1,5 @@
 // Render outputs: the request defaults, the encoders an ffmpeg build offers, the MP4 arguments kept byte for byte and
-// those of WebM, ProRes and GIF.
+// those of WebM, ProRes, GIF, still PNG and PNG sequence.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -159,17 +159,18 @@ test('an output this version cannot render is refused, and so is transparency on
     () => normalizeRequest(project, { ...req, output: 'avi' as never }),
     (e) => e instanceof HttpError && e.status === 400 && e.message === 'Invalid render output: avi',
   );
-  assert.throws(() => normalizeRequest(project, { ...req, output: 'png' }), { status: 400 });
   assert.throws(
     () => normalizeRequest(project, { ...req, transparent: true }),
     (e) => e instanceof HttpError && e.status === 422 && e.message === 'mp4 has no transparency',
   );
 });
 
-test('transparency is accepted on WebM and ProRes, refused on GIF', () => {
+test('transparency is accepted on WebM, ProRes, still PNG and PNG sequence, refused on GIF', () => {
   const req: RenderRequest = { formats: ['16:9'], quality: 'draft', transparent: true };
-  assert.equal(normalizeRequest(project, { ...req, output: 'webm' }).transparent, true);
-  assert.equal(normalizeRequest(project, { ...req, output: 'mov' }).transparent, true);
+  for (const output of ['webm', 'mov', 'png', 'png-sequence'] as const) {
+    assert.deepEqual(normalizeRequest(project, { ...req, output }).output, output);
+    assert.equal(normalizeRequest(project, { ...req, output }).transparent, true, output);
+  }
   assert.equal(normalizeRequest(project, { ...req, output: 'gif', transparent: false }).output, 'gif');
   assert.throws(
     () => normalizeRequest(project, { ...req, output: 'gif' }),
@@ -318,8 +319,55 @@ test('gif: above 50 fps every second or third frame is kept, so no frame delay f
   assert.equal(rate(60, 'mp4'), '60');
 });
 
+test('png: one frame in RGB from a PNG screenshot, or RGBA resized premultiplied when transparent, without audio', () => {
+  const png = { ...base, output: '/r/demo.png.part', kind: 'png' as const, audio: music, voice: null, sounds: '/s/x.wav' };
+  const resize = 'crop=2160:2700:0:0,scale=1080:1350:flags=lanczos+accurate_rnd+full_chroma_int';
+  const rest = [
+    '-c:v',
+    'png',
+    '-r',
+    '30',
+    '-t',
+    '4.500000',
+    '-frames:v',
+    '1',
+    '-update',
+    '1',
+    '-f',
+    'image2',
+    '/r/demo.png.part',
+  ];
+  assert.deepEqual(ffmpegArgs(png), [...PNG_INPUT, '-map', '0:v:0', '-vf', `${resize},format=rgb24`, ...rest]);
+  assert.deepEqual(ffmpegArgs({ ...png, transparent: true }), [
+    ...PNG_INPUT,
+    '-map',
+    '0:v:0',
+    '-vf',
+    `format=rgba,premultiply=inplace=1,${resize},unpremultiply=inplace=1,format=rgba`,
+    ...rest,
+  ]);
+});
+
+test('png-sequence: numbered PNG frames from 000001.png into the folder, without audio', () => {
+  const sequence = { ...base, ...opaque, output: '/r/demo.part', kind: 'png-sequence' as const, supersample: false };
+  assert.deepEqual(ffmpegArgs({ ...sequence, audio: music }), [
+    ...PNG_INPUT,
+    '-map',
+    '0:v:0',
+    '-vf',
+    'crop=1080:1350:0:0,scale=1080:1350:flags=lanczos+accurate_rnd+full_chroma_int,format=rgb24',
+    ...['-c:v', 'png', '-r', '30', '-t', '4.500000', '-f', 'image2', '/r/demo.part/%06d.png'],
+  ]);
+  const vf = (args: string[]) => args[args.indexOf('-vf') + 1];
+  assert.equal(
+    vf(ffmpegArgs({ ...sequence, transparent: true })),
+    vf(ffmpegArgs({ ...sequence, kind: 'png', transparent: true })),
+  );
+  assert.equal(ffmpegArgs({ ...sequence, output: '/r/50%d off/demo.part' }).at(-1), '/r/50%%d off/demo.part/%06d.png');
+});
+
 test('every output crops to the canvas then scales down to the output size, twice the size when supersampling', () => {
-  for (const kind of ['mp4', 'webm', 'mov', 'gif'] as const) {
+  for (const kind of ['mp4', 'webm', 'mov', 'gif', 'png', 'png-sequence'] as const) {
     for (const supersample of [false, true]) {
       const args = ffmpegArgs({ ...base, ...opaque, kind, supersample });
       const vf = args[args.indexOf('-vf') + 1];

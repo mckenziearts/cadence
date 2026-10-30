@@ -894,6 +894,8 @@ export interface RenderFile {
   createdAt: string;
   format: FormatId | null;
   output: RenderOutput;
+  /** A PNG sequence's frames: the plain files of its folder. */
+  frames?: number;
 }
 
 export type AssetKind = 'image' | 'svg' | 'font' | 'audio' | 'other';

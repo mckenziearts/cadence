@@ -325,7 +325,7 @@ projects/<id>/
   components/           shared components/constants for this project (relative imports)
   assets/               images, SVGs, fonts; assets/refs/ = reference screenshots for the agent
   music/                audio tracks + <file>.analysis.json caches and <file>.spectrum.bin band levels
-  renders/              exported MP4s (gitignored)
+  renders/              exported videos, GIFs, PNG frames and PNG sequence folders (gitignored)
   .cadence/             internal, gitignored: chats/ (project.json, scene-<id>.json, archive/), versions/,
                         thumbs/ (<scene>-<16x9>-<t>-g<run>.<gen>-<sig>.jpg), frames/ (what the agent rendered),
                         seams.json (version 2), publications.json (Publication[], newest first), trash/,
@@ -915,11 +915,16 @@ POST   /api/projects/:id/chats/:key/stop
 DELETE /api/projects/:id/chats/:key                answers ChatState
 GET    /api/projects/:id/agent-frames/:name        image/jpeg or image/png (frames the agent rendered)
 GET    /api/projects/:id/cost                      { totalUsd }
-POST   /api/projects/:id/renders                   RenderRequest, answers RenderJob[]
-GET    /api/projects/:id/renders                   { jobs: RenderJob[], files: RenderFile[] }
+POST   /api/projects/:id/renders                   RenderRequest (output mp4 | webm | mov | gif | png | png-sequence,
+                                                   transparent), answers RenderJob[]; 422 when the ffmpeg in use lacks
+                                                   the output's encoder or the output has no alpha
+GET    /api/projects/:id/renders                   { jobs: RenderJob[], files: RenderFile[], outputs: { [output]:
+                                                   OutputSupport } } (a sequence's file has its size and frames)
 DELETE /api/renders/:jobId                         cancel
-GET    /api/projects/:id/renders/:name             video/mp4 (Range support)
-DELETE /api/projects/:id/renders/:name             moves the MP4 to .cadence/trash (409 while it uploads)
+GET    /api/projects/:id/renders/:name             video/mp4, video/webm, video/quicktime, image/gif or image/png
+                                                   (Range support); a sequence folder is not served (404)
+DELETE /api/projects/:id/renders/:name             moves the file or sequence folder to .cadence/trash (409 while it
+                                                   uploads)
 GET    /api/projects/:id/assets                    AssetInfo[]
 POST   /api/projects/:id/assets                    multipart "file", answers AssetInfo
 DELETE /api/projects/:id/assets                    ?path= 
@@ -956,14 +961,32 @@ answers `{ brand, brandId, brandUrl }`. Each answers only the id of the origin i
 `FfmpegRenderService`: jobs run one at a time (one job per requested format). A job opens up to
 `min(4, cpus/2)` capture pages at the format's canvas × scale (× 2 when supersampling), splits the frame range in
 contiguous chunks, captures `t = i / fps` with `seek()`, and feeds frames to ffmpeg in order
-(`image2pipe`). Encoding: libx264, yuv420p, BT.709, `+faststart`; quality presets
-draft (CRF 23, veryfast, JPEG q80) / standard (CRF 16, medium, JPEG q95) / master (CRF 10, slow, JPEG q100).
+(`image2pipe`). `RenderRequest.output` picks what ffmpeg writes (mp4 by default):
+
+| Output | Encoding | Audio |
+|---|---|---|
+| `mp4` | libx264, yuv420p, `+faststart` | AAC 192 k |
+| `webm` | libvpx-vp9 `-b:v 0`, VP9 CRF, `-row-mt 1`, yuv420p or yuva420p | libopus, else ffmpeg's opus with `-strict -2` |
+| `mov` | prores_ks profile 4444 yuva444p10le (transparent) or profile 3 (422 HQ) yuv422p10le | pcm_s16le |
+| `gif` | lossless FFV1 frames into `<name>.frames.part`, then `palettegen=stats_mode=diff` and `paletteuse` in a second pass; above 50 fps every second or third frame is kept | none |
+| `png` | one frame at `range.from` (0 without a range), rgb24 or rgba, `-frames:v 1 -update 1 -f image2` | none |
+| `png-sequence` | `-f image2` `%06d.png` (from 000001.png) into the folder `<name>.part/`, renamed `<name>/` at the end | none |
+
+Quality presets: draft (CRF 23, veryfast, VP9 CRF 38, JPEG q80) / standard (CRF 16, medium, VP9 CRF 31, JPEG q95) /
+master (CRF 10, slow, VP9 CRF 24, JPEG q100). `GET renders` reads the encoders of the ffmpeg in use once per build
+(`server/capture/encoders.ts`); an output whose encoder is missing is refused with the reason (422).
+Frames are JPEG screenshots for mp4, gif and opaque webm/mov. PNG outputs and `transparent` ones are captured as PNG
+through one CDP session per page, within a capture window sized from the pixels (256 MB at 1.7 bytes a pixel); with
+`transparent` (webm, mov, png, png-sequence only, 422 otherwise) the stage drops the brand background and the PNG
+keeps its alpha.
 Sizes are rounded down to even numbers and the `-vf` chain starts with a crop to that size (× 2 when
 supersampling), so odd sizes are cropped, never stretched (4:5 at 0,5× = 540 × 674); supersampling then downsizes
-with `scale=W:H:flags=lanczos`, and `setparams` tags the frames BT.709 (tv range). Once the render pages are open,
+with `scale=W:H:flags=lanczos` for every output. Video outputs convert to BT.709 tv range and `setparams` tags the
+frames (a transparent frame is resized premultiplied, then unpremultiplied); PNG outputs keep the page's RGB, untagged.
+Once the render pages are open,
 their duration and code generation are compared with the job's; on a mismatch they reload, and a second mismatch
 fails the job (« Le projet a changé pendant le lancement du rendu »). Audio (when the project has music): track from
-`music.start`, AAC 192 k, `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length. With a
+`music.start`, in the output's codec (none for a GIF or PNG), `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length. With a
 voice-over, its track is a second input (see "Voice-over"), unless no sentence falls in the rendered range, and the
 audio goes through `-filter_complex`, voice alone or mixed, ending with the same limiter.
 Sound effects: before capture, the render reads `__cadence.sounds()` on its first page (the cues of every scene, in
@@ -981,8 +1004,12 @@ at each playback frame schedules on Web Audio the cues of the next 0.15 s, throu
 once. A cue whose peak the playhead passed (the first frame after play, a seek, a loop or a dropped frame) lands at
 most 0.1 s after its cue; later than that it is skipped, so a seek past a cue's peak skips it in the preview, where the
 MP4 mixes its tail. Pause, mute and a change of cues stop the sounds already playing.
-Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`. Deleting one moves it to the project's
-`.cadence/trash/` (`RenderService.remove`); what the networks received stays in `publications.json`.
+Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.<mp4|webm|mov|gif|png>`, or the folder
+`<project>-<16x9>-<YYYYMMDD-HHmmss>/` of a PNG sequence. ffmpeg writes `<name>.part` (a folder for a sequence), renamed
+once the job is done; a cancel or a failure removes it, and one a killed process left (a file, or a folder named like a
+sequence's) is swept after an hour untouched. The listing gives a sequence the size and number of its plain
+files. Deleting a file or a sequence folder moves it to the project's `.cadence/trash/` (`RenderService.remove`); only
+an MP4 can be published, and what the networks received stays in `publications.json`.
 
 ## Music
 
@@ -1108,7 +1135,7 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
 ## CLI (`npm run cadence -- <command>`)
 
 - `start [--port] [--frame-port]`
-- `render <project> [--formats 16:9,9:16] [--quality standard] [--scale 1] [--fps 60] [--supersample]`
+- `render <project> [--formats 16:9,9:16] [--quality standard] [--scale 1] [--fps 60] [--supersample] [--output mp4]`
 - `analyze <audio>`
 - `new <name> --brand <id> [--template <id>] [--formats ...] [--fps 60]`
 - `list`, `doctor`, `mcp`

@@ -1,8 +1,8 @@
 // FfmpegRenderService against the frame harness: MP4 length, frame count, colors, soundtrack, voice-over, sound effects,
-// cancel, files; transparent ProRes and WebM, GIF.
+// cancel, files; transparent ProRes and WebM, GIF, still PNG and PNG sequence.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { lutimes, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { lstat, lutimes, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -773,6 +773,177 @@ esac
     assert.deepEqual(left, []);
   });
 
+  it('renders one PNG frame at the range start, or at 0 without a range, supersampled, in true colors', async () => {
+    const request = { formats: ['16:9' as const], quality: 'draft' as const, scale: 0.5 as const, supersample: true };
+    const [queued] = await renders.start(id, { ...request, output: 'png' });
+    assert.equal(queued.framesTotal, 1);
+    const job = await renders.wait(queued.id);
+    assert.equal(job.status, 'done', job.error ?? job.status);
+    assert.match(job.file!, /\.png$/);
+    const first = await readFile(renders.resolveFile(id, job.file!));
+    const image = PNG.sync.read(first);
+    assert.deepEqual([image.width, image.height, job.framesTotal], [960, 540, 1]);
+    assert.ok(near(pixel(first, 750, 400), [255, 0, 0], 6), 'scene a at 0');
+    const across = await renderOne({ ...request, output: 'png', range: { from: 0.4, to: 0.9 } });
+    assert.ok(near(pixel(await readFile(across.file), 750, 400), [255, 0, 0], 6), 'scene a at 0.4, not scene b at 0.9');
+    const later = await renderOne({ ...request, output: 'png', range: { from: 0.8, to: 0.9 } });
+    assert.ok(near(pixel(await readFile(later.file), 750, 400), [0, 0, 255], 6), 'scene b at 0.8');
+    for (const range of [
+      { from: 0.8, to: 0.81 },
+      { from: 3, to: 4 },
+    ]) {
+      const short = await renderOne({ ...request, output: 'png', range });
+      assert.equal(short.job.framesTotal, 1);
+      assert.ok(near(pixel(await readFile(short.file), 750, 400), [0, 0, 255], 6), `scene b from ${range.from}`);
+    }
+    const partial = (await readdir(path.join(h.store.dir(id), 'renders'))).filter((n) => n.endsWith('.part'));
+    assert.deepEqual(partial, []);
+  });
+
+  it('renders a transparent PNG frame with its alpha and the RGB of the page', async () => {
+    const restore = await withScenes(
+      `export default () => <>\n` +
+        `  <div style={{ position: 'absolute', left: 861, top: 440, width: 199, height: 200, background: '#ff0000' }} />\n` +
+        `  <div style={{ position: 'absolute', left: 200, top: 200, width: 200, height: 200, background: '#3366cc' }} />\n` +
+        `</>;\n`,
+    );
+    try {
+      const request = { formats: ['16:9' as const], quality: 'draft' as const, scale: 0.5 as const, supersample: true };
+      const { file } = await renderOne({ ...request, output: 'png', transparent: true });
+      const image = PNG.sync.read(await readFile(file));
+      const rgba = (x: number, y: number) => [...image.data.subarray((image.width * y + x) * 4, (image.width * y + x) * 4 + 4)];
+      assert.equal(rgba(5, 5)[3], 0, 'corner: transparent');
+      assert.ok(near(rgba(480, 270), [255, 0, 0, 255], 2), `centre: opaque red, ${rgba(480, 270)}`);
+      assert.ok(near(rgba(150, 150), [51, 102, 204, 255], 2), `mid tone unchanged, ${rgba(150, 150)}`);
+    } finally {
+      await restore();
+    }
+  });
+
+  it('captures an opaque PNG losslessly: a 1 px red line on blue keeps its exact pixels', async () => {
+    const restore = await withScenes(
+      `export default () => <div style={{ position: 'absolute', inset: 0, background: '#0000ff' }}>\n` +
+        `  <div style={{ position: 'absolute', left: 1001, top: 0, width: 1, height: 1080, background: '#ff0000' }} />\n` +
+        `</div>;\n`,
+    );
+    try {
+      for (const output of ['png', 'png-sequence'] as const) {
+        const { file } = await renderOne({ formats: ['16:9'], quality: 'draft', range: { from: 0, to: 1 / 30 }, output });
+        const frame = await readFile(output === 'png' ? file : path.join(file, '000001.png'));
+        assert.deepEqual(
+          [999, 1000, 1001, 1002].map((x) => pixel(frame, x, 540)),
+          [
+            [0, 0, 255],
+            [0, 0, 255],
+            [255, 0, 0],
+            [0, 0, 255],
+          ],
+          output,
+        );
+      }
+    } finally {
+      await restore();
+    }
+  });
+
+  it('renders a PNG sequence folder with one numbered frame per frame, listed with its size and frames, then trashed', async () => {
+    const { job, file } = await renderOne({
+      formats: ['16:9'],
+      quality: 'draft',
+      scale: 0.5,
+      range: { from: 0.4, to: 1 },
+      output: 'png-sequence',
+    });
+    assert.match(job.file!, /^[\w-]+$/);
+    assert.ok((await lstat(file)).isDirectory());
+    const frames = (await readdir(file)).sort();
+    assert.equal(job.framesTotal, 18);
+    assert.deepEqual(
+      frames,
+      Array.from({ length: job.framesTotal }, (_, i) => `${String(i + 1).padStart(6, '0')}.png`),
+    );
+    const first = await readFile(path.join(file, frames[0]));
+    assert.deepEqual([PNG.sync.read(first).width, PNG.sync.read(first).height], [960, 540]);
+    assert.ok(near(pixel(first, 750, 400), [255, 0, 0], 6), 'scene a first');
+    assert.ok(near(pixel(await readFile(path.join(file, frames.at(-1)!)), 750, 400), [0, 0, 255], 6), 'scene b last');
+    const rendersDir = path.join(h.store.dir(id), 'renders');
+    assert.deepEqual(
+      (await readdir(rendersDir)).filter((n) => n.endsWith('.part')),
+      [],
+    );
+
+    const sizes = await Promise.all(frames.map(async (name) => (await lstat(path.join(file, name))).size));
+    const listed = (await renders.files(id)).find((f) => f.name === job.file)!;
+    assert.deepEqual(
+      [listed.output, listed.frames, listed.size, listed.format],
+      ['png-sequence', 18, sizes.reduce((a, b) => a + b, 0), '16:9'],
+    );
+    await renders.remove(id, job.file!);
+    assert.equal(
+      (await renders.files(id)).some((f) => f.name === job.file),
+      false,
+    );
+    const trash = path.join(h.store.dir(id), '.cadence', 'trash');
+    const trashed = (await readdir(trash)).find((name) => name.endsWith(`-${job.file}`))!;
+    assert.equal((await readdir(path.join(trash, trashed))).length, 18);
+  });
+
+  it(
+    'removes the partial folder of a PNG sequence when ffmpeg fails or the render is cancelled',
+    { timeout: 60_000 },
+    async () => {
+      // The real ffmpeg writes every frame, then says it failed.
+      const wrapper = path.join(h.store.dir(id), 'ffmpeg-failing-sequence');
+      await writeFile(
+        wrapper,
+        `#!/bin/sh
+case "$*" in
+  *%06d.png*) "${h.config.ffmpegPath}" "$@"; echo boom >&2; exit 3 ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const failing = new FfmpegRenderService({
+        config: { ...h.config, ffmpegPath: wrapper },
+        store: h.store,
+        music,
+        voiceOver,
+        hub,
+      });
+      const rendersDir = path.join(h.store.dir(id), 'renders');
+      const existing = await readdir(rendersDir).catch(() => [] as string[]);
+      const request = {
+        formats: ['16:9' as const],
+        quality: 'draft' as const,
+        scale: 0.5 as const,
+        output: 'png-sequence' as const,
+      };
+      const [queued] = await failing.start(id, request);
+      const job = await failing.wait(queued.id);
+      assert.equal(job.status, 'error');
+      assert.equal(job.error, 'ffmpeg a échoué (code 3) : boom');
+      assert.deepEqual(
+        (await readdir(rendersDir)).filter((n) => !existing.includes(n)),
+        [],
+      );
+
+      const [running] = await renders.start(id, { ...request, fps: 120 });
+      while (renders.jobs(id).find((j) => j.id === running.id)!.framesDone < 2) await new Promise((r) => setTimeout(r, 20));
+      const folders = (await readdir(rendersDir)).filter((n) => !existing.includes(n));
+      assert.equal(folders.length, 1);
+      assert.match(folders[0], /\.part$/);
+      renders.cancel(running.id);
+      const cancelled = await renders.wait(running.id);
+      assert.equal(cancelled.status, 'cancelled');
+      assert.ok(cancelled.framesDone < cancelled.framesTotal);
+      assert.deepEqual(
+        (await readdir(rendersDir)).filter((n) => !existing.includes(n)),
+        [],
+      );
+    },
+  );
+
   it('sizes the video from what its pages show when an edit lands as the job starts', async () => {
     // Scene b gets longer (a PATCH right after POST /renders) once the job has read the project, before its pages load it.
     const late = renderingWith(async (read, project) => {
@@ -867,18 +1038,30 @@ esac
     );
   });
 
-  it('removes the partial file a killed render left, never a live one', async () => {
+  it('removes the partial file or PNG sequence folder a killed render left, never a live one or a link', async () => {
     const dir = path.join(h.store.dir(id), 'renders');
     await mkdir(dir, { recursive: true });
     const [old, live] = [path.join(dir, 'killed-16x9.mp4.part'), path.join(dir, 'live-16x9.mp4.part')];
+    const [oldSequence, liveSequence] = [path.join(dir, 'killed-16x9.part'), path.join(dir, 'live-16x9.part')];
+    const link = path.join(dir, 'linked-16x9.part');
     await writeFile(old, 'x');
     await writeFile(live, 'x');
+    for (const folder of [oldSequence, liveSequence]) {
+      await mkdir(folder);
+      await writeFile(path.join(folder, '000001.png'), 'x');
+    }
+    await symlink(liveSequence, link);
     const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
-    await utimes(old, twoHoursAgo, twoHoursAgo);
-    await renders.files(id);
-    const parts = (await readdir(dir)).filter((n) => n.endsWith('.part'));
-    assert.deepEqual(parts, ['live-16x9.mp4.part']);
-    await rm(live);
+    for (const file of [old, path.join(oldSequence, '000001.png'), oldSequence]) await utimes(file, twoHoursAgo, twoHoursAgo);
+    await lutimes(link, twoHoursAgo, twoHoursAgo);
+    try {
+      await renders.files(id);
+      const parts = (await readdir(dir)).filter((n) => n.endsWith('.part')).sort();
+      assert.deepEqual(parts, ['linked-16x9.part', 'live-16x9.mp4.part', 'live-16x9.part']);
+      assert.deepEqual(await readdir(liveSequence), ['000001.png']);
+    } finally {
+      for (const file of [old, live, oldSequence, liveSequence, link]) await rm(file, { recursive: true, force: true });
+    }
   });
 
   it('removes the sounds track and temporary file a killed render left, never a live one', async () => {

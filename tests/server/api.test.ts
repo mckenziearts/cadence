@@ -1723,10 +1723,13 @@ test('renders: validated requests, jobs and files, cancel, MP4 streaming, deleti
 test('renders: an output is optional, one this version renders accepted, transparent a boolean', async () => {
   const req = { formats: ['16:9'], quality: 'draft' };
   assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'mp4', transparent: false })).status, 200);
-  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'png' })).status, 400);
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'png-sequence' })).status, 200);
   assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'avi' })).status, 400);
   assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, transparent: 'yes' })).status, 400);
-  assert.deepEqual(calls.render, [{ id: 'demo', req: { ...req, output: 'mp4', transparent: false } }]);
+  assert.deepEqual(calls.render, [
+    { id: 'demo', req: { ...req, output: 'mp4', transparent: false } },
+    { id: 'demo', req: { ...req, output: 'png-sequence' } },
+  ]);
 });
 
 /** The API on a real render service, for its files and its checks before a job starts. */
@@ -1777,30 +1780,52 @@ test('renders: every kind of file is listed, served with its type and moved to t
   await fs.mkdir(sequence, { recursive: true });
   await fs.writeFile(path.join(sequence, '000001.png'), Buffer.alloc(30, 1));
   await fs.writeFile(path.join(sequence, '000002.png'), Buffer.alloc(40, 1));
+  await fs.mkdir(path.join(sequence, 'nested'));
   const kinds = { mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', gif: 'image/gif', png: 'image/png' };
   const names = Object.keys(kinds).map((ext, i) => `demo-16x9-20261030-10150${i}.${ext}`);
   for (const [i, name] of names.entries()) await fs.writeFile(path.join(dir, name), Buffer.alloc(10 + i, 1));
   const outside = path.join(t.root, 'outside.mp4');
   await fs.writeFile(outside, Buffer.alloc(5, 1));
+  await fs.symlink(outside, path.join(sequence, '000003.png'));
   await fs.symlink(outside, path.join(dir, 'linked.mp4'));
   await fs.symlink(sequence, path.join(dir, 'linked-sequence'));
   await fs.writeFile(path.join(dir, 'notes.txt'), 'x');
   await fs.mkdir(path.join(dir, 'demo-16x9-20261030-101507.part'));
+  // What a killed render left an hour ago: its sequence folder goes with what it holds, never what a link inside points
+  // to; a link and a folder no sequence would be named like stay.
+  const staleSequence = path.join(dir, 'demo-16x9-20261030-101508.part');
+  await fs.mkdir(staleSequence);
+  await fs.writeFile(path.join(staleSequence, '000001.png'), 'x');
+  await fs.symlink(outside, path.join(staleSequence, '000002.png'));
+  await fs.symlink(staleSequence, path.join(dir, 'demo-16x9-20261030-101509.part'));
+  await fs.mkdir(path.join(dir, 'kept-16x9.mp4.part'));
+  const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
+  for (const name of ['000001.png', '']) await fs.utimes(path.join(staleSequence, name), twoHoursAgo, twoHoursAgo);
+  await fs.lutimes(path.join(staleSequence, '000002.png'), twoHoursAgo, twoHoursAgo);
+  await fs.lutimes(path.join(dir, 'demo-16x9-20261030-101509.part'), twoHoursAgo, twoHoursAgo);
+  await fs.utimes(path.join(dir, 'kept-16x9.mp4.part'), twoHoursAgo, twoHoursAgo);
   for (const [i, name] of [...names, path.basename(sequence)].entries()) {
     const time = new Date(Date.UTC(2026, 9, 30, 10, 15, i));
     await fs.utimes(path.join(dir, name), time, time);
   }
 
   const { body } = await json('GET', '/api/projects/demo/renders');
+  assert.deepEqual((await fs.readdir(dir)).filter((name) => name.endsWith('.part')).sort(), [
+    'demo-16x9-20261030-101507.part',
+    'demo-16x9-20261030-101509.part',
+    'kept-16x9.mp4.part',
+  ]);
+  assert.equal((await fs.lstat(path.join(dir, 'demo-16x9-20261030-101509.part'))).isSymbolicLink(), true);
+  assert.equal((await fs.readFile(outside)).length, 5, 'the file a link in the stale folder points to stays');
   assert.deepEqual(
-    body.files.map((f: RenderFile) => [f.name, f.output, f.size, f.format]),
+    body.files.map((f: RenderFile) => [f.name, f.output, f.size, f.format, f.frames]),
     [
-      ['demo-16x9-20261030-101506', 'png-sequence', 70, '16:9'],
-      ['demo-16x9-20261030-101504.png', 'png', 14, '16:9'],
-      ['demo-16x9-20261030-101503.gif', 'gif', 13, '16:9'],
-      ['demo-16x9-20261030-101502.mov', 'mov', 12, '16:9'],
-      ['demo-16x9-20261030-101501.webm', 'webm', 11, '16:9'],
-      ['demo-16x9-20261030-101500.mp4', 'mp4', 10, '16:9'],
+      ['demo-16x9-20261030-101506', 'png-sequence', 70, '16:9', 2],
+      ['demo-16x9-20261030-101504.png', 'png', 14, '16:9', undefined],
+      ['demo-16x9-20261030-101503.gif', 'gif', 13, '16:9', undefined],
+      ['demo-16x9-20261030-101502.mov', 'mov', 12, '16:9', undefined],
+      ['demo-16x9-20261030-101501.webm', 'webm', 11, '16:9', undefined],
+      ['demo-16x9-20261030-101500.mp4', 'mp4', 10, '16:9', undefined],
     ],
   );
   assert.equal(body.files[0].url, '/api/projects/demo/renders/demo-16x9-20261030-101506');
@@ -1844,15 +1869,17 @@ test('renders: every kind of file is listed, served with its type and moved to t
   const trash = await fs.readdir(path.join(store.dir('demo'), '.cadence', 'trash'));
   assert.deepEqual(trash.map((name) => name.replace(/^\d+-/, '')).sort(), [path.basename(sequence), names[1]].sort());
   assert.deepEqual(
-    await fs.readdir(
-      path.join(
-        store.dir('demo'),
-        '.cadence',
-        'trash',
-        trash.find((n) => !n.endsWith('.webm'))!,
-      ),
-    ),
-    ['000001.png', '000002.png'],
+    await fs
+      .readdir(
+        path.join(
+          store.dir('demo'),
+          '.cadence',
+          'trash',
+          trash.find((n) => !n.endsWith('.webm'))!,
+        ),
+      )
+      .then((entries) => entries.sort()),
+    ['000001.png', '000002.png', '000003.png', 'nested'],
   );
   assert.equal((await fs.lstat(path.join(dir, 'linked.mp4'))).isSymbolicLink(), true, 'the link stays');
   assert.equal((await fs.readFile(outside)).length, 5);
