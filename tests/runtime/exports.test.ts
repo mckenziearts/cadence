@@ -5,6 +5,11 @@ import * as cadence from '../../src/runtime/index';
 import type { SoundCue, SoundName, SoundProps } from '../../src/runtime/index';
 import { SOUND_NAMES } from '../../src/shared/sounds';
 
+const PATH_TOOLS = [
+  ...['parsePath', 'getLength', 'getPointAtLength', 'getTangentAtLength', 'evolvePath'],
+  ...['rectPath', 'roundedRect', 'circle', 'ellipse', 'polygon', 'star', 'triangle', 'pie'],
+];
+
 // The exports ARCHITECTURE.md promises to scenes, templates and the frame page.
 const REQUIRED = [
   ...['progress', 'interpolate', 'keyframes', 'spring', 'springs', 'springDuration', 'ease', 'bezier', 'mix', 'clamp'],
@@ -15,6 +20,7 @@ const REQUIRED = [
   ...['Fill', 'SceneContext', 'useScene', 'BrandContext', 'useBrand', 'useFormat', 'asset', 'setAssetBase'],
   ...['Stage3D', 'Camera', 'DrawPath', 'Glow', 'Callout', 'Dimension', 'RadiusArc', 'Guide', 'Tag', 'Highlight'],
   ...['Cursor', 'ClickRipple', 'BrowserFrame', 'PhoneFrame', 'Grain', 'Vignette'],
+  ...PATH_TOOLS,
   'createMusic',
   'voiceLevel',
 ];
@@ -22,6 +28,13 @@ const REQUIRED = [
 test('index exports everything the architecture requires', () => {
   const missing = REQUIRED.filter((name) => !(name in cadence));
   assert.deepEqual(missing, []);
+});
+
+test('API.md documents every path tool and shape', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8');
+  const section = api.slice(api.indexOf('## Paths & shapes'), api.indexOf('## Annotations'));
+  assert.ok(api.includes('## Paths & shapes'));
+  for (const name of PATH_TOOLS) assert.ok(section.includes(`\`${name}(`), name);
 });
 
 test('API.md warns about what renders do differently from the preview', () => {

@@ -64,7 +64,6 @@ export {
   type CameraProps,
 } from './stage';
 export {
-  rectPath,
   DrawPath,
   Glow,
   Tag,
@@ -83,6 +82,8 @@ export {
   type GuideProps,
   type HighlightProps,
 } from './annotate';
+export { parsePath, getLength, getPointAtLength, getTangentAtLength, evolvePath, type CubicSegment, type Subpath } from './paths';
+export { rectPath, roundedRect, circle, ellipse, polygon, star, triangle, pie } from './shapes';
 export { Cursor, cursorAt, cursorPress, ClickRipple, type CursorKey, type CursorProps, type ClickRippleProps } from './pointer';
 export {
   BrowserFrame,

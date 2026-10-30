@@ -316,7 +316,7 @@ const a = (s: number, e: number) => progress(t, s, e, ease.outCubic);
 
 ## Drawing
 
-- `rectPath(x, y, w, h, r = 0): string`: rounded-rect path data (clockwise from the top-left).
+- `rectPath(x, y, w, h, r = 0)` and the other shapes: see Paths & shapes.
 - `<DrawPath d progress color="currentColor" width={2} opacity? head? linecap="round" style? />`: SVG path drawn
   from its start by `progress` (nothing at 0, plain stroke at 1). `head`: `true | { length = 0.06, color = '#fff',
   width }`: a bright comet riding the tip. Renders SVG elements: put it inside an `<svg>` (or `<Glow>`). Its width
@@ -347,6 +347,52 @@ const land = progress(t, 2.2, 3.2, ease.smooth);
   <Vignette strength={0.7} />
   <Grain t={t} opacity={0.1} />
 </Fill>
+```
+
+## Paths & shapes
+
+Pure math on SVG path data, the same numbers in preview, render and every engine (never `getTotalLength()`).
+
+- `parsePath(d): Subpath[]`: reads `M L H V C S Q T A Z`, absolute and relative, implicit repeats and exponents,
+  into `{ segments: CubicSegment[], closed }` per subpath (`CubicSegment` = `{ from, c1, c2, to }`; lines,
+  quadratics and arcs become cubics). Invalid data throws `Invalid path data at position <i>`.
+- `getLength(d): number`: px, moves between subpaths add nothing.
+- `getPointAtLength(d, length): Point` and `getTangentAtLength(d, length): Point` (unit vector, drawing direction):
+  lengths outside `[0, getLength(d)]` clamp to the ends; a NaN length, or a path of length 0, throws. Ride an object
+  along a path, turned with `Math.atan2(tan.y, tan.x)`.
+- `evolvePath(progress, d): { strokeDasharray, strokeDashoffset }`: spread on a `<path d={d}>` to draw it from its
+  start (progress clamped 0 to 1, NaN throws). At 1 the stroke is plain (no dash), at 0 nothing shows, round caps
+  included. One subpath per `d` (several throw: browsers restart the dash on each subpath): split a logo or vectorised
+  text into one `<path>` per subpath, each with its own progress. `<DrawPath>` does the same with `pathLength`, plus
+  the comet head.
+
+Shapes return path data. All are centred on `(x, y)` (default `0, 0`) and draw clockwise; angles in degrees start
+straight up and turn clockwise.
+
+- `rectPath(x, y, w, h, r = 0)`: rounded rect from its **top-left corner** (the one exception).
+- `roundedRect({ width, height, cornerRadius = 0, x, y })`: the radius is clamped to half the short side.
+- `circle({ radius, x, y })`, `ellipse({ rx, ry, x, y })`: start at the rightmost point.
+- `polygon({ sides, radius, rotation = 0, x, y })`: regular, inscribed in `radius`, first vertex up.
+- `star({ points = 5, outerRadius, innerRadius, rotation = 0, x, y })`: first tip up.
+- `triangle({ side, direction = 'up', x, y })`: equilateral, its bounding box centred on `(x, y)`, tip towards
+  `'up' | 'down' | 'left' | 'right'`.
+- `pie({ radius, progress, rotation = 0, x, y })`: slice from straight up, clockwise over `progress` of the turn,
+  starting at the centre; `progress >= 1`, or close enough that the slice would close up, is the whole circle; NaN
+  throws.
+
+```tsx
+// A dot travelling along a drawn curve, turned with it.
+const d = 'M200,800 C600,200 1300,1000 1720,300';
+const p = progress(t, 0.3, 2.2, ease.inOutCubic);
+const at = getPointAtLength(d, p * getLength(d));
+const tan = getTangentAtLength(d, p * getLength(d));
+<svg width={width} height={height} style={{ position: 'absolute', inset: 0 }}>
+  <path d={d} fill="none" stroke={brand.colors.accent} strokeWidth={4} {...evolvePath(p, d)} />
+  <path d={triangle({ side: 28, direction: 'right' })} fill={brand.colors.accent}
+        transform={`translate(${at.x} ${at.y}) rotate(${(Math.atan2(tan.y, tan.x) * 180) / Math.PI})`} />
+  <path d={star({ points: 5, outerRadius: 60, innerRadius: 26, x: 1720, y: 300 })} fill={brand.colors.accent}
+        opacity={progress(t, 2.1, 2.4)} />
+</svg>
 ```
 
 ## Annotations (positions in canvas px; constant screen size inside a Camera)
