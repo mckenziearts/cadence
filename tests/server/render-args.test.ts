@@ -1,11 +1,12 @@
-// Render outputs: the request defaults, the encoders an ffmpeg build offers, and the MP4 arguments kept byte for byte.
+// Render outputs: the request defaults, the encoders an ffmpeg build offers, the MP4 arguments kept byte for byte and
+// those of WebM, ProRes and GIF.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 import { outputSupport, parseEncoders } from '../../server/capture/encoders';
-import { ffmpegArgs, normalizeRequest } from '../../server/capture/render';
+import { captureWindow, ffmpegArgs, gifArgs, normalizeRequest } from '../../server/capture/render';
 import { setLanguage } from '../../server/i18n';
 import { HttpError } from '../../server/util';
 import type { ProjectState, RenderRequest } from '../../src/shared/types';
@@ -158,11 +159,174 @@ test('an output this version cannot render is refused, and so is transparency on
     () => normalizeRequest(project, { ...req, output: 'avi' as never }),
     (e) => e instanceof HttpError && e.status === 400 && e.message === 'Invalid render output: avi',
   );
-  assert.throws(() => normalizeRequest(project, { ...req, output: 'webm' }), { status: 400 });
+  assert.throws(() => normalizeRequest(project, { ...req, output: 'png' }), { status: 400 });
   assert.throws(
     () => normalizeRequest(project, { ...req, transparent: true }),
     (e) => e instanceof HttpError && e.status === 422 && e.message === 'mp4 has no transparency',
   );
+});
+
+test('transparency is accepted on WebM and ProRes, refused on GIF', () => {
+  const req: RenderRequest = { formats: ['16:9'], quality: 'draft', transparent: true };
+  assert.equal(normalizeRequest(project, { ...req, output: 'webm' }).transparent, true);
+  assert.equal(normalizeRequest(project, { ...req, output: 'mov' }).transparent, true);
+  assert.equal(normalizeRequest(project, { ...req, output: 'gif', transparent: false }).output, 'gif');
+  assert.throws(
+    () => normalizeRequest(project, { ...req, output: 'gif' }),
+    (e) => e instanceof HttpError && e.status === 422 && e.message === 'gif has no transparency',
+  );
+});
+
+const opaque = { audio: null, voice: null, sounds: null };
+/** The `-vf` chain from a JPEG (opaque) or a PNG (transparent) screenshot, at twice the size when supersampling. */
+const chain = (o: { png: boolean; pixels: string; k?: number }) => {
+  const resize = `crop=${1080 * (o.k ?? 2)}:${1350 * (o.k ?? 2)}:0:0,scale=1080:1350:flags=lanczos+accurate_rnd+full_chroma_int`;
+  // A PNG with alpha is resized premultiplied, so the transparent pixels' black never darkens the edges.
+  const colors = o.png
+    ? `format=rgba,premultiply=inplace=1,${resize},unpremultiply=inplace=1,scale=out_color_matrix=bt709:out_range=tv`
+    : `${resize}:in_color_matrix=bt601:in_range=full:out_color_matrix=bt709:out_range=tv`;
+  return `${colors},format=${o.pixels},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv`;
+};
+const PNG_INPUT = INPUT.map((arg) => (arg === 'mjpeg' ? 'png' : arg));
+const TAGS = ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv'];
+const VP9 = [
+  '-c:v',
+  'libvpx-vp9',
+  '-b:v',
+  '0',
+  '-crf',
+  '31',
+  '-deadline',
+  'good',
+  '-cpu-used',
+  '2',
+  '-row-mt',
+  '1',
+  ...TAGS,
+  '-r',
+  '30',
+];
+const MUSIC_AF = 'aresample=192000,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,volume=0.7,afade=t=out:st=3.900:d=0.600';
+
+test('webm: VP9 at constant quality and the speed of the preset, yuv420p from JPEG or yuva420p from PNG when transparent', () => {
+  const webm = { ...base, crf: 31, preset: '2', output: '/r/demo.webm.part', kind: 'webm' as const };
+  const tail = ['-t', '4.500000', '-f', 'webm', '/r/demo.webm.part'];
+  assert.deepEqual(ffmpegArgs({ ...webm, ...opaque }), [
+    ...INPUT,
+    '-map',
+    '0:v:0',
+    '-vf',
+    chain({ png: false, pixels: 'yuv420p' }),
+    ...VP9,
+    ...tail,
+  ]);
+  assert.deepEqual(ffmpegArgs({ ...webm, ...opaque, transparent: true }), [
+    ...PNG_INPUT,
+    '-map',
+    '0:v:0',
+    '-vf',
+    chain({ png: true, pixels: 'yuva420p' }),
+    ...VP9,
+    ...tail,
+  ]);
+});
+
+test("webm audio is libopus, or ffmpeg's own opus as an experimental encoder when the build has no libopus", () => {
+  const webm = { ...base, crf: 31, kind: 'webm' as const, audio: music, voice: null, sounds: null };
+  const audio = (args: string[]) => args.slice(args.indexOf('-af'), args.indexOf('-t'));
+  assert.deepEqual(audio(ffmpegArgs({ ...webm, libopus: true })), ['-af', MUSIC_AF, '-c:a', 'libopus', '-b:a', '192k']);
+  assert.deepEqual(audio(ffmpegArgs({ ...webm, libopus: false })), [
+    '-af',
+    MUSIC_AF,
+    '-c:a',
+    'opus',
+    '-strict',
+    '-2',
+    '-b:a',
+    '192k',
+  ]);
+});
+
+test('mov: ProRes 4444 yuva444p10le when transparent, ProRes 422 HQ (profile 3) yuv422p10le otherwise, PCM audio', () => {
+  const mov = { ...base, output: '/r/demo.mov.part', kind: 'mov' as const, audio: music, voice: null, sounds: null };
+  const rest = (pixels: string, profile: string) => [
+    '-map',
+    '1:a:0?',
+    '-vf',
+    chain({ png: pixels.startsWith('yuva'), pixels }),
+    '-c:v',
+    'prores_ks',
+    '-profile:v',
+    profile,
+    ...TAGS,
+    '-r',
+    '30',
+    '-af',
+    MUSIC_AF,
+    '-c:a',
+    'pcm_s16le',
+    '-t',
+    '4.500000',
+    '-f',
+    'mov',
+    '/r/demo.mov.part',
+  ];
+  const withMusic = ['-ss', '2.000', '-i', '/m/a.mp3', '-map', '0:v:0'];
+  assert.deepEqual(ffmpegArgs(mov), [...INPUT, ...withMusic, ...rest('yuv422p10le', '3')]);
+  assert.deepEqual(ffmpegArgs({ ...mov, transparent: true }), [...PNG_INPUT, ...withMusic, ...rest('yuva444p10le', '4444')]);
+});
+
+test('gif: lossless frames first, without audio even with music, voice and sounds', () => {
+  const voice = { file: '/v/t.wav', start: 1, intervals: [[0.5, 2]] as [number, number][], musicLevel: 0.25 };
+  const args = ffmpegArgs({ ...base, output: '/r/demo.gif.frames.part', kind: 'gif', audio: music, voice, sounds: '/s/x.wav' });
+  assert.deepEqual(args, [
+    ...INPUT,
+    '-map',
+    '0:v:0',
+    '-vf',
+    'crop=2160:2700:0:0,scale=1080:1350:flags=lanczos+accurate_rnd+full_chroma_int',
+    '-c:v',
+    'ffv1',
+    '-r',
+    '30',
+    '-t',
+    '4.500000',
+    '-f',
+    'matroska',
+    '/r/demo.gif.frames.part',
+  ]);
+});
+
+test('gif: one palette per video from the frame differences, read from the frames file rather than kept in memory', () => {
+  assert.deepEqual(gifArgs('/r/demo.gif.frames.part', '/r/demo.gif.part'), [
+    ...['-y', '-hide_banner', '-loglevel', 'error', '-i', '/r/demo.gif.frames.part', '-i', '/r/demo.gif.frames.part'],
+    '-filter_complex',
+    '[0:v]tpad=stop=1:color=black,tpad=stop=1:color=white,palettegen=stats_mode=diff[p];[1:v][p]paletteuse',
+    ...['-c:v', 'gif', '-f', 'gif', '/r/demo.gif.part'],
+  ]);
+});
+
+test('gif: above 50 fps every second or third frame is kept, so no frame delay falls under 2 hundredths', () => {
+  const rate = (fps: number, kind: 'gif' | 'mp4' = 'gif') => {
+    const args = ffmpegArgs({ ...base, ...opaque, fps, kind });
+    return args[args.indexOf('-r') + 1];
+  };
+  assert.deepEqual(
+    [24, 30, 50, 60, 100, 120, 51].map((fps) => rate(fps)),
+    ['24', '30', '50', '30', '50', '40', '51/2'],
+  );
+  assert.equal(rate(60, 'mp4'), '60');
+});
+
+test('every output crops to the canvas then scales down to the output size, twice the size when supersampling', () => {
+  for (const kind of ['mp4', 'webm', 'mov', 'gif'] as const) {
+    for (const supersample of [false, true]) {
+      const args = ffmpegArgs({ ...base, ...opaque, kind, supersample });
+      const vf = args[args.indexOf('-vf') + 1];
+      const k = supersample ? 2 : 1;
+      assert.ok(vf.startsWith(`crop=${1080 * k}:${1350 * k}:0:0,scale=1080:1350:flags=lanczos`), `${kind} ${supersample}: ${vf}`);
+    }
+  }
 });
 
 test('the encoders list is read from the lines after the legend', () => {
@@ -245,4 +409,16 @@ test('a bare ffmpeg name is looked up on PATH, so replacing that build is notice
   const later = new Date(Date.now() + 60_000);
   await fs.utimes(bin, later, later);
   assert.equal((await outputSupport('cadence-test-ffmpeg')).mp4.available, true);
+});
+
+test('PNG frames (transparent) capture ahead of ffmpeg within 256 MB at 1.7 bytes a pixel, JPEG ones 16 per page', () => {
+  assert.deepEqual(captureWindow(4, false, 7680 * 4320), { frames: 64, block: 8 });
+  // A 1080p PNG weighs at most about 3.5 MB: the full window.
+  assert.deepEqual(captureWindow(4, true, 1920 * 1080), { frames: 64, block: 8 });
+  // 4K: 14 MB a frame, 18 of them, so 4 pages take blocks of 4 and stay inside the window.
+  assert.deepEqual(captureWindow(4, true, 3840 * 2160), { frames: 18, block: 4 });
+  // Scale 2 supersampled: a 7680 x 4320 capture of up to 56 MB, 4 frames, one per page.
+  assert.deepEqual(captureWindow(4, true, 7680 * 4320), { frames: 4, block: 1 });
+  // Never fewer than one frame per page.
+  assert.deepEqual(captureWindow(4, true, 15360 * 8640), { frames: 4, block: 1 });
 });

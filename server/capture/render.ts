@@ -1,12 +1,14 @@
-// MP4 export: headless frame pages capture frames in parallel, ffmpeg encodes them in order (H.264 + soundtrack).
+// Video export: headless frame pages capture frames in parallel, ffmpeg encodes them in order (H.264 MP4, VP9 WebM,
+// ProRes MOV or GIF, with the soundtrack but on a GIF).
 // Adapted from saeedvaziry/caleb-video-editor (MIT)
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { Page } from 'playwright';
+import { promisify } from 'node:util';
+import type { CDPSession, Page } from 'playwright';
 import { MAX_SOUND_CUES, MAX_VIDEO_SOUND_CUES, parseSoundCues } from '../../src/shared/sounds';
 import {
   FORMATS,
@@ -35,16 +37,24 @@ import { m } from '../i18n';
 import { soundTrack } from '../sounds/track';
 import { assertId, formatSeconds, HttpError, listInside, nowIso, pathExists, resolveInside } from '../util';
 import { fromPage, launchChromium, openFramePage, RENDER_TIMEOUT_MS, seekFrame, withTimeout, type FramePage } from './capture';
-import { outputSupport } from './encoders';
+import { ffmpegEncoders, outputSupport } from './encoders';
 
-const PRESETS: Record<RenderQuality, { crf: number; preset: string; jpeg: number }> = {
-  draft: { crf: 23, preset: 'veryfast', jpeg: 80 },
-  standard: { crf: 16, preset: 'medium', jpeg: 95 },
-  master: { crf: 10, preset: 'slow', jpeg: 100 },
+const execFileAsync = promisify(execFile);
+
+/** `crf` is x264's scale; VP9's runs from 0 to 63, and 31 is libvpx's advice for 1080p. */
+// vp9Speed is libvpx's -cpu-used: its default of 0 encodes a 1080p WebM at about 23 fps, slower than the capture.
+const PRESETS: Record<RenderQuality, { crf: number; vp9Crf: number; preset: string; vp9Speed: number; jpeg: number }> = {
+  draft: { crf: 23, vp9Crf: 38, preset: 'veryfast', vp9Speed: 4, jpeg: 80 },
+  standard: { crf: 16, vp9Crf: 31, preset: 'medium', vp9Speed: 2, jpeg: 95 },
+  master: { crf: 10, vp9Crf: 24, preset: 'slow', vp9Speed: 1, jpeg: 100 },
 };
 
 /** Frames a page captures in a row (consecutive frames re-render cheaply); pages never run far ahead of ffmpeg. */
 const BLOCK = 8;
+/** What the PNG frames captured ahead of ffmpeg may weigh. */
+const AHEAD_PNG_BYTES = 256e6;
+/** Bytes per pixel of a PNG with alpha in the worst case measured: 1.66 for a noisy page, 0.64 for a gradient. */
+const PNG_BYTES_PER_PIXEL = 1.7;
 const FADE_OUT_S = 0.6;
 const PROGRESS_INTERVAL_MS = 100;
 /** Characters of a thrown `sounds()` message a failed render shows. */
@@ -55,11 +65,12 @@ const ERROR_CHARS = 200;
  */
 const TRACK_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.wav(\.\d+\.[0-9a-f]{8}\.tmp)?$/;
 
-/** The outputs a request may ask for; T18 and T19 add the others. */
-export const ACCEPTED_OUTPUTS = ['mp4'] as const satisfies readonly RenderOutput[];
+/** The outputs a request may ask for; T19 adds the PNG ones. */
+export const ACCEPTED_OUTPUTS = ['mp4', 'webm', 'mov', 'gif'] as const satisfies readonly RenderOutput[];
+type AcceptedOutput = (typeof ACCEPTED_OUTPUTS)[number];
 const ALPHA_OUTPUTS: readonly RenderOutput[] = ['webm', 'mov', 'png', 'png-sequence'];
 
-export function isAcceptedOutput(value: unknown): value is (typeof ACCEPTED_OUTPUTS)[number] {
+export function isAcceptedOutput(value: unknown): value is AcceptedOutput {
   return (ACCEPTED_OUTPUTS as readonly unknown[]).includes(value);
 }
 
@@ -274,11 +285,16 @@ export class FfmpegRenderService implements RenderService {
     let project = await store.get(job.projectId);
     let { from, total } = frameRange(project, request, job.fps);
     const preset = PRESETS[request.quality];
+    // normalizeRequest lets accepted outputs only through.
+    const kind = (request.output ?? 'mp4') as AcceptedOutput;
+    const transparent = Boolean(request.transparent);
 
     const dir = this.rendersDir(job.projectId);
     await fs.mkdir(dir, { recursive: true });
-    const name = await freeName(dir, `${project.id}-${job.format.replace(':', 'x')}-${stamp(new Date())}`);
+    const name = await freeName(dir, `${project.id}-${job.format.replace(':', 'x')}-${stamp(new Date())}`, kind);
     const partial = path.join(dir, `${name}.part`);
+    // A GIF's frames go to a lossless file first, then get their palette in a second pass (see gifArgs).
+    const frames = kind === 'gif' ? path.join(dir, `${name}.frames.part`) : null;
     abort.signal.throwIfAborted();
 
     const browser = await launchChromium(this.deps.browserServer);
@@ -294,10 +310,28 @@ export class FfmpegRenderService implements RenderService {
             sceneId: null,
             format: job.format,
             scale: pixelRatio,
+            transparent,
             requestSecret: config.requestSecret,
           }),
         ),
       );
+      // A transparent frame goes through CDP: Playwright's PNG screenshot would set and reset the background on every frame,
+      // without optimizeForSpeed (about 5 times slower in 1080p).
+      const cdp = transparent ? await Promise.all(pages.map(({ page }) => page.context().newCDPSession(page))) : null;
+      if (cdp) {
+        const background = { color: { r: 0, g: 0, b: 0, a: 0 } };
+        // A session without its own metrics override captures at a pixel ratio of 1 whatever the context's is.
+        await Promise.all(
+          cdp.map((session, i) => {
+            const { width, height } = pages[i]!.page.viewportSize()!;
+            const metrics = { width, height, deviceScaleFactor: pixelRatio, mobile: false };
+            return Promise.all([
+              session.send('Emulation.setDefaultBackgroundColorOverride', background),
+              session.send('Emulation.setDeviceMetricsOverride', metrics),
+            ]);
+          }),
+        );
+      }
       abort.signal.throwIfAborted();
       project = await shownState(pages, project, store);
       ({ from, total } = frameRange(project, request, job.fps));
@@ -331,13 +365,16 @@ export class FfmpegRenderService implements RenderService {
           width: job.width,
           height: job.height,
           supersample: Boolean(request.supersample),
-          crf: preset.crf,
-          preset: preset.preset,
+          kind,
+          transparent,
+          libopus: (await ffmpegEncoders(config.ffmpegPath)).has('libopus'),
+          crf: kind === 'webm' ? preset.vp9Crf : preset.crf,
+          preset: kind === 'webm' ? String(preset.vp9Speed) : preset.preset,
           audio,
           voice,
           sounds,
           duration,
-          output: partial,
+          output: frames ?? partial,
         }),
         { stdio: ['pipe', 'ignore', 'pipe'] },
       );
@@ -361,24 +398,30 @@ export class FfmpegRenderService implements RenderService {
       // Pages take blocks of consecutive frames; the writer feeds ffmpeg strictly in order.
       const images: (Deferred<Buffer> | null)[] = Array.from({ length: total }, () => deferred<Buffer>());
       let cursor = 0;
-      const aheadLimit = workers * BLOCK * 2;
+      const ahead = captureWindow(workers, transparent, job.width * job.height * (request.supersample ? 4 : 1));
       let wakeCapture = deferred<void>();
       abort.signal.addEventListener('abort', () => wakeCapture.resolve(), { once: true });
 
-      const capture = async (page: Page) => {
+      const capture = async (page: Page, session: CDPSession | undefined) => {
+        const screenshot = async (t: number) => {
+          if (!session) return page.screenshot({ type: 'jpeg', quality: preset.jpeg, timeout: RENDER_TIMEOUT_MS });
+          const shot = session.send('Page.captureScreenshot', { format: 'png', optimizeForSpeed: true });
+          const timeout = m().media.capture.seekTimeout(formatSeconds(t), RENDER_TIMEOUT_MS / 1000);
+          return Buffer.from((await withTimeout(shot, RENDER_TIMEOUT_MS, timeout)).data, 'base64');
+        };
         for (;;) {
-          while (cursor >= written + aheadLimit && !abort.signal.aborted) await wakeCapture.promise;
+          while (cursor >= written + ahead.frames && !abort.signal.aborted) await wakeCapture.promise;
           abort.signal.throwIfAborted();
           if (cursor >= total) return;
           const start = cursor;
-          const end = Math.min(total, start + BLOCK);
+          const end = Math.min(total, start + ahead.block);
           cursor = end;
           for (let i = start; i < end; i++) {
             abort.signal.throwIfAborted();
             const t = from + i / job.fps;
             const result = await seekFrame(page, t);
             if (result.errors.length > 0) throw new Error(m().media.render.videoError(formatSeconds(t), result.errors[0]));
-            images[i]!.resolve(await page.screenshot({ type: 'jpeg', quality: preset.jpeg, timeout: RENDER_TIMEOUT_MS }));
+            images[i]!.resolve(await screenshot(t));
           }
         }
       };
@@ -398,12 +441,19 @@ export class FfmpegRenderService implements RenderService {
         ffmpeg.stdin.end();
       };
 
-      await Promise.all([write(), ...pages.map(({ page }) => capture(page).catch((e: unknown) => abort.abort(e)))]);
+      await Promise.all([write(), ...pages.map(({ page }, i) => capture(page, cdp?.[i]).catch((e: unknown) => abort.abort(e)))]);
       Object.assign(job, { status: 'encoding' });
       this.emit(state, true);
       const code = await exited;
       abort.signal.throwIfAborted();
       if (code !== 0) throw new Error(m().media.render.ffmpegFailed(code, lastLine(stderr)));
+      if (frames) {
+        await execFileAsync(config.ffmpegPath, gifArgs(frames, partial), { signal: abort.signal, killSignal: 'SIGKILL' }).catch(
+          (e: { code?: unknown; stderr?: string }) => {
+            throw new Error(m().media.render.ffmpegFailed(typeof e.code === 'number' ? e.code : 1, lastLine(e.stderr ?? '')));
+          },
+        );
+      }
       const output = path.join(dir, name);
       await fs.rename(partial, output);
       return { status: 'done', progress: 1, framesDone: total, file: name, url: renderUrl(job.projectId, name) };
@@ -414,6 +464,7 @@ export class FfmpegRenderService implements RenderService {
       kill();
       await browser.close().catch(() => undefined);
       await fs.rm(partial, { force: true });
+      if (frames) await fs.rm(frames, { force: true });
       if (sounds) await fs.rm(sounds, { force: true });
     }
   }
@@ -535,30 +586,51 @@ export function normalizeRequest(
   };
 }
 
-/** What an output changes in the ffmpeg arguments. */
-const OUTPUT_ARGS = {
+const BT709 = ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv'];
+
+/**
+ * What an output changes in the ffmpeg arguments; a GIF has no audio, and its own colors (see ffmpegArgs). The GIF
+ * arguments write its frames losslessly, for gifArgs.
+ */
+const OUTPUT_ARGS: Record<
+  AcceptedOutput,
+  {
+    pixels: ((transparent: boolean) => string) | null;
+    video: (o: { preset: string; crf: number; transparent: boolean }) => string[];
+    audio: ((libopus: boolean) => string[]) | null;
+    container: string[];
+  }
+> = {
   mp4: {
-    pixels: 'yuv420p',
-    video: (preset: string, crf: number) => [
-      '-c:v',
-      'libx264',
-      '-preset',
-      preset,
-      '-crf',
-      String(crf),
-      '-colorspace',
-      'bt709',
-      '-color_primaries',
-      'bt709',
-      '-color_trc',
-      'bt709',
-      '-color_range',
-      'tv',
-    ],
-    audio: ['-c:a', 'aac', '-b:a', '192k'],
+    pixels: () => 'yuv420p',
+    video: (o) => ['-c:v', 'libx264', '-preset', o.preset, '-crf', String(o.crf), ...BT709],
+    audio: () => ['-c:a', 'aac', '-b:a', '192k'],
     container: ['-movflags', '+faststart', '-f', 'mp4'],
   },
-} satisfies Partial<Record<RenderOutput, object>>;
+  webm: {
+    pixels: (transparent) => (transparent ? 'yuva420p' : 'yuv420p'),
+    video: (o) => [
+      ...['-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', String(o.crf)],
+      ...['-deadline', 'good', '-cpu-used', o.preset, '-row-mt', '1', ...BT709],
+    ],
+    // ffmpeg's own opus encoder is still experimental.
+    audio: (libopus) => (libopus ? ['-c:a', 'libopus', '-b:a', '192k'] : ['-c:a', 'opus', '-strict', '-2', '-b:a', '192k']),
+    container: ['-f', 'webm'],
+  },
+  mov: {
+    pixels: (transparent) => (transparent ? 'yuva444p10le' : 'yuv422p10le'),
+    // 4444 carries the alpha; 3 is 422 HQ.
+    video: (o) => ['-c:v', 'prores_ks', '-profile:v', o.transparent ? '4444' : '3', ...BT709],
+    audio: () => ['-c:a', 'pcm_s16le'],
+    container: ['-f', 'mov'],
+  },
+  gif: {
+    pixels: null,
+    video: () => ['-c:v', 'ffv1'],
+    audio: null,
+    container: ['-f', 'matroska'],
+  },
+};
 
 export function ffmpegArgs(o: {
   fps: number;
@@ -566,7 +638,14 @@ export function ffmpegArgs(o: {
   height: number;
   /** Frames are captured at twice the output size. */
   supersample: boolean;
+  /** An opaque MP4 by default. */
+  kind?: AcceptedOutput;
+  /** Frames come as PNG with their alpha instead of JPEG. */
+  transparent?: boolean;
+  /** WebM audio takes libopus, or ffmpeg's own opus without it. */
+  libopus?: boolean;
   crf: number;
+  /** x264's preset, or libvpx's -cpu-used for a WebM. */
   preset: string;
   audio: { file: string; start: number; volume: number } | null;
   /** The voice-over track from `start` (video seconds), and when it speaks in output seconds. */
@@ -577,6 +656,10 @@ export function ffmpegArgs(o: {
   duration: number;
   output: string;
 }): string[] {
+  const kind = o.kind ?? 'mp4';
+  const out = OUTPUT_ARGS[kind];
+  const transparent = Boolean(o.transparent);
+  const { audio, voice, sounds } = out.audio ? o : { audio: null, voice: null, sounds: null };
   const args = [
     '-y',
     '-hide_banner',
@@ -587,7 +670,7 @@ export function ffmpegArgs(o: {
     '-framerate',
     String(o.fps),
     '-c:v',
-    'mjpeg',
+    transparent ? 'png' : 'mjpeg',
     '-i',
     'pipe:0',
   ];
@@ -597,60 +680,105 @@ export function ffmpegArgs(o: {
     args.push('-i', file);
     return inputs++;
   };
-  const musicInput = o.audio ? input(o.audio.file, o.audio.start) : null;
-  const voiceInput = o.voice ? input(o.voice.file, o.voice.start) : null;
-  const soundsInput = o.sounds ? input(o.sounds) : null;
-  const mixed = Boolean(o.voice || o.sounds);
+  const musicInput = audio ? input(audio.file, audio.start) : null;
+  const voiceInput = voice ? input(voice.file, voice.start) : null;
+  const soundsInput = sounds ? input(sounds) : null;
+  const mixed = Boolean(voice || sounds);
   args.push('-map', '0:v:0');
-  if (o.audio && !mixed) args.push('-map', `${musicInput}:a:0?`);
-  // ponytail: one output so far; T18 picks the entry from the request's output.
-  const out = OUTPUT_ARGS.mp4;
+  if (audio && !mixed) args.push('-map', `${musicInput}:a:0?`);
   const k = o.supersample ? 2 : 1;
+  // The crop drops the odd last row of an odd canvas (4:5 at 0.5×) instead of resampling every frame by 1/675; lanczos
+  // also handles supersampling.
+  const resize = `crop=${o.width * k}:${o.height * k}:0:0,scale=${o.width}:${o.height}:flags=lanczos+accurate_rnd+full_chroma_int`;
+  // JPEG screenshots are full-range BT.601, PNG ones RGB; the video is limited-range BT.709. setparams tags the frames
+  // themselves: the encoder takes primaries and transfer from them, not from -color_*. A GIF's frames stay as they come:
+  // gifArgs turns them into RGB.
+  // PNG alpha is straight: resized as it is, the black of the transparent pixels darkens the edges of shapes, so the
+  // resize runs on premultiplied pixels. ProRes 4444 and VP9 take straight alpha back.
+  const colors = transparent
+    ? `format=rgba,premultiply=inplace=1,${resize},unpremultiply=inplace=1,scale=out_color_matrix=bt709:out_range=tv`
+    : `${resize}:in_color_matrix=bt601:in_range=full:out_color_matrix=bt709:out_range=tv`;
   args.push(
-    // Screenshots are full-range BT.601 JPEGs; the video is limited-range BT.709 (lanczos also handles supersampling).
-    // The crop drops the odd last row of an odd canvas (4:5 at 0.5×) instead of resampling every frame by 1/675.
-    // setparams tags the frames themselves: the encoder takes primaries and transfer from them, not from -color_*.
     '-vf',
-    `crop=${o.width * k}:${o.height * k}:0:0,scale=${o.width}:${o.height}:flags=lanczos+accurate_rnd+full_chroma_int:in_color_matrix=bt601:in_range=full:out_color_matrix=bt709:out_range=tv,format=${out.pixels},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv`,
-    ...out.video(o.preset, o.crf),
+    out.pixels
+      ? `${colors},format=${out.pixels(transparent)},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv`
+      : resize,
+    ...out.video({ preset: o.preset, crf: o.crf, transparent }),
     '-r',
-    String(o.fps),
+    kind === 'gif' ? gifRate(o.fps) : String(o.fps),
   );
+  const audioCodec = out.audio?.(o.libopus ?? true) ?? [];
   const fade = Math.min(FADE_OUT_S, o.duration);
   const fadeOut = `afade=t=out:st=${(o.duration - fade).toFixed(3)}:d=${fade.toFixed(3)}`;
   // loudnorm first so `volume` stays relative to a normalized track; the fade comes last so nothing undoes it.
   // loudnorm runs at 192 kHz: newer ffmpeg resamples to it on its own, 5.1 (Debian 12) fails unless asked to.
   const normalize = (lufs: number) => ['aresample=192000', `loudnorm=I=${lufs}:TP=-1.5:LRA=11`, 'aresample=48000'];
-  if (o.audio && !mixed) {
-    args.push('-af', [...normalize(-14), `volume=${o.audio.volume}`, fadeOut].join(','), ...out.audio);
+  if (audio && !mixed) {
+    args.push('-af', [...normalize(-14), `volume=${audio.volume}`, fadeOut].join(','), ...audioCodec);
   } else if (mixed) {
     const chains: string[] = [];
     const labels: string[] = [];
-    if (o.audio) {
-      const duck = o.voice?.intervals.length
-        ? [`volume='${duckExpression(o.voice.intervals, o.voice.musicLevel)}':eval=frame`]
-        : [];
-      chains.push(`[${musicInput}:a]${[...normalize(-14), `volume=${o.audio.volume}`, ...duck].join(',')}[music]`);
+    if (audio) {
+      const duck = voice?.intervals.length ? [`volume='${duckExpression(voice.intervals, voice.musicLevel)}':eval=frame`] : [];
+      chains.push(`[${musicInput}:a]${[...normalize(-14), `volume=${audio.volume}`, ...duck].join(',')}[music]`);
       labels.push('[music]');
     }
     // Piper already evens out each sentence, and the sounds are levelled in their library; loudnorm would not do: on the
     // digital silence between sentences, it outputs garbage that the limiter turns into noise. The limiter, on the voice
     // alone too, only catches peaks: its default auto-level would lift everything back to 0 dB, ducking included.
     const limiter = 'alimiter=limit=0.95:level=disabled';
-    if (o.voice) {
+    if (voice) {
       chains.push(`[${voiceInput}:a]aresample=48000[voice]`);
       labels.push('[voice]');
     }
-    if (o.sounds) {
+    if (sounds) {
       chains.push(`[${soundsInput}:a]aresample=48000[sounds]`);
       labels.push('[sounds]');
     }
     const mix = labels.length > 1 ? `amix=inputs=${labels.length}:duration=longest:normalize=0,` : '';
     chains.push(`${labels.join('')}${mix}${limiter},${fadeOut}[audio]`);
-    args.push('-filter_complex', chains.join(';'), '-map', '[audio]', ...out.audio);
+    args.push('-filter_complex', chains.join(';'), '-map', '[audio]', ...audioCodec);
   }
   args.push('-t', o.duration.toFixed(6), ...out.container, o.output);
   return args;
+}
+
+/**
+ * A GIF stores its frame delays in hundredths of a second, and browsers show a delay of 1 or less for 10: above 50 fps,
+ * every second or third frame is kept, so no delay falls under 2.
+ */
+function gifRate(fps: number): string {
+  const step = Math.ceil(fps / 50);
+  return Number.isInteger(fps / step) ? String(fps / step) : `${fps}/${step}`;
+}
+
+/**
+ * How many frames the pages may capture before ffmpeg takes them, and how many a page takes in a row. A JPEG frame stays
+ * under about 300 KB, a PNG one (transparent) is five to fifty times larger: its window follows the captured pixels,
+ * never under one frame per page, and blocks shrink so every page works inside it, passing it by `block - 1` at most.
+ */
+export function captureWindow(workers: number, transparent: boolean, pixels: number): { frames: number; block: number } {
+  const most = workers * BLOCK * 2;
+  const frames = transparent
+    ? Math.max(workers, Math.min(most, Math.floor(AHEAD_PNG_BYTES / (pixels * PNG_BYTES_PER_PIXEL))))
+    : most;
+  return { frames, block: Math.max(1, Math.min(BLOCK, Math.floor(frames / workers))) };
+}
+
+/**
+ * The GIF from the lossless frames ffmpegArgs wrote: one palette for the whole video, built from what changes between
+ * frames. palettegen gives its palette at the end of its input only, so paletteuse reads the frames a second time from the
+ * file instead of holding all of them in memory (about 8 MB a frame in 1080p). stats_mode=diff counts the colour a pixel
+ * leaves, so the colours of the last frame (an end card after a cut) would count only once something replaced them: two
+ * padded frames of different colours do, on the palette input only.
+ */
+export function gifArgs(frames: string, output: string): string[] {
+  return [
+    ...['-y', '-hide_banner', '-loglevel', 'error', '-i', frames, '-i', frames],
+    '-filter_complex',
+    '[0:v]tpad=stop=1:color=black,tpad=stop=1:color=white,palettegen=stats_mode=diff[p];[1:v][p]paletteuse',
+    ...['-c:v', 'gif', '-f', 'gif', output],
+  ];
 }
 
 /** duckGain (src/shared/voiceOver.ts) as an ffmpeg `volume` expression of `t`. */
@@ -697,9 +825,9 @@ function stamp(date: Date): string {
   return `${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}-${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}`;
 }
 
-async function freeName(dir: string, base: string): Promise<string> {
+async function freeName(dir: string, base: string, ext: string): Promise<string> {
   for (let i = 1; ; i++) {
-    const name = i === 1 ? `${base}.mp4` : `${base}-${i}.mp4`;
+    const name = i === 1 ? `${base}.${ext}` : `${base}-${i}.${ext}`;
     if (!(await pathExists(path.join(dir, name))) && !(await pathExists(path.join(dir, `${name}.part`)))) return name;
   }
 }

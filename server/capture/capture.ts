@@ -166,6 +166,8 @@ export async function openFramePage(
     format: FormatId;
     scale: number;
     captions?: boolean;
+    /** The stage drops the brand background, for outputs with alpha. */
+    transparent?: boolean;
     requestSecret?: string;
   },
 ): Promise<FramePage> {
@@ -181,6 +183,7 @@ export async function openFramePage(
     const params = new URLSearchParams({ project: opts.projectId, format: opts.format, mode: 'capture' });
     if (opts.sceneId) params.set('scene', opts.sceneId);
     if (opts.captions === false) params.set('captions', '0');
+    if (opts.transparent) params.set('transparent', '1');
     await page.goto(`${origin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
     if (!(await fromPage(page.evaluate(() => window.__cadence !== undefined)))) {
       throw new Error(m().media.capture.frameNotStarted(problems));

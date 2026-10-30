@@ -1,5 +1,5 @@
 // FfmpegRenderService against the frame harness: MP4 length, frame count, colors, soundtrack, voice-over, sound effects,
-// cancel, files.
+// cancel, files; transparent ProRes and WebM, GIF.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { lutimes, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
@@ -8,6 +8,8 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { promisify } from 'node:util';
+import { PNG } from 'pngjs';
+import { outputSupport } from '../../server/capture/encoders';
 import { FfmpegRenderService } from '../../server/capture/render';
 import type { CadenceConfig, ProjectStore } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
@@ -108,6 +110,21 @@ async function frameAt(file: string, t: number): Promise<Buffer> {
   return stdout;
 }
 
+/** One pixel of a decoded frame with its alpha; `decoder` forces one (ffmpeg's own VP9 decoder drops the alpha). */
+async function rgbaAt(file: string, t: number, x: number, y: number, decoder?: string): Promise<number[]> {
+  const { stdout } = await run(
+    'ffmpeg',
+    [
+      ...['-v', 'error', '-ss', String(t), ...(decoder ? ['-c:v', decoder] : []), '-i', file],
+      ...['-frames:v', '1', '-pix_fmt', 'rgba', '-f', 'image2pipe', '-c:v', 'png', '-'],
+    ],
+    { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 },
+  );
+  const image = PNG.sync.read(stdout);
+  const i = (image.width * y + x) * 4;
+  return [...image.data.subarray(i, i + 4)];
+}
+
 async function renderOne(
   request: Parameters<FfmpegRenderService['start']>[1],
   service = renders,
@@ -137,6 +154,16 @@ async function withSounds(cues: Record<string, string>): Promise<() => Promise<v
   );
   return async () => {
     await Promise.all(saved.map(([file, code]) => writeFile(file, code)));
+  };
+}
+
+/** Gives scenes a and b `code`; the returned function puts their code back. */
+async function withScenes(code: string): Promise<() => Promise<void>> {
+  const files = ['a', 'b'].map((sceneId) => h.store.sceneFile(id, sceneId));
+  const saved = await Promise.all(files.map((file) => readFile(file, 'utf8')));
+  await Promise.all(files.map((file) => writeFile(file, code)));
+  return async () => {
+    await Promise.all(files.map((file, i) => writeFile(file, saved[i])));
   };
 }
 
@@ -551,6 +578,199 @@ export default function A({ t, music }: SceneProps) {
       assert.ok(near(pixel(start, 100, 100), [255, 0, 0], 6), `red, supersample ${supersample}`);
       assert.ok(near(pixel(await frameAt(file, 0.3), 270, 600), [0, 0, 255], 6), `then scene b, supersample ${supersample}`);
     }
+  });
+
+  it('renders a transparent ProRes 4444 and VP9 WebM without the brand background, in true colors', async (t) => {
+    // One red square in the middle of the 16:9 canvas (861-1060 × 440-640), on nothing: 430-530 × 220-320 at 0.5×, its
+    // left column half covered. A mid-tone square (200-400 × 200-400, 100-200 at 0.5×) catches a tv/pc range error that
+    // saturated red hides: #3366cc read back as pc range is about 41,99,213.
+    const restore = await withScenes(
+      `export default () => <>\n` +
+        `  <div style={{ position: 'absolute', left: 861, top: 440, width: 199, height: 200, background: '#ff0000' }} />\n` +
+        `  <div style={{ position: 'absolute', left: 200, top: 200, width: 200, height: 200, background: '#3366cc' }} />\n` +
+        `</>;\n`,
+    );
+    try {
+      const request = {
+        formats: ['16:9' as const],
+        quality: 'draft' as const,
+        scale: 0.5 as const,
+        supersample: true,
+        transparent: true,
+      };
+      const { job, file } = await renderOne({ ...request, output: 'mov' });
+      assert.match(job.file!, /\.mov$/);
+      const video = (await probe(file)).streams.find((s) => s.codec_type === 'video')!;
+      assert.deepEqual([video.codec_name, video.width, video.height, video.pix_fmt], ['prores', 960, 540, 'yuva444p12le']);
+      assert.equal(video.nb_read_frames, '30');
+      assert.equal((await rgbaAt(file, 0.2, 5, 5))[3], 0, 'corner: transparent');
+      assert.ok(near(await rgbaAt(file, 0.2, 480, 270), [255, 0, 0, 255], 6), 'centre: opaque red');
+      assert.ok(near(await rgbaAt(file, 0.2, 150, 150), [51, 102, 204, 255], 6), 'mid tone in tv range');
+      // Resized premultiplied: the half-covered edge is red at half alpha, not darkened by the transparent black beside it.
+      const edge = await rgbaAt(file, 0.2, 430, 270);
+      assert.ok(edge[3] > 64 && edge[3] < 192 && near(edge.slice(0, 3), [255, 0, 0], 12), `edge: half-transparent red, ${edge}`);
+
+      // The CDP screenshot comes in device pixels: at a device pixel ratio of 0.5 or 2 the crop must still frame the canvas.
+      for (const [scale, supersample] of [
+        [0.5, false],
+        [1, true],
+      ] as const) {
+        const k = scale * 2;
+        const other = await renderOne({ ...request, scale, supersample, output: 'mov' });
+        const stream = (await probe(other.file)).streams.find((s) => s.codec_type === 'video')!;
+        const ratio = `ratio ${scale * (supersample ? 2 : 1)}`;
+        assert.deepEqual([stream.width, stream.height], [960 * k, 540 * k], ratio);
+        assert.equal((await rgbaAt(other.file, 0.2, 5, 5))[3], 0, `${ratio} corner: transparent`);
+        const centre = await rgbaAt(other.file, 0.2, 480 * k, 270 * k);
+        assert.ok(near(centre, [255, 0, 0, 255], 6), `${ratio} centre: opaque red, ${centre}`);
+        const mid = await rgbaAt(other.file, 0.2, 150 * k, 150 * k);
+        assert.ok(near(mid, [51, 102, 204, 255], 6), `${ratio} mid tone, ${mid}`);
+      }
+
+      if (!(await outputSupport(h.config.ffmpegPath)).webm.available) return t.skip('the local ffmpeg has no libvpx-vp9');
+      const webm = await renderOne({ ...request, output: 'webm' });
+      assert.match(webm.job.file!, /\.webm$/);
+      assert.equal((await rgbaAt(webm.file, 0.2, 5, 5, 'libvpx-vp9'))[3], 0, 'webm corner: transparent');
+      assert.ok(near(await rgbaAt(webm.file, 0.2, 480, 270, 'libvpx-vp9'), [255, 0, 0, 255], 6), 'webm centre: opaque red');
+      assert.ok(near(await rgbaAt(webm.file, 0.2, 150, 150, 'libvpx-vp9'), [51, 102, 204, 255], 6), 'webm mid tone in tv range');
+    } finally {
+      await restore();
+    }
+  });
+
+  it("renders a ProRes with PCM audio and a WebM with opus, ffmpeg's own when the build has no libopus", async (t) => {
+    const musicDir = path.join(h.store.dir(id), 'music');
+    await mkdir(musicDir, { recursive: true });
+    const track = path.join(musicDir, 'tone.wav');
+    await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4', '-ar', '44100', track]);
+    const projectFile = path.join(h.store.dir(id), 'project.json');
+    const project = JSON.parse(await readFile(projectFile, 'utf8')) as ProjectFile;
+    project.music = { file: 'music/tone.wav', start: 0, volume: 1 };
+    await writeFile(projectFile, JSON.stringify(project, null, 2));
+    music.audio.set(id, track);
+    const request = { formats: ['16:9' as const], quality: 'draft' as const, scale: 0.5 as const };
+    const audioOf = async (file: string) => {
+      const audio = (await probe(file)).streams.filter((s) => s.codec_type === 'audio');
+      return audio.map((s) => [s.codec_name, s.sample_rate]);
+    };
+    try {
+      assert.deepEqual(await audioOf((await renderOne({ ...request, output: 'mov' })).file), [['pcm_s16le', '48000']]);
+
+      if (!(await outputSupport(h.config.ffmpegPath)).webm.available) return t.skip('the local ffmpeg has no libvpx-vp9');
+      assert.deepEqual(await audioOf((await renderOne({ ...request, output: 'webm' })).file), [['opus', '48000']]);
+
+      // The same ffmpeg, but its encoders list leaves libopus out.
+      const wrapper = path.join(h.store.dir(id), 'ffmpeg-no-libopus');
+      await writeFile(
+        wrapper,
+        `#!/bin/sh
+printf '%s\\n' "$*" >> "$0.log"
+case "$*" in
+  *-encoders*) "${h.config.ffmpegPath}" "$@" | grep -v ' libopus ' ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const native = new FfmpegRenderService({
+        config: { ...h.config, ffmpegPath: wrapper },
+        store: h.store,
+        music,
+        voiceOver,
+        hub,
+      });
+      assert.deepEqual(await audioOf((await renderOne({ ...request, output: 'webm' }, native)).file), [['opus', '48000']]);
+      assert.match(await readFile(`${wrapper}.log`, 'utf8'), / -c:a opus -strict -2 /);
+    } finally {
+      project.music = null;
+      await writeFile(projectFile, JSON.stringify(project, null, 2));
+      music.audio.delete(id);
+    }
+  });
+
+  it('renders a GIF with every frame and true colors, supersampled', async () => {
+    const { job, file } = await renderOne({ formats: ['16:9'], quality: 'draft', scale: 0.5, supersample: true, output: 'gif' });
+    assert.match(job.file!, /\.gif$/);
+    const info = await probe(file);
+    assert.deepEqual(
+      info.streams.map((s) => [s.codec_type, s.codec_name, s.width, s.height, s.nb_read_frames]),
+      [['video', 'gif', 960, 540, '30']],
+    );
+    assert.ok(near(pixel(await frameAt(file, 0.2), 750, 400), [255, 0, 0], 6), 'red');
+    assert.ok(near(pixel(await frameAt(file, 0.8), 750, 400), [0, 0, 255], 6), 'blue');
+    const partial = (await readdir(path.join(h.store.dir(id), 'renders'))).filter((n) => n.endsWith('.part'));
+    assert.deepEqual(partial, [], 'the frames file is gone too');
+  });
+
+  it('reports a failed GIF palette pass with what ffmpeg said, and leaves no file behind', async () => {
+    // The real ffmpeg, except for the second pass.
+    const wrapper = path.join(h.store.dir(id), 'ffmpeg-no-palette');
+    await writeFile(
+      wrapper,
+      `#!/bin/sh
+case "$*" in
+  *paletteuse*) echo boom >&2; exit 3 ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const failing = new FfmpegRenderService({
+      config: { ...h.config, ffmpegPath: wrapper },
+      store: h.store,
+      music,
+      voiceOver,
+      hub,
+    });
+    const rendersDir = path.join(h.store.dir(id), 'renders');
+    const existing = await readdir(rendersDir).catch(() => [] as string[]);
+    const [queued] = await failing.start(id, { formats: ['16:9'], quality: 'draft', scale: 0.5, output: 'gif' });
+    const job = await failing.wait(queued.id);
+    assert.equal(job.status, 'error');
+    assert.equal(job.error, 'ffmpeg a échoué (code 3) : boom');
+    const left = (await readdir(rendersDir)).filter((n) => !existing.includes(n) && /\.(part|gif)$/.test(n));
+    assert.deepEqual(left, []);
+  });
+
+  it('cancels a GIF during its palette pass, within seconds, and leaves no file behind', { timeout: 30_000 }, async () => {
+    // The real ffmpeg, except for the second pass, which says it started and then hangs.
+    const wrapper = path.join(h.store.dir(id), 'ffmpeg-slow-palette');
+    const started = `${wrapper}.started`;
+    await writeFile(
+      wrapper,
+      `#!/bin/sh
+case "$*" in
+  *paletteuse*) touch "${started}"; exec sleep 30 ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const slow = new FfmpegRenderService({
+      config: { ...h.config, ffmpegPath: wrapper },
+      store: h.store,
+      music,
+      voiceOver,
+      hub,
+    });
+    const rendersDir = path.join(h.store.dir(id), 'renders');
+    const existing = await readdir(rendersDir).catch(() => [] as string[]);
+    const [queued] = await slow.start(id, { formats: ['16:9'], quality: 'draft', scale: 0.5, output: 'gif' });
+    while (
+      !(await readFile(started).then(
+        () => true,
+        () => false,
+      ))
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(slow.jobs(id).find((j) => j.id === queued.id)!.status, 'encoding');
+    const cancelledAt = Date.now();
+    slow.cancel(queued.id);
+    const job = await slow.wait(queued.id);
+    assert.equal(job.status, 'cancelled');
+    assert.ok(Date.now() - cancelledAt < 5_000, 'ffmpeg is killed, not waited for');
+    const left = (await readdir(rendersDir)).filter((n) => !existing.includes(n) && /\.(part|gif)$/.test(n));
+    assert.deepEqual(left, []);
   });
 
   it('sizes the video from what its pages show when an edit lands as the job starts', async () => {

@@ -1,6 +1,8 @@
 // Contract between the frame page (frame.html, served on the FRAME origin) and its hosts:
 // - the editor (cross-origin iframe: postMessage only, origins checked on both sides),
 // - headless capture (Playwright: window.__cadence directly).
+// frame.html query: project, format, scene, mode=capture|present, captions=0 (no captions), transparent=1 (the stage
+// drops the brand background; renders with alpha screenshot it with omitBackground).
 import type { BrandKit } from './brandKit';
 import type { SoundCue } from './sounds';
 import type { FormatId } from './types';

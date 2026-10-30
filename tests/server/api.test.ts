@@ -21,6 +21,7 @@ import type {
   BrandBuildService,
   BrandSource,
   ApiDeps,
+  BrowserServer,
   CaptureService,
   ChatService,
   ElevenLabsApi,
@@ -1719,18 +1720,25 @@ test('renders: validated requests, jobs and files, cancel, MP4 streaming, deleti
   assert.deepEqual(calls.removeRender, [{ id: 'demo', name: 'demo.mp4' }]);
 });
 
-test('renders: an output is optional, mp4 the only one accepted, transparent a boolean', async () => {
+test('renders: an output is optional, one this version renders accepted, transparent a boolean', async () => {
   const req = { formats: ['16:9'], quality: 'draft' };
   assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'mp4', transparent: false })).status, 200);
-  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'webm' })).status, 400);
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'png' })).status, 400);
   assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'avi' })).status, 400);
   assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, transparent: 'yes' })).status, 400);
   assert.deepEqual(calls.render, [{ id: 'demo', req: { ...req, output: 'mp4', transparent: false } }]);
 });
 
 /** The API on a real render service, for its files and its checks before a job starts. */
-function realRenders(): FfmpegRenderService {
-  const renders = new FfmpegRenderService({ config: t.config, store, music: deps.music, voiceOver: deps.voiceOver, hub });
+function realRenders(browserServer?: () => Promise<BrowserServer>): FfmpegRenderService {
+  const renders = new FfmpegRenderService({
+    config: t.config,
+    store,
+    music: deps.music,
+    voiceOver: deps.voiceOver,
+    hub,
+    browserServer,
+  });
   app = createApi({ ...deps, renders });
   return renders;
 }
@@ -1745,6 +1753,21 @@ test('renders: a render the ffmpeg in use cannot encode is refused with the reas
     body: { error: 'Le ffmpeg utilisé n’a pas d’encodeur libx264 ni aac' },
   });
   assert.deepEqual(renders.jobs('demo'), []);
+});
+
+test('renders: a WebM the ffmpeg in use cannot encode is refused before any job, a MOV from the same ffmpeg is not', async () => {
+  const renders = realRenders(() => Promise.reject(new Error('no browser in this test')));
+  await store.createScene('demo', { name: 'Fin' });
+  t.config.ffmpegPath = await fakeFfmpeg(path.join(t.root, 'ffmpeg'), ENCODERS_NO_VPX);
+  const req = { formats: ['16:9'], quality: 'draft' };
+  assert.deepEqual(await json('POST', '/api/projects/demo/renders', { ...req, output: 'webm' }), {
+    status: 422,
+    body: { error: 'Le ffmpeg utilisé n’a pas d’encodeur libvpx-vp9' },
+  });
+  assert.deepEqual(renders.jobs('demo'), []);
+  const mov = await json('POST', '/api/projects/demo/renders', { ...req, output: 'mov' });
+  assert.equal(mov.status, 200);
+  assert.equal((await renders.wait(mov.body[0].id)).request.output, 'mov');
 });
 
 test('renders: every kind of file is listed, served with its type and moved to the trash; links are refused', async () => {

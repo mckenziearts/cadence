@@ -48,6 +48,8 @@ let sceneId: string | null = query.get('scene') || null;
 let currentT = Number(query.get('t')) || 0;
 // Seam checks and thumbnails open the page with captions=0: they look at the scene, and a caption would hide part of it.
 const captionsShown = query.get('captions') !== '0';
+// Renders with alpha open the page with transparent=1: the brand background would fill the whole frame.
+const transparentStage = query.get('transparent') === '1';
 
 // After the base font styles, so the brand theme wins.
 const brandStyle = document.createElement('style');
@@ -469,7 +471,7 @@ function Stage(props: { spec: FormatSpec; view: View }) {
         transformOrigin: '0 0',
         overflow: 'hidden',
         contain: 'strict',
-        background: colors?.background ?? '#ffffff',
+        background: transparentStage ? 'transparent' : (colors?.background ?? '#ffffff'),
         color: colors?.ink ?? '#0a0a0a',
         fontFamily: fonts?.body ?? "'Inter Variable', system-ui, sans-serif",
         WebkitFontSmoothing: 'antialiased',
