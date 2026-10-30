@@ -6,7 +6,8 @@ import type { AgentId, CreateSceneInput, FormatId, ProjectState, SeamResult } fr
 import { seamTone } from '../lib/format';
 import { parseHash } from '../lib/routing';
 import { oneAtATime, sceneInPlace, undoAllowed } from '../lib/shortcuts';
-import { clamp, currentScene, get, previewDuration, sceneAt, set, useStore, type PreviewMode } from '.';
+import { sceneAt } from '../lib/timeline';
+import { clamp, currentScene, get, previewDuration, set, useStore, type PreviewMode } from '.';
 import { flushMusic } from './music';
 import { toast } from './ui';
 

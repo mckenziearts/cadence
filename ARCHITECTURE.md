@@ -350,6 +350,11 @@ never take more than the scene (`sceneTimeline` in `server/store/projects.ts`):
 holds, so a scene shortened later never breaks the timeline and nothing cascades on disk. `start` = previous start +
 previous duration - effective transition, rounded to the ms; `ProjectState.duration` and the project list's duration
 subtract the overlaps. Without transitions, starts and durations are the running sums they always were.
+During an overlap the frame page draws both scenes (`pickScene` in `src/frame/pick.ts`), the incoming one on top, each
+at its own local time and in its own error boundary; `presentation()` (`src/frame/transitions.ts`) styles them for each
+frame from the eased progress, never with CSS transitions. A frame exactly at the outgoing scene's end shows the
+incoming scene alone. The brand background and the captions are drawn once, outside both scenes; `seek()` answers both
+scenes' errors and the incoming scene's id; the text checks skip frames inside a cut; scene mode shows one scene and no cut.
 `tempo` (default 120) is the fallback beat grid and converts template bars to seconds (1 bar = 240 / tempo s).
 `language` (`fr` | `en` | null = the brand's) sets the on-screen language: the frame passes
 `{ ...kit, language }` to scenes, and the agent's turn context names it.

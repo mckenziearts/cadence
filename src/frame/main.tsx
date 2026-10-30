@@ -16,7 +16,7 @@ import {
   type SceneProps,
   type VoiceOverInfo,
 } from 'cadence';
-import { Component, type ComponentType, type ErrorInfo, type ReactNode } from 'react';
+import { Component, type ComponentType, type CSSProperties, type ErrorInfo, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { FrameProjectData } from '../../server/frames/frameServer';
@@ -28,7 +28,9 @@ import { auditStage } from './audit';
 import { Captions } from './captions';
 import { editorOrigins, postToEditor } from './editor';
 import { readSpectrum, spectrumFor, spectrumUrl } from './spectrum';
+import { pickScene, type Picked } from './pick';
 import { texts } from './texts';
+import { presentation } from './transitions';
 import { sceneVoiceOver, tidy } from './voiceOver';
 
 const BASE_FACES = [
@@ -67,15 +69,17 @@ interface LoadedScene {
   error: string | null;
 }
 
-interface Picked {
-  scene: SceneState;
-  local: number;
-}
+/** One drawn scene: its component, or its compile error. */
+type Layer = { scene: SceneState; style: CSSProperties } & (
+  | { kind: 'scene'; label: string; key: string; Comp: ComponentType<SceneProps>; props: SceneProps }
+  | { kind: 'error'; title: string; message: string }
+);
 
 type View =
   | { kind: 'empty' }
   | { kind: 'error'; title: string; message: string }
-  | { kind: 'scene'; label: string; key: string; Comp: ComponentType<SceneProps>; props: SceneProps };
+  /** Outgoing then incoming scene during a transition; `t` is the video time the captions show. */
+  | { kind: 'scenes'; layers: Layer[]; wrapper: CSSProperties; t: number };
 
 let data: FrameProjectData | null = null;
 /** The brand module's kit; `kit` is the same kit in the project's on-screen language. */
@@ -93,13 +97,16 @@ const voiceOverCache = new Map<string, VoiceOverInfo>();
 /** Per scene and format, like the props `sounds()` gets; cleared with the music on every load. */
 const soundsCache = new Map<string, SceneSounds>();
 let renderErrors: string[] = [];
-let boundaryFailed = false;
+/** The scenes whose error boundary caught during the last render. */
+let failedScenes = new Set<string>();
 let lastErrors: string[] = [];
-/** A scene drew without throwing: the text checks have something to read. */
+/** One scene drew without throwing: the text checks have something to read. During a cut both scenes are moving, and
+ * text a slide or flip carries across the canvas edge is not a layout fault. */
 let sceneDrawn = false;
 let lastPosted: string | null = null;
 let lastPostedSounds: string | null = null;
-let boundaryEpoch = 0;
+/** Per scene, so a scene that throws during a cut does not remount the one that draws. */
+const boundaryEpochs = new Map<string, number>();
 /** src last decoded per <img>: scenes may swap the src of the same element over time. */
 const decodedSrc = new WeakMap<HTMLImageElement, string>();
 
@@ -171,7 +178,7 @@ function ErrorOverlay(props: { title: string; message: string }) {
   );
 }
 
-class Boundary extends Component<{ label: string; children: ReactNode }, { error: unknown }> {
+class Boundary extends Component<{ sceneId: string; label: string; children: ReactNode }, { error: unknown }> {
   state: { error: unknown } = { error: null };
 
   static getDerivedStateFromError(error: unknown) {
@@ -185,6 +192,7 @@ class Boundary extends Component<{ label: string; children: ReactNode }, { error
       .slice(0, 3)
       .map(cleanLine)
       .join('\n');
+    failedScenes.add(this.props.sceneId);
     renderErrors.push(`${texts.runtimeError(this.props.label)}\n${formatError(error)}${where ? `\n${where}` : ''}`);
   }
 
@@ -320,19 +328,6 @@ function formatOf(project: ProjectState | undefined): FormatId {
   return requestedFormat ?? project?.formats[0] ?? '16:9';
 }
 
-function pickScene(project: ProjectState, t: number): Picked | null {
-  if (sceneId) {
-    const scene = project.scenes.find((s) => s.id === sceneId);
-    return scene ? { scene, local: tidy(Math.min(Math.max(0, t), scene.duration)) } : null;
-  }
-  // A frame exactly on a cut belongs to the next scene; the epsilon absorbs float sums like 0.5 + 0.6.
-  for (const scene of project.scenes) {
-    if (t < scene.start + scene.duration - 1e-9) return { scene, local: tidy(Math.max(0, t - scene.start)) };
-  }
-  const last = project.scenes.at(-1);
-  return last ? { scene: last, local: last.duration } : null;
-}
-
 function musicFor(project: ProjectState, scene: SceneState): Music {
   const key = `${scene.id}|${scene.start}|${scene.duration}`;
   let music = musicCache.get(key);
@@ -421,6 +416,23 @@ function postSounds(): void {
   post(message);
 }
 
+function layer(project: ProjectState, scene: SceneState, local: number, spec: FormatSpec, brand: BrandKit): Layer | null {
+  const label = `scenes/${scene.id}.tsx`;
+  const loaded = scenes.get(scene.id);
+  if (!loaded) return null;
+  if (!loaded.Comp) return { scene, style: {}, kind: 'error', title: texts.compileError(label), message: loaded.error ?? '' };
+  const props: SceneProps = { t: local, ...sceneProps(project, scene, spec, brand) };
+  return {
+    scene,
+    style: {},
+    kind: 'scene',
+    label,
+    key: `${scene.id}:${loaded.key}:${boundaryEpochs.get(scene.id) ?? 0}`,
+    Comp: loaded.Comp,
+    props,
+  };
+}
+
 function view(picked: Picked | null, spec: FormatSpec): View {
   if (loadError) return { kind: 'error', title: 'Projet indisponible', message: loadError };
   if (!data) return { kind: 'empty' };
@@ -429,14 +441,26 @@ function view(picked: Picked | null, spec: FormatSpec): View {
     if (!sceneId) return { kind: 'empty' };
     return { kind: 'error', title: texts.sceneNotFound, message: texts.sceneMissing(sceneId) };
   }
+  if (!kit) return { kind: 'empty' };
   const { project } = data;
-  const { scene, local } = picked;
-  const label = `scenes/${scene.id}.tsx`;
-  const loaded = scenes.get(scene.id);
-  if (!loaded || !kit) return { kind: 'empty' };
-  if (!loaded.Comp) return { kind: 'error', title: texts.compileError(label), message: loaded.error ?? '' };
-  const props: SceneProps = { t: local, ...sceneProps(project, scene, spec, kit) };
-  return { kind: 'scene', label, key: `${scene.id}:${loaded.key}:${boundaryEpoch}`, Comp: loaded.Comp, props };
+  const { scene, local, outgoing } = picked;
+  const incoming = layer(project, scene, local, spec, kit);
+  const t = tidy(scene.start + local);
+  if (!outgoing || !scene.transition)
+    return incoming ? { kind: 'scenes', layers: [incoming], wrapper: {}, t } : { kind: 'empty' };
+  const before = layer(project, outgoing.scene, outgoing.local, spec, kit);
+  if (!incoming || !before) return { kind: 'empty' };
+  const { kind, direction } = scene.transition;
+  const styles = presentation(kind, direction, outgoing.progress, spec.width, spec.height);
+  return {
+    kind: 'scenes',
+    layers: [
+      { ...before, style: styles.outgoing },
+      { ...incoming, style: styles.incoming },
+    ],
+    wrapper: styles.wrapper,
+    t,
+  };
 }
 
 function Stage(props: { spec: FormatSpec; view: View }) {
@@ -446,16 +470,30 @@ function Stage(props: { spec: FormatSpec; view: View }) {
   const fonts = kit?.fonts ?? data?.brand.fonts;
   let content: ReactNode = null;
   if (view.kind === 'error') content = <ErrorOverlay title={view.title} message={view.message} />;
-  if (view.kind === 'scene') {
-    const Scene = view.Comp;
+  if (view.kind === 'scenes') {
+    // Keyed by scene: the incoming scene keeps its element, and its decoded images, when the transition ends.
     content = (
-      <BrandContext.Provider value={view.props.brand}>
-        <SceneContext.Provider value={view.props}>
-          <Boundary key={view.key} label={view.label}>
-            <Scene {...view.props} />
-          </Boundary>
-        </SceneContext.Provider>
-      </BrandContext.Provider>
+      <div data-cadence-scenes="" style={{ position: 'absolute', inset: 0, ...view.wrapper }}>
+        {view.layers.map((layer) => (
+          <div
+            key={layer.scene.id}
+            data-cadence-scene={layer.scene.id}
+            style={{ position: 'absolute', inset: 0, ...layer.style }}
+          >
+            {layer.kind === 'error' ? (
+              <ErrorOverlay title={layer.title} message={layer.message} />
+            ) : (
+              <BrandContext.Provider value={layer.props.brand}>
+                <SceneContext.Provider value={layer.props}>
+                  <Boundary key={layer.key} sceneId={layer.scene.id} label={layer.label}>
+                    <layer.Comp {...layer.props} />
+                  </Boundary>
+                </SceneContext.Provider>
+              </BrandContext.Provider>
+            )}
+          </div>
+        ))}
+      </div>
     );
   }
   return (
@@ -478,14 +516,9 @@ function Stage(props: { spec: FormatSpec; view: View }) {
       }}
     >
       {content}
-      {/* Outside the scene's error boundary: a scene that throws keeps its captions. */}
-      {view.kind === 'scene' && captionsShown && data?.project.captions && (
-        <Captions
-          lines={data.project.voiceOverLines}
-          speakers={data.project.voiceOver.speakers}
-          spec={spec}
-          t={tidy(view.props.scene.start + view.props.t)}
-        />
+      {/* Outside the scenes' error boundaries and transitions: a scene that throws keeps its captions, a cut never moves them. */}
+      {view.kind === 'scenes' && view.layers.some((l) => l.kind === 'scene') && captionsShown && data?.project.captions && (
+        <Captions lines={data.project.voiceOverLines} speakers={data.project.voiceOver.speakers} spec={spec} t={view.t} />
       )}
     </div>
   );
@@ -494,20 +527,24 @@ function Stage(props: { spec: FormatSpec; view: View }) {
 function renderAt(t: number): FrameRenderResult {
   currentT = Number.isFinite(t) ? t : 0;
   // Remount the error boundary after a failure: the scene may only throw at some times.
-  if (boundaryFailed) boundaryEpoch++;
+  for (const failed of failedScenes) boundaryEpochs.set(failed, (boundaryEpochs.get(failed) ?? 0) + 1);
+  failedScenes = new Set();
   renderErrors = [];
   const project = data?.project;
-  const picked = project ? pickScene(project, currentT) : null;
+  const picked = project ? pickScene(project.scenes, currentT, sceneId) : null;
   const spec = FORMATS[formatOf(project)];
   const shown = view(picked, spec);
   flushSync(() => root.render(<Stage spec={spec} view={shown} />));
-  boundaryFailed = renderErrors.length > 0;
-  sceneDrawn = shown.kind === 'scene' && !boundaryFailed;
-  const errors = [...(shown.kind === 'error' ? [`${shown.title}\n${shown.message}`] : []), ...renderErrors];
+  const layers = shown.kind === 'scenes' ? shown.layers : [];
+  sceneDrawn = layers.length === 1 && layers[0].kind === 'scene' && failedScenes.size === 0;
+  const errors = shown.kind === 'error' ? [`${shown.title}\n${shown.message}`] : [];
+  for (const l of layers) if (l.kind === 'error') errors.push(`${l.title}\n${l.message}`);
+  errors.push(...renderErrors);
   // A failing sounds() is an error of the scene, which still draws.
-  if (project && picked && shown.kind === 'scene') {
-    const sounds = soundsOf(project, picked.scene, spec);
-    if ('error' in sounds) errors.push(`${texts.soundsError(shown.label)}\n${sounds.error}`);
+  for (const l of layers) {
+    if (l.kind !== 'scene' || !project) continue;
+    const sounds = soundsOf(project, l.scene, spec);
+    if ('error' in sounds) errors.push(`${texts.soundsError(l.label)}\n${sounds.error}`);
   }
   lastErrors = errors;
   const signature = errors.join('\n\u0000\n');

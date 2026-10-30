@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import {
   Counter,
   DrawPath,
@@ -60,6 +61,7 @@ const LAYOUT = {
 
 export default function ChartDraw({ t, duration, music, brand }: SceneProps) {
   const f = useFormat();
+  const id = `cadence-chart-${useId().replace(/[^\w-]/g, '')}`;
   const L = f.pick(LAYOUT);
   const { ui, colors, fonts } = brand;
   const copy = COPY[brand.language] ?? COPY.fr;
@@ -146,11 +148,11 @@ export default function ChartDraw({ t, duration, music, brand }: SceneProps) {
         />
         <svg width={L.card.w} height={L.card.h} style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible' }}>
           <defs>
-            <linearGradient id="cadence-chart-area" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id={`${id}-area`} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stopColor={colors.primary} stopOpacity={0.22} />
               <stop offset="1" stopColor={colors.primary} stopOpacity={0} />
             </linearGradient>
-            <clipPath id="cadence-chart-reveal">
+            <clipPath id={`${id}-reveal`}>
               <rect x={cx - 4} y={cy - 40} width={Math.max(0, tip.x - cx + 4)} height={ch + 44} />
             </clipPath>
           </defs>
@@ -188,7 +190,7 @@ export default function ChartDraw({ t, duration, music, brand }: SceneProps) {
               {label}
             </text>
           ))}
-          {draw > 0 ? <path d={area} fill="url(#cadence-chart-area)" clipPath="url(#cadence-chart-reveal)" /> : null}
+          {draw > 0 ? <path d={area} fill={`url(#${id}-area)`} clipPath={`url(#${id}-reveal)`} /> : null}
           <DrawPath d={d} progress={draw} color={colors.primary} width={4} />
           {draw > 0 ? (
             <g>

@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import {
   ease,
   Fill,
@@ -249,21 +250,22 @@ function Landscape({ brand, t }: { brand: BrandKit; t: number }) {
     return `M${points.join('L')}L1640,1000L-40,1000Z`;
   };
   const sunY = 600 - t * 4;
+  const id = `cadence-landscape-${useId().replace(/[^\w-]/g, '')}`;
   return (
     <svg viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" width="100%" height="100%" style={{ display: 'block' }}>
       <defs>
-        <linearGradient id="cadence-sky" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={`${id}-sky`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stopColor={shade(0.82)} />
           <stop offset="0.62" stopColor={mixColor(tint, '#ffffff', 0.35)} />
           <stop offset="1" stopColor={mixColor(tint, '#ffffff', 0.55)} />
         </linearGradient>
-        <radialGradient id="cadence-sun" cx="0.5" cy="0.5" r="0.5">
+        <radialGradient id={`${id}-sun`} cx="0.5" cy="0.5" r="0.5">
           <stop offset="0" stopColor="#ffffff" stopOpacity={0.85} />
           <stop offset="1" stopColor="#ffffff" stopOpacity={0} />
         </radialGradient>
       </defs>
-      <rect width={1600} height={1000} fill="url(#cadence-sky)" />
-      <circle cx={800} cy={sunY} r={260} fill="url(#cadence-sun)" />
+      <rect width={1600} height={1000} fill={`url(#${id}-sky)`} />
+      <circle cx={800} cy={sunY} r={260} fill={`url(#${id}-sun)`} />
       <circle cx={800} cy={sunY} r={62} fill="#ffffff" />
       <path d={ridge(640, 26, 0.004, 120 + drift)} fill={shade(0.25)} />
       <path d={ridge(700, 34, 0.0032, 520 - drift * 1.4)} fill={shade(0.42)} />

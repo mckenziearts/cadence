@@ -311,6 +311,9 @@ const a = (s: number, e: number) => progress(t, s, e, ease.outCubic);
   the screen: lines running far past the canvas (construction guides) cost about 1 s per frame. Keep long lines out
   of it: draw them before it, in the same `<svg>` (`GuideLine` in the wireframe-glow template gives them a cheap
   gradient halo).
+- SVG `<defs>` ids (gradients, clip paths, masks, filters) come from `useId()`, never a fixed string: two scenes share
+  the document during a transition, and `url(#id)` points to the first element with that id.
+  ``const id = `chart-${useId().replace(/[^\w-]/g, '')}` `` then ``fill={`url(#${id}-area)`}``.
 
 ```tsx
 // Glowing wireframe drawing itself on black, in perspective, then landing flat.

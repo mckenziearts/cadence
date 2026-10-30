@@ -13,7 +13,7 @@ import type { CadenceConfig } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { frameOriginOf } from '../../src/shared/frameOrigin';
-import type { MusicGridData, ProjectFile } from '../../src/shared/types';
+import type { MusicGridData, ProjectFile, SceneTransition } from '../../src/shared/types';
 import { near, pixel, startHarness, type Harness } from './helpers/harness';
 
 let h: Harness;
@@ -772,6 +772,206 @@ describe('frame page', () => {
     await sync(page);
     await seek(page, 0.5);
     assert.ok(near(await colorAt(page, 960, 540), [18, 171, 52]));
+    await page.context().close();
+  });
+});
+
+describe('transitions', () => {
+  const solid = (color: string, throwsAfter = Infinity) =>
+    `export default function Solid({ t }) {\n  if (t > ${throwsAfter}) throw new Error('Boum à ' + t);\n` +
+    `  return <div style={{ position: 'absolute', inset: 0, background: '${color}' }} />;\n}\n`;
+
+  /** A project of its own: scene `out` (1 s), then scene `in` (1 s) with `transition`, so `in` starts at 1 - duration. */
+  async function cut(
+    transition: SceneTransition,
+    out: string,
+    into: string,
+    captions = false,
+  ): Promise<{ id: string; page: Page }> {
+    const projectId = await h.project('frames');
+    const file = path.join(h.store.dir(projectId), 'project.json');
+    const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
+    project.scenes = [
+      { id: 'out', name: 'Sortante', duration: 1 },
+      { id: 'in', name: 'Entrante', duration: 1, transition },
+    ];
+    project.captions = captions;
+    await writeFile(file, JSON.stringify(project, null, 2));
+    await writeFile(h.store.sceneFile(projectId, 'out'), out);
+    await writeFile(h.store.sceneFile(projectId, 'in'), into);
+    await h.store.syncCode(projectId);
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 0.5 });
+    const page = await context.newPage();
+    const origin = await frameOriginOf(h.config.frameOrigin, 'project', projectId);
+    await page.goto(`${origin}/frame.html?${new URLSearchParams({ project: projectId, format: '16:9', mode: 'capture' })}`);
+    await page.evaluate(() => window.__cadence!.ready);
+    return { id: projectId, page };
+  }
+
+  const drawn = (page: Page) =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('[data-cadence-scene]')].map((el) => el.getAttribute('data-cadence-scene')),
+    );
+
+  it('blends two solid scenes halfway through a fade, then draws the incoming one alone from the end of the outgoing one', async () => {
+    const { page } = await cut({ kind: 'fade', duration: 0.5 }, solid('#ff0000'), solid('#0000ff'));
+    assert.equal(await page.evaluate(() => window.__cadence!.duration()), 1.5);
+    assert.deepEqual(await seek(page, 0.5), { errors: [], sceneId: 'in', localTime: 0 });
+    assert.ok(near(await colorAt(page, 960, 540), [255, 0, 0]), 'progress 0: the outgoing scene only');
+    assert.deepEqual(await seek(page, 0.75), { errors: [], sceneId: 'in', localTime: 0.25 });
+    assert.deepEqual(await drawn(page), ['out', 'in'], 'the incoming scene on top');
+    const mid = await colorAt(page, 960, 540);
+    assert.ok(near(mid, [128, 0, 128], 3), `between red and blue, got ${mid}`);
+    await page.evaluate(() => document.querySelector('[data-cadence-scene="in"]')!.setAttribute('data-probe', ''));
+    assert.deepEqual(await seek(page, 1), { errors: [], sceneId: 'in', localTime: 0.5 });
+    assert.deepEqual(await drawn(page), ['in']);
+    assert.ok(await page.locator('[data-cadence-scene="in"][data-probe]').count(), 'the incoming scene keeps its element');
+    assert.ok(near(await colorAt(page, 960, 540), [0, 0, 255]));
+    await page.context().close();
+  });
+
+  it("keeps drawing one scene while the other throws, and reports both scenes' errors with the incoming scene's id", async () => {
+    // A wipe to the left: the outgoing scene keeps the left part, the incoming one comes in from the right edge.
+    const { page } = await cut({ kind: 'wipe', direction: 'left', duration: 0.5 }, solid('#ff0000', 0.6), solid('#0000ff', 0.2));
+    const one = await seek(page, 0.65);
+    assert.equal(one.sceneId, 'in');
+    assert.equal(one.errors.length, 1);
+    assert.match(one.errors[0], /Erreur d’exécution · scenes\/out\.tsx/);
+    assert.ok(near(await colorAt(page, 480, 1000), [254, 243, 242]), "the outgoing scene's error");
+    assert.ok(near(await colorAt(page, 1900, 1000), [0, 0, 255]), 'the incoming scene still draws');
+    await page.evaluate(() => document.querySelector('[data-cadence-scene="in"] > div')!.setAttribute('data-probe', ''));
+    assert.equal((await seek(page, 0.68)).errors.length, 1);
+    assert.equal(
+      await page.locator('[data-cadence-scene="in"] > div[data-probe]').count(),
+      1,
+      'the outgoing scene failing again does not remount the incoming one',
+    );
+    const both = await seek(page, 0.75);
+    assert.deepEqual(
+      both.errors.map((e) => e.split('\n')[0]),
+      ['Erreur d’exécution · scenes/out.tsx', 'Erreur d’exécution · scenes/in.tsx'],
+    );
+    assert.equal(both.sceneId, 'in');
+    await page.context().close();
+  });
+
+  it('slides the incoming scene in from the side the motion comes from', async () => {
+    const { page } = await cut({ kind: 'slide', direction: 'left', duration: 0.5 }, solid('#ff0000'), solid('#0000ff'));
+    await seek(page, 0.75);
+    assert.ok(near(await colorAt(page, 480, 540), [255, 0, 0]), 'the outgoing scene leaves by the left');
+    assert.ok(near(await colorAt(page, 1440, 540), [0, 0, 255]), 'the incoming scene comes from the right');
+    await page.context().close();
+  });
+
+  it('flips the scenes without ever showing their back', async () => {
+    // The incoming scene draws its left half only: what its transparent right half lets through tells the faces apart.
+    const half =
+      'export default function Half() {\n' +
+      "  return <div style={{ position: 'absolute', left: 0, top: 0, width: '50%', height: '100%', background: '#0000ff' }} />;\n}\n";
+    const { page } = await cut({ kind: 'flip', direction: 'left', duration: 0.5 }, solid('#ff0000'), half);
+    const background: [number, number, number] = [244, 244, 245];
+    // Progress 0.4: the outgoing scene has turned under 90 degrees, the incoming one over 90, back to the viewer.
+    await seek(page, 0.7);
+    assert.ok(near(await colorAt(page, 20, 540), background), 'the outgoing scene turns away from the canvas edges');
+    assert.ok(near(await colorAt(page, 720, 540), [255, 0, 0]));
+    assert.ok(near(await colorAt(page, 1200, 540), [255, 0, 0]), "the incoming scene's mirrored half stays hidden");
+    // Progress 0.6: the faces have swapped.
+    await seek(page, 0.8);
+    assert.ok(near(await colorAt(page, 720, 540), [0, 0, 255]));
+    assert.ok(near(await colorAt(page, 1200, 540), background), "the outgoing scene's back stays hidden");
+    await page.context().close();
+  });
+
+  it("reports both scenes' sounds() and compile errors during the cut, and hides the captions over a compile error alone", async () => {
+    const sounds = `export function sounds() {\n  throw new Error('Sons cassés');\n}\n${solid('#ff0000')}`;
+    const broken = 'export default function Broken() {\n  return <div>oops</span>;\n}\n';
+    const first = await cut({ kind: 'fade', duration: 0.5 }, sounds, broken, true);
+    h.store.voiceOverLines.set(first.id, [
+      { sceneId: 'in', text: 'Sous-titre.', start: 0.5, end: 1.5, speaker: null, words: [], level: [] },
+    ]);
+    await first.page.evaluate(() => window.__cadence!.reload(0));
+    const during = await seek(first.page, 0.75);
+    assert.equal(during.sceneId, 'in');
+    assert.deepEqual(
+      during.errors.map((e) => e.split('\n')[0]),
+      ['Erreur de compilation · scenes/in.tsx', 'Erreur dans sounds() · scenes/out.tsx'],
+    );
+    assert.match(during.errors[1], /Sons cassés/);
+    assert.equal(await first.page.locator('[data-cadence-captions]').count(), 1, 'the outgoing scene still draws');
+    await seek(first.page, 1.2);
+    assert.equal(await first.page.locator('[data-cadence-captions]').count(), 0);
+    h.store.voiceOverLines.delete(first.id);
+    await first.page.context().close();
+
+    const second = await cut({ kind: 'fade', duration: 0.5 }, broken, sounds);
+    assert.deepEqual(
+      (await seek(second.page, 0.75)).errors.map((e) => e.split('\n')[0]),
+      ['Erreur de compilation · scenes/out.tsx', 'Erreur dans sounds() · scenes/in.tsx'],
+    );
+    await second.page.context().close();
+  });
+
+  it('draws the brand background and the captions once, outside both scenes', async () => {
+    const { id: projectId, page } = await cut(
+      { kind: 'slide', direction: 'left', duration: 0.5 },
+      solid('transparent'),
+      solid('transparent', 0.2),
+      true,
+    );
+    h.store.voiceOverLines.set(projectId, [
+      { sceneId: 'in', text: 'Un seul sous-titre.', start: 0.5, end: 1.5, speaker: null, words: [], level: [] },
+    ]);
+    await page.evaluate(() => window.__cadence!.reload(0));
+    const result = await seek(page, 0.6);
+    assert.deepEqual(result.errors, []);
+    const layout = await page.evaluate(() => {
+      const stage = document.querySelector('[data-cadence-stage]')!;
+      const scenes = [...stage.querySelectorAll<HTMLElement>('[data-cadence-scene]')];
+      return {
+        captions: [...stage.querySelectorAll('[data-cadence-captions]')].map((el) => [
+          el.parentElement === stage,
+          el.textContent,
+        ]),
+        stage: getComputedStyle(stage).backgroundColor,
+        scenes: scenes.map((el) => getComputedStyle(el).backgroundColor),
+      };
+    });
+    assert.deepEqual(layout, {
+      captions: [[true, 'Un seul sous-titre.']],
+      stage: 'rgb(244, 244, 245)',
+      scenes: ['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0)'],
+    });
+    // A scene that throws keeps the captions.
+    const failed = await seek(page, 0.8);
+    assert.equal(failed.errors.length, 1);
+    assert.equal(await page.locator('[data-cadence-captions]').count(), 1);
+    h.store.voiceOverLines.delete(projectId);
+    await page.context().close();
+  });
+
+  it('runs the text checks on a settled scene, not on two scenes caught halfway through a slide', async () => {
+    const centred = (text: string, extra = '') =>
+      `export default function Centred() {\n  return (\n    <div style={{ position: 'absolute', inset: 0, display: 'flex', ` +
+      `alignItems: 'center', justifyContent: 'center', background: '#ffffff', color: '#111111' }}>\n` +
+      `      <h1 style={{ margin: 0, fontSize: 96 }}>${text}</h1>\n${extra}    </div>\n  );\n}\n`;
+    const offCanvas = `      <h2 style={{ position: 'absolute', left: 1600, top: 800, margin: 0, fontSize: 80, whiteSpace: 'nowrap' }}>Hors cadre</h2>\n`;
+    const { page } = await cut(
+      { kind: 'slide', direction: 'left', duration: 0.5 },
+      centred('Avant la coupe'),
+      centred('Après la coupe', offCanvas),
+    );
+    const audit = () => page.evaluate(() => window.__cadence!.audit());
+    await seek(page, 0.25);
+    assert.deepEqual(await audit(), [], 'the outgoing scene alone, clean');
+    await seek(page, 0.75);
+    assert.deepEqual(await drawn(page), ['out', 'in']);
+    assert.deepEqual(await audit(), [], 'both headings cross a canvas edge only because the cut moves them');
+    await seek(page, 1.25);
+    assert.deepEqual(
+      (await audit()).map((f) => `${f.kind} ${f.text}`),
+      ['offCanvas Hors cadre'],
+      'the incoming scene alone is checked again',
+    );
     await page.context().close();
   });
 });

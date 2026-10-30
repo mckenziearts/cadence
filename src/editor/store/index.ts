@@ -225,10 +225,4 @@ export function previewDuration(s: EditorState = get()): number {
   return s.mode === 'whole' ? (s.project?.duration ?? 0) : (currentScene(s)?.duration ?? 0);
 }
 
-/** Scene playing at video time t (a frame exactly on a cut belongs to the next scene, like the frame page). */
-export function sceneAt(project: ProjectState, t: number): SceneState | null {
-  for (const scene of project.scenes) if (t < scene.start + scene.duration - 1e-9) return scene;
-  return project.scenes.at(-1) ?? null;
-}
-
 export const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));

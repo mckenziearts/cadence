@@ -22,7 +22,8 @@ import type {
 } from '../../../server/contracts';
 import { createFrameHandler } from '../../../server/frames/frameServer';
 import { createVite, invalidateDirs } from '../../../server/frames/vite';
-import { HttpError, KeyedMutex, pathExists, readJson, roundMs, sha256, shortHash } from '../../../server/util';
+import { sceneTimeline } from '../../../server/store/projects';
+import { HttpError, KeyedMutex, pathExists, readJson, sha256, shortHash } from '../../../server/util';
 import type {
   BrandFile,
   MusicAnalysis,
@@ -78,20 +79,22 @@ export class FixtureProjectStore implements ProjectStore {
     const file = await readJson<ProjectFile>(path.join(dir, 'project.json')).catch(() => {
       throw new HttpError(404, `Projet introuvable : ${id}`);
     });
-    let start = 0;
+    const timeline = sceneTimeline(file.scenes);
     const scenes: SceneState[] = [];
-    for (const [index, scene] of file.scenes.entries()) {
+    for (const [index, { transition: declared, ...scene }] of file.scenes.entries()) {
       const sceneFile = this.sceneFile(id, scene.id);
       const code = await readFile(sceneFile, 'utf8').catch(() => '');
+      const { start, transition } = timeline.scenes[index];
       scenes.push({
         ...scene,
         index,
-        start: roundMs(start),
+        start,
+        ...(transition ? { transition } : {}),
+        ...(declared ? { declaredTransition: declared } : {}),
         file: sceneFile,
         url: `/@fs${sceneFile}`,
         codeVersion: shortHash(code),
       });
-      start += scene.duration;
     }
     return {
       id,
@@ -103,7 +106,7 @@ export class FixtureProjectStore implements ProjectStore {
       tempo: file.tempo,
       language: null,
       scenes,
-      duration: roundMs(start),
+      duration: timeline.duration,
       music: file.music ? { ...file.music, spectrum: this.analysedMusic.get(id)?.spectrum ?? null } : null,
       musicUrl: null,
       musicGrid: file.music ? (this.analysedMusic.get(id)?.grid ?? null) : null,

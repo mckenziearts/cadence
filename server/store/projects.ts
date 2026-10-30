@@ -1087,7 +1087,7 @@ function parseTransition(value: unknown): SceneTransition {
  * scene: a neighbour shortened later clamps it here, and nothing cascades on disk. Without transitions, the starts
  * are the running sums of the durations.
  */
-function sceneTimeline(scenes: SceneFile[]): {
+export function sceneTimeline(scenes: SceneFile[]): {
   scenes: { start: number; transition?: SceneTransition }[];
   duration: number;
 } {

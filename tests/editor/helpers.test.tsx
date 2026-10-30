@@ -39,7 +39,7 @@ import { Markdown } from '../../src/editor/lib/markdown';
 import { projectsPage } from '../../src/editor/lib/pages';
 import { fileAfterRemoval, fileView, hasAlpha, renderRequest, stillTime, unavailable } from '../../src/editor/lib/render';
 import { shownVersions } from '../../src/editor/lib/versions';
-import { barDrift, frameStart, playbackTime, rulerStep, sceneBars, timelineMarks } from '../../src/editor/lib/timeline';
+import { barDrift, frameStart, playbackTime, rulerStep, sceneAt, sceneBars, timelineMarks } from '../../src/editor/lib/timeline';
 import {
   editLine,
   lineTimes,
@@ -190,6 +190,39 @@ test('grid marks without music: steady tempo restarting at every scene', () => {
     [2],
   );
   assert.equal(sceneBars(p, p.scenes[0]), 1);
+});
+
+test('a cut with a transition is marked where the incoming scene starts, its grid restarting there', () => {
+  const p = project([2, 2]);
+  p.scenes[1] = { ...p.scenes[1], start: 1.5, transition: { kind: 'fade', duration: 0.5 } };
+  p.duration = 3.5;
+  const whole = timelineMarks(p, null);
+  assert.deepEqual(
+    whole.cuts.map((c) => [c.t, c.scene.id]),
+    [[1.5, 's1']],
+  );
+  assert.deepEqual(whole.phrases, [0, 1.5]);
+});
+
+test('sceneAt follows the frame page: during an overlap the playhead is on the incoming scene', () => {
+  const p = project([2, 2]);
+  p.scenes[1] = { ...p.scenes[1], start: 1.5, transition: { kind: 'fade', duration: 0.5 } };
+  const at = (t: number) => sceneAt(p, t)?.id;
+  assert.equal(at(1.4), 's0');
+  assert.equal(at(1.5), 's1');
+  assert.equal(at(1.75), 's1');
+  assert.equal(at(2), 's1');
+  assert.equal(at(9), 's1');
+  const plain = project([0.1, 0.2, 1]);
+  assert.equal(sceneAt(plain, 0.3)?.id, 's2');
+  assert.equal(sceneAt({ ...plain, scenes: [] }, 1), null);
+});
+
+test('sceneAt: a first scene still carrying a transition (optimistic reorder) is drawn alone', () => {
+  const p = project([2, 2]);
+  p.scenes[0] = { ...p.scenes[0], transition: { kind: 'fade', duration: 0.5 } };
+  assert.equal(sceneAt(p, 0)?.id, 's0');
+  assert.equal(sceneAt(p, 0.25)?.id, 's0');
 });
 
 test('grid marks with a track follow the track grid, offset by music start and scene start', () => {
