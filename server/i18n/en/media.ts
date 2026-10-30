@@ -47,6 +47,10 @@ export default {
     invalidScale: (scale: number) => `Invalid scale: ${scale} (0.5, 1 or 2)`,
     invalidQuality: (quality: string) => `Invalid quality: ${quality}`,
     invalidRange: 'Invalid render range',
+    invalidOutput: (output: string) => `Invalid render output: ${output}`,
+    noTransparency: (output: string) => `${output} has no transparency`,
+    missingEncoders: (names: string[]) => `The ffmpeg in use has no ${names.join(' or ')} encoder`,
+    publishMp4Only: (file: string) => `Only an MP4 video can be published: ${file}`,
     noScene: 'The project has no scene to render',
     noDetail: 'no detail',
     soundMissing: (file: string) => `Sound effect not found: ${file}`,
@@ -217,6 +221,8 @@ export default {
     encoders: (version: string, missing: string[]) =>
       `ffmpeg ${version} without the ${missing.join(' and ')} encoder${missing.length > 1 ? 's' : ''}`,
     encodersFix: 'Install an ffmpeg build with libx264 and aac (for example `brew install ffmpeg`)',
+    outputs: (version: string, outputs: string[]) => `ffmpeg ${version} renders ${outputs.join(', ')}`,
+    outputMissing: (output: string, reason: string) => `${output}: ${reason}`,
     ffprobeMissing: (bin: string) => `ffprobe not found (${bin})`,
     ffprobeFix: 'It comes with ffmpeg, or set FFPROBE_PATH',
     chromiumMissing: 'Chromium (Playwright) is not installed',
@@ -251,7 +257,7 @@ Usage: npm run cadence -- <command> [options]
   start [--port 5310] [--frame-port 5311] [--dev]
                                                starts the editor (--dev: from Vite's dev server, to work on Cadence)
   render <project> [--formats 16:9,9:16] [--quality draft|standard|master]
-         [--scale 0.5|1|2] [--fps 24|30|60] [--supersample]
+         [--scale 0.5|1|2] [--fps 24|30|60] [--supersample] [--output mp4]
                                                renders the video to MP4 (every format of the project by default)
   analyze <audio> [--json]                     analyzes a music track (tempo, beats, bars, phrases)
   soundtracks [id...]                          recomposes the soundtracks of the Music panel (src/editor/soundtracks)
@@ -266,6 +272,7 @@ Usage: npm run cadence -- <command> [options]
     stopping: 'Stopping Cadence...',
     noProject: 'Specify the project to render: render <project>',
     unknownQuality: (quality: string) => `Unknown quality: ${quality}`,
+    unknownOutput: (output: string, known: string) => `Unknown output: ${output} (${known})`,
     progress: (jobs: { format: string; percent: number }[]) => jobs.map((job) => `${job.format} ${job.percent}%`).join(', '),
     exporting: (name: string, duration: string, formats: string, quality: string) =>
       `Rendering "${name}" (${duration}): ${formats}, ${quality} quality`,

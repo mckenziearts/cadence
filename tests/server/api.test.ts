@@ -16,6 +16,7 @@ import { createApi } from '../../server/api';
 import { ProjectArchiver } from '../../server/archive/projects';
 import { readTar } from '../../server/archive/tar';
 import { LOCAL } from '../../server/capture/policy';
+import { FfmpegRenderService } from '../../server/capture/render';
 import type {
   BrandBuildService,
   BrandSource,
@@ -54,6 +55,7 @@ import {
   type ChatState,
   type NetworkAccount,
   type NetworkId,
+  type RenderFile,
   type RenderJob,
   type RepoListing,
   type SeamResult,
@@ -61,7 +63,7 @@ import {
   type VoiceInfo,
   type VoiceOverSettings,
 } from '../../src/shared/types';
-import { fakeNetwork, makeRoot, writeCompleteBrand, type TestRoot } from './helpers';
+import { ENCODERS_FULL, ENCODERS_NO_VPX, fakeFfmpeg, fakeNetwork, makeRoot, writeCompleteBrand, type TestRoot } from './helpers';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 const SIWIS: VoiceInfo = {
@@ -1689,7 +1691,20 @@ test('renders: validated requests, jobs and files, cancel, MP4 streaming, deleti
   const req = { formats: ['16:9', '9:16'], quality: 'master', scale: 2, supersample: true, range: { from: 0, to: 4 } };
   assert.deepEqual((await json('POST', '/api/projects/demo/renders', req)).body, [job]);
   assert.deepEqual(calls.render, [{ id: 'demo', req }]);
-  assert.deepEqual((await json('GET', '/api/projects/demo/renders')).body, { jobs: [job], files: [] });
+  t.config.ffmpegPath = await fakeFfmpeg(path.join(t.root, 'ffmpeg'), ENCODERS_NO_VPX);
+  const available = { available: true };
+  assert.deepEqual((await json('GET', '/api/projects/demo/renders')).body, {
+    jobs: [job],
+    files: [],
+    outputs: {
+      mp4: available,
+      webm: { available: false, reason: 'Le ffmpeg utilisé n’a pas d’encodeur libvpx-vp9' },
+      mov: available,
+      gif: available,
+      png: available,
+      'png-sequence': available,
+    },
+  });
   assert.deepEqual((await json('DELETE', '/api/renders/job-1')).body, { ok: true });
   assert.deepEqual(calls.cancel, ['job-1']);
   const renders = path.join(store.dir('demo'), 'renders');
@@ -1702,6 +1717,131 @@ test('renders: validated requests, jobs and files, cancel, MP4 streaming, deleti
   assert.equal((await call('GET', '/api/projects/demo/renders/..%2Fproject.json')).status, 400);
   assert.deepEqual((await json('DELETE', '/api/projects/demo/renders/demo.mp4')).body, { ok: true });
   assert.deepEqual(calls.removeRender, [{ id: 'demo', name: 'demo.mp4' }]);
+});
+
+test('renders: an output is optional, mp4 the only one accepted, transparent a boolean', async () => {
+  const req = { formats: ['16:9'], quality: 'draft' };
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'mp4', transparent: false })).status, 200);
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'webm' })).status, 400);
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'avi' })).status, 400);
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, transparent: 'yes' })).status, 400);
+  assert.deepEqual(calls.render, [{ id: 'demo', req: { ...req, output: 'mp4', transparent: false } }]);
+});
+
+/** The API on a real render service, for its files and its checks before a job starts. */
+function realRenders(): FfmpegRenderService {
+  const renders = new FfmpegRenderService({ config: t.config, store, music: deps.music, voiceOver: deps.voiceOver, hub });
+  app = createApi({ ...deps, renders });
+  return renders;
+}
+
+test('renders: a render the ffmpeg in use cannot encode is refused with the reason, before any job', async () => {
+  const renders = realRenders();
+  await store.createScene('demo', { name: 'Fin' });
+  const encoders = ENCODERS_FULL.replace(/^.* (libx264|aac) .*\n/gm, '');
+  t.config.ffmpegPath = await fakeFfmpeg(path.join(t.root, 'ffmpeg'), encoders);
+  assert.deepEqual(await json('POST', '/api/projects/demo/renders', { formats: ['16:9'], quality: 'draft' }), {
+    status: 422,
+    body: { error: 'Le ffmpeg utilisé n’a pas d’encodeur libx264 ni aac' },
+  });
+  assert.deepEqual(renders.jobs('demo'), []);
+});
+
+test('renders: every kind of file is listed, served with its type and moved to the trash; links are refused', async () => {
+  realRenders();
+  const dir = path.join(store.dir('demo'), 'renders');
+  const sequence = path.join(dir, 'demo-16x9-20261030-101506');
+  await fs.mkdir(sequence, { recursive: true });
+  await fs.writeFile(path.join(sequence, '000001.png'), Buffer.alloc(30, 1));
+  await fs.writeFile(path.join(sequence, '000002.png'), Buffer.alloc(40, 1));
+  const kinds = { mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', gif: 'image/gif', png: 'image/png' };
+  const names = Object.keys(kinds).map((ext, i) => `demo-16x9-20261030-10150${i}.${ext}`);
+  for (const [i, name] of names.entries()) await fs.writeFile(path.join(dir, name), Buffer.alloc(10 + i, 1));
+  const outside = path.join(t.root, 'outside.mp4');
+  await fs.writeFile(outside, Buffer.alloc(5, 1));
+  await fs.symlink(outside, path.join(dir, 'linked.mp4'));
+  await fs.symlink(sequence, path.join(dir, 'linked-sequence'));
+  await fs.writeFile(path.join(dir, 'notes.txt'), 'x');
+  await fs.mkdir(path.join(dir, 'demo-16x9-20261030-101507.part'));
+  for (const [i, name] of [...names, path.basename(sequence)].entries()) {
+    const time = new Date(Date.UTC(2026, 9, 30, 10, 15, i));
+    await fs.utimes(path.join(dir, name), time, time);
+  }
+
+  const { body } = await json('GET', '/api/projects/demo/renders');
+  assert.deepEqual(
+    body.files.map((f: RenderFile) => [f.name, f.output, f.size, f.format]),
+    [
+      ['demo-16x9-20261030-101506', 'png-sequence', 70, '16:9'],
+      ['demo-16x9-20261030-101504.png', 'png', 14, '16:9'],
+      ['demo-16x9-20261030-101503.gif', 'gif', 13, '16:9'],
+      ['demo-16x9-20261030-101502.mov', 'mov', 12, '16:9'],
+      ['demo-16x9-20261030-101501.webm', 'webm', 11, '16:9'],
+      ['demo-16x9-20261030-101500.mp4', 'mp4', 10, '16:9'],
+    ],
+  );
+  assert.equal(body.files[0].url, '/api/projects/demo/renders/demo-16x9-20261030-101506');
+
+  for (const [i, type] of Object.values(kinds).entries()) {
+    const res = await call('GET', `/api/projects/demo/renders/${names[i]}`, undefined, { range: 'bytes=0-4' });
+    assert.equal(res.status, 206, names[i]);
+    assert.equal(res.headers.get('content-type'), type);
+    assert.equal((await res.arrayBuffer()).byteLength, 5);
+  }
+  const webm = `/api/projects/demo/renders/${names[1]}`;
+  const whole = await call('GET', webm);
+  assert.equal(whole.status, 200);
+  assert.equal(whole.headers.get('content-length'), '11');
+  assert.deepEqual(Buffer.from(await whole.arrayBuffer()), Buffer.alloc(11, 1));
+  const head = await call('HEAD', webm);
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('content-length'), '11');
+  assert.equal(head.body, null);
+  const etag = whole.headers.get('etag')!;
+  assert.ok(etag);
+  assert.equal((await call('GET', webm, undefined, { 'if-none-match': etag })).status, 304);
+  const beyond = await call('GET', webm, undefined, { range: 'bytes=11-' });
+  assert.equal(beyond.status, 416);
+  assert.equal(beyond.headers.get('content-range'), 'bytes */11');
+  assert.equal((await call('GET', '/api/projects/demo/renders/linked.mp4')).status, 404, 'a link is not served');
+  assert.equal(
+    (await call('GET', `/api/projects/demo/renders/${path.basename(sequence)}`)).status,
+    404,
+    'a folder is not a file',
+  );
+  assert.equal((await call('GET', '/api/projects/demo/renders/notes.txt')).status, 400);
+  assert.equal((await call('GET', '/api/projects/demo/renders/..%2Fproject.json')).status, 400);
+  assert.equal((await call('GET', '/api/projects/demo/renders/demo.mp4.part')).status, 400);
+
+  assert.equal((await json('DELETE', '/api/projects/demo/renders/linked.mp4')).status, 404);
+  assert.equal((await json('DELETE', '/api/projects/demo/renders/linked-sequence')).status, 404);
+  assert.equal((await json('DELETE', '/api/projects/demo/renders/..%2Fproject.json')).status, 400);
+  assert.deepEqual((await json('DELETE', `/api/projects/demo/renders/${names[1]}`)).body, { ok: true });
+  assert.deepEqual((await json('DELETE', `/api/projects/demo/renders/${path.basename(sequence)}`)).body, { ok: true });
+  const trash = await fs.readdir(path.join(store.dir('demo'), '.cadence', 'trash'));
+  assert.deepEqual(trash.map((name) => name.replace(/^\d+-/, '')).sort(), [path.basename(sequence), names[1]].sort());
+  assert.deepEqual(
+    await fs.readdir(
+      path.join(
+        store.dir('demo'),
+        '.cadence',
+        'trash',
+        trash.find((n) => !n.endsWith('.webm'))!,
+      ),
+    ),
+    ['000001.png', '000002.png'],
+  );
+  assert.equal((await fs.lstat(path.join(dir, 'linked.mp4'))).isSymbolicLink(), true, 'the link stays');
+  assert.equal((await fs.readFile(outside)).length, 5);
+
+  // A renders folder that is itself a link lists, serves and deletes nothing.
+  const elsewhere = path.join(t.root, 'elsewhere');
+  await fs.rename(dir, elsewhere);
+  await fs.symlink(elsewhere, dir);
+  assert.deepEqual((await json('GET', '/api/projects/demo/renders')).body.files, []);
+  assert.equal((await call('GET', `/api/projects/demo/renders/${names[0]}`)).status, 404);
+  assert.equal((await json('DELETE', `/api/projects/demo/renders/${names[0]}`)).status, 404);
+  assert.ok(await pathExists(path.join(elsewhere, names[0])));
 });
 
 test('brand builds: repositories through gh, validated starts, cancel, running builds in the state', async () => {
@@ -2179,6 +2319,11 @@ test('publishing: the video goes out in the background, the project keeps the li
     body: { error: 'Vidéo introuvable : absent.mp4' },
   });
   assert.equal((await json('POST', '/api/projects/demo/publications', publishBody('../project.json'))).status, 400);
+  await fs.writeFile(path.join(renders, 'demo-16x9.gif'), Buffer.alloc(1000, 1));
+  assert.deepEqual(await json('POST', '/api/projects/demo/publications', publishBody('demo-16x9.gif')), {
+    status: 422,
+    body: { error: 'Seule une vidéo MP4 peut être publiée : demo-16x9.gif' },
+  });
   assert.equal(
     (await json('POST', '/api/projects/demo/publications', { ...publishBody('demo-16x9.mp4'), title: '' })).status,
     400,

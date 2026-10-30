@@ -11,10 +11,12 @@ import { MAX_SOUND_CUES, MAX_VIDEO_SOUND_CUES, parseSoundCues } from '../../src/
 import {
   FORMATS,
   isFormatId,
+  RENDER_OUTPUTS,
   type FormatId,
   type ProjectState,
   type RenderFile,
   type RenderJob,
+  type RenderOutput,
   type RenderQuality,
   type RenderRequest,
 } from '../../src/shared/types';
@@ -31,8 +33,9 @@ import type {
 } from '../contracts';
 import { m } from '../i18n';
 import { soundTrack } from '../sounds/track';
-import { assertId, formatSeconds, HttpError, nowIso, pathExists, resolveInside } from '../util';
+import { assertId, formatSeconds, HttpError, listInside, nowIso, pathExists, resolveInside } from '../util';
 import { fromPage, launchChromium, openFramePage, RENDER_TIMEOUT_MS, seekFrame, withTimeout, type FramePage } from './capture';
+import { outputSupport } from './encoders';
 
 const PRESETS: Record<RenderQuality, { crf: number; preset: string; jpeg: number }> = {
   draft: { crf: 23, preset: 'veryfast', jpeg: 80 },
@@ -51,6 +54,31 @@ const ERROR_CHARS = 200;
  * sweep leaves anything else alone: the folder may hold what a copied project brought, or link elsewhere.
  */
 const TRACK_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.wav(\.\d+\.[0-9a-f]{8}\.tmp)?$/;
+
+/** The outputs a request may ask for; T18 and T19 add the others. */
+export const ACCEPTED_OUTPUTS = ['mp4'] as const satisfies readonly RenderOutput[];
+const ALPHA_OUTPUTS: readonly RenderOutput[] = ['webm', 'mov', 'png', 'png-sequence'];
+
+export function isAcceptedOutput(value: unknown): value is (typeof ACCEPTED_OUTPUTS)[number] {
+  return (ACCEPTED_OUTPUTS as readonly unknown[]).includes(value);
+}
+
+/**
+ * The name of each kind of render in renders/: a file by its extension, a PNG sequence a folder. A folder name has no
+ * dot, so a `.part` never passes for a render.
+ */
+const RENDER_NAMES: Record<RenderOutput, RegExp> = {
+  mp4: /^\w[\w.-]*\.mp4$/,
+  webm: /^\w[\w.-]*\.webm$/,
+  mov: /^\w[\w.-]*\.mov$/,
+  gif: /^\w[\w.-]*\.gif$/,
+  png: /^\w[\w.-]*\.png$/,
+  'png-sequence': /^\w[\w-]*$/,
+};
+
+function outputOf(name: string): RenderOutput | undefined {
+  return RENDER_OUTPUTS.find((output) => RENDER_NAMES[output].test(name));
+}
 
 class RenderCancelled extends Error {}
 
@@ -81,6 +109,8 @@ export class FfmpegRenderService implements RenderService {
   async start(projectId: string, req: RenderRequest): Promise<RenderJob[]> {
     const project = await this.deps.store.get(projectId);
     const request = normalizeRequest(project, req);
+    const support = (await outputSupport(this.deps.config.ffmpegPath))[request.output];
+    if (!support.available) throw new HttpError(422, support.reason);
     const jobs = request.formats.map((format) => this.enqueue(project, format, request));
     void this.pump();
     return jobs;
@@ -103,26 +133,32 @@ export class FfmpegRenderService implements RenderService {
       .reverse();
   }
 
+  /**
+   * Plain files and folders only, never through a link: a renders folder that is one lists nothing. The project folder of
+   * a copied or imported project may hold anything.
+   */
   async files(projectId: string): Promise<RenderFile[]> {
     const dir = this.rendersDir(projectId);
-    const entries = await fs.readdir(dir).catch(() => [] as string[]);
+    const project = path.dirname(dir);
+    const entries = await listInside(project, dir).catch(() => [] as string[]);
     const sounds = this.soundsDir(projectId);
     const tracks = await fs.readdir(sounds).catch(() => [] as string[]);
     await Promise.all([
       ...entries.filter((name) => name.endsWith('.part')).map((name) => dropStale(path.join(dir, name))),
       ...tracks.filter((name) => TRACK_FILE.test(name)).map((name) => dropStale(path.join(sounds, name))),
     ]);
-    const names = entries.filter((name) => name.endsWith('.mp4'));
     const files = await Promise.all(
-      names.map(async (name) => {
-        const stat = await fs.stat(path.join(dir, name)).catch(() => null);
-        if (!stat) return null;
+      entries.map(async (name) => {
+        const output = outputOf(name);
+        const stat = output ? await fs.lstat(path.join(dir, name)).catch(() => null) : null;
+        if (!output || !stat || !(output === 'png-sequence' ? stat.isDirectory() : stat.isFile())) return null;
         const file: RenderFile = {
           name,
           url: renderUrl(projectId, name),
-          size: stat.size,
+          size: output === 'png-sequence' ? await folderSize(project, path.join(dir, name)) : stat.size,
           createdAt: stat.mtime.toISOString(),
           format: formatFromName(name),
+          output,
         };
         return file;
       }),
@@ -131,15 +167,19 @@ export class FfmpegRenderService implements RenderService {
   }
 
   resolveFile(projectId: string, name: string): string {
-    if (!/^[\w][\w.-]*\.mp4$/.test(name)) throw new HttpError(400, m().media.render.invalidFileName(name));
+    if (!outputOf(name)) throw new HttpError(400, m().media.render.invalidFileName(name));
     return resolveInside(this.rendersDir(projectId), name);
   }
 
-  /** Kept in .cadence/trash rather than deleted, like a project or an asset: getting it back beats rendering it again. */
+  /**
+   * Kept in .cadence/trash rather than deleted, like a project or an asset: getting it back beats rendering it again. A
+   * link, or a renders folder that is one, is never moved. Checked by path: no agent turn writes renders/.
+   */
   async remove(projectId: string, name: string): Promise<void> {
     const file = this.resolveFile(projectId, name);
-    const stat = await fs.stat(file).catch(() => null);
-    if (!stat?.isFile()) throw new HttpError(404, m().api.fileNotFound(name));
+    const [folder, stat] = await Promise.all([fs.lstat(path.dirname(file)), fs.lstat(file)].map((p) => p.catch(() => null)));
+    const kind = outputOf(name) === 'png-sequence' ? stat?.isDirectory() : stat?.isFile();
+    if (!folder?.isDirectory() || !kind) throw new HttpError(404, m().api.fileNotFound(name));
     const trash = path.join(this.deps.store.dir(projectId), '.cadence', 'trash');
     await fs.mkdir(trash, { recursive: true });
     await fs.rename(file, path.join(trash, `${Date.now()}-${name}`));
@@ -406,6 +446,13 @@ export async function soundCues(page: Page, project: ProjectState) {
   return parsed.cues;
 }
 
+/** Bytes of the plain files in a PNG sequence folder. */
+async function folderSize(root: string, folder: string): Promise<number> {
+  const names = await listInside(root, folder).catch(() => [] as string[]);
+  const stats = await Promise.all(names.map((name) => fs.lstat(path.join(folder, name)).catch(() => null)));
+  return stats.reduce((sum, stat) => sum + (stat?.isFile() ? stat.size : 0), 0);
+}
+
 /**
  * A render killed with its process (crash, SIGKILL) leaves its .part file, its sounds track and maybe the temporary file
  * of that track. A live render, even from another Cadence on the same folder, writes its .part every few seconds: a
@@ -456,7 +503,10 @@ async function shownState(pages: FramePage[], project: ProjectState, store: Proj
   throw new Error(m().media.render.projectChanged);
 }
 
-function normalizeRequest(project: ProjectState, req: RenderRequest): RenderRequest {
+export function normalizeRequest(
+  project: ProjectState,
+  req: RenderRequest,
+): RenderRequest & Required<Pick<RenderRequest, 'output' | 'transparent'>> {
   const formats = [...new Set(req.formats ?? [])];
   const t = m().media;
   if (formats.length === 0 || !formats.every(isFormatId)) throw new HttpError(400, t.render.invalidFormats);
@@ -469,6 +519,9 @@ function normalizeRequest(project: ProjectState, req: RenderRequest): RenderRequ
   if (range && !(Number.isFinite(range.from) && Number.isFinite(range.to) && range.from >= 0 && range.to > range.from)) {
     throw new HttpError(400, t.render.invalidRange);
   }
+  const output = req.output ?? 'mp4';
+  if (!isAcceptedOutput(output)) throw new HttpError(400, t.render.invalidOutput(output));
+  if (req.transparent && !ALPHA_OUTPUTS.includes(output)) throw new HttpError(422, t.render.noTransparency(output));
   if (project.scenes.length === 0) throw new HttpError(400, t.render.noScene);
   return {
     formats,
@@ -477,8 +530,35 @@ function normalizeRequest(project: ProjectState, req: RenderRequest): RenderRequ
     quality: req.quality,
     supersample: Boolean(req.supersample),
     ...(range ? { range: { from: range.from, to: range.to } } : {}),
+    output,
+    transparent: Boolean(req.transparent),
   };
 }
+
+/** What an output changes in the ffmpeg arguments. */
+const OUTPUT_ARGS = {
+  mp4: {
+    pixels: 'yuv420p',
+    video: (preset: string, crf: number) => [
+      '-c:v',
+      'libx264',
+      '-preset',
+      preset,
+      '-crf',
+      String(crf),
+      '-colorspace',
+      'bt709',
+      '-color_primaries',
+      'bt709',
+      '-color_trc',
+      'bt709',
+      '-color_range',
+      'tv',
+    ],
+    audio: ['-c:a', 'aac', '-b:a', '192k'],
+    container: ['-movflags', '+faststart', '-f', 'mp4'],
+  },
+} satisfies Partial<Record<RenderOutput, object>>;
 
 export function ffmpegArgs(o: {
   fps: number;
@@ -523,27 +603,16 @@ export function ffmpegArgs(o: {
   const mixed = Boolean(o.voice || o.sounds);
   args.push('-map', '0:v:0');
   if (o.audio && !mixed) args.push('-map', `${musicInput}:a:0?`);
+  // ponytail: one output so far; T18 picks the entry from the request's output.
+  const out = OUTPUT_ARGS.mp4;
   const k = o.supersample ? 2 : 1;
   args.push(
     // Screenshots are full-range BT.601 JPEGs; the video is limited-range BT.709 (lanczos also handles supersampling).
     // The crop drops the odd last row of an odd canvas (4:5 at 0.5×) instead of resampling every frame by 1/675.
     // setparams tags the frames themselves: the encoder takes primaries and transfer from them, not from -color_*.
     '-vf',
-    `crop=${o.width * k}:${o.height * k}:0:0,scale=${o.width}:${o.height}:flags=lanczos+accurate_rnd+full_chroma_int:in_color_matrix=bt601:in_range=full:out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv`,
-    '-c:v',
-    'libx264',
-    '-preset',
-    o.preset,
-    '-crf',
-    String(o.crf),
-    '-colorspace',
-    'bt709',
-    '-color_primaries',
-    'bt709',
-    '-color_trc',
-    'bt709',
-    '-color_range',
-    'tv',
+    `crop=${o.width * k}:${o.height * k}:0:0,scale=${o.width}:${o.height}:flags=lanczos+accurate_rnd+full_chroma_int:in_color_matrix=bt601:in_range=full:out_color_matrix=bt709:out_range=tv,format=${out.pixels},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv`,
+    ...out.video(o.preset, o.crf),
     '-r',
     String(o.fps),
   );
@@ -553,7 +622,7 @@ export function ffmpegArgs(o: {
   // loudnorm runs at 192 kHz: newer ffmpeg resamples to it on its own, 5.1 (Debian 12) fails unless asked to.
   const normalize = (lufs: number) => ['aresample=192000', `loudnorm=I=${lufs}:TP=-1.5:LRA=11`, 'aresample=48000'];
   if (o.audio && !mixed) {
-    args.push('-af', [...normalize(-14), `volume=${o.audio.volume}`, fadeOut].join(','), '-c:a', 'aac', '-b:a', '192k');
+    args.push('-af', [...normalize(-14), `volume=${o.audio.volume}`, fadeOut].join(','), ...out.audio);
   } else if (mixed) {
     const chains: string[] = [];
     const labels: string[] = [];
@@ -578,9 +647,9 @@ export function ffmpegArgs(o: {
     }
     const mix = labels.length > 1 ? `amix=inputs=${labels.length}:duration=longest:normalize=0,` : '';
     chains.push(`${labels.join('')}${mix}${limiter},${fadeOut}[audio]`);
-    args.push('-filter_complex', chains.join(';'), '-map', '[audio]', '-c:a', 'aac', '-b:a', '192k');
+    args.push('-filter_complex', chains.join(';'), '-map', '[audio]', ...out.audio);
   }
-  args.push('-t', o.duration.toFixed(6), '-movflags', '+faststart', '-f', 'mp4', o.output);
+  args.push('-t', o.duration.toFixed(6), ...out.container, o.output);
   return args;
 }
 
@@ -640,7 +709,7 @@ function renderUrl(projectId: string, name: string): string {
 }
 
 function formatFromName(name: string): FormatId | null {
-  const match = /-(\d+)x(\d+)-\d{8}-\d{6}(?:-\d+)?\.mp4$/.exec(name);
+  const match = /-(\d+)x(\d+)-\d{8}-\d{6}(?:-\d+)?(?:\.[a-z0-9]+)?$/.exec(name);
   const format = match ? `${match[1]}:${match[2]}` : null;
   return isFormatId(format) ? format : null;
 }

@@ -46,6 +46,10 @@ export default {
     invalidScale: (scale: number) => `Échelle invalide : ${scale} (0,5, 1 ou 2)`,
     invalidQuality: (quality: string) => `Qualité invalide : ${quality}`,
     invalidRange: 'Plage de rendu invalide',
+    invalidOutput: (output: string) => `Sortie de rendu invalide : ${output}`,
+    noTransparency: (output: string) => `${output} ne gère pas la transparence`,
+    missingEncoders: (names: string[]) => `Le ffmpeg utilisé n’a pas d’encodeur ${names.join(' ni ')}`,
+    publishMp4Only: (file: string) => `Seule une vidéo MP4 peut être publiée : ${file}`,
     noScene: 'Le projet n’a aucune scène à rendre',
     noDetail: 'aucun détail',
     soundMissing: (file: string) => `Effet sonore introuvable : ${file}`,
@@ -218,6 +222,8 @@ export default {
     ffmpegFix: 'macOS : `brew install ffmpeg` \u00b7 Debian/Ubuntu : `sudo apt install ffmpeg` \u00b7 ou définissez FFMPEG_PATH',
     encoders: (version: string, missing: string[]) => `ffmpeg ${version} sans encodeur ${missing.join(' ni ')}`,
     encodersFix: 'Installez une version de ffmpeg avec libx264 et aac (par exemple `brew install ffmpeg`)',
+    outputs: (version: string, outputs: string[]) => `ffmpeg ${version} exporte en ${outputs.join(', ')}`,
+    outputMissing: (output: string, reason: string) => `${output} : ${reason}`,
     ffprobeMissing: (bin: string) => `ffprobe introuvable (${bin})`,
     ffprobeFix: 'Il est fourni avec ffmpeg \u00b7 ou définissez FFPROBE_PATH',
     chromiumMissing: "Chromium (Playwright) n'est pas installé",
@@ -253,7 +259,7 @@ Usage : npm run cadence -- <commande> [options]
   start [--port 5310] [--frame-port 5311] [--dev]
                                                démarre l'éditeur (--dev : depuis le serveur de dev de Vite, pour travailler sur Cadence)
   render <projet> [--formats 16:9,9:16] [--quality draft|standard|master]
-         [--scale 0.5|1|2] [--fps 24|30|60] [--supersample]
+         [--scale 0.5|1|2] [--fps 24|30|60] [--supersample] [--output mp4]
                                                exporte la vidéo en MP4 (tous les formats du projet par défaut)
   analyze <audio> [--json]                     analyse une musique (tempo, temps, mesures, phrases)
   soundtracks [ambiance\u2026]                      recompose les ambiances du panneau Musique (src/editor/soundtracks)
@@ -268,6 +274,7 @@ Usage : npm run cadence -- <commande> [options]
     stopping: 'Arrêt de Cadence\u2026',
     noProject: 'Précisez le projet à exporter : render <projet>',
     unknownQuality: (quality: string) => `Qualité inconnue : ${quality}`,
+    unknownOutput: (output: string, known: string) => `Sortie inconnue : ${output} (${known})`,
     progress: (jobs: { format: string; percent: number }[]) =>
       jobs.map((job) => `${job.format} ${job.percent} %`).join(' \u00b7 '),
     exporting: (name: string, duration: string, formats: string, quality: string) =>

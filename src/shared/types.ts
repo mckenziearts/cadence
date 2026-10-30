@@ -842,6 +842,12 @@ export interface SeamResult {
 
 export type RenderQuality = 'draft' | 'standard' | 'master';
 
+export const RENDER_OUTPUTS = ['mp4', 'webm', 'mov', 'gif', 'png', 'png-sequence'] as const;
+/** What a render writes: a video, a GIF, one PNG frame, or a folder of numbered PNG frames. */
+export type RenderOutput = (typeof RENDER_OUTPUTS)[number];
+/** Whether the ffmpeg in use can make an output, and why not. */
+export type OutputSupport = { available: true } | { available: false; reason: string };
+
 export interface RenderRequest {
   formats: FormatId[];
   /** Defaults to the project fps. */
@@ -853,6 +859,10 @@ export interface RenderRequest {
   supersample?: boolean;
   /** Optional sub-range of the video, seconds. */
   range?: { from: number; to: number };
+  /** Defaults to mp4. */
+  output?: RenderOutput;
+  /** Keep the alpha channel: frames without the brand background. */
+  transparent?: boolean;
 }
 
 export interface RenderJob {
@@ -883,6 +893,7 @@ export interface RenderFile {
   size: number;
   createdAt: string;
   format: FormatId | null;
+  output: RenderOutput;
 }
 
 export type AssetKind = 'image' | 'svg' | 'font' | 'audio' | 'other';

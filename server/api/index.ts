@@ -28,7 +28,9 @@ import {
   type NetworkId,
   type VersionSource,
 } from '../../src/shared/types';
+import { outputSupport } from '../capture/encoders';
 import { LOCAL } from '../capture/policy';
+import { ACCEPTED_OUTPUTS } from '../capture/render';
 import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
 import { DEFAULT_BRAND } from '../store/brands';
@@ -138,6 +140,8 @@ const schemas = {
     scale: z.literal([0.5, 1, 2]).optional(),
     quality: z.enum(['draft', 'standard', 'master']),
     supersample: z.boolean().optional(),
+    output: z.enum(ACCEPTED_OUTPUTS).optional(),
+    transparent: z.boolean().optional(),
     range: z
       .object({ from: z.number().min(0), to: z.number().positive() })
       .refine((r) => r.to > r.from, { error: () => m().api.routes.rangeOrder })
@@ -548,15 +552,16 @@ export function createApi(deps: ApiDeps) {
   app.get('/projects/:id/renders', async (c) => {
     const id = c.req.param('id');
     await existingProject(c);
-    return c.json({ jobs: renders.jobs(id), files: await renders.files(id) });
+    return c.json({ jobs: renders.jobs(id), files: await renders.files(id), outputs: await outputSupport(config.ffmpegPath) });
   });
   app.delete('/renders/:jobId', (c) => {
     renders.cancel(c.req.param('jobId'));
     return c.json({ ok: true });
   });
-  app.get('/projects/:id/renders/:name', async (c) =>
-    sendFile(c, renders.resolveFile(c.req.param('id'), c.req.param('name')), 'video/mp4'),
-  );
+  app.get('/projects/:id/renders/:name', async (c) => {
+    const id = c.req.param('id');
+    return sendFile(c, renders.resolveFile(id, c.req.param('name')), undefined, store.dir(id));
+  });
   app.delete('/projects/:id/renders/:name', async (c) => {
     const id = c.req.param('id');
     const name = c.req.param('name');

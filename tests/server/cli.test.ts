@@ -25,3 +25,14 @@ test('`new` creates the project with its initial version', async (t) => {
     [['v0001', 'baseline', 'État initial']],
   );
 });
+
+test('`render --output` refuses an output this version cannot render, before starting a server', async () => {
+  const run = promisify(execFile)(process.execPath, ['--import', 'tsx', 'bin/cadence.ts', 'render', 'demo', '--output', 'webm'], {
+    cwd: ROOT,
+    env: { ...process.env, CADENCE_LANGUAGE: 'fr' },
+  });
+  await assert.rejects(
+    run,
+    (e: { code: number; stderr: string }) => e.code !== 0 && e.stderr.startsWith('Sortie inconnue : webm (mp4)'),
+  );
+});

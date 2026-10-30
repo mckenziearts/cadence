@@ -306,3 +306,41 @@ export async function assertNoCssCodeExec(managedDirs: string[], brandsDir: stri
     );
   }
 }
+
+/** `ffmpeg -hide_banner -encoders` of a build with every encoder a render output needs (ffmpeg 8.1, Homebrew). */
+export const ENCODERS_FULL = ` V..... = Video
+ A..... = Audio
+ ...X.. = Codec is experimental
+ .....D = Supports direct rendering method 1
+ ------
+ V....D gif                  GIF (Graphics Interchange Format)
+ V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)
+ VFS..D mjpeg                MJPEG (Motion JPEG)
+ VF...D png                  PNG (Portable Network Graphics) image
+ VFS... prores_ks            Apple ProRes (iCodec Pro) (codec prores)
+ V....D libvpx-vp9           libvpx VP9 (codec vp9)
+ A....D aac                  AAC (Advanced Audio Coding)
+ A..X.D opus                 Opus
+ A....D libopus              libopus Opus (codec opus)
+ A....D pcm_s16le            PCM signed 16-bit little-endian
+`;
+
+/** The same build without libvpx and libopus, like a minimal static ffmpeg: WebM is out, ffmpeg's own opus stays. */
+export const ENCODERS_NO_VPX = ENCODERS_FULL.replace(/^.*(libvpx-vp9|libopus) .*\n/gm, '');
+
+/**
+ * An executable that answers `-version` and `-encoders` like an ffmpeg with the given encoders list, and appends a line
+ * to `<file>.calls` at each `-encoders` run.
+ */
+export async function fakeFfmpeg(file: string, encoders: string, version = '8.1-test'): Promise<string> {
+  await fs.writeFile(`${file}.encoders`, encoders);
+  const script = `#!/bin/sh
+case "$*" in
+  *-version*) echo "ffmpeg version ${version} Copyright (c) 2000-2026 the FFmpeg developers" ;;
+  *-encoders*) echo run >> "$0.calls"; echo "Encoders:"; cat "$0.encoders" ;;
+  *) exit 1 ;;
+esac
+`;
+  await fs.writeFile(file, script, { mode: 0o755 });
+  return file;
+}
