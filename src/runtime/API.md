@@ -447,6 +447,35 @@ const onSave = progress(t, 1.6, 1.8);                                  // the cu
   against banding in dark gradients; static per seed, animated only when you pass `t`.
 - `<Vignette color="#000" strength={0.45} size={0.55} />`: darkens the edges.
 
+## Motion blur
+
+- `<MotionBlur t={t} fps={fps} samples={8} shutter={0.5}>{(t) => content}</MotionBlur>`: draws the content at
+  `samples` times (1 to 16) evenly spaced over `shutter` (0 to 1) of a frame before `t`, never before 0, and stacks
+  them into their mean. The render prop receives each sample time: drive the moving parts from it, never from the
+  scene's `t`. Every copy fills the nearest positioned ancestor (like `Fill`); copies past the first are `aria-hidden`
+  and the text checks of `render_frames` judge only the copy at `t`. Draw the opaque background inside it: opaque
+  copies average exactly and static parts stay pixel-identical, while translucent copies stack and look denser.
+- Each sample costs a full render of the content and a composite of the box it fills: 16 full-canvas copies take
+  about 2.5 times as long to capture. Wrap it in a positioned box around the path only, static content outside; pass
+  `samples={1}` outside the move (still copies cost as much as moving ones; 1 sample draws the content once,
+  unblurred); never nest a MotionBlur in another (16 x 16 copies).
+- An svg id in the content (`<defs>`, `url(#id)`) comes from a `useId()` called inside the render prop's own
+  component, which gives each copy its own: an id from the scene's `useId()` repeats in every copy, and they all draw
+  the defs of the copy at `t`.
+
+```tsx
+// A card whipping across the screen, blurred along its path: the copies fill only the band it crosses.
+<div style={{ position: 'absolute', left: 0, right: 0, top: 380, height: 320 }}>
+  <MotionBlur t={t} fps={fps} shutter={1} samples={t > 0.4 && t < 0.85 ? 8 : 1}>
+    {(time) => (
+      <Fill style={{ background: '#0b0b0d' }}>
+        <ui.Card style={{ position: 'absolute', top: 40, left: interpolate(time, [0.4, 0.8], [-600, 760], { easing: ease.inOutCubic }) }} />
+      </Fill>
+    )}
+  </MotionBlur>
+</div>
+```
+
 ## Seam checklist
 
 Consecutive scenes cut hard unless the next scene declares a transition (see Transitions; nothing has to match

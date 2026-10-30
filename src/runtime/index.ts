@@ -95,5 +95,6 @@ export {
   type GrainProps,
   type VignetteProps,
 } from './chrome';
+export { MotionBlur, type MotionBlurProps } from './motionBlur';
 export type { SceneProps, SceneInfo, VoiceOverInfo, Point, BrandKit, FormatId, Orientation } from './types';
 export type { SoundCue, SoundName, SoundProps } from '../shared/sounds';

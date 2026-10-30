@@ -19,7 +19,7 @@ const REQUIRED = [
   ...['SplitText', 'typed', 'measureText', 'TypeOn', 'SwapWords', 'Counter'],
   ...['Fill', 'SceneContext', 'useScene', 'BrandContext', 'useBrand', 'useFormat', 'asset', 'setAssetBase'],
   ...['Stage3D', 'Camera', 'DrawPath', 'Glow', 'Callout', 'Dimension', 'RadiusArc', 'Guide', 'Tag', 'Highlight'],
-  ...['Cursor', 'ClickRipple', 'BrowserFrame', 'PhoneFrame', 'Grain', 'Vignette'],
+  ...['Cursor', 'ClickRipple', 'BrowserFrame', 'PhoneFrame', 'Grain', 'Vignette', 'MotionBlur'],
   ...PATH_TOOLS,
   'createMusic',
   'voiceLevel',
@@ -85,5 +85,22 @@ test('API.md documents music.spectrum, its band count and its pending error', ()
   const section = api.slice(api.indexOf('## Music'), api.indexOf('## Voice-over'));
   for (const rule of ['music.spectrum(t, bands = 24)', 'from 1 to 24', '40 Hz to 11 kHz', 'MusicAnalysisPending', 'zeros']) {
     assert.ok(section.includes(rule), rule);
+  }
+});
+
+test('API.md documents MotionBlur', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  for (const rule of [
+    '<MotionBlur t={t} fps={fps}',
+    'samples={8}',
+    'shutter={0.5}',
+    '1 to 16',
+    'opaque background inside',
+    'positioned box around the path only',
+    '`samples={1}` outside the move',
+    'never nest',
+    "`useId()` called inside the render prop's own component",
+  ]) {
+    assert.ok(api.includes(rule), rule);
   }
 });

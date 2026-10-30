@@ -18,6 +18,7 @@ import {
   Guide,
   Highlight,
   Layer3D,
+  MotionBlur,
   PhoneFrame,
   RadiusArc,
   SceneContext,
@@ -144,6 +145,12 @@ const gallery: [string, ReactElement][] = [
   ['PhoneFrame', <PhoneFrame />],
   ['Grain', <Grain seed={2} t={1} />],
   ['Vignette', <Vignette />],
+  [
+    'MotionBlur',
+    <MotionBlur t={1} fps={30}>
+      {(time) => <i>{time}</i>}
+    </MotionBlur>,
+  ],
 ];
 
 describe('components render deterministically', () => {
@@ -459,5 +466,67 @@ describe('cursor', () => {
     assert.equal(render(<ClickRipple x={0} y={0} t={0.9} at={1} />), '');
     assert.notEqual(render(<ClickRipple x={0} y={0} t={1.2} at={1} />), '');
     assert.equal(render(<ClickRipple x={0} y={0} t={1.6} at={1} />), '');
+  });
+});
+
+describe('motion blur', () => {
+  const times = (html: string) => [...html.matchAll(/<i>([^<]*)<\/i>/g)].map((m) => Number(m[1]));
+  const opacities = (html: string) => [...html.matchAll(/filter:opacity\(([\d.]+)\)/g)].map((m) => Number(m[1]));
+  const blur = (props: { t: number; fps?: number; samples?: number; shutter?: number }) =>
+    render(
+      <MotionBlur fps={30} {...props}>
+        {(time) => <i>{time}</i>}
+      </MotionBlur>,
+    );
+  const close = (actual: number[], expected: number[]) => {
+    assert.equal(actual.length, expected.length, `${actual} vs ${expected}`);
+    actual.forEach((value, i) => assert.ok(Math.abs(value - expected[i]) < 1e-9, `${actual} vs ${expected}`));
+  };
+
+  test('draws one layer per sample, evenly spaced over the shutter before t, averaged by their opacities', () => {
+    const html = blur({ t: 1, samples: 4, shutter: 0.6 });
+    // 0.6 of a 30 fps frame is 20 ms: 4 samples 5 ms apart, ending at t.
+    close(times(html), [1, 0.995, 0.99, 0.985]);
+    // A filter, not the opacity property: Chromium rounds each opacity composite down, 3 levels off after 8 copies.
+    close(opacities(html), [1 / 2, 1 / 3, 1 / 4]);
+    // Every layer is its own stacking context, so a zIndex or a blend mode in the content stays inside its copy.
+    assert.equal((html.match(/position:absolute;inset:0;isolation:isolate/g) ?? []).length, 4);
+    assert.doesNotMatch(html, /[;"]opacity:/);
+  });
+
+  test('spreads the shutter over a frame of the given fps', () => {
+    close(times(blur({ t: 1, fps: 60, samples: 4, shutter: 0.6 })), [1, 0.9975, 0.995, 0.9925]);
+    close(times(blur({ t: 1, fps: 24, samples: 4, shutter: 0.6 })), [1, 0.99375, 0.9875, 0.98125]);
+  });
+
+  test('copies are hidden from assistive tech and the text checks, the layer at t is not', () => {
+    const html = blur({ t: 1, samples: 3 });
+    assert.match(html, /^<div style="position:absolute;inset:0;isolation:isolate"><i>1<\/i>/);
+    assert.equal((html.match(/aria-hidden="true"/g) ?? []).length, 2);
+    assert.equal((html.match(/data-cadence-decor=""/g) ?? []).length, 2);
+  });
+
+  test('defaults to 8 samples over half a frame', () => {
+    close(
+      times(blur({ t: 2 })),
+      Array.from({ length: 8 }, (_, k) => 2 - (k * 0.5) / 30 / 8),
+    );
+  });
+
+  test('clamps samples to 1-16 and shutter to 0-1', () => {
+    assert.equal(times(blur({ t: 1, samples: 100 })).length, 16);
+    assert.equal(times(blur({ t: 1, samples: 2.6 })).length, 3);
+    assert.equal(times(blur({ t: 1, samples: 2.4 })).length, 2);
+    assert.equal(blur({ t: 1, samples: 3, shutter: 2 }), blur({ t: 1, samples: 3, shutter: 1 }));
+    close(times(blur({ t: 1, samples: 3, shutter: -1 })), [1, 1, 1]);
+  });
+
+  test('one sample draws exactly the child at t', () => {
+    assert.equal(blur({ t: 0.5, samples: 1 }), '<i>0.5</i>');
+    assert.equal(blur({ t: 0.5, samples: 0 }), '<i>0.5</i>');
+  });
+
+  test('sample times never go below 0', () => {
+    close(times(blur({ t: 0.01, samples: 4, shutter: 1 })), [0.01, 0.01 - 1 / 120, 0, 0]);
   });
 });

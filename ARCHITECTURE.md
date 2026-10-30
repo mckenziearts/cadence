@@ -407,7 +407,8 @@ the agent's system prompt):
   `DrawPath` (SVG path drawn by progress), `Glow` (SVG glow filter + helper), `Callout` (dot, elbow line, then label),
   `Dimension` (measure line + label), `RadiusArc`, `Guide` (dashed line), `Tag` (pill label), `Highlight`
   (outline around a rect with a label), `Cursor` (pointer following keyframes, press/hover), `ClickRipple`,
-  `BrowserFrame`, `PhoneFrame`, `Grain` (animated-by-seed noise to avoid banding), `Vignette`.
+  `BrowserFrame`, `PhoneFrame`, `Grain` (animated-by-seed noise to avoid banding), `Vignette`, `MotionBlur`
+  (render prop drawn at earlier times and averaged).
 - Music: `createMusic({ grid, tempo, musicStart, sceneStart, sceneDuration }): Music` with `hasTrack, bpm,
   beatLength, barLength, beatsPerBar, beats, downbeats, phrases, sections, accents, beat(n), bar(n), phrase(n),
   bars(n)` (seconds for n bars), `snap(t, 'beat'|'bar'|'phrase'|'half'|'quarter'), pulse(t, {grid, decay}),

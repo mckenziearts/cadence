@@ -246,7 +246,15 @@ function audit(stage: HTMLElement, spec: FormatSpec): AuditFinding[] {
 
   // Text per element, in document order: React splits `{n} items` into several text nodes.
   const texts = new Map<Element, { text: string; rects: DOMRect[] }>();
-  const walker = document.createTreeWalker(stage, NodeFilter.SHOW_TEXT);
+  // Runtime decor (motion blur copies, grain) is not scene text: skipped whole, outside the node budget.
+  const walker = document.createTreeWalker(stage, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+    acceptNode: (node) =>
+      node.nodeType === Node.TEXT_NODE
+        ? NodeFilter.FILTER_ACCEPT
+        : (node as Element).hasAttribute('data-cadence-decor')
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_SKIP,
+  });
   const range = document.createRange();
   for (let node = walker.nextNode(), walked = 0; node && walked < MAX_TEXT_NODES; node = walker.nextNode(), walked++) {
     const parent = node.parentElement;

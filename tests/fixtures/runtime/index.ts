@@ -29,3 +29,6 @@ export function createMusic(input: CreateMusicInput) {
     spectrum: createRuntimeMusic(input).spectrum,
   };
 }
+
+// The real component: its e2e test measures the pixels it composites.
+export { MotionBlur } from '../../../src/runtime/motionBlur';

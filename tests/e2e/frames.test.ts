@@ -7,6 +7,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { chromium, type Browser, type Page } from 'playwright';
+import { PNG } from 'pngjs';
 import { auditFrame, CHROMIUM_ARGS, PlaywrightCapture } from '../../server/capture/capture';
 import { LOCAL } from '../../server/capture/policy';
 import type { CadenceConfig } from '../../server/contracts';
@@ -1642,6 +1643,45 @@ export default function Checked() {
     await page.context().close();
   });
 
+  it('judges the text of a motion blur once, at t, and leaves the copies out of the text budget', async () => {
+    // 16 copies of 40 labels would take 640 of the 500 text nodes walked: the line after the blur would go unseen.
+    await addScene(
+      'audit-blur',
+      `import { MotionBlur } from 'cadence';
+const at = (left, top, style) => ({ position: 'absolute', left, top, margin: 0, ...style });
+export default function Blurred({ t, fps }) {
+  return (
+    <div style={{ position: 'absolute', inset: 0, color: '#111111' }}>
+      <MotionBlur t={t} fps={fps} samples={16} shutter={1}>
+        {(time) => (
+          <div style={{ position: 'absolute', inset: 0, background: '#ffffff' }}>
+            {Array.from({ length: 40 }, (_, i) => (
+              <span key={i} style={at(100 + (i % 8) * 200, 100 + Math.floor(i / 8) * 60, { fontSize: 32 })}>{i}</span>
+            ))}
+            <p style={at(100, 500, { fontSize: 40, color: '#bbbbbb' })}>Faint in the blur</p>
+            <h2 style={at(1600 + 100 * time, 700, { fontSize: 80, whiteSpace: 'nowrap' })}>Half off canvas</h2>
+          </div>
+        )}
+      </MotionBlur>
+      <p style={at(1700, 900, { fontSize: 40, whiteSpace: 'nowrap' })}>After the blur, past the edge</p>
+    </div>
+  );
+}
+`,
+    );
+    await h.store.syncCode(id);
+    const page = await open({ scene: 'audit-blur' });
+    await seek(page, 0.25);
+    const findings = await audit(page);
+    await page.context().close();
+    assert.deepEqual(kinds(findings), [
+      'offCanvas Half off canvas',
+      'offCanvas After the blur, past the edge',
+      'contrast Faint in the blur',
+    ]);
+    assert.equal(findings[2].ratio, 1.92, 'judged on its own background, through the copies drawn over it');
+  });
+
   it('gives null when scene code replaces the checks with junk', { timeout: 10_000 }, async () => {
     const page = await open({ scene: 'audit' });
     await seek(page, 0.25);
@@ -1992,6 +2032,67 @@ describe('scene voice-over', () => {
     } finally {
       h.store.voiceOverLines.delete(id);
     }
+  });
+});
+
+describe('motion blur', () => {
+  it('keeps static content pixel-identical and leaves a trail behind a moving square', async () => {
+    const content = `<div style={{ position: 'absolute', inset: 0, background: '#1d4ed8' }}>
+      <div style={{ position: 'absolute', left: 300, top: 200, width: 500, height: 300, borderRadius: 40,
+        background: 'linear-gradient(90deg, rgba(255, 255, 255, 0.8), rgba(255, 0, 128, 0.4))' }} />
+      <div style={{ position: 'absolute', left: 1000, top: 600, fontSize: 96, color: '#ffffff' }}>Static</div>
+    </div>`;
+    await addScene('blur-plain', `export default function Plain() {\n  return ${content};\n}\n`);
+    await addScene(
+      'blur-static',
+      `import { MotionBlur } from 'cadence';
+export default function Still({ t, fps }) {
+  return <MotionBlur t={t} fps={fps} shutter={1}>{() => ${content}}</MotionBlur>;
+}
+`,
+    );
+    // 1200 px/s at 30 fps with a full shutter: 8 samples 5 canvas px apart, the square's left edge at 1000 px at 0.5 s.
+    await addScene(
+      'blur-move',
+      `import { MotionBlur } from 'cadence';
+export default function Move({ t, fps }) {
+  return (
+    <MotionBlur t={t} fps={fps} shutter={1}>
+      {(time) => (
+        <div style={{ position: 'absolute', inset: 0, background: '#000000' }}>
+          <div style={{ position: 'absolute', left: 400 + 1200 * time, top: 440, width: 200, height: 200, background: '#ffffff', zIndex: 1 }} />
+        </div>
+      )}
+    </MotionBlur>
+  );
+}
+`,
+    );
+    await h.store.syncCode(id);
+
+    const shot = async (scene: string) => {
+      const page = await open({ scene });
+      assert.deepEqual((await seek(page, 0.5)).errors, []);
+      const png = await page.screenshot({ type: 'png' });
+      await page.context().close();
+      return PNG.sync.read(png).data;
+    };
+    const [plain, still] = [await shot('blur-plain'), await shot('blur-static')];
+    assert.equal(still.length, plain.length);
+    let worst = 0;
+    for (let i = 0; i < plain.length; i++) worst = Math.max(worst, Math.abs(plain[i] - still[i]));
+    assert.ok(worst <= 1, `static content changed by ${worst} levels`);
+
+    const page = await open({ scene: 'blur-move' });
+    await seek(page, 0.5);
+    assert.ok(near(await colorAt(page, 1100, 540), [255, 255, 255]), 'covered by every sample');
+    const trail = await colorAt(page, 980, 540);
+    assert.ok(near(trail, [128, 128, 128], 3), `half the samples cover the trail: ${trail}`);
+    assert.ok(near(await colorAt(page, 950, 540), [0, 0, 0]), 'behind the oldest sample');
+    // The square's zIndex stays inside each copy: the leading edge is covered by 2 of the 8 samples, not by the copy at t alone.
+    const lead = await colorAt(page, 1192, 540);
+    assert.ok(near(lead, [64, 64, 64], 3), `two samples cover the leading edge: ${lead}`);
+    await page.context().close();
   });
 });
 
