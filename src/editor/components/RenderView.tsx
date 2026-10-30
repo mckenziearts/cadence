@@ -1,10 +1,11 @@
-// Rendu tab: export settings, running jobs with progress, finished MP4s with an inline player.
+// Rendu tab: export settings, running jobs with progress, finished renders with their preview.
 import clsx from 'clsx';
 import {
   Clapperboard,
   Copy,
   Download,
   Film,
+  Images,
   Loader2,
   Maximize,
   Minimize,
@@ -17,23 +18,38 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   FORMATS,
+  RENDER_OUTPUTS,
   type FormatId,
   type Publication,
   type PublishJob,
   type RenderFile,
   type RenderJob,
+  type RenderOutput,
   type RenderQuality,
 } from '../../shared/types';
 import { api, ignore } from '../api';
 import { useT } from '../i18n';
 import { NBSP, bytes, percentShort, relative, secs, secsLabel } from '../lib/format';
+import { fileAfterRemoval, fileView, hasAlpha, renderRequest, stillTime, unavailable } from '../lib/render';
 import { currentScene, useStore } from '../store';
 import { loadRenders } from '../store/project';
 import { copyText, openModal } from '../store/ui';
 import { NetworkLogo } from './logos';
-import { Button, Checkbox, ConfirmButton, EmptyState, FormatGlyph, IconButton, Segmented, SectionTitle, Tooltip } from './ui';
+import {
+  Button,
+  Checkbox,
+  ConfirmButton,
+  EmptyState,
+  FormatGlyph,
+  IconButton,
+  Segmented,
+  SectionTitle,
+  Tooltip,
+  useFocusAfter,
+} from './ui';
 
 const QUALITIES: RenderQuality[] = ['draft', 'standard', 'master'];
 
@@ -47,9 +63,13 @@ export function RenderView() {
   const [quality, setQuality] = useState<RenderQuality>('standard');
   const [scale, setScale] = useState('1');
   const [fps, setFps] = useState(String(project.fps));
+  const playhead = useStore((s) => (s.mode === 'scene' && scene ? stillTime(scene, s.time, Number(fps)) : s.time));
   const [supersample, setSupersample] = useState(false);
   const [range, setRange] = useState<'all' | 'scene'>('all');
+  const [output, setOutput] = useState<RenderOutput>('mp4');
+  const [transparent, setTransparent] = useState(false);
   const [starting, setStarting] = useState(false);
+  const { list: shelf, focusAfter } = useFocusAfter<HTMLElement>();
 
   useEffect(() => {
     setFormats((current) => current.filter((f) => project.formats.includes(f)));
@@ -57,6 +77,8 @@ export function RenderView() {
 
   const chosen = project.formats.filter((f) => formats.includes(f));
   const seconds = range === 'scene' && scene ? scene.duration : project.duration;
+  const outputLabel = texts.outputs[output].label;
+  const blocked = unavailable(output, renders.outputs);
   // Same rounding as the encoder (H.264 needs even sizes): 4:5 at 0,5× is 540 × 674.
   const even = (v: number) => Math.max(2, Math.floor(v / 2) * 2);
   const size = (f: FormatId) =>
@@ -69,19 +91,45 @@ export function RenderView() {
   const start = async () => {
     setStarting(true);
     try {
-      await api.startRender(project.id, {
-        formats: chosen,
-        quality,
-        scale: Number(scale),
-        fps: Number(fps),
-        supersample,
-        ...(range === 'scene' && scene ? { range: { from: scene.start, to: scene.start + scene.duration } } : {}),
-      });
+      await api.startRender(
+        project.id,
+        renderRequest({
+          formats: chosen,
+          quality,
+          scale: Number(scale),
+          fps: Number(fps),
+          supersample,
+          output,
+          transparent,
+          range: range === 'scene' && scene ? { from: scene.start, to: scene.start + scene.duration } : null,
+          playhead,
+        }),
+      );
     } catch {
       // toast shown
     } finally {
       setStarting(false);
     }
+  };
+
+  // The focused delete button leaves with its card: the next card's takes the focus (another of its controls while it
+  // uploads, since its delete button is off then), or the empty state after the last.
+  const remove = (name: string) => {
+    const next = fileAfterRemoval(
+      renders.files.map((f) => f.name),
+      name,
+    );
+    const removed = api.deleteRender(project.id, name).then(loadRenders);
+    focusAfter(
+      removed.then(
+        () => true,
+        () => false,
+      ),
+      next
+        ? [`[data-file="${next}"] [data-control="remove"] button`, `[data-file="${next}"] button:not(:disabled)`]
+        : ['[data-control="empty"]'],
+    );
+    return removed;
   };
 
   return (
@@ -98,6 +146,42 @@ export function RenderView() {
             <h2 className="display-caps text-[22px]/7 text-ink">{texts.title}</h2>
             <p className="mt-1 text-[13px] text-ink-3">{texts.subtitle}</p>
           </div>
+          <section className="space-y-2">
+            <SectionTitle>{texts.output}</SectionTitle>
+            <div className="grid grid-cols-2 gap-1.5" role="radiogroup" aria-label={texts.output}>
+              {RENDER_OUTPUTS.map((value) => {
+                const reason = unavailable(value, renders.outputs);
+                const on = output === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    disabled={reason !== null}
+                    onClick={() => setOutput(value)}
+                    className={clsx(
+                      'focus-ring press border-2 border-ink px-3 py-2 text-left disabled:border-track disabled:text-ink-4',
+                      on ? 'bg-ink text-white' : 'bg-white text-ink enabled:hover:bg-wash',
+                    )}
+                  >
+                    <span className="block text-[13px] font-semibold">{texts.outputs[value].label}</span>
+                    <span className={clsx('block text-xs', on ? 'text-ink-4' : reason === null && 'text-ink-3')}>
+                      {reason ?? texts.outputs[value].detail}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {hasAlpha(output) && (
+              <Checkbox
+                checked={transparent}
+                onChange={setTransparent}
+                label={texts.transparent}
+                description={texts.transparentHint}
+              />
+            )}
+          </section>
           <section className="space-y-2">
             <SectionTitle>{texts.formats}</SectionTitle>
             <div className="grid grid-cols-2 gap-1.5">
@@ -195,22 +279,28 @@ export function RenderView() {
           />
           <section className="space-y-2">
             <SectionTitle>{texts.range}</SectionTitle>
-            <Segmented
-              label={texts.range}
-              size="sm"
-              stretch
-              value={range}
-              onChange={setRange}
-              options={[
-                { value: 'all', label: texts.wholeVideo },
-                { value: 'scene', label: texts.selectedScene, disabled: !scene },
-              ]}
-            />
-            <p className="text-xs text-ink-3">
-              {range === 'scene' && scene
-                ? texts.sceneRange(scene.name, secs(scene.start), secsLabel(scene.start + scene.duration))
-                : texts.videoRange(project.scenes.length, secsLabel(project.duration))}
-            </p>
+            {output === 'png' ? (
+              <p className="text-xs text-ink-3">{texts.stillAt(secsLabel(playhead))}</p>
+            ) : (
+              <>
+                <Segmented
+                  label={texts.range}
+                  size="sm"
+                  stretch
+                  value={range}
+                  onChange={setRange}
+                  options={[
+                    { value: 'all', label: texts.wholeVideo },
+                    { value: 'scene', label: texts.selectedScene, disabled: !scene },
+                  ]}
+                />
+                <p className="text-xs text-ink-3">
+                  {range === 'scene' && scene
+                    ? texts.sceneRange(scene.name, secs(scene.start), secsLabel(scene.start + scene.duration))
+                    : texts.videoRange(project.scenes.length, secsLabel(project.duration))}
+                </p>
+              </>
+            )}
           </section>
           <div className="border-t border-rule pt-4">
             <Button
@@ -220,14 +310,17 @@ export function RenderView() {
               className="w-full"
               icon={<Clapperboard className="size-4" />}
               loading={starting}
-              disabled={chosen.length === 0}
+              disabled={chosen.length === 0 || blocked !== null}
             >
               {texts.start}
             </Button>
-            <p className="mt-2 text-center text-xs text-ink-3">
+            <p className="mt-2 text-center text-xs text-ink-3" aria-live="polite">
               {chosen.length === 0
                 ? texts.noFormat
-                : texts.summary(chosen.length, secsLabel(seconds), fps, Math.round(seconds * Number(fps)))}
+                : (blocked ??
+                  (output === 'png'
+                    ? texts.stillSummary(outputLabel, chosen.length, secsLabel(playhead))
+                    : texts.summary(outputLabel, chosen.length, secsLabel(seconds), fps, Math.round(seconds * Number(fps)))))}
             </p>
           </div>
         </form>
@@ -243,10 +336,10 @@ export function RenderView() {
               </ul>
             </section>
           )}
-          <section className="space-y-4">
+          <section ref={shelf} className="space-y-4">
             <h2 className="display-caps text-[22px]/7 text-ink">{texts.exported}</h2>
             {renders.files.length === 0 ? (
-              <div className="border-2 border-dashed border-ink bg-paper/70">
+              <div data-control="empty" tabIndex={-1} className="border-2 border-dashed border-ink bg-paper/70 outline-none">
                 <EmptyState icon={<Film className="size-5" />} title={texts.empty}>
                   {texts.emptyHint}
                 </EmptyState>
@@ -257,10 +350,10 @@ export function RenderView() {
                   <FileCard
                     key={file.name}
                     file={file}
-                    projectId={project.id}
                     dir={project.dir}
                     publications={publishing.publications.filter((p) => p.file === file.name)}
                     sending={publishing.jobs.find((j) => j.file === file.name && j.status === 'uploading')}
+                    onRemove={() => remove(file.name)}
                   />
                 ))}
               </ul>
@@ -329,27 +422,67 @@ function JobRow({ job }: { job: RenderJob }) {
 
 function FileCard(props: {
   file: RenderFile;
-  projectId: string;
   dir: string;
   publications: Publication[];
   sending?: PublishJob;
+  onRemove: () => Promise<unknown>;
 }) {
-  const { file, projectId, dir, publications, sending } = props;
+  const { file, dir, publications, sending, onRemove } = props;
   const { common, production } = useT();
   const texts = production.render.file;
   const visibilities = common.visibilities;
   const networks = useStore((s) => s.app?.networks);
   const label = (id: string) => networks?.find((n) => n.id === id)?.label ?? id;
+  const view = fileView(file.output);
+  const image = useRef<HTMLImageElement>(null);
+  // A GIF loops and keeps the render's size and rate: like a video, nothing loads before its play key.
+  const [shown, setShown] = useState(file.output !== 'gif');
+  const show = () => {
+    flushSync(() => setShown(true));
+    image.current?.focus();
+  };
   return (
-    <li className="flex flex-col overflow-hidden border-2 border-ink bg-white shadow-hard">
-      <Player src={file.url} label={file.name} />
+    <li data-file={file.name} className="flex flex-col overflow-hidden border-2 border-ink bg-white shadow-hard">
+      {view.preview === 'video' && <Player src={file.url} label={file.name} />}
+      {view.preview === 'image' && (
+        <div className="aspect-video border-b-2 border-ink bg-ink">
+          {shown ? (
+            <img
+              ref={image}
+              src={file.url}
+              alt={file.name}
+              loading="lazy"
+              decoding="async"
+              tabIndex={-1}
+              className="size-full object-contain outline-none"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={show}
+              aria-label={texts.playGif}
+              className="focus-ring grid size-full cursor-(--control-cursor) place-items-center"
+            >
+              <span className="grid size-12 place-items-center bg-now text-ink">
+                <Play className="ml-0.5 size-5 fill-current" />
+              </span>
+            </button>
+          )}
+        </div>
+      )}
+      {view.preview === 'frames' && (
+        <div className="grid aspect-video place-items-center border-b-2 border-ink bg-ink text-ink-4" aria-hidden>
+          <Images className="size-6" />
+        </div>
+      )}
       {/* Actions at the bottom: they line up across a row whatever the publications above them. */}
       <div className="flex flex-1 flex-col px-3.5 py-3">
         <p className="truncate font-mono text-[12px] font-medium text-ink-2" title={file.name}>
           {file.name}
         </p>
         <p className="mt-0.5 text-xs text-ink-3">
-          {file.format ?? texts.unknownFormat} · {bytes(file.size)} · {relative(file.createdAt)}
+          {file.format ?? texts.unknownFormat} · {production.render.outputs[file.output].label}
+          {file.frames !== undefined && ` · ${texts.frames(file.frames)}`} · {bytes(file.size)} · {relative(file.createdAt)}
         </p>
         {(publications.length > 0 || sending) && (
           <ul className="mt-2 space-y-0.5 text-xs text-ink-3">
@@ -382,14 +515,16 @@ function FileCard(props: {
           </ul>
         )}
         <div className="mt-auto flex items-center gap-1.5 pt-2.5">
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<Send className="size-3.5" />}
-            onClick={() => openModal({ kind: 'publish', file: file.name })}
-          >
-            {texts.publish}
-          </Button>
+          {view.publish && (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Send className="size-3.5" />}
+              onClick={() => openModal({ kind: 'publish', file: file.name })}
+            >
+              {texts.publish}
+            </Button>
+          )}
           <span className="flex-1" />
           <IconButton
             label={texts.copyPath}
@@ -397,35 +532,39 @@ function FileCard(props: {
             icon={<Copy className="size-3.5" />}
             onClick={() => void copyText(`${dir}/renders/${file.name}`, texts.pathCopied)}
           />
-          <Tooltip label={texts.download}>
-            <a
-              href={file.url}
-              download={file.name}
-              aria-label={texts.download}
-              className="focus-ring grid size-7 cursor-(--control-cursor) place-items-center text-ink-2 hover:bg-wash hover:text-ink"
-            >
-              <Download className="size-3.5" />
-            </a>
-          </Tooltip>
+          {view.download && (
+            <Tooltip label={texts.download}>
+              <a
+                href={file.url}
+                download={file.name}
+                aria-label={texts.download}
+                className="focus-ring grid size-7 cursor-(--control-cursor) place-items-center text-ink-2 hover:bg-wash hover:text-ink"
+              >
+                <Download className="size-3.5" />
+              </a>
+            </Tooltip>
+          )}
           {/* The server refuses it too while this video uploads: the network reads the file. */}
-          <ConfirmButton
-            iconOnly
-            label={texts.remove}
-            confirmLabel={texts.removeConfirm}
-            icon={<Trash2 className="size-3.5" />}
-            disabled={sending !== undefined}
-            onConfirm={async () => {
-              await api.deleteRender(projectId, file.name);
-              await loadRenders();
-            }}
-          />
+          <span data-control="remove" className="contents">
+            <ConfirmButton
+              iconOnly
+              label={texts.remove}
+              confirmLabel={texts.removeConfirm}
+              icon={<Trash2 className="size-3.5" />}
+              disabled={sending !== undefined}
+              onConfirm={onRemove}
+            />
+          </span>
         </div>
       </div>
     </li>
   );
 }
 
-/** The exported MP4 on an ink screen, over a small deck in the transport's style: play key, counter, the clip and its playhead. */
+/**
+ * An exported video on an ink screen, over a small deck in the transport's style: play key, counter, the clip and its
+ * playhead. A video the browser cannot show (ProRes outside Safari) gets a note instead: the download stays on the card.
+ */
 function Player({ src, label }: { src: string; label: string }) {
   const { timeline, production } = useT();
   const keys = timeline.transport;
@@ -434,6 +573,8 @@ function Player({ src, label }: { src: string; label: string }) {
   const video = useRef<HTMLVideoElement>(null);
   const track = useRef<HTMLDivElement>(null);
   const playKey = useRef<HTMLButtonElement>(null);
+  const note = useRef<HTMLParagraphElement>(null);
+  const [unplayable, setUnplayable] = useState(false);
   const [playing, setPlaying] = useState(false);
   // Until the first play or seek, the screen shows the poster frame (#t below) and the deck reads 0.
   const [started, setStarted] = useState(false);
@@ -477,6 +618,22 @@ function Player({ src, label }: { src: string; label: string }) {
     const rect = track.current!.getBoundingClientRect();
     return ((clientX - rect.left) / rect.width) * duration;
   };
+  // Chromium plays the sound of a ProRes file without its picture, so no picture counts as unplayable too.
+  const fail = () => {
+    const focused = box.current?.contains(document.activeElement);
+    flushSync(() => setUnplayable(true));
+    if (focused) note.current?.focus();
+  };
+
+  if (unplayable) {
+    return (
+      <div className="grid aspect-video place-items-center border-b-2 border-ink bg-ink px-4 text-center">
+        <p ref={note} tabIndex={-1} className="text-[13px] text-ink-4 outline-none">
+          {texts.previewUnavailable}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div ref={box} className="flex flex-col">
@@ -489,7 +646,8 @@ function Player({ src, label }: { src: string; label: string }) {
           className="absolute inset-0 size-full cursor-(--control-cursor) object-contain"
           aria-label={label}
           onClick={toggle}
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+          onError={fail}
+          onLoadedMetadata={(e) => (e.currentTarget.videoWidth === 0 ? fail() : setDuration(e.currentTarget.duration))}
           onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
           onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
           onPause={() => setPlaying(false)}

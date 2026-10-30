@@ -3,7 +3,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { MusicGridData, ProjectState, SceneState, ScriptLine, Speaker, VersionEntry } from '../../src/shared/types';
+import type {
+  MusicGridData,
+  OutputSupport,
+  ProjectState,
+  RenderOutput,
+  SceneState,
+  ScriptLine,
+  Speaker,
+  VersionEntry,
+} from '../../src/shared/types';
 import { frameErrors } from '../../src/editor/components/FrameView';
 import en from '../../src/editor/i18n/en/shell';
 import fr from '../../src/editor/i18n/fr/shell';
@@ -28,6 +37,7 @@ import {
 import { allowedAsk, dismissedAsk, raisedAsk } from '../../src/editor/lib/captureAsk';
 import { Markdown } from '../../src/editor/lib/markdown';
 import { projectsPage } from '../../src/editor/lib/pages';
+import { fileAfterRemoval, fileView, hasAlpha, renderRequest, stillTime, unavailable } from '../../src/editor/lib/render';
 import { shownVersions } from '../../src/editor/lib/versions';
 import { barDrift, frameStart, playbackTime, rulerStep, sceneBars, timelineMarks } from '../../src/editor/lib/timeline';
 import {
@@ -445,4 +455,88 @@ test('the versions panel hides editor steps, undos and redos, and keeps restore 
   );
   assert.deepEqual(shownVersions([entry('v1', 'edit')]), []);
   assert.deepEqual(shownVersions([]), []);
+});
+
+test('render outputs: transparency on WebM, ProRes and PNG only, and an output the server cannot make carries its reason', () => {
+  assert.deepEqual((['mp4', 'webm', 'mov', 'gif', 'png', 'png-sequence'] as RenderOutput[]).filter(hasAlpha), [
+    'webm',
+    'mov',
+    'png',
+    'png-sequence',
+  ]);
+  const outputs = {
+    mp4: { available: true },
+    webm: { available: false, reason: 'pas de libvpx-vp9' },
+  } as Record<RenderOutput, OutputSupport>;
+  assert.equal(unavailable('webm', outputs), 'pas de libvpx-vp9');
+  assert.equal(unavailable('mp4', outputs), null);
+  // Before the server answers, every output stays open: it checks again when the render starts.
+  assert.equal(unavailable('webm', undefined), null);
+});
+
+test('render request: the output named, transparency only where it applies, a PNG image is the frame at the playhead', () => {
+  const settings = {
+    formats: ['16:9' as const],
+    quality: 'standard' as const,
+    scale: 1,
+    fps: 30,
+    supersample: false,
+    transparent: true,
+    range: { from: 2, to: 5 },
+    playhead: 1.2,
+  };
+  assert.deepEqual(renderRequest({ ...settings, output: 'mp4' }), {
+    formats: ['16:9'],
+    quality: 'standard',
+    scale: 1,
+    fps: 30,
+    supersample: false,
+    output: 'mp4',
+    transparent: false,
+    range: { from: 2, to: 5 },
+  });
+  assert.equal(renderRequest({ ...settings, output: 'gif' }).transparent, false);
+  assert.equal(renderRequest({ ...settings, output: 'webm' }).transparent, true);
+  assert.equal(renderRequest({ ...settings, output: 'mov', transparent: false }).transparent, false);
+  assert.deepEqual(renderRequest({ ...settings, output: 'png-sequence' }).range, { from: 2, to: 5 });
+  assert.equal(renderRequest({ ...settings, output: 'mp4', range: null }).range, undefined);
+  // The scene range does not apply to a still: one frame long, from the playhead.
+  assert.deepEqual(renderRequest({ ...settings, output: 'png' }).range, { from: 1.2, to: 1.2 + 1 / 30 });
+  assert.deepEqual(renderRequest({ ...settings, output: 'png', range: null, playhead: 0 }).range, { from: 0, to: 1 / 30 });
+});
+
+test('a PNG image from the scene view stays on that scene in the whole video: not at its cut, not in its entry transition', () => {
+  const scene = { start: 4, duration: 2 };
+  assert.equal(stillTime(scene, 0.5, 30), 4.5);
+  assert.equal(stillTime(scene, 0, 30), 4);
+  // The end of the scene is the next scene's first frame in the whole video: the last frame of this one instead.
+  assert.equal(stillTime(scene, 2, 30), 4 + 2 - 1 / 30);
+  assert.equal(stillTime(scene, 2, 25), 4 + 2 - 1 / 25);
+  // The overlap with the previous scene shows that scene: the first frame after it.
+  const entered = { ...scene, transition: { kind: 'fade' as const, duration: 0.4 } };
+  assert.equal(stillTime(entered, 0, 30), 4.4);
+  assert.equal(stillTime(entered, 0.3, 30), 4.4);
+  assert.equal(stillTime(entered, 1, 30), 5);
+  assert.equal(stillTime(entered, 2, 30), 4 + 2 - 1 / 30);
+});
+
+test('rendered files: images for GIF and PNG, the player for videos, no download for a sequence, Publish on MP4 only', () => {
+  assert.deepEqual(
+    (['mp4', 'webm', 'mov', 'gif', 'png', 'png-sequence'] as RenderOutput[]).map((output) => [output, fileView(output)]),
+    [
+      ['mp4', { preview: 'video', download: true, publish: true }],
+      ['webm', { preview: 'video', download: true, publish: false }],
+      ['mov', { preview: 'video', download: true, publish: false }],
+      ['gif', { preview: 'image', download: true, publish: false }],
+      ['png', { preview: 'image', download: true, publish: false }],
+      ['png-sequence', { preview: 'frames', download: false, publish: false }],
+    ],
+  );
+});
+
+test('a deleted render hands the focus to the row now in its place, then the one before, then the empty state', () => {
+  assert.equal(fileAfterRemoval(['a', 'b', 'c'], 'a'), 'b');
+  assert.equal(fileAfterRemoval(['a', 'b', 'c'], 'b'), 'c');
+  assert.equal(fileAfterRemoval(['a', 'b', 'c'], 'c'), 'b');
+  assert.equal(fileAfterRemoval(['a'], 'a'), null);
 });

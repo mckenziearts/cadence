@@ -21,12 +21,14 @@ import type {
   MusicAnalysis,
   MusicSettingsPatch,
   NetworkId,
+  OutputSupport,
   ProjectState,
   Publications,
   PublishJob,
   PublishRequest,
   RenderFile,
   RenderJob,
+  RenderOutput,
   RenderRequest,
   RepoListing,
   SceneState,
@@ -190,7 +192,10 @@ export const api = {
   clearChat: (id: string, key: ChatKey) => del<ChatState>(`${p(id)}/chats/${key}`),
   cost: (id: string) => get<{ totalUsd: number }>(`${p(id)}/cost`, { quiet: true }),
 
-  renders: (id: string) => get<{ jobs: RenderJob[]; files: RenderFile[] }>(`${p(id)}/renders`, { quiet: true }),
+  renders: (id: string) =>
+    get<{ jobs: RenderJob[]; files: RenderFile[]; outputs: Record<RenderOutput, OutputSupport> }>(`${p(id)}/renders`, {
+      quiet: true,
+    }),
   startRender: (id: string, input: RenderRequest) => post<RenderJob[]>(`${p(id)}/renders`, input),
   cancelRender: (jobId: string) => del<{ ok: true }>(`/api/renders/${encodeURIComponent(jobId)}`),
   deleteRender: (id: string, name: string) => del<{ ok: true }>(`${p(id)}/renders/${encodeURIComponent(name)}`),

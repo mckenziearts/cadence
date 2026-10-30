@@ -216,7 +216,19 @@ export default {
   },
   render: {
     title: 'Exporter la vidéo',
-    subtitle: 'Un fichier MP4 par format, avec la musique mixée.',
+    subtitle: 'Un rendu par format : vidéo, GIF ou images PNG, avec la musique mixée quand la sortie a du son.',
+    output: 'Sortie',
+    outputs: {
+      mp4: { label: 'MP4', detail: 'H.264, se publie partout' },
+      webm: { label: 'WebM', detail: 'VP9, pour le web' },
+      mov: { label: 'ProRes (.mov)', detail: 'Pour le montage' },
+      gif: { label: 'GIF', detail: 'Sans son' },
+      png: { label: 'Image PNG', detail: 'L’image à la tête de lecture' },
+      'png-sequence': { label: 'Séquence PNG', detail: 'Un dossier d’images' },
+    },
+    transparent: 'Fond transparent',
+    transparentHint: 'Sans le fond de la marque. Le fond qu’une scène dessine elle-même reste.',
+    stillAt: (at: string) => `L’image à ${at}, où se trouve la tête de lecture.`,
     formats: 'Formats',
     quality: 'Qualité',
     qualities: {
@@ -236,13 +248,15 @@ export default {
     videoRange: (scenes: number, length: string) => `${plural(scenes, 'scène', 'scènes')}, ${length}`,
     start: 'Lancer le rendu',
     noFormat: 'Choisissez au moins un format.',
-    summary: (files: number, length: string, fps: string, frames: number) =>
-      `${plural(files, 'fichier', 'fichiers')} · ${length} à ${fps}\u00a0i/s · ${plural(frames, 'image', 'images')} par format`,
+    summary: (output: string, files: number, length: string, fps: string, frames: number) =>
+      `${output} · ${plural(files, 'rendu', 'rendus')} · ${length} à ${fps}\u00a0i/s · ${plural(frames, 'image', 'images')} par format`,
+    stillSummary: (output: string, files: number, at: string) =>
+      `${output} · ${plural(files, 'rendu', 'rendus')} · image à ${at}`,
     running: 'En cours',
     recent: 'Récents',
-    exported: 'Vidéos exportées',
-    empty: 'Aucune vidéo exportée',
-    emptyHint: 'Les MP4 arrivent dans le dossier renders/ du projet et s’affichent ici.',
+    exported: 'Rendus exportés',
+    empty: 'Aucun rendu exporté',
+    emptyHint: 'Les vidéos, GIF et images PNG arrivent dans le dossier renders/ du projet et s’affichent ici.',
     job: {
       status: {
         queued: 'En file d’attente',
@@ -260,12 +274,15 @@ export default {
     },
     file: {
       unknownFormat: 'Format inconnu',
+      frames: (count: number) => plural(count, 'image', 'images'),
+      previewUnavailable: 'Aperçu indisponible dans ce navigateur',
+      playGif: 'Lire le GIF',
       uploading: (network: string, percent: string) => `Envoi sur ${network} : ${percent}`,
       publish: 'Publier',
       copyPath: 'Copier le chemin',
-      pathCopied: 'Chemin de la vidéo copié',
+      pathCopied: 'Chemin du rendu copié',
       download: 'Télécharger',
-      remove: 'Supprimer la vidéo',
+      remove: 'Supprimer le rendu',
       removeConfirm: 'Supprimer ?',
       fullScreen: 'Plein écran',
       exitFullScreen: 'Quitter le plein écran',

@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -30,6 +30,7 @@ import {
   type MusicGridData,
   type ProjectState,
   type ProjectSummary,
+  type PublishJob,
   type RenderJob,
   type ScriptLine,
 } from '../../src/shared/types';
@@ -1075,7 +1076,7 @@ describe('editor', () => {
     const page = await open(B);
     await page.getByRole('button', { name: 'Rendu' }).click();
     const card = page.getByRole('listitem').filter({ hasText: name });
-    await card.getByRole('button', { name: 'Supprimer la vidéo' }).click();
+    await card.getByRole('button', { name: 'Supprimer le rendu' }).click();
     await card.getByRole('button', { name: 'Supprimer ?' }).click();
     await card.waitFor({ state: 'detached' });
     const trash = await readdir(path.join(server.config.projectsDir, B, '.cadence', 'trash'));
@@ -1084,6 +1085,277 @@ describe('editor', () => {
       .getByRole('listitem')
       .filter({ hasText: `${B}-16x9-deck.mp4` })
       .waitFor();
+    await page.context().close();
+  });
+
+  it(
+    'picks a render output: the reason of a missing one, transparency where it applies, a PNG image at the playhead',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-out`;
+      await api('POST', '/api/projects', { name: 'Sorties', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Plan', duration: 2 });
+      const start = (await api<ProjectState>('GET', `/api/projects/${id}`)).scenes.find((s) => s.id === scene.id)!.start;
+      assert.ok(start > 0);
+      // Half a second into the scene: the image is taken at the video time, the scene's start plus the playhead.
+      const playhead = start + 0.5;
+      const page = await newPage();
+      const reason = 'Ce ffmpeg ne sait pas encoder le VP9.';
+      const missing: Record<string, string> = { webm: reason };
+      const sent: unknown[] = [];
+      await page.route(`**/api/projects/${id}/renders`, async (route) => {
+        if (route.request().method() === 'POST') {
+          sent.push(route.request().postDataJSON());
+          return route.fulfill({ json: [] });
+        }
+        const response = await route.fetch();
+        const body = await response.json();
+        const off = Object.fromEntries(Object.entries(missing).map(([name, why]) => [name, { available: false, reason: why }]));
+        return route.fulfill({ response, json: { ...body, outputs: { ...body.outputs, ...off } } });
+      });
+      const outputs = page.getByRole('radiogroup', { name: 'Sortie' });
+      const output = (name: string) => outputs.getByRole('radio', { name: new RegExp(`^${name}`) });
+      const label = (seconds: number) => `${seconds.toFixed(2).replace('.', ',')}${NBSP}s`;
+      const playheadAt = (seconds: string) =>
+        page.locator(`[role="slider"][aria-label="Tête de lecture"][aria-valuetext="${seconds}"]`).waitFor();
+      await open(`${id}/${scene.id}`, page);
+      // At the scene's end, the whole video already shows the next scene: the image is this scene's last frame.
+      for (let i = 0; i < 2; i++) await page.keyboard.press('Shift+ArrowRight');
+      await playheadAt(`2,00${NBSP}s`);
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      await output('Image PNG').click();
+      await page.getByText(`L’image à ${label(start + 2 - 1 / 30)}, où se trouve la tête de lecture.`).waitFor();
+      await page.getByRole('button', { name: 'Scènes', exact: true }).click();
+      await page.keyboard.press('Home');
+      for (let i = 0; i < 15; i++) await page.keyboard.press('ArrowRight');
+      await playheadAt(`0,50${NBSP}s`);
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      const startButton = page.getByRole('button', { name: 'Lancer le rendu' });
+      const summary = startButton.locator('xpath=following-sibling::p[1]');
+      const transparent = page.getByRole('checkbox', { name: /Fond transparent/ });
+
+      await output('WebM').getByText(reason).waitFor();
+      assert.equal(await output('WebM').isDisabled(), true);
+      assert.equal(await output('MP4').getAttribute('aria-checked'), 'true');
+      assert.match((await summary.textContent()) ?? '', new RegExp(`^MP4 · 1${NBSP}rendu · `));
+      assert.equal(await transparent.count(), 0);
+
+      await output('GIF').click();
+      assert.equal(await transparent.count(), 0, 'a GIF has no alpha channel');
+      await output('ProRes').click();
+      await transparent.waitFor();
+      await page.getByText('Le fond qu’une scène dessine elle-même reste.', { exact: false }).waitFor();
+
+      await output('Image PNG').click();
+      const at = label(playhead);
+      await page.getByText(`L’image à ${at}, où se trouve la tête de lecture.`).waitFor();
+      assert.equal(await summary.textContent(), `Image PNG · 1${NBSP}rendu · image à ${at}`);
+      await transparent.check();
+      await startButton.click();
+      for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+      const request = sent[0] as { output: string; transparent: boolean; range: { from: number; to: number } };
+      assert.equal(request.output, 'png');
+      assert.equal(request.transparent, true);
+      assert.equal(request.range.from, playhead);
+      assert.ok(request.range.to > request.range.from);
+
+      // In the whole video, the playhead already is the video time: the same point, not the scene's start added again.
+      await page.getByRole('button', { name: 'Scènes', exact: true }).click();
+      await page.getByRole('group', { name: 'Aperçu', exact: true }).getByRole('button', { name: 'Vidéo entière' }).click();
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      await output('Image PNG').click();
+      await page.getByText(`L’image à ${at}, où se trouve la tête de lecture.`).waitFor();
+      await startButton.click();
+      for (let i = 0; i < 50 && sent.length === 1; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal((sent[1] as typeof request).range.from, playhead);
+
+      // An ffmpeg without H.264: MP4 stays picked on opening, the summary says why nothing can start.
+      missing.mp4 = 'Ce ffmpeg ne sait pas encoder le H.264.';
+      await page.reload();
+      await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      await output('MP4').getByText(missing.mp4).waitFor();
+      assert.equal(await summary.getAttribute('aria-live'), 'polite');
+      assert.equal(await summary.textContent(), missing.mp4);
+      assert.equal(await startButton.isDisabled(), true);
+      await page.context().close();
+    },
+  );
+
+  it(
+    'shows each render by its output and hands the focus on when one is deleted, down to the empty state',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-files`;
+      await api('POST', '/api/projects', { name: 'Fichiers', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const renders = path.join(server.config.projectsDir, id, 'renders');
+      await mkdir(path.join(renders, `${id}-16x9-seq`), { recursive: true });
+      const ffmpeg = (...args: string[]) =>
+        promisify(execFile)(server.config.ffmpegPath, [
+          ...['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x36:r=10:d=1'],
+          ...args,
+        ]);
+      // Newest first on the shelf: the mtimes set this order.
+      const names = [
+        `${id}-16x9.mp4`,
+        `${id}-16x9.mov`,
+        `${id}-16x9.webm`,
+        `${id}-16x9.png`,
+        `${id}-16x9.gif`,
+        `${id}-16x9-seq`,
+        `${id}-9x16.mov`,
+      ];
+      await ffmpeg('-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(renders, names[0]!));
+      await ffmpeg('-c:v', 'prores_ks', path.join(renders, names[1]!));
+      await ffmpeg('-c:v', 'libvpx-vp9', path.join(renders, names[2]!));
+      await ffmpeg('-frames:v', '1', path.join(renders, names[3]!));
+      await ffmpeg(path.join(renders, names[4]!));
+      await ffmpeg('-frames:v', '2', path.join(renders, names[5]!, '%06d.png'));
+      // A real ProRes render has its PCM sound: Chromium then reads the metadata and finds no picture, instead of an error.
+      await ffmpeg(
+        ...['-f', 'lavfi', '-i', 'sine=d=1', '-c:v', 'prores_ks', '-profile:v', '3', '-c:a', 'pcm_s16le', '-shortest'],
+        path.join(renders, names[6]!),
+      );
+      for (const [i, name] of names.entries()) {
+        const at = new Date(Date.UTC(2026, 0, 1, 12, 0, 60 - i));
+        await utimes(path.join(renders, name), at, at);
+      }
+
+      const page = await newPage();
+      // The ProRes files wait until the focus is placed: the note that replaces a deck takes it over only from that deck.
+      const releases = new Map<string, () => void>();
+      for (const name of [names[1]!, names[6]!]) {
+        const held = new Promise<void>((resolve) => releases.set(name, resolve));
+        await page.route(`**/${name}*`, async (route) => {
+          await held;
+          return route.fallback();
+        });
+      }
+      const gifRequests: string[] = [];
+      page.on('request', (request) => {
+        if (request.url().includes(names[4]!)) gifRequests.push(request.url());
+      });
+      await open(id, page);
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      const card = (name: string) => page.locator(`li[data-file="${name}"]`);
+      for (const name of names) await card(name).waitFor();
+      // The 1 s fixtures have their metadata read: a WebM or MP4 the browser could not show would already be a note.
+      for (const name of [names[0]!, names[2]!]) await card(name).locator('[role="slider"][aria-valuemax="1"]').waitFor();
+      const has = async (name: string, role: 'link' | 'button', label: string) =>
+        (await card(name).getByRole(role, { name: label, exact: true }).count()) === 1;
+
+      // Without sound, the .mov fails to load; with it, the metadata come with no picture: both end on the note.
+      // The note takes the focus only from its own deck: elsewhere (here the Rendu tab) the focus stays put.
+      const tab = page.getByRole('button', { name: 'Rendu', exact: true });
+      for (const [name, from, to] of [
+        [names[1]!, card(names[1]!).getByRole('button', { name: 'Lecture' }), 'note'],
+        [names[6]!, tab, 'tab'],
+      ] as const) {
+        await from.focus();
+        releases.get(name)!();
+        const note = card(name).getByText('Aperçu indisponible dans ce navigateur');
+        await note.waitFor();
+        assert.equal(await focused(to === 'note' ? note : tab), true, `the focus goes to the ${to} (${name})`);
+        assert.equal(await has(name, 'link', 'Télécharger'), true);
+        assert.equal(await has(name, 'button', 'Publier'), false);
+      }
+
+      assert.equal(await card(names[0]!).locator('video').count(), 1);
+      assert.equal(await has(names[0]!, 'button', 'Publier'), true);
+      assert.equal(await card(names[2]!).locator('video').count(), 1);
+      assert.equal(await card(names[2]!).getByText('Aperçu indisponible dans ce navigateur').count(), 0);
+      assert.equal(await has(names[2]!, 'button', 'Publier'), false);
+      // A GIF loops and can weigh hundreds of MB: nothing loads before its play key, which hands the focus to the image.
+      assert.equal(await card(names[4]!).getByRole('img').count(), 0);
+      assert.deepEqual(gifRequests, []);
+      await card(names[4]!).getByRole('button', { name: 'Lire le GIF' }).click();
+      assert.equal(await focused(card(names[4]!).getByRole('img', { name: names[4]! })), true);
+      for (const name of [names[3]!, names[4]!]) {
+        const image = card(name).getByRole('img', { name });
+        assert.equal(await image.getAttribute('loading'), 'lazy', 'an image loads when its card comes near the view');
+        await image.scrollIntoViewIfNeeded();
+        await page.waitForFunction((el) => (el as HTMLImageElement).naturalWidth > 0, await image.elementHandle());
+        assert.equal(await has(name, 'link', 'Télécharger'), true);
+        assert.equal(await has(name, 'button', 'Publier'), false);
+      }
+      await card(names[5]!).getByText('2 images', { exact: false }).waitFor();
+      assert.equal(await has(names[5]!, 'button', 'Copier le chemin'), true);
+      assert.equal(await has(names[5]!, 'link', 'Télécharger'), false);
+      assert.equal(await has(names[5]!, 'button', 'Publier'), false);
+
+      // From the keyboard: the card in the deleted one's place, the one before after the last, then the empty state.
+      const remove = (name: string) => card(name).getByRole('button', { name: 'Supprimer le rendu' });
+      const press = async (name: string) => {
+        await page.keyboard.press('Enter');
+        await card(name).getByRole('button', { name: 'Supprimer ?' }).waitFor();
+        await page.keyboard.press('Enter');
+        await card(name).waitFor({ state: 'detached' });
+      };
+      await remove(names[6]!).focus();
+      await press(names[6]!);
+      assert.equal(await focused(remove(names[5]!)), true, 'after the last card, the one before');
+      await remove(names[1]!).focus();
+      await press(names[1]!);
+      assert.equal(await focused(remove(names[2]!)), true, 'the next card takes the focus');
+      await remove(names[5]!).focus();
+      await press(names[5]!);
+      assert.equal(await focused(remove(names[4]!)), true, 'after the last card, the one before');
+      for (const [name, next] of [
+        [names[4]!, names[3]!],
+        [names[3]!, names[2]!],
+        [names[2]!, names[0]!],
+      ] as const) {
+        await press(name);
+        assert.equal(await focused(remove(next)), true, `${next} after ${name}`);
+      }
+      await press(names[0]!);
+      const empty = page.locator('[data-control="empty"]');
+      assert.equal(await focused(empty), true, 'the empty state takes the focus after the last render');
+      await empty.getByText('Aucun rendu exporté').waitFor();
+      await page.context().close();
+    },
+  );
+
+  it('hands the focus to the next card when its delete button is off while it uploads', { timeout: 60_000 }, async () => {
+    const id = `${PREFIX}-sending`;
+    await api('POST', '/api/projects', { name: 'Envoi', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    const renders = path.join(server.config.projectsDir, id, 'renders');
+    await mkdir(renders, { recursive: true });
+    const [first, second] = [`${id}-16x9.mp4`, `${id}-9x16.mp4`];
+    for (const [i, name] of [first, second].entries()) {
+      await promisify(execFile)(server.config.ffmpegPath, [
+        ...['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x36:r=10:d=1'],
+        ...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(renders, name)],
+      ]);
+      const at = new Date(Date.UTC(2026, 0, 1, 12, 0, 60 - i));
+      await utimes(path.join(renders, name), at, at);
+    }
+    const page = await newPage();
+    const job: PublishJob = {
+      id: 'job-1',
+      projectId: id,
+      file: second,
+      network: 'youtube',
+      status: 'uploading',
+      progress: 0.4,
+      createdAt: new Date().toISOString(),
+    };
+    await page.route(`**/api/projects/${id}/publications`, (route) =>
+      route.request().method() === 'GET' ? route.fulfill({ json: { jobs: [job], publications: [] } }) : route.fallback(),
+    );
+    await open(id, page);
+    await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+    const card = (name: string) => page.locator(`li[data-file="${name}"]`);
+    const remove = (name: string) => card(name).getByRole('button', { name: 'Supprimer le rendu' });
+    await remove(second).waitFor();
+    assert.equal(await remove(second).isDisabled(), true, 'a render cannot go while it uploads');
+
+    await remove(first).focus();
+    await page.keyboard.press('Enter');
+    await card(first).getByRole('button', { name: 'Supprimer ?' }).waitFor();
+    await page.keyboard.press('Enter');
+    await card(first).waitFor({ state: 'detached' });
+    assert.equal(await focused(card(second).locator('button:not(:disabled)').first()), true, 'a control of the remaining card');
     await page.context().close();
   });
 

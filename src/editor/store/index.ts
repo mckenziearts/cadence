@@ -7,10 +7,12 @@ import type {
   Effort,
   FormatId,
   Language,
+  OutputSupport,
   ProjectState,
   Publications,
   RenderFile,
   RenderJob,
+  RenderOutput,
   SceneState,
   SeamResult,
 } from '../../shared/types';
@@ -98,7 +100,8 @@ export interface EditorState {
   picks: Partial<Record<ChatKind, { model: string; effort: Effort }>>;
   seams: SeamResult[];
   seamsChecking: boolean;
-  renders: { jobs: RenderJob[]; files: RenderFile[] };
+  /** `outputs` comes with the first listing: which outputs the ffmpeg in use can make, and why not. */
+  renders: { jobs: RenderJob[]; files: RenderFile[]; outputs?: Record<RenderOutput, OutputSupport> };
   publishing: Publications;
   music: { status: MusicStatus; error: string | null };
   /** Piper's latest run on the open project. */
