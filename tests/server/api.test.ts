@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -22,6 +23,7 @@ import type {
   BrandSource,
   ApiDeps,
   BrowserServer,
+  AssetStore,
   CaptureService,
   ChatService,
   ElevenLabsApi,
@@ -260,7 +262,7 @@ beforeEach(async () => {
     brands,
     templates,
     versions: new FileVersionStore(store, brands),
-    assets: new FileAssetStore(store, capture),
+    assets: new FileAssetStore(store, capture, t.config.ffmpegPath),
     capture,
     seams,
     renders,
@@ -1911,9 +1913,7 @@ test('brand builds: repositories through gh, validated starts, cancel, running b
 });
 
 test('assets and references', async () => {
-  const form = new FormData();
-  form.append('file', new File([PNG], 'Capture écran.png', { type: 'image/png' }));
-  let res = await json('POST', '/api/projects/demo/assets', form);
+  let res = await json('POST', `/api/projects/demo/assets?name=${encodeURIComponent('Capture écran.png')}`, new Blob([PNG]));
   assert.equal(res.body.path, 'capture-ecran.png');
   const file = await call('GET', `/api/projects/demo/assets/file?path=${encodeURIComponent('capture-ecran.png')}`);
   assert.equal(file.headers.get('content-type'), 'image/png');
@@ -1933,6 +1933,93 @@ test('assets and references', async () => {
   );
   assert.deepEqual((await json('DELETE', '/api/projects/demo/assets?path=capture-ecran.png')).body, { ok: true });
   assert.equal((await json('GET', '/api/projects/demo/assets')).body.length, 1);
+});
+
+const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
+
+test(
+  'asset uploads: the name is required, a file ffmpeg cannot read answers 422 (fr, en) and is not kept',
+  { skip: !hasFfmpeg && 'ffmpeg introuvable' },
+  async () => {
+    assert.equal((await json('POST', '/api/projects/demo/assets', new Blob([PNG]))).status, 400);
+    const fake = () => new Blob([Buffer.from('#EXTM3U\n#EXTINF:1,\nseg.ts\n')]);
+    assert.deepEqual(await json('POST', '/api/projects/demo/assets?name=clip.mp4', fake()), {
+      status: 422,
+      body: { error: "« clip.mp4 » n'est pas une vidéo que ffmpeg sait lire" },
+    });
+    setLanguage('en');
+    try {
+      assert.deepEqual((await json('POST', '/api/projects/demo/assets?name=clip.webm', fake())).body, {
+        error: '"clip.webm" is not a video ffmpeg can read',
+      });
+    } finally {
+      setLanguage('fr');
+    }
+    assert.deepEqual(await fs.readdir(path.join(store.dir('demo'), 'assets')), ['refs']);
+  },
+);
+
+test('asset uploads: a chunked body reaches the store as it comes, stopped past 500 MiB', { timeout: 30_000 }, async () => {
+  // The rest of the body is sent only once the store has read its start: a route holding it whole would wait forever.
+  let read = 0;
+  let started!: () => void;
+  const reading = new Promise<void>((resolve) => (started = resolve));
+  const real = deps.assets;
+  const assets: AssetStore = Object.assign(Object.create(real), {
+    upload: (projectId: string, file: Upload) =>
+      real.upload(projectId, {
+        name: file.name,
+        body: (async function* () {
+          for await (const chunk of file.body) {
+            read += chunk.byteLength;
+            started();
+            yield chunk;
+          }
+        })(),
+      }),
+  });
+  app = createApi({ ...deps, assets });
+  const chunk = new Uint8Array(256 * 1024 * 1024);
+  const next = (async function* () {
+    yield chunk.subarray(0, 1);
+    await reading;
+    for (let i = 0; i < 9; i++) yield chunk;
+  })();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await next.next();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+  });
+  const res = await app.fetch(
+    new Request('http://127.0.0.1:5299/api/projects/demo/assets?name=long.mp4', {
+      method: 'POST',
+      body,
+      duplex: 'half',
+    } as RequestInit),
+  );
+  assert.equal(res.status, 413);
+  assert.match((await res.json()).error, /500/);
+  assert.ok(read > 500 * 1024 * 1024 && read <= 1 + 2 * chunk.length, `${read} bytes reached the store`);
+  assert.deepEqual(await fs.readdir(path.join(store.dir('demo'), 'assets')), ['refs']);
+});
+
+test('asset files are served with the MIME type of their extension', async () => {
+  const types: [string, string][] = [
+    ['clip.mp4', 'video/mp4'],
+    ['clip.m4v', 'video/mp4'],
+    ['clip.webm', 'video/webm'],
+    ['clip.mov', 'video/quicktime'],
+    ['loader.gif', 'image/gif'],
+    ['anim.json', 'application/json'],
+  ];
+  for (const [name, type] of types) {
+    await fs.writeFile(path.join(store.dir('demo'), 'assets', name), 'x');
+    const res = await call('GET', `/api/projects/demo/assets/file?path=${name}`);
+    assert.equal(res.headers.get('content-type'), type, name);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  }
 });
 
 test("capture hosts: the person approves hosts for one project's agent captures; deleting the project drops them", async () => {
@@ -2161,7 +2248,10 @@ test('bodies get the JSON size limit, except on the two upload routes', async ()
   };
   assert.deepEqual(await json('POST', '/api/projects', big()), { status: 413, body: { error: 'Requête trop volumineuse' } });
   assert.equal((await json('PUT', '/api/projects/demo/art-direction', big())).status, 413);
-  assert.equal((await json('POST', '/api/projects/demo/assets', big())).body.path, 'grand.png');
+  assert.equal(
+    (await json('POST', '/api/projects/demo/assets?name=grand.png', new Blob([Buffer.alloc(3 * 1024 * 1024, 1)]))).body.path,
+    'grand.png',
+  );
   assert.equal(
     (await call('POST', '/api/projects/demo/music?name=grand.wav', new Blob([Buffer.alloc(3 * 1024 * 1024, 1)]))).status,
     200,

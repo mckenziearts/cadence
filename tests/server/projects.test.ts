@@ -15,6 +15,7 @@ import {
   readFileNoFollow,
   removeFileInside,
   removeTreeInside,
+  renameInside,
   shortHash,
   writeFileAtomic,
   writeFileInside,
@@ -1307,6 +1308,50 @@ describe('removeFileInside', () => {
     assert.equal(await fs.readFile(path.join(outside, 'x.ts'), 'utf8'), 'TOPSECRET');
     await removeFileInside(path.join(t.root, 'gone'), path.join(t.root, 'gone', 'scenes', 'x.ts'));
   });
+});
+
+describe('renameInside', () => {
+  test('renames a file within its folder, replacing what has the new name', async () => {
+    const { project, file } = await swappable();
+    const folder = path.dirname(file);
+    await fs.writeFile(path.join(folder, 'y.ts'), 'replaced');
+    await renameInside(project, file, path.join(folder, 'y.ts'));
+    assert.deepEqual(await fs.readdir(folder), ['y.ts']);
+    assert.equal(await fs.readFile(path.join(folder, 'y.ts'), 'utf8'), 'inside');
+  });
+
+  test('refuses two names in different folders, moving nothing', async () => {
+    const project = path.join(t.root, 'p');
+    await fs.mkdir(path.join(project, 'a'), { recursive: true });
+    await fs.mkdir(path.join(project, 'b'));
+    await fs.writeFile(path.join(project, 'a', 'x.ts'), 'a');
+    await fs.writeFile(path.join(project, 'b', 'x.ts'), 'b');
+    await assert.rejects(renameInside(project, path.join(project, 'a', 'x.ts'), path.join(project, 'b', 'y.ts')), /same folder/);
+    assert.deepEqual(await fs.readdir(path.join(project, 'a')), ['x.ts']);
+    assert.deepEqual(await fs.readdir(path.join(project, 'b')), ['x.ts']);
+  });
+
+  test('moves nothing through a folder that is a link out of its root', async () => {
+    const { project, outside, link } = await linkedOut();
+    await assert.rejects(renameInside(project, path.join(link, 'x.ts'), path.join(link, 'y.ts')), REFUSED);
+    assert.deepEqual(await fs.readdir(outside), ['x.ts']);
+  });
+
+  test('moves nothing through a link to another folder inside its root', async () => {
+    const { project, inner, link } = await linkedInward();
+    await assert.rejects(renameInside(project, path.join(link, 'chat.json'), path.join(link, 'moved.json')), REFUSED);
+    assert.deepEqual(await fs.readdir(inner), ['chat.json']);
+  });
+
+  for (const swapped of ['scenes/sub', 'scenes']) {
+    test(`moves nothing outside when ${swapped} was swapped for a link out of its root`, async () => {
+      const setup = await swappable(swapped);
+      await setup.toLink();
+      const to = path.join(path.dirname(setup.file), 'y.ts');
+      await assert.rejects(renameInside(setup.project, setup.file, to), REFUSED);
+      await setup.outsideUntouched();
+    });
+  }
 });
 
 describe('listInside', () => {

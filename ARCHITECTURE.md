@@ -323,7 +323,8 @@ projects/<id>/
   art-direction.md      the look every scene follows (copied from the brand, then edited)
   scenes/<scene>.tsx    one component per scene (default export)
   components/           shared components/constants for this project (relative imports)
-  assets/               images, SVGs, fonts; assets/refs/ = reference screenshots for the agent
+  assets/               images, SVGs, fonts, videos (MP4, MOV, M4V, WebM), Lottie JSON; assets/refs/ = reference
+                        screenshots for the agent; 1536 MiB in all, so an export stays under the 2048 MB import
   music/                audio tracks + <file>.analysis.json caches and <file>.spectrum.bin band levels
   renders/              exported videos, GIFs, PNG frames and PNG sequence folders (gitignored)
   .cadence/             internal, gitignored: chats/ (project.json, scene-<id>.json, archive/), versions/,
@@ -926,7 +927,8 @@ GET    /api/projects/:id/renders/:name             video/mp4, video/webm, video/
 DELETE /api/projects/:id/renders/:name             moves the file or sequence folder to .cadence/trash (409 while it
                                                    uploads)
 GET    /api/projects/:id/assets                    AssetInfo[]
-POST   /api/projects/:id/assets                    multipart "file", answers AssetInfo
+POST   /api/projects/:id/assets                    ?name=, body = the file (raw), answers AssetInfo; 50 MiB images/fonts,
+                                                   500 MiB videos, 10 MiB Lottie, 1536 MiB per project (413)
 DELETE /api/projects/:id/assets                    ?path= 
 GET    /api/projects/:id/assets/file               ?path=, answers file
 POST   /api/projects/:id/refs                      CaptureRefInput, answers AssetInfo

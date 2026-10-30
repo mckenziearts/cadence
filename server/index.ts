@@ -206,7 +206,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     });
     const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub, browserServer });
     const versions = new FileVersionStore(store, brands);
-    const assets = new FileAssetStore(store, capture);
+    const assets = new FileAssetStore(store, capture, config.ffmpegPath);
     const tokens = new McpTokens(config);
     // Key by key rather than a spread: an undefined flag stays on, and a key the editor does not know is not served.
     const activeFeatures = Object.fromEntries(

@@ -46,8 +46,6 @@ export default {
     invalidBody: (issues: string[]) => `Invalid request: ${issues.join('; ')}`,
     rangeOrder: 'the end must come after the start',
     fileTooLarge: (mb: number) => `File too large (${mb} MB max)`,
-    invalidUpload: 'Invalid file upload (multipart/form-data expected)',
-    noFile: 'No file received ("file" field)',
     unknownChat: (key: string) => `Unknown chat: ${key}`,
     unknownNetwork: (id: string) => `Unknown network: ${id}`,
     missingParam: (name: string) => `Missing "${name}" parameter`,
@@ -156,9 +154,11 @@ This document is reread before every change. Describe here the style all scenes 
   },
   assets: {
     unsupported: (name: string) =>
-      `Unsupported file type: ${name} (PNG, JPEG, WebP, GIF or SVG images, WOFF, WOFF2, TTF or OTF fonts)`,
+      `Unsupported file type: ${name} (PNG, JPEG, WebP, GIF or SVG images, MP4, MOV, M4V or WebM videos, Lottie JSON animations, WOFF, WOFF2, TTF or OTF fonts)`,
     empty: (name: string) => `Empty file: ${name}`,
-    tooLarge: (name: string) => `File too large: ${name} (50 MB max)`,
+    tooLarge: (name: string, mb: number) => `File too large: ${name} (${mb} MB max)`,
+    projectFull: (name: string, mb: number) =>
+      `No room for ${name}: a project keeps ${mb} MB of assets at most, so that its export can be imported again`,
     invalidUrl: (url: string) => `Invalid URL: ${url}`,
     httpOnly: (url: string) => `Only http:// and https:// URLs can be captured: ${url}`,
     unknownDevice: (device: string) => `Unknown device: ${device}`,

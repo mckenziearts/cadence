@@ -71,7 +71,7 @@ async function request<T>(method: string, url: string, body?: unknown, options: 
   const headers: Record<string, string> = {};
   if (method !== 'GET' && method !== 'HEAD') headers['X-Cadence-Token'] = token;
   let payload: BodyInit | undefined;
-  if (body instanceof FormData || body instanceof Blob) payload = body;
+  if (body instanceof Blob) payload = body;
   else if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
@@ -115,12 +115,6 @@ const q = (params: Record<string, string | number | undefined | null>) => {
   const text = search.toString();
   return text ? `?${text}` : '';
 };
-
-function upload(file: File): FormData {
-  const form = new FormData();
-  form.append('file', file, file.name);
-  return form;
-}
 
 /** Swallows a rejection already reported by a toast. */
 export const ignore = (): void => undefined;
@@ -204,7 +198,7 @@ export const api = {
   cancelBrandBuild: (id: string) => del<{ ok: true }>(`/api/brand-builds/${encodeURIComponent(id)}`),
 
   assets: (id: string) => get<AssetInfo[]>(`${p(id)}/assets`),
-  uploadAsset: (id: string, file: File) => post<AssetInfo>(`${p(id)}/assets`, upload(file)),
+  uploadAsset: (id: string, file: File) => post<AssetInfo>(`${p(id)}/assets${q({ name: file.name })}`, file),
   deleteAsset: (id: string, assetPath: string) => del<{ ok: true }>(`${p(id)}/assets${q({ path: assetPath })}`),
   captureRef: (id: string, input: CaptureRefInput) => post<AssetInfo>(`${p(id)}/refs`, input),
   captureHosts: (id: string) => get<{ hosts: string[] }>(`${p(id)}/capture-hosts`),

@@ -26,8 +26,10 @@ const TYPES: Record<string, string> = {
   flac: 'audio/flac',
   ogg: 'audio/ogg',
   mp4: 'video/mp4',
-  webm: 'video/webm',
+  m4v: 'video/mp4',
   mov: 'video/quicktime',
+  webm: 'video/webm',
+  json: 'application/json',
 };
 
 /** Served files are inert: an uploaded SVG opened directly must not run script on the editor origin. */

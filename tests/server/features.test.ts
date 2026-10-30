@@ -1,6 +1,6 @@
 // StartOptions.features: the flags a host app passes to hide editor sections, served to the editor in /api/state.
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
@@ -192,6 +192,29 @@ test("a host app's secret store passed to startServer is where the ElevenLabs ke
     assert.deepEqual(((await res.json()) as VoicesState).elevenLabs, { configured: true });
     assert.deepEqual(asked, ['elevenlabs']);
     assert.equal(await pathExists(path.join(server.config.stateDir, 'elevenlabs.json')), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('the ffmpegPath passed to startServer is the ffmpeg that probes uploaded clips', async () => {
+  const bin = path.join(t.root, 'host-ffmpeg');
+  const gif = `Input #0, gif, from 'a.gif':\n  Duration: 00:00:01.00, start: 0.000000, bitrate: 88 kb/s\n  Stream #0:0: Video: gif, bgra, 100x80, 10 fps, 10 tbr, 100 tbn\n`;
+  await writeFile(path.join(t.root, 'gif.txt'), gif);
+  await writeFile(bin, `#!/bin/sh\necho called > "${bin}.called"\ncat "${t.root}/gif.txt" >&2\nexit 1\n`, { mode: 0o755 });
+  const server = await startServer({ ...options, ffmpegPath: bin });
+  const call = (route: string, body: BodyInit) =>
+    fetch(`${server.config.editorOrigin}/api${route}`, {
+      method: 'POST',
+      headers: { 'x-cadence-token': server.editorToken, ...(typeof body === 'string' && { 'content-type': 'application/json' }) },
+      body,
+    });
+  try {
+    const project = await call('/projects', JSON.stringify({ name: 'Clips', brand: null, formats: ['16:9'], fps: 30 }));
+    const { id } = (await project.json()) as { id: string };
+    const res = await call(`/projects/${id}/assets?name=a.gif`, new Blob([Buffer.from('GIF89a')]));
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(await readFile(`${bin}.called`, 'utf8'), 'called\n');
   } finally {
     await server.close();
   }

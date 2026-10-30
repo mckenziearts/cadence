@@ -395,8 +395,11 @@ export interface VersionStore {
 
 export interface AssetStore {
   list(projectId: string): Promise<AssetInfo[]>;
-  /** Save an uploaded file under assets/ (images, SVG, fonts; 50 MB max). Name is sanitized. */
-  upload(projectId: string, file: { name: string; data: Buffer }): Promise<AssetInfo>;
+  /**
+   * Save an uploaded file under assets/: images, SVG and fonts (50 MiB max), videos ffmpeg reads (500 MiB) and Lottie
+   * JSON with embedded images (10 MiB). Name is sanitized.
+   */
+  upload(projectId: string, file: Upload): Promise<AssetInfo>;
   remove(projectId: string, assetPath: string): Promise<void>;
   /**
    * Screenshot a web page into assets/refs/<name>-<device>.png (reference material for the agent). `policy` is what the

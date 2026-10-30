@@ -76,7 +76,12 @@ export async function openFileNoFollow(root: string, file: string): Promise<File
 }
 
 /** writeFileAtomic for a folder an agent turn can write: a folder it swaps for a link never sends the write elsewhere. */
-export async function writeFileInside(root: string, file: string, data: string | Buffer, mode?: number): Promise<void> {
+export async function writeFileInside(
+  root: string,
+  file: string,
+  data: string | Buffer | Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  mode?: number,
+): Promise<void> {
   const tmp = tmpFile(file);
   const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
   const handle = await openInside(root, tmp, flags, mode).catch(async (e: NodeJS.ErrnoException) => {
@@ -96,6 +101,12 @@ export async function writeFileInside(root: string, file: string, data: string |
     await removeFileInside(root, tmp).catch(() => undefined);
     throw e;
   }
+}
+
+/** fs.rename(from, to) of two names in the same folder an agent turn can write, never through a link on the way. */
+export async function renameInside(root: string, from: string, to: string): Promise<void> {
+  if (path.dirname(from) !== path.dirname(to)) throw new Error(`${from} and ${to} are not in the same folder`);
+  await inParentInside(root, to, { renameFrom: path.basename(from) });
 }
 
 /** fs.rm(file, { force: true }) for a folder an agent turn can write, never through a link on the way. */

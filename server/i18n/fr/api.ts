@@ -46,8 +46,6 @@ export default {
     invalidBody: (issues: string[]) => `Requête invalide \u2014 ${issues.join(' ; ')}`,
     rangeOrder: 'la fin doit suivre le début',
     fileTooLarge: (mb: number) => `Fichier trop volumineux (${mb} Mo max)`,
-    invalidUpload: 'Envoi de fichier invalide (multipart/form-data attendu)',
-    noFile: 'Aucun fichier reçu (champ « file »)',
     unknownChat: (key: string) => `Conversation inconnue : ${key}`,
     unknownNetwork: (id: string) => `Réseau inconnu : ${id}`,
     missingParam: (name: string) => `Paramètre « ${name} » manquant`,
@@ -162,9 +160,11 @@ Ce document est relu avant chaque modification. Décrivez ici le style commun à
   },
   assets: {
     unsupported: (name: string) =>
-      `Type de fichier non pris en charge : ${name} (images PNG, JPEG, WebP, GIF, SVG ou polices WOFF, WOFF2, TTF, OTF)`,
+      `Type de fichier non pris en charge : ${name} (images PNG, JPEG, WebP, GIF, SVG, vidéos MP4, MOV, M4V, WebM, animations Lottie JSON ou polices WOFF, WOFF2, TTF, OTF)`,
     empty: (name: string) => `Fichier vide : ${name}`,
-    tooLarge: (name: string) => `Fichier trop volumineux : ${name} (50 Mo max)`,
+    tooLarge: (name: string, mb: number) => `Fichier trop volumineux : ${name} (${mb} Mo max)`,
+    projectFull: (name: string, mb: number) =>
+      `Plus de place pour ${name} : un projet garde ${mb} Mo de médias au plus, pour que son export puisse être réimporté`,
     invalidUrl: (url: string) => `Adresse invalide : ${url}`,
     httpOnly: (url: string) => `Seules les adresses http:// et https:// peuvent être capturées : ${url}`,
     unknownDevice: (device: string) => `Appareil inconnu : ${device}`,

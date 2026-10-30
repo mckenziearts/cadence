@@ -147,6 +147,16 @@ export default {
       gain: (index: number) => `son ${index} : gain doit être un nombre entre 0 et 1`,
     },
   },
+  clips: {
+    unreadable: (name: string) => `« ${name} » n'est pas une vidéo que ffmpeg sait lire`,
+    noDuration: (name: string) =>
+      `« ${name} » n'indique pas sa durée (vidéo enregistrée en flux) : réécrivez-la une fois, par exemple ffmpeg -i entree.webm -c copy sortie.webm`,
+    notLottie: (name: string) => `« ${name} » n'est pas une animation Lottie (v, fr, ip, op, w, h et layers attendus)`,
+    externalImage: (name: string, image: string) =>
+      `« ${name} » charge une image externe (${image}) : intégrez les images au fichier (data: URI), la scène ne charge rien d'autre`,
+    externalFont: (name: string, font: string) =>
+      `« ${name} » charge une police externe (${font}) : convertissez le texte en formes, la scène ne charge rien d'autre`,
+  },
   brands: {
     build: {
       tools: {

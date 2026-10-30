@@ -43,7 +43,6 @@ import { dataUrl, sendFile, sendImage } from './files';
 const MB = 1024 * 1024;
 const JSON_LIMIT = 2 * MB;
 const MUSIC_LIMIT = 201 * MB;
-const ASSET_LIMIT = 51 * MB;
 const ARCHIVE_LIMIT = 2048 * MB;
 /** POST routes that take a file with their own, larger body limit. */
 const UPLOAD_ROUTE = /^\/api\/(projects\/[^/]+\/(music|assets)|import)$/;
@@ -619,9 +618,12 @@ export function createApi(deps: ApiDeps) {
 
   // Assets
   app.get('/projects/:id/assets', async (c) => c.json(await assets.list(c.req.param('id'))));
-  app.post('/projects/:id/assets', uploadLimit(ASSET_LIMIT, 50), async (c) =>
-    c.json(await assets.upload(c.req.param('id'), await uploadedFile(c))),
-  );
+  // Like music: the file is the body, its name in the query; the store counts it against the limit of its type.
+  app.post('/projects/:id/assets', async (c) => {
+    const name = requiredQuery(c, 'name');
+    const body = c.req.raw.body ? Readable.fromWeb(c.req.raw.body as WebReadableStream<Uint8Array>) : [];
+    return c.json(await assets.upload(c.req.param('id'), { name, body }));
+  });
   app.delete('/projects/:id/assets', async (c) => {
     await assets.remove(c.req.param('id'), requiredQuery(c, 'path'));
     return c.json({ ok: true });
@@ -749,18 +751,9 @@ async function body<T extends z.ZodType>(c: Context, schema: T): Promise<z.outpu
   return parsed.data;
 }
 
-/** `mb` is the limit people are told; `maxSize` leaves room for the multipart envelope. */
+/** `mb` is the limit people are told; the service checks it to the byte, `maxSize` only cuts off a body well past it. */
 function uploadLimit(maxSize: number, mb: number) {
   return bodyLimit({ maxSize, onError: (c) => c.json({ error: m().api.routes.fileTooLarge(mb) }, 413) });
-}
-
-async function uploadedFile(c: Context): Promise<{ name: string; data: Buffer }> {
-  const form = await c.req.parseBody().catch(() => {
-    throw new HttpError(400, m().api.routes.invalidUpload);
-  });
-  const file = form.file;
-  if (!(file instanceof File)) throw new HttpError(400, m().api.routes.noFile);
-  return { name: file.name, data: Buffer.from(await file.arrayBuffer()) };
 }
 
 function download(c: Context, archive: Readable, name: string): Response {
