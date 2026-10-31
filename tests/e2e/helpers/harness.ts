@@ -14,6 +14,7 @@ import type {
   AnalysedMusic,
   BrandStore,
   CadenceConfig,
+  ClipService,
   Hub,
   MusicService,
   ProjectStore,
@@ -116,6 +117,7 @@ export class FixtureProjectStore implements ProjectStore {
       voiceOverPending: [],
       voiceOverError: null,
       captions: file.captions ?? false,
+      clips: {},
       codeGeneration: this.generation(id),
       createdAt: file.createdAt,
       updatedAt: file.updatedAt,
@@ -167,6 +169,7 @@ export class FixtureProjectStore implements ProjectStore {
   writeArtDirection = unused;
   setMusicGridProvider = unused;
   setVoiceOverProvider = unused;
+  setClipsProvider = unused;
   adopt = unused;
 }
 
@@ -220,6 +223,16 @@ export class FixtureMusicService implements MusicService {
   grid = unused;
   snapCuts = unused;
   context = unused;
+}
+
+export class FixtureClipService implements ClipService {
+  /** What whenIdle() waits for, per project: nothing by default, or a pending extraction a test settles. */
+  idle = new Map<string, Promise<void>>();
+  async whenIdle(projectId: string): Promise<void> {
+    await this.idle.get(projectId);
+  }
+  sync = unused;
+  start = unused;
 }
 
 export class FixtureVoiceOverService implements VoiceOverService {

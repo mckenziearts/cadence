@@ -70,9 +70,11 @@ async function entries(archive: Readable): Promise<[string, Buffer][]> {
   return out;
 }
 
-test('project paths: renders, tsconfig.json, dotfiles and most of .cadence are left out; chats, versions and voice-over go', () => {
+test('project paths: renders, clips, tsconfig.json, dotfiles and most of .cadence are left out; chats, versions and voice-over go', () => {
   const dropped = [
     'renders/a.mp4',
+    'clips/intro-0123456789ab/000001.jpg',
+    'clips/intro-0123456789ab.part/clip.json',
     'tsconfig.json',
     '.cadence/thumbs/x.jpg',
     '.cadence/frames/a.jpg',
@@ -93,6 +95,7 @@ test('project paths: renders, tsconfig.json, dotfiles and most of .cadence are l
     'scenes/intro.tsx',
     'components/tsconfig.json',
     'assets/renders/a.png',
+    'assets/clips/a.png',
     '.cadence/chats/project.json',
     '.cadence/versions/index.json',
     '.cadence/voice-over/track.wav',
@@ -913,6 +916,7 @@ test('import leaves out the paths an export never writes, in projects and in bra
   const dropped = [
     'tsconfig.json',
     'renders/a.mp4',
+    'clips/intro-0123456789ab/000001.jpg',
     'node_modules/x/index.js',
     'components/package.json',
     '.cadence/frames/a',

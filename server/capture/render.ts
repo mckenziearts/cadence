@@ -27,6 +27,7 @@ import type {
   BrowserServer,
   CadenceConfig,
   ChromiumOptions,
+  ClipService,
   Hub,
   MusicService,
   ProjectStore,
@@ -110,6 +111,7 @@ export class FfmpegRenderService implements RenderService {
       config: CadenceConfig;
       store: ProjectStore;
       music: MusicService;
+      clips: ClipService;
       voiceOver: VoiceOverService;
       hub: Hub;
       browserServer?: (options: ChromiumOptions) => Promise<BrowserServer>;
@@ -270,7 +272,7 @@ export class FfmpegRenderService implements RenderService {
 
   private async run(state: JobState): Promise<Partial<RenderJob>> {
     const { job, abort } = state;
-    const { config, store, music, voiceOver } = this.deps;
+    const { config, store, music, clips, voiceOver } = this.deps;
     const request = job.request;
     job.status = 'rendering';
     this.emit(state, true);
@@ -282,6 +284,8 @@ export class FfmpegRenderService implements RenderService {
     // A failed one blocks only the scenes that call music.spectrum(): their pages fail the render with the frame's text.
     // The analyzer has no timeout: a cancel must not wait for it.
     await Promise.race([music.analysis(job.projectId).catch(() => undefined), rejectOnAbort(abort.signal)]);
+    // Same for clip frames: a page that loads before they are extracted would draw a clip that is not there yet.
+    await Promise.race([clips.whenIdle(job.projectId).catch(() => undefined), rejectOnAbort(abort.signal)]);
     let project = await store.get(job.projectId);
     let { from, total } = frameRange(project, request, job.fps);
     const preset = PRESETS[request.quality];

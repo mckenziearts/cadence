@@ -366,11 +366,24 @@ export interface ProjectState {
   voiceOverError: string | null;
   /** See ProjectFile.captions. */
   captions: boolean;
+  clips: Record<string, ClipState>;
   /** Bumped whenever any code file of the project (or its brand) changes; frames re-import when it moves. */
   codeGeneration: number;
   createdAt: string;
   updatedAt: string;
 }
+
+export interface ClipInfo {
+  fps: number;
+  frames: number;
+  width: number;
+  height: number;
+  duration: number;
+  audio: boolean;
+}
+
+export type ClipState =
+  { status: 'preparing' } | ({ status: 'ready'; key: string } & ClipInfo) | { status: 'error'; error: string };
 
 export interface ProjectSummary {
   id: string;

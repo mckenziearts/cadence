@@ -1,21 +1,24 @@
 // Frame origin + frame page in a real Chromium: guards, rendering at exact times, brand/fonts/assets, errors,
 // reloads (scene, component, Tailwind class), text checks, CSP and the postMessage bridge.
 import assert from 'node:assert/strict';
-import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFile, spawnSync } from 'node:child_process';
+import { cp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
 import { PNG } from 'pngjs';
 import { auditFrame, CHROMIUM_ARGS, PlaywrightCapture } from '../../server/capture/capture';
 import { LOCAL } from '../../server/capture/policy';
+import { LocalClipService } from '../../server/clips/service';
 import type { CadenceConfig } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { frameOriginOf } from '../../src/shared/frameOrigin';
 import type { MusicGridData, ProjectFile, SceneTransition } from '../../src/shared/types';
-import { near, pixel, startHarness, type Harness } from './helpers/harness';
+import { near, pixel, RecordingHub, startHarness, type Harness } from './helpers/harness';
 
 let h: Harness;
 let browser: Browser;
@@ -2461,5 +2464,62 @@ export default ({ t, width, height }) => (
     assert.match(errors[0], /Erreur d’exécution · scenes\/triangle\.tsx/);
     assert.match(errors[0], /Le contexte WebGL a été perdu/);
     await page.context().close();
+  });
+});
+
+describe('clip frames', () => {
+  const skip = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0 ? false : 'ffmpeg introuvable';
+
+  it('extracts the frames of a real video and GIF, and the project origin serves them', { skip, timeout: 60_000 }, async () => {
+    const dir = h.store.dir(id);
+    const lavfi = (source: string, file: string, ...args: string[]) =>
+      promisify(execFile)('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', source, ...args, path.join(dir, 'assets', file)]);
+    await mkdir(path.join(dir, 'assets', 'loops'), { recursive: true });
+    await lavfi(
+      'testsrc2=size=320x240:rate=30:duration=1',
+      'clip.mp4',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=duration=1',
+      '-pix_fmt',
+      'yuv420p',
+    );
+    await lavfi('testsrc=size=200x100:rate=10:duration=1', 'loops/spin.gif');
+    const clips = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+    try {
+      await clips.whenIdle(id);
+      const states = await clips.sync(id);
+      const expected = {
+        'clip.mp4': { fps: 30, frames: 30, width: 320, height: 240, audio: true },
+        'loops/spin.gif': { fps: 10, frames: 10, width: 200, height: 100, audio: false },
+      };
+      for (const [rel, want] of Object.entries(expected)) {
+        const state = states[rel];
+        assert.ok(state?.status === 'ready', `${rel}: ${JSON.stringify(state)}`);
+        const { fps, frames, width, height, audio, duration } = state;
+        assert.deepEqual({ fps, frames, width, height, audio }, want, rel);
+        assert.ok(Math.abs(duration - 1) < 0.1, `${rel}: ${duration}`);
+        const folder = path.join(dir, 'clips', state.key);
+        assert.deepEqual(JSON.parse(await readFile(path.join(folder, 'clip.json'), 'utf8')), {
+          fps,
+          frames,
+          width,
+          height,
+          duration,
+          audio,
+        });
+        const files = (await readdir(folder)).filter((name) => name.endsWith('.jpg')).sort();
+        assert.equal(files.length, want.frames);
+        assert.equal(files.at(-1), `${String(want.frames).padStart(6, '0')}.jpg`);
+        const served = await request(`/@fs${path.join(folder, '000001.jpg')}`);
+        assert.equal(served.status, 200);
+        assert.match(String(served.headers['content-type']), /^image\/jpeg/);
+      }
+    } finally {
+      await rm(path.join(dir, 'assets', 'clip.mp4'), { force: true });
+      await rm(path.join(dir, 'assets', 'loops'), { recursive: true, force: true });
+      await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+    }
   });
 });

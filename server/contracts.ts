@@ -17,6 +17,7 @@ import type {
   CaptureRefInput,
   ChatKey,
   ChatState,
+  ClipState,
   CreateProjectInput,
   CreateSceneInput,
   ElevenLabsModel,
@@ -123,7 +124,7 @@ export interface Hub {
 //   'changed'       (projectId)              project.json or art-direction.md changed
 //   'code-changed'  (projectId, generation)  a code file (scenes/**, components/**, brand files) changed; generation bumped
 //   'versions-changed' (projectId)           FileVersionStore recorded a version (hub event 'versions')
-//   'assets-changed'   (projectId)           assets/** changed on disk (hub event 'assets')
+//   'assets-changed'   (projectId)           assets/** changed on disk, or FileAssetStore wrote an upload (hub event 'assets')
 
 /** Vite's file watcher (chokidar `all` events: name, absolute path): it already watches the root, see server/frames/vite.ts. */
 export type FileEvents = Pick<EventEmitter, 'on' | 'off'>;
@@ -177,6 +178,8 @@ export interface ProjectStore {
   setMusicGridProvider(fn: (id: string) => Promise<AnalysedMusic | null>): void;
   /** Injected by server/index.ts: resolves the voice-over fields of ProjectState from what is already generated. */
   setVoiceOverProvider(fn: VoiceOverProvider): void;
+  /** Injected by server/index.ts: resolves ProjectState.clips. */
+  setClipsProvider(fn: (id: string) => Promise<Record<string, ClipState>>): void;
   /**
    * Move a checked project folder (staged on the same volume) in under `id`, or `<id>-2`... when it is taken, and
    * emit 'list-changed'. Returns the id it got.
@@ -503,7 +506,7 @@ export interface SeamService {
 
 // server/capture/render.ts: export class FfmpegRenderService implements RenderService
 //   constructor(deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; voiceOver: VoiceOverService; hub: Hub;
-//     browserServer?: (options: ChromiumOptions) => Promise<BrowserServer> })
+//     clips: ClipService; browserServer?: (options: ChromiumOptions) => Promise<BrowserServer> })
 
 export interface RenderService {
   /** One job per format; jobs run one at a time, frames captured by up to 4 parallel pages. */
@@ -559,6 +562,20 @@ export interface MusicService {
   context(projectId: string, sceneId?: string | null): Promise<string>;
   /** Absolute path of the selected track, or null. */
   audioPath(projectId: string): Promise<string | null>;
+}
+
+// server/clips/service.ts: export class LocalClipService implements ClipService
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore; hub: Hub; ffmpeg?: FfmpegRunner })
+// Frames of each video and GIF asset in projects/<id>/clips/<key>/ (000001.jpg..., then clip.json), <key> from the
+// asset's path, size and mtime. One ffmpeg at a time for the whole server.
+
+export interface ClipService {
+  /** Removes stale folders, queues missing clips and returns their states; never waits for an extraction. */
+  sync(projectId: string): Promise<Record<string, ClipState>>;
+  /** Resolves once no clip of the project is queued or being prepared. */
+  whenIdle(projectId: string): Promise<void>;
+  /** Syncs every project now and each one on 'assets-changed'. */
+  start(): void;
 }
 
 // server/voiceover/piper.ts: export class PiperEngine implements SpeechEngine  (constructor(bin: string))

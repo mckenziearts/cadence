@@ -103,6 +103,7 @@ export default {
     relativePath: 'chemin relatif au projet attendu',
     duplicateScene: (id: string) => `scène en double « ${id} »`,
     musicGrid: (id: string, error: string) => `[cadence] grille musicale indisponible (${id}) : ${error}`,
+    clips: (id: string, error: string) => `[cadence] images des clips indisponibles (${id}) : ${error}`,
     voiceOver: (id: string, error: string) => `[cadence] voix off indisponible (${id}) : ${error}`,
     voiceOverSettings: (issues: string) => `Réglages de voix off invalides : ${issues}`,
     sceneVoiceOver: (issues: string) => `Voix off invalide : ${issues}`,

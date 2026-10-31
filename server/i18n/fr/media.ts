@@ -148,7 +148,14 @@ export default {
     },
   },
   clips: {
+    stalled: (name: string, seconds: number) => `« ${name} » : ffmpeg n'a sorti aucune image en ${seconds} s, extraction arrêtée`,
+    tooLong: (name: string, minutes: number) =>
+      `La vidéo « ${name} » est trop longue : ${minutes} minutes au plus à sa cadence et 2 Go d'images. Coupez-la puis importez-la de nouveau`,
+    diskFull: (name: string) =>
+      `« ${name} » : le disque est presque plein, extraction arrêtée. Libérez de la place puis importez la vidéo de nouveau`,
+    notPrepared: (name: string, error: string) => `[cadence] images de « ${name} » non préparées : ${error}`,
     unreadable: (name: string) => `« ${name} » n'est pas une vidéo que ffmpeg sait lire`,
+    notJpeg: 'ffmpeg a sorti autre chose que des images JPEG',
     noDuration: (name: string) =>
       `« ${name} » n'indique pas sa durée (vidéo enregistrée en flux) : réécrivez-la une fois, par exemple ffmpeg -i entree.webm -c copy sortie.webm`,
     notLottie: (name: string) => `« ${name} » n'est pas une animation Lottie (v, fr, ip, op, w, h et layers attendus)`,

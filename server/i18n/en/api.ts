@@ -100,6 +100,7 @@ export default {
     relativePath: 'expected a path relative to the project',
     duplicateScene: (id: string) => `duplicate scene "${id}"`,
     musicGrid: (id: string, error: string) => `[cadence] music grid unavailable (${id}): ${error}`,
+    clips: (id: string, error: string) => `[cadence] clip frames unavailable (${id}): ${error}`,
     voiceOver: (id: string, error: string) => `[cadence] voice-over unavailable (${id}): ${error}`,
     voiceOverSettings: (issues: string) => `Invalid voice-over settings: ${issues}`,
     sceneVoiceOver: (issues: string) => `Invalid voice-over: ${issues}`,

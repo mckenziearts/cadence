@@ -71,8 +71,8 @@ export async function createVite({
         deny: ['.env*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.cadence/**'],
       },
       // This watcher also feeds ProjectStore.watch(). What only piles up stays out (versions, chats and thumbnails under
-      // .cadence/, renders, soundtracks, trashed projects, imports being staged): on Linux each watched file holds an
-      // inotify watch.
+      // .cadence/, renders, soundtracks, clip frames, trashed projects, imports being staged): on Linux each watched file
+      // holds an inotify watch.
       watch: {
         ignored: ['**/.cadence/**', (file: string) => pilesUp(config, file)],
       },
@@ -142,12 +142,15 @@ export async function createVite({
   return server;
 }
 
-/** Renders, soundtracks, trashed projects, staged imports: by path rather than glob, so it holds wherever the dirs live. */
+/**
+ * Renders, soundtracks, clip frames, trashed projects, staged imports: by path rather than glob, so it holds wherever the
+ * dirs live.
+ */
 function pilesUp({ projectsDir, brandsDir }: CadenceConfig, file: string): boolean {
   if (isInside(brandsDir, file)) return path.relative(brandsDir, file).split(path.sep)[0] === '.import';
   if (!isInside(projectsDir, file)) return false;
   const [project, folder] = path.relative(projectsDir, file).split(path.sep);
-  return project === '.trash' || project === '.import' || folder === 'renders' || folder === 'music';
+  return project === '.trash' || project === '.import' || folder === 'renders' || folder === 'music' || folder === 'clips';
 }
 
 const ICON_SET = /['"](@heroicons\/react\/\d+\/(?:solid|outline)|@tabler\/icons-react)['"]/g;

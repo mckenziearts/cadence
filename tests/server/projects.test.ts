@@ -10,6 +10,7 @@ import { FileBrandStore } from '../../server/store/brands';
 import { FileProjectStore, parseSceneVoiceOver } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import {
+  createFileInside,
   HttpError,
   listInside,
   readFileNoFollow,
@@ -1263,6 +1264,42 @@ describe('writeFileInside', () => {
       assert.equal(await fs.readFile(path.join(setup.heldFolder, path.relative(setup.folder, setup.file)), 'utf8'), 'inside');
     });
   }
+});
+
+describe('createFileInside', () => {
+  test('creates the file and its missing folders, and never writes over a name that exists', async () => {
+    const project = path.join(t.root, 'p');
+    await fs.mkdir(path.join(project, 'components'), { recursive: true });
+    const file = path.join(project, 'components', 'a', 'b', 'x.ts');
+    await createFileInside(project, file, 'written');
+    assert.equal(await fs.readFile(file, 'utf8'), 'written');
+    await assert.rejects(createFileInside(project, file, 'again'), /EEXIST/);
+    assert.equal(await fs.readFile(file, 'utf8'), 'written');
+  });
+
+  test('refuses a folder that is a link out of its root, creating nothing through it', async () => {
+    const { project, outside, link } = await linkedOut();
+    await assert.rejects(createFileInside(project, path.join(link, 'new.ts'), 'written'), REFUSED);
+    await assert.rejects(createFileInside(project, path.join(link, 'deep', 'x.ts'), 'written'), REFUSED);
+    assert.deepEqual(await fs.readdir(outside), ['x.ts']);
+  });
+
+  test('writes nothing into another folder of its root through a link to it', async () => {
+    const { project, inner, link } = await linkedInward();
+    await assert.rejects(createFileInside(project, path.join(link, 'new.json'), 'written'), REFUSED);
+    await assert.rejects(createFileInside(project, path.join(link, 'deep', 'x.ts'), 'written'), REFUSED);
+    assert.deepEqual(await fs.readdir(inner), ['chat.json']);
+  });
+
+  test('refuses a name that is a link, and a file named outside its root', async () => {
+    const { project, outside } = await linkedOut();
+    const file = path.join(project, 'components', 'b', 'z.ts');
+    await fs.symlink(path.join(outside, 'x.ts'), file);
+    await assert.rejects(createFileInside(project, file, 'written'), /EEXIST|ELOOP/);
+    await assert.rejects(createFileInside(project, path.join(t.root, 'x.ts'), 'written'), /outside/);
+    assert.equal(await fs.readFile(path.join(outside, 'x.ts'), 'utf8'), 'TOPSECRET');
+    await assert.rejects(fs.access(path.join(t.root, 'x.ts')));
+  });
 });
 
 describe('removeFileInside', () => {

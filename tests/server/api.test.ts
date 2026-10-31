@@ -18,6 +18,7 @@ import { ProjectArchiver } from '../../server/archive/projects';
 import { readTar } from '../../server/archive/tar';
 import { LOCAL } from '../../server/capture/policy';
 import { FfmpegRenderService } from '../../server/capture/render';
+import { LocalClipService } from '../../server/clips/service';
 import type {
   BrandBuildService,
   BrandSource,
@@ -1789,6 +1790,7 @@ function realRenders(browserServer?: () => Promise<BrowserServer>): FfmpegRender
     config: t.config,
     store,
     music: deps.music,
+    clips: new LocalClipService({ config: t.config, store, hub }),
     voiceOver: deps.voiceOver,
     hub,
     browserServer,

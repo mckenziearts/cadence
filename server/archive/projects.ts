@@ -24,15 +24,16 @@ const TRAVELLING_STATE = new Set(['chats', 'versions', 'voice-over']);
 const local = (segment: string) => segment.startsWith('.') || isResolverInput(segment);
 
 /**
- * A project file that goes into an archive. renders/ stays (videos are made again from the code), and so does
- * tsconfig.json: its `extends` points into this installation and would break Vite on another one.
+ * A project file that goes into an archive. renders/ stays (videos are made again from the code), clips/ too (frames
+ * are extracted again from the assets), and so does tsconfig.json: its `extends` points into this installation and
+ * would break Vite on another one.
  */
 export function exportableProjectPath(rel: string): boolean {
   const segments = rel.split('/');
   if (segments[0] === '.cadence') {
     return segments.length > 2 && TRAVELLING_STATE.has(segments[1]) && !segments.slice(1).some(local);
   }
-  return segments[0] !== 'renders' && rel !== 'tsconfig.json' && !segments.some(local);
+  return segments[0] !== 'renders' && segments[0] !== 'clips' && rel !== 'tsconfig.json' && !segments.some(local);
 }
 
 /** A brand file that goes into an archive (the `.building` marker is a dotfile). */

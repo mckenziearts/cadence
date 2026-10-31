@@ -147,7 +147,14 @@ export default {
     },
   },
   clips: {
+    stalled: (name: string, seconds: number) => `"${name}": ffmpeg gave no frame for ${seconds} s, extraction stopped`,
+    tooLong: (name: string, minutes: number) =>
+      `"${name}" is too long to prepare: at most ${minutes} minutes at its frame rate and 2 GB of frames. Trim the video, then import it again`,
+    diskFull: (name: string) =>
+      `"${name}": the disk is almost full, extraction stopped. Free some space, then import the video again`,
+    notPrepared: (name: string, error: string) => `[cadence] frames of "${name}" not prepared: ${error}`,
     unreadable: (name: string) => `"${name}" is not a video ffmpeg can read`,
+    notJpeg: 'ffmpeg printed something other than JPEG frames',
     noDuration: (name: string) =>
       `"${name}" states no duration (a video recorded as a stream): rewrite it once, for example ffmpeg -i input.webm -c copy output.webm`,
     notLottie: (name: string) => `"${name}" is not a Lottie animation (v, fr, ip, op, w, h and layers expected)`,

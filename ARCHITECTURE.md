@@ -62,6 +62,7 @@ cadence/
     networks/               youtube.ts, linkedin.ts, instagram.ts (through Facebook Login), tiktok.ts (drafts)
     api/                    Hono routes under /api (index.ts = createApi)
     archive/                tar.ts (ustar reader and writer, no dependency), projects.ts (ProjectArchiver)
+    clips/                  probe.ts (what ffmpeg says of a video), service.ts (LocalClipService: frame cache)
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
     capture/                capture.ts (Playwright), browser-host.ts + chromium-server.mjs (Chromium in a child
                             process), serve-chromium.mjs (the Chromium server that process runs, exported for a
@@ -328,6 +329,7 @@ projects/<id>/
                         screenshots for the agent; 1536 MiB in all, so an export stays under the 2048 MB import
   music/                audio tracks + <file>.analysis.json caches and <file>.spectrum.bin band levels
   renders/              exported videos, GIFs, PNG frames and PNG sequence folders (gitignored)
+  clips/<key>/          frames of each video or GIF asset (000001.jpg...) and clip.json, see "Clip frames"
   .cadence/             internal, gitignored: chats/ (project.json, scene-<id>.json, archive/), versions/,
                         thumbs/ (<scene>-<16x9>-<t>-g<run>.<gen>-<sig>.jpg), frames/ (what the agent rendered),
                         seams.json (version 2), publications.json (Publication[], newest first), trash/,
@@ -787,7 +789,7 @@ written and read by `server/archive/tar.ts` with no dependency. Entries, in orde
 - `brands/<id>/<path>` once per brand the projects use. Never `brands/cadence`: every installation has it.
 
 What is left out, by `exportableProjectPath` and `exportableBrandPath` (the same rule decides what an import keeps):
-`renders/` (videos are made again from the code), a project's `tsconfig.json` (its `extends` points into this
+`renders/` (videos are made again from the code), `clips/` (frames are extracted again from the assets), a project's `tsconfig.json` (its `extends` points into this
 installation and breaks Vite on another one), `node_modules/` and `package.json` under any case (the frame server
 refuses them above a stylesheet), dotfiles (`.building` included), and in `.cadence/`
 everything but `chats/`, `versions/` and `voice-over/` (thumbnails, frames, seams, sounds, trash and publications are
@@ -1021,6 +1023,40 @@ once the job is done; a cancel or a failure removes it, and one a killed process
 sequence's) is swept after an hour untouched. The listing gives a sequence the size and number of its plain
 files. Deleting a file or a sequence folder moves it to the project's `.cadence/trash/` (`RenderService.remove`); only
 an MP4 can be published, and what the networks received stays in `publications.json`.
+
+## Clip frames
+
+`LocalClipService` (`server/clips/service.ts`) turns every video and GIF under `assets/` (the extensions of
+`DEMUXERS`) into JPEG frames a scene can show at an exact time. It prepares an asset on upload and on the watcher
+(both send `assets-changed`), and at start for every project; `ProjectStore.get()` calls `sync()`, so
+`ProjectState.clips`, keyed by the path under `assets/`, is `preparing`, `ready` (`key`, `fps`, `frames`, `width`,
+`height`, `duration`, `audio`) or `error` (the last line ffmpeg printed).
+
+The key is `<slug>-<shortHash(path, size, mtime)>`: a replaced asset gets a new key, and `sync()` removes the folder of a
+key no asset has any more, a deleted asset's included, and a `.part` folder with no new frame for 2 minutes (a killed
+server's: a running extraction, in any server sharing `projects/`, adds one at least every 60 s). ffmpeg runs one at a
+time per server; a second request for the same key joins the running one. It reads the asset as fd 3 (opened with
+`openFileNoFollow`, demuxer forced, `-protocol_whitelist file`, like the probe) and prints frames at
+`min(source fps, 60)`, at most 3840 px on either side, aspect kept and sides even
+(`fps=N,scale=w='min(iw,3840)':h='min(ih,3840)':force_original_aspect_ratio=decrease:force_divisible_by=2`; the fps
+filter also evens out a GIF's frame delays; `JpegSplitter` holds a whole frame in memory, however tall), as MJPEG `-q:v 3` on stdout. `JpegSplitter` cuts the stream at each EOI; each frame goes to
+`clips/<key>.<random id>.part/000001.jpg...` through `createFileInside` (exclusive, no link followed, and no shell on
+macOS, where `writeFileInside` spawns one per file), `clip.json` last, then the folder is renamed `clips/<key>/`, unless
+another server already prepared that key: its folder stays and this `.part` is removed, as after a failure. The size is
+the first frame's SOF. A `clips` entry that is not a real folder is never listed, written through or removed (the
+extraction fails); an `assets` one is never listed (no clip). An extraction that fails is kept as `error` and not
+tried again until the asset changes, unless another server prepared its frames; one that prints no frame for 60 s is
+killed. One extraction gives at most 10 minutes at 60 fps or 2 GiB of frames: it is refused before it starts when the
+probe's duration times the frame rate is over, and killed as soon as the frames printed go past either (the probe reads
+the duration from the file, which can state any), the clip in error and its `.part` removed. That budget is per clip,
+so the disk holding the project keeps 2 GiB and 100 000 files free (`statfs`, on the first frame and every 250): below
+either, the extraction stops the same way. A filesystem that reports no file count (btrfs, some network ones) is not
+checked on files. `duration` is `frames / fps`,
+from the frames written. A job whose asset changed again before its turn does nothing: the sync that saw the change
+queued the new key.
+
+A render waits for the project's running extractions before it opens a page (`whenIdle`, cancelable like the music
+wait). Vite's watcher leaves `clips/` out, and so does an archive.
 
 ## Music
 

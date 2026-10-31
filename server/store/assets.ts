@@ -101,6 +101,8 @@ export class FileAssetStore implements AssetStore {
           .map((n) => n.slice(0, -ext.length - 1).toLowerCase());
         const name = `${uniqueId(stem, taken)}.${ext}`;
         await renameInside(root, upload, path.join(base, name));
+        // The watcher would say so too, later; the clip service starts preparing a video now.
+        this.store.events.emit('assets-changed', projectId);
         return this.info(projectId, name, size);
       });
     } catch (e) {

@@ -83,23 +83,36 @@ export async function writeFileInside(
   mode?: number,
 ): Promise<void> {
   const tmp = tmpFile(file);
-  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
-  const handle = await openInside(root, tmp, flags, mode).catch(async (e: NodeJS.ErrnoException) => {
-    if (e.code !== 'ENOENT') throw e;
-    await inParentInside(root, file, { mkdir: true });
-    return openInside(root, tmp, flags, mode);
-  });
   try {
-    try {
-      await handle.writeFile(data);
-    } finally {
-      await handle.close();
-    }
+    await createFileInside(root, tmp, data, mode);
     await inParentInside(root, file, { renameFrom: path.basename(tmp) });
   } catch (e) {
     // Where the walk still reaches it, beside a name that is a folder say; not in a folder a swap moved away.
     await removeFileInside(root, tmp).catch(() => undefined);
     throw e;
+  }
+}
+
+/**
+ * A new file, folders created on the way, never through a link and never over an existing name (EEXIST). Not atomic: for
+ * a folder renamed into place once complete. On macOS it opens with no shell, where writeFileInside's rename spawns one.
+ */
+export async function createFileInside(
+  root: string,
+  file: string,
+  data: string | Buffer | Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  mode?: number,
+): Promise<void> {
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+  const handle = await openInside(root, file, flags, mode).catch(async (e: NodeJS.ErrnoException) => {
+    if (e.code !== 'ENOENT') throw e;
+    await inParentInside(root, file, { mkdir: true });
+    return openInside(root, file, flags, mode);
+  });
+  try {
+    await handle.writeFile(data);
+  } finally {
+    await handle.close();
   }
 }
 

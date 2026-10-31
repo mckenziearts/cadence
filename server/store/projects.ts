@@ -10,6 +10,7 @@ import {
   TRANSITION_DIRECTIONS,
   TRANSITION_KINDS,
   isFormatId,
+  type ClipState,
   type CreateProjectInput,
   type CreateSceneInput,
   type FormatId,
@@ -290,6 +291,7 @@ export class FileProjectStore implements ProjectStore {
   private invalidate: (dirs: string[]) => void = () => undefined;
   private musicGrid: ((id: string) => Promise<AnalysedMusic | null>) | null = null;
   private voiceOver: VoiceOverProvider | null = null;
+  private clips: ((id: string) => Promise<Record<string, ClipState>>) | null = null;
   private unwatch: (() => void) | null = null;
   private timers = new Map<string, NodeJS.Timeout>();
   private pending = new Map<string, Set<CodeKind>>();
@@ -336,6 +338,10 @@ export class FileProjectStore implements ProjectStore {
 
   setVoiceOverProvider(fn: VoiceOverProvider): void {
     this.voiceOver = fn;
+  }
+
+  setClipsProvider(fn: (id: string) => Promise<Record<string, ClipState>>): void {
+    this.clips = fn;
   }
 
   generation(id: string): number {
@@ -407,6 +413,7 @@ export class FileProjectStore implements ProjectStore {
       musicGrid: analysed?.grid ?? null,
       ...(await this.resolveVoiceOver(id, data, scenes)),
       captions: data.captions ?? false,
+      clips: await this.resolveClips(id),
       codeGeneration: this.generation(id),
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
@@ -886,6 +893,15 @@ export class FileProjectStore implements ProjectStore {
     } catch (e) {
       console.warn(m().api.projects.voiceOver(id, (e as Error).message));
       return none;
+    }
+  }
+
+  private async resolveClips(id: string): Promise<Record<string, ClipState>> {
+    try {
+      return this.clips ? await this.clips(id) : {};
+    } catch (e) {
+      console.warn(m().api.projects.clips(id, (e as Error).message));
+      return {};
     }
   }
 

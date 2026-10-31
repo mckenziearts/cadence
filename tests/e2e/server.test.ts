@@ -2,7 +2,7 @@
 // through the API, render it, fetch the MP4. Its state (settings, accounts, usage) goes to a temp folder.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -104,11 +104,13 @@ it('creates a project, renders it and serves the MP4', { timeout: 180_000 }, asy
 });
 
 it(
-  "reloads a scene edited on disk through Vite's watcher, which leaves renders and .cadence/ out",
+  "reloads a scene edited on disk through Vite's watcher, which leaves renders, clips and .cadence/ out",
   { timeout: 20_000 },
   async () => {
     const { store, vite } = server.services;
     const project = await store.get(id);
+    await mkdir(path.join(store.dir(id), 'clips', 'notes'), { recursive: true });
+    await writeFile(path.join(store.dir(id), 'clips', 'notes', 'a.txt'), 'frames');
     await store.syncCode(id);
     const reloaded = new Promise<void>((resolve) => {
       const listener = (projectId: string) => {
@@ -125,7 +127,7 @@ it(
     const dir = store.dir(id);
     const watched = Object.keys(vite.watcher.getWatched());
     assert.ok(watched.includes(path.join(dir, 'scenes')));
-    for (const left of ['renders', '.cadence']) {
+    for (const left of ['renders', 'clips', '.cadence']) {
       await stat(path.join(dir, left));
       assert.ok(!watched.some((d) => d === path.join(dir, left) || d.startsWith(path.join(dir, left, path.sep))), left);
     }

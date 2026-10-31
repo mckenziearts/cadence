@@ -17,6 +17,7 @@ import { HttpError } from '../../server/util';
 import { writeWav } from '../../server/voiceover/wav';
 import type { ProjectFile, ProjectState, RenderJob, ServerEvent } from '../../src/shared/types';
 import {
+  FixtureClipService,
   FixtureMusicService,
   FixtureVoiceOverService,
   near,
@@ -31,6 +32,7 @@ const run = promisify(execFile);
 
 let h: Harness;
 let hub: RecordingHub;
+const clips = new FixtureClipService();
 let music: FixtureMusicService;
 let voiceOver: FixtureVoiceOverService;
 let renders: FfmpegRenderService;
@@ -41,7 +43,7 @@ before(async () => {
   hub = new RecordingHub();
   music = new FixtureMusicService();
   voiceOver = new FixtureVoiceOverService();
-  renders = new FfmpegRenderService({ config: h.config, store: h.store, music, voiceOver, hub });
+  renders = new FfmpegRenderService({ config: h.config, store: h.store, music, clips, voiceOver, hub });
   id = await h.project('render');
 });
 
@@ -176,7 +178,7 @@ function renderingWith(
   const store: ProjectStore = Object.assign(Object.create(h.store) as FixtureProjectStore, {
     get: async (projectId: string) => onRead(++reads, await h.store.get(projectId)),
   });
-  return new FfmpegRenderService({ config: h.config, store, music: musicService, voiceOver, hub });
+  return new FfmpegRenderService({ config: h.config, store, music: musicService, clips, voiceOver, hub });
 }
 
 describe('FfmpegRenderService', () => {
@@ -307,7 +309,7 @@ export default function A({ voiceOver }: SceneProps) {
       },
     });
     try {
-      const service = new FfmpegRenderService({ config: h.config, store: h.store, music, voiceOver: speaking, hub });
+      const service = new FfmpegRenderService({ config: h.config, store: h.store, music, clips, voiceOver: speaking, hub });
       const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' }, service);
       assert.ok(near(pixel(await frameAt(file, 0.2), 1500, 800), [0, 255, 0], 6), 'green: scene a has its sentence');
     } finally {
@@ -380,7 +382,7 @@ export default function A({ t, music }: SceneProps) {
       assert.ok(near(pixel(await frameAt(file, 0.2), 1500, 800), [0, 255, 0], 6), 'green: scene a has its spectrum');
 
       h.store.analysedMusic.delete(id);
-      const failed = new FfmpegRenderService({ config: h.config, store: h.store, music: failing, voiceOver, hub });
+      const failed = new FfmpegRenderService({ config: h.config, store: h.store, music: failing, clips, voiceOver, hub });
       const [queued] = await failed.start(id, { formats: ['16:9'], quality: 'draft' });
       const job = await failed.wait(queued.id);
       assert.equal(job.status, 'error');
@@ -407,6 +409,7 @@ export default function A({ t, music }: SceneProps) {
       config: h.config,
       store: h.store,
       music: stuck,
+      clips,
       voiceOver,
       hub,
       browserServer: async () => {
@@ -416,6 +419,35 @@ export default function A({ t, music }: SceneProps) {
     });
     const [queued] = await service.start(id, { formats: ['16:9'], quality: 'draft' });
     await analysing;
+    service.cancel(queued.id);
+    assert.equal((await service.wait(queued.id)).status, 'cancelled');
+    assert.equal(launched, false);
+  });
+
+  it('waits for the clip frames before opening a page, and a cancel does not wait for them', { timeout: 10_000 }, async () => {
+    let asked!: (projectId: string) => void;
+    const waited = new Promise<string>((resolve) => (asked = resolve));
+    const preparing = Object.assign(new FixtureClipService(), {
+      whenIdle: (projectId: string) => {
+        asked(projectId);
+        return new Promise<never>(() => {});
+      },
+    });
+    let launched = false;
+    const service = new FfmpegRenderService({
+      config: h.config,
+      store: h.store,
+      music,
+      clips: preparing,
+      voiceOver,
+      hub,
+      browserServer: async () => {
+        launched = true;
+        throw new Error('no browser while clip frames are extracted');
+      },
+    });
+    const [queued] = await service.start(id, { formats: ['16:9'], quality: 'draft' });
+    assert.equal(await waited, id);
     service.cancel(queued.id);
     assert.equal((await service.wait(queued.id)).status, 'cancelled');
     assert.equal(launched, false);
@@ -676,6 +708,7 @@ esac
         config: { ...h.config, ffmpegPath: wrapper },
         store: h.store,
         music,
+        clips,
         voiceOver,
         hub,
       });
@@ -719,6 +752,7 @@ esac
       config: { ...h.config, ffmpegPath: wrapper },
       store: h.store,
       music,
+      clips,
       voiceOver,
       hub,
     });
@@ -750,6 +784,7 @@ esac
       config: { ...h.config, ffmpegPath: wrapper },
       store: h.store,
       music,
+      clips,
       voiceOver,
       hub,
     });
@@ -908,6 +943,7 @@ esac
         config: { ...h.config, ffmpegPath: wrapper },
         store: h.store,
         music,
+        clips,
         voiceOver,
         hub,
       });
@@ -1166,7 +1202,7 @@ describe('FfmpegRenderService on a frame origin with a request secret', () => {
   it('renders with the secret its pages send, and fails without it', async () => {
     const { job } = await renderOne(
       { formats: ['16:9'], quality: 'draft' },
-      new FfmpegRenderService({ config, store: h.store, music, voiceOver, hub }),
+      new FfmpegRenderService({ config, store: h.store, music, clips, voiceOver, hub }),
     );
     assert.deepEqual([job.framesTotal, job.framesDone], [30, 30]);
 
@@ -1174,6 +1210,7 @@ describe('FfmpegRenderService on a frame origin with a request secret', () => {
       config: { ...config, requestSecret: undefined },
       store: h.store,
       music,
+      clips,
       voiceOver,
       hub,
     });

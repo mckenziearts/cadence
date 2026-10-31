@@ -75,6 +75,7 @@ class FakeStore {
       voiceOverPending: [],
       voiceOverError: null,
       captions: false,
+      clips: {},
       codeGeneration: 0,
     };
   }
