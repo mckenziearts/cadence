@@ -2,7 +2,7 @@
 // straight up and turn clockwise, in degrees. rectPath is the exception: its origin is the top-left corner.
 
 /** Coordinates to 3 decimals: trigonometry would otherwise print 6.123233995736766e-15. */
-const n = (v: number) => String(Math.round(v * 1000) / 1000);
+export const n = (v: number) => String(Math.round(v * 1000) / 1000);
 
 /** Point at `radius` from (x, y), `turn` degrees clockwise from straight up. */
 function polar(x: number, y: number, radius: number, turn: number): string {

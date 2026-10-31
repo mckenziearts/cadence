@@ -7,6 +7,7 @@ import {
   getLength,
   getPointAtLength,
   getTangentAtLength,
+  interpolatePath,
   parsePath,
   pie,
   polygon,
@@ -63,6 +64,11 @@ function bounds(d: string) {
   }
   return box;
 }
+
+const boxNear = (d: string, expected: ReturnType<typeof bounds>, eps = 0.1) => {
+  const box = bounds(d);
+  for (const key of ['minX', 'minY', 'maxX', 'maxY'] as const) near(box[key], expected[key], eps, key);
+};
 
 function assertClosed(d: string) {
   const subs = parsePath(d);
@@ -474,12 +480,106 @@ describe('evolvePath', () => {
   });
 });
 
-describe('shapes', () => {
-  const boxNear = (d: string, expected: { minX: number; minY: number; maxX: number; maxY: number }) => {
-    const box = bounds(d);
-    for (const key of ['minX', 'minY', 'maxX', 'maxY'] as const) near(box[key], expected[key], 0.1, key);
-  };
+describe('interpolatePath', () => {
+  const square = 'M0 0 H100 V100 H0 Z';
+  const points = (d: string) => ends(d).map(([from, to]) => [from.x, from.y, to.x, to.y]);
 
+  test('lerps every point of the two paths, printed the same way for the same inputs', () => {
+    const d = interpolatePath(0.5, 'M0 0 L100 0', 'M0 100 L100 100');
+    assert.equal(d, 'M0,50 C33.333,50 66.667,50 100,50');
+    assert.equal(interpolatePath(0.5, 'M0 0 L100 0', 'M0 100 L100 100'), d);
+    assert.equal(interpolatePath(1 / 3, 'M0 0 L100 0', 'M0 100 L100 100'), 'M0,33.333 C33.333,33.333 66.667,33.333 100,33.333');
+  });
+
+  test('gives from at 0 and to at 1, progress clamped, and draws their outlines just inside the ends', () => {
+    const from = circle({ radius: 100 });
+    const to = star({ points: 5, outerRadius: 100, innerRadius: 40 });
+    assert.equal(interpolatePath(0, from, to), from);
+    assert.equal(interpolatePath(-1, from, to), from);
+    assert.equal(interpolatePath(1, from, to), to);
+    assert.equal(interpolatePath(2, from, to), to);
+    // The circle is split to the star's 10 segments: the halves still lie on it.
+    const start = interpolatePath(1e-7, from, to);
+    near(getLength(start), getLength(from), 0.01);
+    for (let i = 0; i < 50; i++) {
+      const p = getPointAtLength(start, (getLength(start) * i) / 50);
+      near(Math.hypot(p.x, p.y), 100, 0.01, `point ${i}`);
+    }
+    const end = interpolatePath(1 - 1e-7, from, to);
+    near(getLength(end), getLength(to), 0.01);
+    boxNear(end, bounds(to), 0.01);
+  });
+
+  test('matches segment counts by splitting the longest segments', () => {
+    assert.equal(parsePath(interpolatePath(0.5, 'M0 0 L100 0 L50 80 Z', square))[0].segments.length, 4);
+    // The 300 px segment is split in its middle, not the 100 px one.
+    assert.deepEqual(points(interpolatePath(0.5, 'M0 0 L300 0 L300 100', 'M0 100 L150 100 L300 100 L300 200')), [
+      [0, 50, 150, 50],
+      [150, 50, 300, 50],
+      [300, 50, 300, 150],
+    ]);
+    // Measured along the curve: the arch spans 100 px but draws about 188, more than the 150 px line, so it is the one split.
+    const arch = interpolatePath(0.5, 'M0 0 Q50 150 100 0 L250 0', 'M0 0 L100 0 L175 0 L250 0');
+    nearPoint(parsePath(arch)[0].segments[0].to, { x: 75, y: 37.5 }, 1e-6);
+  });
+
+  test('matches subpath counts: an extra subpath grows from (or shrinks to) its centre', () => {
+    const two = `${square} M200 0 H300 V100 H200 Z`;
+    for (const d of [interpolatePath(0.5, square, two), interpolatePath(0.5, two, square)]) {
+      assert.deepEqual(
+        parsePath(d).map((subpath) => subpath.closed),
+        [true, true],
+      );
+      // The second square at half size: 200 px of outline next to the 400 px of the first.
+      near(getLength(d), 600, 0.01);
+      boxNear(d, { minX: 0, minY: 0, maxX: 275, maxY: 100 }, 0.01);
+    }
+  });
+
+  test('closed subpaths start at the point that moves the least', () => {
+    // The same square from its opposite corner: without the turn, every corner would cross to the centre.
+    const d = interpolatePath(0.5, square, 'M100 100 H0 V0 H100 Z');
+    near(getLength(d), 400, 0.01);
+    boxNear(d, { minX: 0, minY: 0, maxX: 100, maxY: 100 }, 0.01);
+    assert.equal(parsePath(d)[0].closed, true);
+  });
+
+  test('open subpaths keep their start; next to an open one, the closed one turns and the result stays open', () => {
+    const d = interpolatePath(0.5, 'M0 0 L100 0 L100 100 L0 100', 'M100 0 L100 100 L0 100 L0 0');
+    nearPoint(parsePath(d)[0].segments[0].from, { x: 50, y: 0 }, 1e-9);
+    assert.equal(parsePath(d)[0].closed, false);
+    const open = 'M100 100 L0 100 L0 0 L100 0 L100 100';
+    for (const mixed of [interpolatePath(0.5, square, open), interpolatePath(0.5, open, square)]) {
+      near(getLength(mixed), 400, 0.01);
+      assert.equal(parsePath(mixed)[0].closed, false);
+    }
+  });
+
+  test('star to circle at 0.5 stays within the bounds of both', () => {
+    const from = star({ points: 5, outerRadius: 100, innerRadius: 40 });
+    const to = circle({ radius: 70 });
+    const box = bounds(interpolatePath(0.5, from, to));
+    const a = bounds(from);
+    const b = bounds(to);
+    assert.ok(box.minX >= Math.min(a.minX, b.minX) - 0.01 && box.maxX <= Math.max(a.maxX, b.maxX) + 0.01, 'x');
+    assert.ok(box.minY >= Math.min(a.minY, b.minY) - 0.01 && box.maxY <= Math.max(a.maxY, b.maxY) + 0.01, 'y');
+    // Halfway between the tip at 100 px and the circle at 70.
+    near(box.minY, -85, 1);
+  });
+
+  test('throws on a NaN progress, an empty path or one that draws nothing, at every progress', () => {
+    assert.throws(() => interpolatePath(NaN, square, square), /interpolatePath: progress is NaN/);
+    for (const progress of [0, 0.5, 1]) {
+      assert.throws(() => interpolatePath(progress, '', square), /Invalid path data: empty/);
+      assert.throws(() => interpolatePath(progress, square, '  '), /Invalid path data: empty/);
+      assert.throws(() => interpolatePath(progress, 'M10 10', square), /interpolatePath: from draws nothing/);
+      assert.throws(() => interpolatePath(progress, square, 'M10 10 Z'), /interpolatePath: to draws nothing/);
+      assert.throws(() => interpolatePath(progress, square, 'M0 0 LNaN 0'), /Invalid path data at position/);
+    }
+  });
+});
+
+describe('shapes', () => {
   test('circle and ellipse, centred on (x, y), start on the right and run clockwise', () => {
     const c = circle({ radius: 50, x: 100, y: 200 });
     assertClosed(c);

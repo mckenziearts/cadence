@@ -407,6 +407,12 @@ Pure math on SVG path data, the same numbers in preview, render and every engine
   included. One subpath per `d` (several throw: browsers restart the dash on each subpath): split a logo or vectorised
   text into one `<path>` per subpath, each with its own progress. `<DrawPath>` does the same with `pathLength`, plus
   the comet head.
+- `interpolatePath(progress, from, to): string`: path data for a morph from `from` (progress 0) to `to` (1); at the
+  ends and beyond, the strings come back as passed. NaN, an empty path or one with no segment (moves only) throws. Subpaths
+  pair in order (an extra one grows from its centre), segment counts match by splitting the longest segments, and a
+  closed subpath starts where its points move the least; next to an open one it stays open until the end. Give both
+  paths their subpaths in the same order and drawn the same way round (the shapes all draw clockwise): a reversed
+  one turns inside out on the way.
 
 Shapes return path data. All are centred on `(x, y)` (default `0, 0`) and draw clockwise; angles in degrees start
 straight up and turn clockwise.
@@ -434,6 +440,15 @@ const tan = getTangentAtLength(d, p * getLength(d));
         transform={`translate(${at.x} ${at.y}) rotate(${(Math.atan2(tan.y, tan.x) * 180) / Math.PI})`} />
   <path d={star({ points: 5, outerRadius: 60, innerRadius: 26, x: 1720, y: 300 })} fill={brand.colors.accent}
         opacity={progress(t, 2.1, 2.4)} />
+</svg>
+```
+
+```tsx
+// A logo mark morphing into a circle badge. Paste the mark's d from its SVG, one interpolatePath per <path>.
+const mark = 'M900,420 L1020,420 L1080,540 L1020,660 L900,660 L840,540 Z';
+const m = progress(t, 0.5, 1.4, ease.inOutCubic);
+<svg width={width} height={height} style={{ position: 'absolute', inset: 0 }}>
+  <path d={interpolatePath(m, mark, circle({ radius: 140, x: 960, y: 540 }))} fill={brand.colors.accent} />
 </svg>
 ```
 

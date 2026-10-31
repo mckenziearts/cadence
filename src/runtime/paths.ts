@@ -1,6 +1,7 @@
 // SVG path data as pure math: parsing, measuring, drawing by progress. No DOM: getTotalLength is missing in node
 // and differs between engines, and a render must give the same numbers in every one.
 import { clamp } from './animate';
+import { n } from './shapes';
 import type { Point } from './types';
 
 /** A cubic Bézier. Every command (lines, quadratics, arcs) is converted to these. */
@@ -400,4 +401,95 @@ export function evolvePath(progress: number, d: string): { strokeDasharray: stri
   // The next dash sits a whole length past the end, so a browser that measures the path a little longer still misses it.
   if (p <= 0) return { strokeDasharray: `0 ${2 * length + 2}`, strokeDashoffset: 1 };
   return { strokeDasharray: `${length} ${length}`, strokeDashoffset: length * (1 - p) };
+}
+
+/** de Casteljau at t = 0.5: the same curve as two cubics. */
+function halve({ from, c1, c2, to }: CubicSegment): [CubicSegment, CubicSegment] {
+  const mid = (p: Point, q: Point): Point => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+  const a = mid(from, c1);
+  const b = mid(c1, c2);
+  const c = mid(c2, to);
+  const ab = mid(a, b);
+  const bc = mid(b, c);
+  const m = mid(ab, bc);
+  return [
+    { from, c1: a, c2: ab, to: m },
+    { from: m, c1: bc, c2: c, to },
+  ];
+}
+
+/** Halves the longest segment until there are `count`: the outline stays the same. */
+function splitTo(segments: CubicSegment[], count: number): CubicSegment[] {
+  if (segments.length >= count) return segments;
+  const pieces = segments.map((segment) => ({ segment, length: lengthTo(segment, 1) }));
+  while (pieces.length < count) {
+    let k = 0;
+    for (let i = 1; i < pieces.length; i++) if (pieces[i].length > pieces[k].length) k = i;
+    const halves = halve(pieces[k].segment).map((segment) => ({ segment, length: lengthTo(segment, 1) }));
+    pieces.splice(k, 1, ...halves);
+  }
+  return pieces.map((piece) => piece.segment);
+}
+
+/** A closed loop started at the segment whose points move the least to reach `target`'s. */
+function turnToFit(loop: CubicSegment[], target: CubicSegment[]): CubicSegment[] {
+  let best = 0;
+  let bestCost = Infinity;
+  for (let shift = 0; shift < loop.length; shift++) {
+    let cost = 0;
+    for (let i = 0; i < loop.length; i++) {
+      const p = loop[(i + shift) % loop.length].from;
+      cost += (p.x - target[i].from.x) ** 2 + (p.y - target[i].from.y) ** 2;
+    }
+    if (cost < bestCost) [best, bestCost] = [shift, cost];
+  }
+  return [...loop.slice(best), ...loop.slice(0, best)];
+}
+
+/** A subpath drawn at one point, the centre of `other`: an extra subpath grows from it or shrinks into it. */
+function collapsed(other: Subpath): Subpath {
+  const centre = {
+    x: other.segments.reduce((sum, s) => sum + s.from.x, 0) / other.segments.length,
+    y: other.segments.reduce((sum, s) => sum + s.from.y, 0) / other.segments.length,
+  };
+  return { segments: other.segments.map(() => ({ from: centre, c1: centre, c2: centre, to: centre })), closed: other.closed };
+}
+
+/**
+ * Path data between `from` (progress 0 and below) and `to` (1 and above), for a morph: the ends give them as passed.
+ * Subpaths pair in order (an extra one grows from its centre), segment counts match by splitting the longest segments,
+ * and a closed subpath starts where its points move the least.
+ */
+export function interpolatePath(progress: number, from: string, to: string): string {
+  if (Number.isNaN(progress)) throw new Error('interpolatePath: progress is NaN');
+  const parse = (d: string, side: string) => {
+    const subpaths = parsePath(d);
+    if (!subpaths.length) throw new Error(`interpolatePath: ${side} draws nothing`);
+    return subpaths;
+  };
+  const a = parse(from, 'from');
+  const b = parse(to, 'to');
+  if (progress <= 0) return from;
+  if (progress >= 1) return to;
+  // ponytail: everything is redone on every frame (parse, measure, split, turn): about 0.08 ms per 30-segment subpath,
+  // so about 5 ms for 60 glyphs, and splitTo and turnToFit are O(n^2) on the segment count (5 ms at 1000 segments, 19 ms
+  // at 2000). Cache the matched segments per (from, to) if text or bigger paths morph.
+  const mix = (u: Point, v: Point) => `${n(u.x + (v.x - u.x) * progress)},${n(u.y + (v.y - u.y) * progress)}`;
+  const parts: string[] = [];
+  for (let k = 0; k < Math.max(a.length, b.length); k++) {
+    const sa = a[k] ?? collapsed(b[k]);
+    const sb = b[k] ?? collapsed(a[k]);
+    const count = Math.max(sa.segments.length, sb.segments.length);
+    let as = splitTo(sa.segments, count);
+    let bs = splitTo(sb.segments, count);
+    // Turning an open subpath would change its shape: only a closed one picks its start.
+    if (sb.closed) bs = turnToFit(bs, as);
+    else if (sa.closed) as = turnToFit(as, bs);
+    parts.push(`M${mix(as[0].from, bs[0].from)}`);
+    for (let i = 0; i < count; i++)
+      parts.push(`C${mix(as[i].c1, bs[i].c1)} ${mix(as[i].c2, bs[i].c2)} ${mix(as[i].to, bs[i].to)}`);
+    // Z only when both are closed: next to an open subpath it would draw the gap between its two ends.
+    if (sa.closed && sb.closed) parts.push('Z');
+  }
+  return parts.join(' ');
 }

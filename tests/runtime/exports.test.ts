@@ -7,7 +7,7 @@ import type { SoundCue, SoundName, SoundProps } from '../../src/runtime/index';
 import { SOUND_NAMES } from '../../src/shared/sounds';
 
 const PATH_TOOLS = [
-  ...['parsePath', 'getLength', 'getPointAtLength', 'getTangentAtLength', 'evolvePath'],
+  ...['parsePath', 'getLength', 'getPointAtLength', 'getTangentAtLength', 'evolvePath', 'interpolatePath'],
   ...['rectPath', 'roundedRect', 'circle', 'ellipse', 'polygon', 'star', 'triangle', 'pie'],
 ];
 
