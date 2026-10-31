@@ -2,7 +2,7 @@
 // publications, cost).
 import { ApiError, api, ignore } from '../api';
 import { browserLanguage, t } from '../i18n';
-import type { AgentId, CreateSceneInput, FormatId, ProjectState, SeamResult } from '../../shared/types';
+import type { AgentId, CreateSceneInput, FormatId, ProjectState, SceneTransition, SeamResult } from '../../shared/types';
 import { seamTone } from '../lib/format';
 import { parseHash } from '../lib/routing';
 import { oneAtATime, sceneInPlace, undoAllowed } from '../lib/shortcuts';
@@ -345,6 +345,12 @@ export async function setSceneDuration(sceneId: string, duration: number): Promi
   if (!project) return;
   if (!Number.isFinite(duration) || duration <= 0) return toast(t().shell.project.badDuration, 'error');
   applyProject(await api.updateScene(project.id, sceneId, { duration: Math.round(duration * 1000) / 1000 }));
+}
+
+export async function setTransition(sceneId: string, transition: SceneTransition | null): Promise<void> {
+  const project = get().project;
+  if (!project) return;
+  applyProject(await api.setTransition(project.id, sceneId, transition));
 }
 
 export async function duplicateScene(sceneId: string): Promise<void> {

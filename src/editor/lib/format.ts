@@ -30,6 +30,11 @@ export function secsLabel(t: number, digits = 2): string {
   return `${secs(t, digits)}${NBSP}s`;
 }
 
+/** Seconds with unit, to the ms and without trailing zeros: 0.5 gives "0,5 s". */
+export function secsExact(t: number): string {
+  return `${trim(secs(t, 3))}${NBSP}s`;
+}
+
 /** Cost in dollars: "0,48 $" ("< 0,01 $" for a non-zero amount that would round to zero); "$0.48" in English. */
 export function usd(value: number): string {
   const amount = value > 0 && value < 0.005 ? decimal(0.01, 2) : decimal(value, 2);

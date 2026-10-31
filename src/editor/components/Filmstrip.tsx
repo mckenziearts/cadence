@@ -1,20 +1,69 @@
-// Filmstrip: scene cards (server thumbnails), seam badges between them, rename, duration, reorder, context menu.
+// Filmstrip: scene cards (server thumbnails), seam badges and transitions between them, rename, duration, reorder, context menu.
 import clsx from 'clsx';
-import { Copy, CopyPlus, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Blend,
+  Check,
+  Copy,
+  CopyPlus,
+  FlipHorizontal2,
+  MoreHorizontal,
+  MoveHorizontal,
+  Pencil,
+  Plus,
+  Scissors,
+  SquareSplitHorizontal,
+  Trash2,
+} from 'lucide-react';
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { createPortal } from 'react-dom';
-import type { SceneState, SeamResult } from '../../shared/types';
+import {
+  TRANSITION_DIRECTIONS,
+  TRANSITION_KINDS,
+  type SceneState,
+  type SceneTransition,
+  type SeamResult,
+} from '../../shared/types';
 import { api, ignore } from '../api';
 import { useT } from '../i18n';
-import { bars, parseDuration, percent, seamShare, seamTone, secs, secsLabel } from '../lib/format';
+import { bars, parseDecimal, parseDuration, percent, seamShare, seamTone, secs, secsExact, secsLabel } from '../lib/format';
 import { barDrift, sceneBars, sceneMusic } from '../lib/timeline';
+import { clampedTransition, editTransition } from '../lib/transitions';
 import { currentScene, get, set, useStore } from '../store';
-import { deleteScene, duplicateScene, renameScene, reorderScenes, selectScene, setSceneDuration } from '../store/project';
+import {
+  deleteScene,
+  duplicateScene,
+  renameScene,
+  reorderScenes,
+  selectScene,
+  setSceneDuration,
+  setTransition,
+} from '../store/project';
 import { copyText, openModal } from '../store/ui';
 import { Tooltip } from './ui';
 
 const CARD_W = 176;
 const THUMB_H = 99;
+const KIND_ICONS = { fade: Blend, slide: MoveHorizontal, wipe: SquareSplitHorizontal, flip: FlipHorizontal2 };
+const DIRECTION_ICONS = { left: ArrowLeft, right: ArrowRight, up: ArrowUp, down: ArrowDown };
+const MENU_ITEM =
+  'focus-ring flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left text-[13px] font-medium text-ink outline-none hover:bg-wash focus:bg-wash';
+
+/** Seconds as typed in a field, to the ms and without trailing zeros: "2,5", not "2,500". */
+const fieldSecs = (t: number) => secs(t, 3).replace(/0+$/, '').replace(/[.,]$/, '');
 
 export function Filmstrip() {
   const t = useT();
@@ -324,7 +373,7 @@ function SceneDuration({ scene }: { scene: SceneState }) {
       <span className="flex h-[18px] items-center gap-0.5">
         <input
           ref={input}
-          defaultValue={secs(scene.duration, 3).replace(/0+$/, '').replace(/[.,]$/, '')}
+          defaultValue={fieldSecs(scene.duration)}
           aria-label={t.timeline.sceneDuration.input}
           inputMode="decimal"
           className="h-[18px] w-14 bg-white px-1 text-right text-xs text-ink outline-none ring-2 ring-now"
@@ -359,6 +408,8 @@ function SceneDuration({ scene }: { scene: SceneState }) {
 function SeamBadge({ from, to, result }: { from: SceneState; to: SceneState; result: SeamResult | undefined }) {
   const t = useT();
   const format = useStore((s) => s.format);
+  const control = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const tone = seamTone(result);
   const label = !result ? (
     '·'
@@ -381,29 +432,203 @@ function SeamBadge({ from, to, result }: { from: SceneState; to: SceneState; res
           to.name,
           tone === 'clean' ? seams.clean : tone === 'jump' ? seams.jump : seams.cut,
         );
+  const words = t.timeline.transitions;
+  const played = to.transition;
+  const clamped = clampedTransition(to);
+  const cut = words.control(
+    from.name,
+    to.name,
+    played
+      ? words.summary(
+          words.kinds[played.kind].toLowerCase(),
+          played.direction ? words.directions[played.direction].toLowerCase() : null,
+          clamped ? words.clamped(secsExact(clamped.played), secsExact(clamped.declared)) : secsExact(played.duration),
+        )
+      : words.none.toLowerCase(),
+  );
+  const Kind = played && KIND_ICONS[played.kind];
   return (
-    <div className="relative flex w-10 shrink-0 justify-center" style={{ height: THUMB_H }}>
-      <span className="absolute inset-y-2 left-1/2 -translate-x-1/2 border-l-2 border-dashed border-ink-4" aria-hidden />
-      <Tooltip label={title} side="top" className="relative self-center">
-        <button
-          type="button"
-          aria-label={title}
-          onClick={() => openModal({ kind: 'seam', from: from.id, to: to.id, format })}
-          className={clsx(
-            'focus-ring relative z-10 flex size-7 items-center justify-center rounded-full border-2 border-ink text-[10px]/none font-bold tracking-tight transition-transform hover:scale-110',
-            {
-              unknown: 'bg-white text-ink-3',
-              clean: 'bg-ok text-white',
-              jump: 'bg-warn text-ink',
-              cut: 'bg-alert text-white',
-              error: 'bg-white text-alert',
-            }[tone],
-          )}
-        >
-          {label}
-        </button>
-      </Tooltip>
+    <div className="flex w-10 shrink-0 flex-col items-center">
+      <div className="relative flex w-full justify-center" style={{ height: THUMB_H }}>
+        <span className="absolute inset-y-2 left-1/2 -translate-x-1/2 border-l-2 border-dashed border-ink-4" aria-hidden />
+        {Kind ? (
+          // A transition hides the hard cut the seam check measures; the cut control below says the same.
+          <Tooltip label={cut} side="top" className="relative self-center">
+            <span
+              aria-hidden
+              className="relative z-10 flex size-7 items-center justify-center rounded-full border-2 border-ink bg-now text-ink"
+            >
+              <Kind className="size-3.5" />
+            </span>
+          </Tooltip>
+        ) : (
+          <Tooltip label={title} side="top" className="relative self-center">
+            <button
+              type="button"
+              aria-label={title}
+              onClick={() => openModal({ kind: 'seam', from: from.id, to: to.id, format })}
+              className={clsx(
+                'focus-ring relative z-10 flex size-7 items-center justify-center rounded-full border-2 border-ink text-[10px]/none font-bold tracking-tight transition-transform hover:scale-110',
+                {
+                  unknown: 'bg-white text-ink-3',
+                  clean: 'bg-ok text-white',
+                  jump: 'bg-warn text-ink',
+                  cut: 'bg-alert text-white',
+                  error: 'bg-white text-alert',
+                }[tone],
+              )}
+            >
+              {label}
+            </button>
+          </Tooltip>
+        )}
+      </div>
+      <button
+        ref={control}
+        type="button"
+        aria-label={cut}
+        aria-haspopup="dialog"
+        aria-expanded={menu !== null}
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          setMenu(menu ? null : { x: rect.left, y: rect.bottom + 4 });
+        }}
+        className={clsx(
+          'focus-ring mt-2 flex h-5 items-center px-1 text-[11px] whitespace-nowrap hover:bg-wash hover:text-ink',
+          clamped ? 'font-semibold text-warn-ink' : 'text-ink-3',
+        )}
+      >
+        {played ? secsExact(played.duration) : <Blend className="size-3.5 text-ink-4" aria-hidden />}
+      </button>
+      {menu && (
+        <TransitionMenu
+          from={from}
+          to={to}
+          x={menu.x}
+          y={menu.y}
+          anchor={control}
+          onClose={() => setMenu(null)}
+          onDone={() => {
+            control.current?.focus();
+            setMenu(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** The cut's popover: kind, direction and duration, each sent as soon as picked. `onDone` closes it back to the cut control. */
+function TransitionMenu(props: {
+  from: SceneState;
+  to: SceneState;
+  x: number;
+  y: number;
+  anchor: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { to, onDone } = props;
+  const t = useT();
+  const words = t.timeline.transitions;
+  const declared = to.declaredTransition;
+  const clamped = clampedTransition(to);
+  const directionLabel = useId();
+  const durationField = useId();
+  const send = (next: SceneTransition | null) => void setTransition(to.id, next).catch(ignore);
+  const commitDuration = (input: HTMLInputElement) => {
+    const next = editTransition(declared, { duration: parseDecimal(input.value) });
+    if (!next) return;
+    input.value = fieldSecs(next.duration);
+    if (next.duration !== declared?.duration) send(next);
+  };
+
+  return (
+    <Popover
+      role="dialog"
+      label={words.dialog(props.from.name, to.name)}
+      x={props.x}
+      y={props.y}
+      anchor={props.anchor}
+      focus='[aria-pressed="true"]'
+      onClose={props.onClose}
+      onKeyDown={(e) => e.key === 'Escape' && onDone()}
+    >
+      <div role="group" aria-label={words.kind}>
+        {([null, ...TRANSITION_KINDS] as const).map((kind) => {
+          const Icon = kind ? KIND_ICONS[kind] : Scissors;
+          const on = (declared?.kind ?? null) === kind;
+          return (
+            <button
+              key={kind ?? 'none'}
+              type="button"
+              aria-pressed={on}
+              className={clsx(MENU_ITEM, on && 'bg-wash')}
+              onClick={() => {
+                if (!on) send(kind && editTransition(declared, { kind }));
+                if (!kind) onDone();
+              }}
+            >
+              <Icon className="size-4 text-ink-3" aria-hidden /> {kind ? words.kinds[kind] : words.none}
+              {on && <Check className="ml-auto size-4" aria-hidden />}
+            </button>
+          );
+        })}
+      </div>
+      {declared && (
+        <>
+          <div className="my-1 h-px bg-rule" />
+          {declared.kind !== 'fade' && (
+            <div role="group" aria-labelledby={directionLabel} className="flex items-center gap-0.5 px-2.5 py-1">
+              <span id={directionLabel} className="mr-auto text-xs text-ink-3">
+                {words.direction}
+              </span>
+              {TRANSITION_DIRECTIONS.map((direction) => {
+                const Icon = DIRECTION_ICONS[direction];
+                const on = declared.direction === direction;
+                return (
+                  <button
+                    key={direction}
+                    type="button"
+                    aria-label={words.directions[direction]}
+                    aria-pressed={on}
+                    className={clsx(
+                      'focus-ring grid size-7 place-items-center border-2 text-ink',
+                      on ? 'border-ink bg-now' : 'border-transparent hover:bg-wash',
+                    )}
+                    onClick={() => !on && send(editTransition(declared, { direction }))}
+                  >
+                    <Icon className="size-4" aria-hidden />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <div className="flex items-center gap-2 px-2.5 py-1">
+            <label htmlFor={durationField} className="mr-auto text-xs text-ink-3">
+              {words.duration}
+            </label>
+            <input
+              id={durationField}
+              defaultValue={fieldSecs(declared.duration)}
+              inputMode="decimal"
+              className="h-6 w-14 bg-white px-1 text-right text-xs text-ink ring-2 ring-rule outline-none focus:ring-now"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitDuration(e.currentTarget);
+                // The blur that follows closing must find nothing to send.
+                if (e.key === 'Escape') e.currentTarget.value = fieldSecs(declared.duration);
+              }}
+              onBlur={(e) => commitDuration(e.currentTarget)}
+            />
+          </div>
+          {clamped && (
+            <p className="px-2.5 pt-0.5 pb-1.5 text-xs/4 text-warn-ink">
+              {words.clampedNote(secsExact(clamped.played), secsExact(clamped.declared))}
+            </p>
+          )}
+        </>
+      )}
+    </Popover>
   );
 }
 
@@ -411,29 +636,10 @@ function SeamBadge({ from, to, result }: { from: SceneState; to: SceneState; res
 
 function SceneMenu({ scene, x, y, onClose }: { scene: SceneState; x: number; y: number; onClose: () => void }) {
   const t = useT();
-  const panel = useRef<HTMLDivElement>(null);
   const [confirming, setConfirming] = useState(false);
-  const [pos, setPos] = useState({ x, y });
 
-  useLayoutEffect(() => {
-    const rect = panel.current?.getBoundingClientRect();
-    if (!rect) return;
-    // Keep the menu inside the window (it usually opens near the bottom edge).
-    setPos({ x: Math.min(x, innerWidth - rect.width - 8), y: y + rect.height > innerHeight - 8 ? y - rect.height : y });
-    panel.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-  }, [x, y]);
-
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => {
-      if (!panel.current?.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener('pointerdown', onDown, true);
-    return () => document.removeEventListener('pointerdown', onDown, true);
-  }, [onClose]);
-
-  const onKeyDown = (e: ReactKeyboardEvent) => {
-    e.stopPropagation();
-    const items = [...(panel.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
     const index = items.indexOf(document.activeElement as HTMLElement);
     if (e.key === 'Escape') onClose();
     else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -443,33 +649,37 @@ function SceneMenu({ scene, x, y, onClose }: { scene: SceneState; x: number; y: 
   };
 
   const single = (get().project?.scenes.length ?? 0) <= 1;
-  const item =
-    'focus-ring flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left text-[13px] font-medium text-ink outline-none hover:bg-wash focus:bg-wash';
   const run = (fn: () => unknown) => () => {
     onClose();
     fn();
   };
 
-  return createPortal(
-    <div
-      ref={panel}
+  return (
+    <Popover
       role="menu"
-      aria-label={t.timeline.sceneMenu.label(scene.name)}
+      label={t.timeline.sceneMenu.label(scene.name)}
+      x={x}
+      y={y}
+      focus='[role="menuitem"]'
+      onClose={onClose}
       onKeyDown={onKeyDown}
-      className="fixed z-[60] w-56 animate-pop-in border-2 border-ink bg-white p-1 shadow-float"
-      style={{ left: pos.x, top: pos.y }}
     >
-      <button type="button" role="menuitem" className={item} onClick={run(() => set({ renaming: scene.id }))}>
+      <button type="button" role="menuitem" className={MENU_ITEM} onClick={run(() => set({ renaming: scene.id }))}>
         <Pencil className="size-4 text-ink-3" /> {t.timeline.sceneMenu.rename}
         <span className="ml-auto font-mono text-[11px] text-ink-3">F2</span>
       </button>
-      <button type="button" role="menuitem" className={item} onClick={run(() => void duplicateScene(scene.id).catch(ignore))}>
+      <button
+        type="button"
+        role="menuitem"
+        className={MENU_ITEM}
+        onClick={run(() => void duplicateScene(scene.id).catch(ignore))}
+      >
         <CopyPlus className="size-4 text-ink-3" /> {t.timeline.sceneMenu.duplicate}
       </button>
       <button
         type="button"
         role="menuitem"
-        className={item}
+        className={MENU_ITEM}
         onClick={run(() => void copyText(scene.file, t.timeline.sceneMenu.pathCopied))}
       >
         <Copy className="size-4 text-ink-3" /> {t.timeline.sceneMenu.copyPath}
@@ -481,7 +691,7 @@ function SceneMenu({ scene, x, y, onClose }: { scene: SceneState; x: number; y: 
         disabled={single}
         title={single ? t.timeline.sceneMenu.lastScene : undefined}
         className={clsx(
-          item,
+          MENU_ITEM,
           confirming ? 'bg-alert text-white hover:bg-alert/90 focus:bg-alert/90' : 'text-alert disabled:text-ink-4',
         )}
         onClick={() => {
@@ -493,6 +703,65 @@ function SceneMenu({ scene, x, y, onClose }: { scene: SceneState; x: number; y: 
         <Trash2 className={clsx('size-4', confirming ? 'text-white' : 'text-alert')} />
         {confirming ? t.timeline.sceneMenu.confirmDelete : t.timeline.sceneMenu.delete}
       </button>
+    </Popover>
+  );
+}
+
+/**
+ * A panel opened at (x, y) that focuses its first `focus` match, keeps keys to itself and closes on a press outside it.
+ * A press on `anchor`, the control it opens from, is not outside: that control's own click closes it.
+ */
+function Popover(props: {
+  role: 'menu' | 'dialog';
+  label: string;
+  x: number;
+  y: number;
+  anchor?: RefObject<HTMLElement | null>;
+  focus: string;
+  onClose: () => void;
+  onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
+  children: ReactNode;
+}) {
+  const { x, y, anchor, focus, onClose } = props;
+  const panel = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number }>({ left: x, top: y });
+
+  useLayoutEffect(() => {
+    const rect = panel.current?.getBoundingClientRect();
+    if (!rect) return;
+    // Keep the panel inside the window (it usually opens near the bottom edge). Too tall for below y, it grows upwards
+    // from y, or from above its anchor so that it does not cover it.
+    const left = Math.min(x, innerWidth - rect.width - 8);
+    const above = anchor?.current ? anchor.current.getBoundingClientRect().top - 4 : y;
+    setPos(y + rect.height > innerHeight - 8 ? { left, bottom: innerHeight - above } : { left, top: y });
+    panel.current?.querySelector<HTMLElement>(focus)?.focus();
+  }, [x, y, anchor, focus]);
+
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      if (panel.current?.contains(e.target as Node)) return;
+      // A field left by a press outside commits as on any blur, before the panel goes. A press on the anchor too: Safari
+      // and Firefox do not focus a pressed button, so the field would keep the focus until the anchor's click closes it.
+      if (panel.current?.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+      if (!anchor?.current?.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [anchor, onClose]);
+
+  return createPortal(
+    <div
+      ref={panel}
+      role={props.role}
+      aria-label={props.label}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        props.onKeyDown(e);
+      }}
+      className="fixed z-60 w-56 animate-pop-in border-2 border-ink bg-white p-1 shadow-float"
+      style={pos}
+    >
+      {props.children}
     </div>,
     document.body,
   );

@@ -12,7 +12,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { chromium, type Browser, type Locator, type Page } from 'playwright';
+import { chromium, type Browser, type Locator, type Page, type Request } from 'playwright';
 import type { AgentProvider, BrandSource, ElevenLabsApi, SpeechEngine } from '../../server/contracts';
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
@@ -2829,6 +2829,166 @@ describe('editor', () => {
       const duree = page.getByRole('button', { name: 'Scène 2 : Durée' });
       await page.waitForFunction((card) => document.activeElement === card, await duree.elementHandle(), { timeout: 10_000 });
       assert.equal(await duree.getAttribute('aria-current'), 'true');
+      await page.context().close();
+    },
+  );
+
+  it(
+    'sets the transition of a cut from the keyboard: the video shortens by the overlap, a restored version brings it back',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-transition`;
+      await undoProject(id);
+      const [before] = await api<{ id: string }[]>('GET', `/api/projects/${id}/versions`);
+      const page = await open(`${id}/duree`);
+      await page.getByRole('group', { name: 'Aperçu', exact: true }).getByRole('button', { name: 'Vidéo entière' }).click();
+      // « Titre » lasts 2 bars at 120 BPM, « Durée » 3 s.
+      const whole = 7;
+      const length = (seconds: number) =>
+        page
+          .locator(`[role="slider"][aria-label="Tête de lecture"][aria-valuemax="${Math.round(seconds * 100) / 100}"]`)
+          .waitFor({ timeout: 10_000 });
+      const control = page.getByRole('button', { name: /^Transition Titre \u2192 Durée : / });
+      const named = (label: string) =>
+        page.getByRole('button', { name: `Transition Titre \u2192 Durée : ${label}`, exact: true }).waitFor({ timeout: 10_000 });
+      const focused = async (target: Locator) =>
+        page.waitForFunction((el) => document.activeElement === el, await target.elementHandle(), { timeout: 10_000 });
+      const cut = page.getByRole('button', { name: /Titre \u2192 Durée/ });
+      const dialog = page.getByRole('dialog', { name: 'Transition Titre \u2192 Durée' });
+      const isPut = (request: Request) => request.method() === 'PUT' && request.url().endsWith('/scenes/duree/transition');
+      const put = () => page.waitForResponse((r) => isPut(r.request()));
+      const sent: unknown[] = [];
+      page.on('request', (request) => {
+        if (isPut(request)) sent.push(request.postDataJSON().transition);
+      });
+      await length(whole);
+      await named('aucune');
+      assert.equal(await cut.count(), 2, 'the seam badge and the cut control');
+
+      await control.focus();
+      await page.keyboard.press('Enter');
+      await focused(dialog.getByRole('button', { name: 'Aucune' }));
+      assert.equal(await dialog.getByRole('button', { name: 'Aucune' }).getAttribute('aria-pressed'), 'true');
+      await page.keyboard.press('Tab');
+      await focused(dialog.getByRole('button', { name: 'Fondu' }));
+      await Promise.all([put(), page.keyboard.press('Enter')]);
+      await length(whole - 0.5);
+      await named('fondu, 0,5\u00a0s');
+      assert.equal(await cut.count(), 1, 'the transition shows in place of the seam status');
+      assert.equal(await dialog.getByRole('button', { name: /^Vers / }).count(), 0, 'a fade has no direction');
+
+      await Promise.all([put(), dialog.getByRole('button', { name: 'Glissement' }).click()]);
+      assert.equal(await dialog.getByRole('button', { name: 'Vers la gauche' }).getAttribute('aria-pressed'), 'true');
+      await Promise.all([put(), dialog.getByRole('button', { name: 'Vers le haut' }).click()]);
+      await named('glissement vers le haut, 0,5\u00a0s');
+      // The dialog keeps its keys: the arrows neither change the scene nor step the playhead under it.
+      const playhead = page.locator('[role="slider"][aria-label="T\u00eate de lecture"]');
+      const at = await playhead.getAttribute('aria-valuenow');
+      await page.keyboard.press('ArrowUp');
+      await page.keyboard.press('ArrowRight');
+      assert.equal(new URL(page.url()).hash, `#/${id}/duree`);
+      assert.equal(await playhead.getAttribute('aria-valuenow'), at);
+      // 9 s typed: 5 s at most, of which the 4 s and 3 s scenes play 1.5 s.
+      await dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).fill('9');
+      await Promise.all([put(), dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).press('Enter')]);
+      await named('glissement vers le haut, 1,5\u00a0s au lieu de 5\u00a0s');
+      await dialog.getByText(/^Jouée sur 1,5\u00a0s au lieu de 5\u00a0s/).waitFor({ timeout: 10_000 });
+      await length(whole - 1.5);
+
+      // Escape drops what was typed: the blur that closing causes sends nothing.
+      await dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).fill('2');
+      await page.keyboard.press('Escape');
+      await dialog.waitFor({ state: 'detached' });
+      await focused(control);
+
+      // A length typed then left by a press outside is sent before the dialog goes.
+      await page.keyboard.press('Enter');
+      await dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).fill('1,2');
+      await Promise.all([
+        put(),
+        page.getByRole('group', { name: 'Aperçu', exact: true }).getByRole('button', { name: 'Vidéo entière' }).click(),
+      ]);
+      await dialog.waitFor({ state: 'detached' });
+      await named('glissement vers le haut, 1,2\u00a0s');
+      await length(whole - 1.2);
+
+      // Opened from the bottom of the window, the dialog grows above its control, whose second press closes it.
+      await control.click();
+      await dialog.waitFor();
+      const [panel, opener] = [await dialog.boundingBox(), await control.boundingBox()];
+      assert.ok(panel && opener && panel.y + panel.height <= opener.y, 'the dialog leaves its control in sight');
+      await control.click();
+      await dialog.waitFor({ state: 'detached' });
+      await focused(control);
+
+      // Safari and Firefox leave the focus in the field on that press: the typed length is sent all the same.
+      await page.keyboard.press('Enter');
+      await dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).fill('0,8');
+      await Promise.all([put(), control.dispatchEvent('pointerdown').then(() => control.dispatchEvent('click'))]);
+      await dialog.waitFor({ state: 'detached' });
+      await named('glissement vers le haut, 0,8\u00a0s');
+      await length(whole - 0.8);
+      await control.focus();
+
+      await page.keyboard.press('Enter');
+      await Promise.all([put(), dialog.getByRole('button', { name: 'Aucune' }).click()]);
+      await dialog.waitFor({ state: 'detached' });
+      await focused(control);
+      await named('aucune');
+      await length(whole);
+
+      await page.keyboard.press('Enter');
+      await Promise.all([put(), dialog.getByRole('button', { name: 'Fondu' }).click()]);
+      await length(whole - 0.5);
+      await page.keyboard.press('Escape');
+      assert.deepEqual(sent, [
+        { kind: 'fade', duration: 0.5 },
+        { kind: 'slide', direction: 'left', duration: 0.5 },
+        { kind: 'slide', direction: 'up', duration: 0.5 },
+        { kind: 'slide', direction: 'up', duration: 5 },
+        { kind: 'slide', direction: 'up', duration: 1.2 },
+        { kind: 'slide', direction: 'up', duration: 0.8 },
+        null,
+        { kind: 'fade', duration: 0.5 },
+      ]);
+
+      // The step before the first transition is an editor write, which the versions panel does not list: restored as the
+      // agent would, the page follows through the events stream like after the panel's button.
+      await api('POST', `/api/projects/${id}/versions/${before.id}/restore`, {});
+      await length(whole);
+      await named('aucune');
+      await page.context().close();
+    },
+  );
+
+  it(
+    'opens the scene menu on its first item, moves through it with the arrows and closes on Escape or a press outside',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-scene-menu`;
+      await undoProject(id);
+      const page = await open(`${id}/duree`);
+      const card = page.getByRole('button', { name: 'Scène 2 : Durée' });
+      const menu = page.getByRole('menu', { name: 'Scène Durée' });
+      const focused = async (name: string | RegExp) =>
+        page.waitForFunction((el) => document.activeElement === el, await menu.getByRole('menuitem', { name }).elementHandle(), {
+          timeout: 10_000,
+        });
+      await card.click({ button: 'right' });
+      await focused(/^Renommer/);
+      await page.keyboard.press('ArrowDown');
+      await focused('Dupliquer');
+      await page.keyboard.press('ArrowUp');
+      await page.keyboard.press('ArrowUp');
+      await focused('Supprimer');
+      await page.keyboard.press('Escape');
+      await menu.waitFor({ state: 'detached' });
+
+      await card.click({ button: 'right' });
+      await focused(/^Renommer/);
+      // The menu opens at the pointer: the card's corner stays clear of it.
+      await card.click({ position: { x: 4, y: 4 } });
+      await menu.waitFor({ state: 'detached' });
       await page.context().close();
     },
   );

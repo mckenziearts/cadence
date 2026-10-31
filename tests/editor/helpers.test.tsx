@@ -1,4 +1,4 @@
-// Pure helpers of the editor: French formatting, music grid marks, seam tones, light markdown.
+// Pure helpers of the editor: French formatting, music grid marks, seam tones, cut transitions, light markdown.
 // node --import tsx --test tests/editor/helpers.test.tsx
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -29,6 +29,7 @@ import {
   seamShare,
   seamTone,
   secs,
+  secsExact,
   secsLabel,
   setFormatLanguage,
   tokenCount,
@@ -38,6 +39,7 @@ import { allowedAsk, dismissedAsk, raisedAsk } from '../../src/editor/lib/captur
 import { Markdown } from '../../src/editor/lib/markdown';
 import { projectsPage } from '../../src/editor/lib/pages';
 import { fileAfterRemoval, fileView, hasAlpha, renderRequest, stillTime, unavailable } from '../../src/editor/lib/render';
+import { clampedTransition, editTransition } from '../../src/editor/lib/transitions';
 import { shownVersions } from '../../src/editor/lib/versions';
 import { barDrift, frameStart, playbackTime, rulerStep, sceneAt, sceneBars, timelineMarks } from '../../src/editor/lib/timeline';
 import {
@@ -55,6 +57,9 @@ const S = ' ';
 test('French number formats', () => {
   assert.equal(secs(2.2222), '2,22');
   assert.equal(secsLabel(3.32), `3,32${S}s`);
+  assert.equal(secsExact(0.5), `0,5${S}s`);
+  assert.equal(secsExact(1.234), `1,234${S}s`);
+  assert.equal(secsExact(2), `2${S}s`);
   assert.equal(usd(0.48), `0,48${S}$`);
   assert.equal(usd(0), `0,00${S}$`);
   assert.equal(usd(0.004), `<${S}0,01${S}$`);
@@ -572,4 +577,43 @@ test('a deleted render hands the focus to the row now in its place, then the one
   assert.equal(fileAfterRemoval(['a', 'b', 'c'], 'b'), 'c');
   assert.equal(fileAfterRemoval(['a', 'b', 'c'], 'c'), 'b');
   assert.equal(fileAfterRemoval(['a'], 'a'), null);
+});
+
+test('a kind picked on a hard cut starts at 0.5 s, to the left except a fade, and "none" removes the transition', () => {
+  assert.deepEqual(editTransition(undefined, { kind: 'fade' }), { kind: 'fade', duration: 0.5 });
+  assert.deepEqual(editTransition(undefined, { kind: 'slide' }), { kind: 'slide', direction: 'left', duration: 0.5 });
+  assert.equal(editTransition({ kind: 'wipe', direction: 'up', duration: 1 }, { kind: null }), null);
+  assert.equal(editTransition(undefined, { direction: 'up' }), null);
+  assert.equal(editTransition(undefined, { duration: 2 }), null);
+});
+
+test('a new kind keeps the duration and the direction, and a fade drops the direction', () => {
+  const wipe = { kind: 'wipe' as const, direction: 'up' as const, duration: 1.2 };
+  assert.deepEqual(editTransition(wipe, { kind: 'flip' }), { kind: 'flip', direction: 'up', duration: 1.2 });
+  assert.deepEqual(editTransition(wipe, { kind: 'fade' }), { kind: 'fade', duration: 1.2 });
+  assert.deepEqual(editTransition({ kind: 'fade', duration: 1.2 }, { kind: 'slide' }), {
+    kind: 'slide',
+    direction: 'left',
+    duration: 1.2,
+  });
+  assert.deepEqual(editTransition(wipe, { direction: 'down' }), { kind: 'wipe', direction: 'down', duration: 1.2 });
+  assert.deepEqual(editTransition({ kind: 'fade', duration: 1 }, { direction: 'down' }), { kind: 'fade', duration: 1 });
+});
+
+test('a transition duration stays within 0.1 and 5 s, to the ms, and a typo changes nothing', () => {
+  const fade = { kind: 'fade' as const, duration: 1 };
+  assert.deepEqual(editTransition(fade, { duration: 0.01 }), { kind: 'fade', duration: 0.1 });
+  assert.deepEqual(editTransition(fade, { duration: 12 }), { kind: 'fade', duration: 5 });
+  assert.deepEqual(editTransition(fade, { duration: 0.12345 }), { kind: 'fade', duration: 0.123 });
+  assert.deepEqual(editTransition(fade, { duration: Number.NaN }), fade);
+});
+
+test('a cut whose scenes are too short for its transition shows the declared and the played durations', () => {
+  const declared = { kind: 'fade' as const, duration: 2 };
+  assert.deepEqual(clampedTransition({ declaredTransition: declared, transition: { kind: 'fade', duration: 0.75 } }), {
+    declared: 2,
+    played: 0.75,
+  });
+  assert.equal(clampedTransition({ declaredTransition: declared, transition: declared }), null);
+  assert.equal(clampedTransition({}), null);
 });
