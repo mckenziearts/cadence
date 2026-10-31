@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 import * as cadence from '../../src/runtime/index';
+import * as cadenceThree from '../../src/runtime/three';
 import type { SoundCue, SoundName, SoundProps } from '../../src/runtime/index';
 import { SOUND_NAMES } from '../../src/shared/sounds';
 
@@ -23,6 +24,7 @@ const REQUIRED = [
   ...PATH_TOOLS,
   'createMusic',
   'voiceLevel',
+  'GLCanvas',
 ];
 
 test('index exports everything the architecture requires', () => {
@@ -102,5 +104,40 @@ test('API.md documents MotionBlur', () => {
     "`useId()` called inside the render prop's own component",
   ]) {
     assert.ok(api.includes(rule), rule);
+  }
+});
+
+test('three lives in cadence/three only, so a scene without it never loads three', () => {
+  assert.equal(typeof cadenceThree.ThreeCanvas, 'function');
+  assert.equal(typeof cadenceThree.THREE.WebGLRenderer, 'function');
+  assert.equal('THREE' in cadence, false);
+  assert.equal('ThreeCanvas' in cadence, false);
+});
+
+test('no module under src but runtime/three.tsx imports three, so neither the cadence index nor the frame pulls it in', () => {
+  const dir = new URL('../../src/', import.meta.url);
+  const importers = fs
+    .readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((file) => /\.tsx?$/.test(file))
+    .filter((file) => /(from|import)\s*\(?\s*['"]three(\/[^'"]*)?['"]/.test(fs.readFileSync(new URL(file, dir), 'utf8')));
+  assert.deepEqual(importers, ['runtime/three.tsx']);
+});
+
+test('API.md documents GLCanvas and cadence/three, software capture and the context limit', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## WebGL'));
+  assert.ok(api.includes('## WebGL'));
+  for (const rule of [
+    '<GLCanvas t={t} width={',
+    "import { THREE, ThreeCanvas } from 'cadence/three'",
+    'renders in software',
+    'pixels may differ slightly from the GPU preview',
+    '16 live WebGL contexts at most per page',
+    'no `requestAnimationFrame`',
+    'Create geometries, materials and textures in `setup` only',
+    'Never call `renderer.setAnimationLoop`, `setSize` or `setPixelRatio`',
+    'about 15 ms to each captured frame',
+  ]) {
+    assert.ok(section.includes(rule), rule);
   }
 });

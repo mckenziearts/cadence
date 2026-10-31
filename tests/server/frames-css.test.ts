@@ -415,6 +415,24 @@ const widthClass = (px: number) => `export default () => <div className="w-[${px
 /** Which of the widths `w-[<px>px]` a compiled stylesheet holds. */
 const widthsIn = (code: string, all: number[]) => all.filter((px) => code.includes(`${px}px`));
 
+test('scene imports resolve to their runtime entry: cadence, cadence/three and @brands/<x>', async () => {
+  // A plain `cadence` alias also prefix-matches `cadence/three`, as `src/runtime/index.ts/three`.
+  const { root, cleanup } = await makeRoot();
+  const real = await fs.realpath(root);
+  const vite = await frameVite(real);
+  try {
+    const brandsDir = managed(real)[0][1];
+    await write(brandsDir, 'acme/brand.ts', 'export default {};\n');
+    const resolved = async (id: string) => (await vite.environments.client.pluginContainer.resolveId(id))?.id;
+    assert.equal(await resolved('cadence'), path.join(repo, 'src/runtime/index.ts'));
+    assert.equal(await resolved('cadence/three'), path.join(repo, 'src/runtime/three.tsx'));
+    assert.equal(await resolved('@brands/acme/brand.ts'), path.join(brandsDir, 'acme/brand.ts'));
+  } finally {
+    await vite.close();
+    await cleanup();
+  }
+});
+
 test('a module URL under the root is read where it names, never where a link there leads', async () => {
   // Vite resolves the URL again after the frame handler checked it: a file swapped for a link to another project's in
   // between. The default projects folder is under the root.

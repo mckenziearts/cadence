@@ -288,6 +288,48 @@ const out = progress(t, 3.6, 3.9);                                     // labels
          label="Body" progress={progress(t, 1.6, 2.3) * (1 - out)} />
 ```
 
+## WebGL
+
+- `<GLCanvas t={t} width={width} height={height} draw={(gl, t) => void}>`: one WebGL2 canvas (canvas px). `draw` runs
+  at every render, synchronously, on a buffer cleared to transparent (`gl.clear` again for a background color) with
+  the viewport set to the whole buffer: a pure function of t, no `requestAnimationFrame`, no timers. The buffer
+  follows the pixel ratio and the size the canvas is shown at (smaller in the preview, scaled down to fit): size in
+  device px is `gl.drawingBufferWidth` x `gl.drawingBufferHeight`. Build programs
+  and buffers once per context (a `WeakMap` keyed by `gl`), not at every frame.
+- `import { THREE, ThreeCanvas } from 'cadence/three'`: three.js, loaded only by the scenes that import it.
+  `<ThreeCanvas t width height setup={(renderer) => state} render={(state, t, renderer) => void}>`: `setup` runs once,
+  when the renderer is created (scene, camera, meshes, lights); `render` sets them for t, sets the camera's aspect
+  from the current `width` / `height` (a format change re-renders without a new `setup`) and calls
+  `renderer.render(scene, camera)`. The renderer is disposed of when the scene unmounts. Create geometries, materials
+  and textures in `setup` only: one created in `render` stays on the GPU until the scene unmounts (a 1024 px texture
+  per frame adds 4 MB a frame). Never call `renderer.setAnimationLoop`, `setSize` or `setPixelRatio`.
+- Renders and thumbnails capture in a headless browser that renders in software: slower than the preview, and
+  pixels may differ slightly from the GPU preview. Keep shaders light: a light full-frame shader already adds about
+  15 ms to each captured frame.
+- 16 live WebGL contexts at most per page: one per canvas, so a few canvases per scene at most. A lost context or a
+  browser without WebGL2 makes the scene show an error.
+
+```tsx
+import { THREE, ThreeCanvas } from 'cadence/three';
+const setup = () => {
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+  camera.position.z = 5;
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), new THREE.MeshStandardMaterial({ color: brand.colors.accent }));
+  const light = new THREE.DirectionalLight('#ffffff', 3);
+  light.position.set(2, 3, 4);
+  scene.add(cube, light, new THREE.AmbientLight('#ffffff', 0.3));
+  return { scene, camera, cube };
+};
+<ThreeCanvas t={t} width={width} height={height} setup={setup}
+  render={({ scene, camera, cube }, t, renderer) => {
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    cube.rotation.y = t * 0.8;
+    renderer.render(scene, camera);
+  }} />
+```
+
 ## Camera
 
 - `<Camera x y zoom={1} rotate={0} style? className?>`: looks at content point (x, y) (default canvas center) and

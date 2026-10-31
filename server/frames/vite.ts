@@ -78,7 +78,12 @@ export async function createVite({
       },
     },
     resolve: {
-      alias: { cadence: path.join(config.root, 'src/runtime/index.ts'), '@brands': config.brandsDir },
+      // Exact matches: a plain `cadence` alias would also take `cadence/three` as `src/runtime/index.ts/three`.
+      alias: [
+        { find: /^cadence$/, replacement: path.join(config.root, 'src/runtime/index.ts') },
+        { find: /^cadence\/three$/, replacement: path.join(config.root, 'src/runtime/three.tsx') },
+        { find: '@brands', replacement: config.brandsDir },
+      ],
       // Vite resolves a bare import from the importer's folder, and managed dirs may live outside the core (a host app's
       // own folders) with no node_modules: deduped ids resolve from `root` instead, so scenes get the core's packages.
       dedupe: Object.keys(dependencies),
@@ -102,6 +107,8 @@ export async function createVite({
         'react/jsx-dev-runtime',
         'lucide-react',
         'clsx',
+        // Else the first scene that imports `cadence/three` waits for a new bundle and reloads the frame.
+        'three',
         ...(await brandIconSets(config.brandsDir)),
       ],
     },

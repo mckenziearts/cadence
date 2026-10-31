@@ -3,6 +3,9 @@
 import { createContext } from 'react';
 import { createMusic as createRuntimeMusic, type CreateMusicInput } from '../../../src/runtime/music';
 
+// The real one: the frame tests draw it through the capture path.
+export { GLCanvas } from '../../../src/runtime/gl';
+
 export const SceneContext = createContext<unknown>(null);
 export const BrandContext = createContext<unknown>(null);
 

@@ -257,7 +257,8 @@ Vite (`server/frames/vite.ts`): `root = <root>`, `appType: 'custom'`, `server.mi
 by), `node_modules/` (+ `CADENCE_VITE_CACHE_DIR`), so the
 server code and root files are never served; `server.fs.deny` adds `**/.cadence/**`, `**/.git/**`, `.env*`. `CADENCE_VITE_CACHE_DIR`
 gives a server its own dependency cache.
-Aliases: `cadence` for `src/runtime/index.ts`, `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
+Aliases: `cadence` for `src/runtime/index.ts` and `cadence/three` for `src/runtime/three.tsx` (exact matches, so three
+loads only in scenes that import it; it is pre-bundled with React), `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
 `@tailwindcss/vite` (its `transform` skips every file under projects/, brands/, templates/), and a Cadence plugin whose
 `hotUpdate` returns `[]` for files under those dirs (Cadence reloads frames itself). Its `transform` compiles a
 stylesheet under those dirs itself (`compileStylesheet()`, with `compile()` from `tailwindcss`), so Tailwind opens no

@@ -304,7 +304,8 @@ export async function startHarness(name: string): Promise<Harness> {
     overrides: {
       // Own dependency cache per suite: test files run in parallel and must not disturb a running Cadence.
       cacheDir: path.join(ROOT, 'node_modules/.vite-e2e', name),
-      resolve: { alias: { cadence: path.join(FIXTURES, 'runtime/index.ts') } },
+      // Put before the app's aliases: exact, so `cadence/three` still reaches the real src/runtime/three.tsx.
+      resolve: { alias: [{ find: /^cadence$/, replacement: path.join(FIXTURES, 'runtime/index.ts') }] },
       // Added to the app's list: the stub runtime lives under tests/.
       server: { fs: { allow: [path.join(FIXTURES, 'runtime')] } },
     },

@@ -2246,3 +2246,220 @@ describe('music spectrum', () => {
     });
   });
 });
+
+describe('WebGL', () => {
+  const TRIANGLE = `import { GLCanvas } from 'cadence';
+const VERTEX = \`#version 300 es
+uniform float angle;
+const vec2 corners[3] = vec2[3](vec2(0.0, 0.8), vec2(-0.7, -0.6), vec2(0.7, -0.6));
+void main() {
+  vec2 p = corners[gl_VertexID];
+  gl_Position = vec4(cos(angle) * p.x - sin(angle) * p.y, sin(angle) * p.x + cos(angle) * p.y, 0.0, 1.0);
+}\`;
+const FRAGMENT = \`#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.0, 0.0, 1.0); }\`;
+function draw(gl, t) {
+  const program = gl.createProgram();
+  for (const [type, source] of [[gl.VERTEX_SHADER, VERTEX], [gl.FRAGMENT_SHADER, FRAGMENT]]) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    gl.attachShader(program, shader);
+  }
+  gl.linkProgram(program);
+  gl.useProgram(program);
+  gl.uniform1f(gl.getUniformLocation(program, 'angle'), t * Math.PI);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+// draw does not clear: GLCanvas does, so the triangle of an earlier t never stays on the canvas.
+export default ({ t, width, height }) => (
+  <div style={{ background: '#000' }}>
+    <GLCanvas t={t} width={width} height={height} draw={draw} />
+  </div>
+);
+`;
+  // Counts setups, renders and disposals on window: the test reads them back.
+  const CUBE = `import { THREE, ThreeCanvas } from 'cadence/three';
+function setup(renderer) {
+  window.setups = (window.setups ?? 0) + 1;
+  const dispose = renderer.dispose.bind(renderer);
+  renderer.dispose = () => {
+    window.disposals = (window.disposals ?? 0) + 1;
+    dispose();
+  };
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color('#202040');
+  const camera = new THREE.PerspectiveCamera(40, 16 / 9, 0.1, 100);
+  // Far enough for the whole cube to fit the width of 9:16 too.
+  camera.position.set(0, 0, 10);
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), new THREE.MeshStandardMaterial({ color: '#ff8800' }));
+  const light = new THREE.DirectionalLight('#ffffff', 3);
+  light.position.set(2, 3, 4);
+  scene.add(cube, light, new THREE.AmbientLight('#ffffff', 0.3));
+  return { scene, camera, cube };
+}
+function render({ scene, camera, cube }, t, renderer, width, height) {
+  window.renders = (window.renders ?? 0) + 1;
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  cube.rotation.set(0.5 + t, t * 2, 0);
+  renderer.render(scene, camera);
+}
+export default ({ t, width, height }) => (
+  <ThreeCanvas t={t} width={width} height={height} setup={setup} render={(state, t, renderer) => render(state, t, renderer, width, height)} />
+);
+`;
+
+  before(async () => {
+    await addScene('triangle', TRIANGLE);
+    await addScene('cube', CUBE);
+    await h.store.syncCode(id);
+  });
+
+  /** Whether the scene's canvas has lost its WebGL context once the frame shows another scene. */
+  async function lostOnUnmount(page: Page): Promise<boolean> {
+    await page.evaluate(() => Reflect.set(window, 'unmounted', document.querySelector('canvas')));
+    await page.evaluate(() => window.__cadence!.setScene('green'));
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    return page.evaluate(() => (Reflect.get(window, 'unmounted') as HTMLCanvasElement).getContext('webgl2')!.isContextLost());
+  }
+
+  /** Whether the page fetched the bundled three module. */
+  function loadedThree(page: Page): Promise<boolean> {
+    return page.evaluate(() => performance.getEntriesByType('resource').some((e) => /\/deps\/three\.js/.test(e.name)));
+  }
+
+  it('draws a GLCanvas at t through the capture path, the same pixels for the same t', async () => {
+    const capture = new PlaywrightCapture({ config: h.config, store: h.store });
+    try {
+      const [first, other, again] = await capture.frames(id, {
+        sceneId: 'triangle',
+        times: [0.2, 0.6, 0.2],
+        format: '16:9',
+        imageFormat: 'png',
+      });
+      for (const frame of [first, other, again]) assert.deepEqual(frame.errors, []);
+      assert.ok(near(pixel(first.image, 480, 270), [255, 0, 0]), String(pixel(first.image, 480, 270)));
+      assert.ok(near(pixel(first.image, 10, 10), [0, 0, 0]));
+      assert.notDeepEqual(other.image, first.image, 'the triangle turns with t');
+      assert.deepEqual(again.image, first.image);
+    } finally {
+      await capture.close();
+    }
+    const page = await open({ scene: 'triangle' });
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    assert.deepEqual(
+      await page.evaluate(() => [document.querySelector('canvas')!.width, document.querySelector('canvas')!.height]),
+      [960, 540],
+      'the drawing buffer follows the pixel ratio',
+    );
+    assert.equal(await loadedThree(page), false, 'a scene without cadence/three does not load three');
+    assert.equal(await lostOnUnmount(page), true, 'the unmounted canvas gives its WebGL context back');
+    await page.context().close();
+  });
+
+  it('sizes the drawing buffer to the preview scaled down to fit, not to the full canvas', async () => {
+    for (const scene of ['triangle', 'cube']) {
+      const page = await open({ scene, mode: 'editor' }, { width: 640, height: 360 });
+      assert.deepEqual((await seek(page, 0.2)).errors, []);
+      assert.deepEqual(
+        await page.evaluate(() => [document.querySelector('canvas')!.width, document.querySelector('canvas')!.height]),
+        [320, 180],
+        `${scene}: 1920 x 1080 canvas px shown at a third of their size, at a pixel ratio of 0.5`,
+      );
+      if (scene === 'triangle')
+        assert.ok(near(await colorAt(page, 320, 180), [255, 0, 0]), String(await colorAt(page, 320, 180)));
+      await page.context().close();
+    }
+  });
+
+  it('draws a lit three.js cube through the capture path, the same pixels for the same t', async () => {
+    const capture = new PlaywrightCapture({ config: h.config, store: h.store });
+    try {
+      const [first, other, again] = await capture.frames(id, {
+        sceneId: 'cube',
+        times: [0.2, 0.6, 0.2],
+        format: '16:9',
+        imageFormat: 'png',
+      });
+      for (const frame of [first, other, again]) assert.deepEqual(frame.errors, []);
+      const center = pixel(first.image, 480, 270);
+      assert.ok(near(pixel(first.image, 10, 10), [32, 32, 64]), 'background');
+      assert.ok(!near(center, [32, 32, 64], 10) && !near(center, [0, 0, 0], 10), `a lit cube: ${center}`);
+      assert.notDeepEqual(other.image, first.image, 'the cube turns with t');
+      assert.deepEqual(again.image, first.image);
+    } finally {
+      await capture.close();
+    }
+  });
+
+  it('creates the three.js renderer once, without an animation loop, and disposes of it on unmount', async () => {
+    const page = await open({ scene: 'cube' });
+    const counts = () => page.evaluate(() => [Reflect.get(window, 'setups'), Reflect.get(window, 'disposals') ?? 0]);
+    for (const t of [0.1, 0.5, 0.9]) assert.deepEqual((await seek(page, t)).errors, []);
+    assert.equal(await loadedThree(page), true);
+    assert.deepEqual(await counts(), [1, 0]);
+    const renders = await page.evaluate(() => Reflect.get(window, 'renders'));
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+    assert.equal(await page.evaluate(() => Reflect.get(window, 'renders')), renders, 'nothing draws between renders');
+    assert.equal(await lostOnUnmount(page), true, 'the unmounted canvas gives its WebGL context back');
+    assert.deepEqual(await counts(), [1, 1]);
+    await page.context().close();
+  });
+
+  it('draws on the whole canvas again after a format change', async () => {
+    for (const scene of ['triangle', 'cube']) {
+      const page = await open({ scene });
+      assert.deepEqual((await seek(page, 0.2)).errors, []);
+      const landscape = await colorAt(page, 960, 540);
+      await page.setViewportSize({ width: 1080, height: 1920 });
+      await page.evaluate(() => window.__cadence!.setFormat('9:16'));
+      assert.deepEqual((await seek(page, 0.2)).errors, []);
+      assert.ok(
+        near(await colorAt(page, 540, 960), landscape, 10),
+        `${scene}: ${await colorAt(page, 540, 960)} for ${landscape}`,
+      );
+      await page.context().close();
+    }
+  });
+
+  it('keeps the cube in proportion after a format change, the camera following the size render gets', async () => {
+    /** Width over height of what is not the background, in the page's screenshot. */
+    async function cubeRatio(page: Page): Promise<number> {
+      const image = PNG.sync.read(await page.screenshot({ type: 'png' }));
+      let [left, right, top, bottom] = [Infinity, -Infinity, Infinity, -Infinity];
+      for (let y = 0; y < image.height; y++) {
+        for (let x = 0; x < image.width; x++) {
+          const i = (image.width * y + x) * 4;
+          if (near([image.data[i], image.data[i + 1], image.data[i + 2]], [32, 32, 64], 10)) continue;
+          [left, right, top, bottom] = [Math.min(left, x), Math.max(right, x), Math.min(top, y), Math.max(bottom, y)];
+        }
+      }
+      return (right - left) / (bottom - top);
+    }
+    const page = await open({ scene: 'cube' });
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    const landscape = await cubeRatio(page);
+    await page.setViewportSize({ width: 1080, height: 1920 });
+    await page.evaluate(() => window.__cadence!.setFormat('9:16'));
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    const portrait = await cubeRatio(page);
+    assert.ok(Math.abs(portrait / landscape - 1) < 0.05, `${portrait} in 9:16 for ${landscape} in 16:9`);
+    await page.context().close();
+  });
+
+  it('turns a lost WebGL context into a translated scene error', async () => {
+    const page = await open({ scene: 'triangle' });
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    await page.evaluate(() =>
+      document.querySelector('canvas')!.getContext('webgl2')!.getExtension('WEBGL_lose_context')!.loseContext(),
+    );
+    const { errors } = await seek(page, 0.3);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /Erreur d’exécution · scenes\/triangle\.tsx/);
+    assert.match(errors[0], /Le contexte WebGL a été perdu/);
+    await page.context().close();
+  });
+});
