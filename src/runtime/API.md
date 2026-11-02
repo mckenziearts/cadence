@@ -254,6 +254,18 @@ export default function Save(props: SceneProps) {
 }
 ```
 
+A cue can also play the sound of a video of the project: `{ at, clip, from?, duration?, gain? }`. `clip` is its path
+under `assets/`, like `<Clip src>`; it starts on `at` (no peak offset), plays from `from` seconds into the video (0
+when left out) for `duration` seconds (to the video's end when left out), always cut at the scene's end. The video
+must be ready and have a sound track; its sound is mixed in mono. The clip cues of a scene are heard at most 8 times
+its length in all. A render hears the whole video, but the preview plays only its first 10 minutes: the editor cuts a cue
+there. Give it the same offset as its `<Clip>`:
+
+```tsx
+export const sounds = (): SoundCue[] => [{ at: 1.5, clip: 'demo/talk.mp4', gain: 0.8 }];
+// with <Clip src="demo/talk.mp4" time={t - 1.5} /> in the component
+```
+
 - A sound per meaningful contact, not per beat: two to four per scene is plenty, the music already carries the beat.
   When a moment does not deserve a sound, leave it silent.
 - `sounds()` is pure like the component and runs without rendering a frame: key it to `music` and `voiceOver.lines`,
@@ -541,7 +553,8 @@ const onSave = progress(t, 1.6, 1.8);                                  // the cu
   pure function of `time`: offset it from the scene's `t` yourself. Before 0 it shows the first frame and past the
   end it holds the last frame; `loop` wraps around instead. An `<img>` sized by `style` (its own pixel size
   otherwise); `fit` (CSS `object-fit`, default 'contain') places the frame in that box.
-- Frames are opaque JPEG (no alpha) and the clip plays no sound.
+- Frames are opaque JPEG (no alpha) and `<Clip>` plays no sound: a clip cue in `sounds()` plays it (see Sound
+  effects).
 - An asset that is not a video or GIF, still being prepared (extracted after an upload: the preview updates when it
   is ready, renders wait for it) or that failed to extract throws an error naming it; so does a frame that does not
   load when the frame is captured.

@@ -34,6 +34,7 @@ import type {
   RenderService,
   VoiceOverService,
 } from '../contracts';
+import { readClipAudio } from '../clips/service';
 import { m } from '../i18n';
 import { soundTrack } from '../sounds/track';
 import { assertId, formatSeconds, HttpError, listInside, nowIso, pathExists, resolveInside } from '../util';
@@ -361,6 +362,8 @@ export class FfmpegRenderService implements RenderService {
         library: path.join(config.root, 'src', 'editor', 'sounds'),
         // The job id: never the same file as another render's, even one of another Cadence on the same folder.
         file: path.join(this.soundsDir(job.projectId), `${job.id}.wav`),
+        readClip: (clip, from, duration) =>
+          readClipAudio(config.ffmpegPath, store.dir(job.projectId), clip, from, duration, abort.signal),
       });
       job.framesTotal = total;
       this.emit(state, true);
@@ -501,7 +504,7 @@ export async function soundCues(page: Page, project: ProjectState) {
     m().media.render.soundsTimeout(RENDER_TIMEOUT_MS / 1000),
   );
   const max = Math.min(MAX_SOUND_CUES * project.scenes.length, MAX_VIDEO_SOUND_CUES);
-  const parsed = parseSoundCues(value, project.duration + 0.001, m().media.sounds.cues, max);
+  const parsed = parseSoundCues(value, project.duration + 0.001, m().media.sounds.cues, project.clips, max);
   if ('error' in parsed) throw new Error(m().media.render.invalidSounds(parsed.error));
   return parsed.cues;
 }

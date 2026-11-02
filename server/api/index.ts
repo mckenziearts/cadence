@@ -31,8 +31,10 @@ import {
 import { outputSupport } from '../capture/encoders';
 import { LOCAL } from '../capture/policy';
 import { ACCEPTED_OUTPUTS } from '../capture/render';
+import { readClipAudio } from '../clips/service';
 import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
+import { SR } from '../music/synth';
 import { DEFAULT_BRAND } from '../store/brands';
 import {
   elevenLabsSpeakersSchema,
@@ -43,6 +45,7 @@ import {
 import { AGENT_FRAME_NAME, HttpError, KeyedMutex, pathExists, resolveInside } from '../util';
 import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
 import { VOICES } from '../voiceover/voices';
+import { silentWav } from '../voiceover/wav';
 import { dataUrl, sendFile, sendImage } from './files';
 
 const MB = 1024 * 1024;
@@ -53,6 +56,8 @@ const ARCHIVE_LIMIT = 2048 * MB;
 const UPLOAD_ROUTE = /^\/api\/(projects\/[^/]+\/(music|assets)|import)$/;
 /** Two lines of 42 characters, the usual limit of subtitle files. */
 const SUBTITLE_MAX_CHARS = 84;
+/** Seconds of a clip the editor plays, like the music's analysis: about 53 MB of WAV at most. */
+const CLIP_SOUND_SECONDS = 600;
 const ZOD_LOCALES = { fr: z.locales.fr(), en: z.locales.en() };
 
 const idSchema = z.string().regex(ID_PATTERN);
@@ -647,6 +652,24 @@ export function createApi(deps: ApiDeps) {
     return c.json({ ok: true });
   });
   app.get('/projects/:id/assets/file', async (c) => sendFile(c, assets.resolve(c.req.param('id'), requiredQuery(c, 'path'))));
+  // What the editor plays for a clip cue: a WAV decodes in every browser, the AAC of an MP4 not in every Chromium build.
+  app.get('/projects/:id/clips/audio', async (c) => {
+    const id = await existingProject(c);
+    const file = requiredQuery(c, 'path');
+    const { clips } = await store.get(id);
+    const clip = Object.hasOwn(clips, file) ? clips[file] : undefined;
+    if (clip?.status !== 'ready' || !clip.audio) throw new HttpError(404, m().media.clips.noSound(file));
+    const seconds = Math.min(clip.duration, CLIP_SOUND_SECONDS);
+    const samples = await readClipAudio(config.ffmpegPath, store.dir(id), file, 0, seconds, c.req.raw.signal);
+    const wav = silentWav(SR, samples.length);
+    wav.samples.set(samples);
+    // node-server writes a Uint8Array body as is; an ArrayBuffer it would copy first.
+    return c.body(wav.data as Uint8Array<ArrayBuffer>, 200, {
+      'Content-Type': 'audio/wav',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+  });
   // The person asks for this capture: their dev servers and LAN are fine. The agent's go through MCP, to approved hosts only.
   app.post('/projects/:id/refs', async (c) =>
     c.json(await assets.captureReference(c.req.param('id'), await body(c, schemas.captureRef), LOCAL)),

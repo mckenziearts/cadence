@@ -383,7 +383,7 @@ function evaluateSounds(project: ProjectState, scene: SceneState, spec: FormatSp
   const { sounds } = loaded;
   if (typeof sounds !== 'function') return { error: texts.soundsExport(scene.id) };
   try {
-    return parseSoundCues(sounds(sceneProps(project, scene, spec, kit)), scene.duration, texts.soundCues);
+    return parseSoundCues(sounds(sceneProps(project, scene, spec, kit)), scene.duration, texts.soundCues, project.clips);
   } catch (e) {
     return { error: formatError(e) };
   }

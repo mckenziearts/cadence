@@ -146,6 +146,7 @@ function Preview({ sounds }: { sounds: SoundPlayer }) {
   const shownSceneId = mode === 'scene' ? sceneId : null;
   const scenes = mode === 'scene' ? 1 : project.scenes.length;
   useEffect(() => sounds.show({ sceneId: shownSceneId, duration, scenes }), [sounds, shownSceneId, duration, scenes]);
+  useEffect(() => sounds.setClips(project.id, project.clips), [sounds, project.id, project.clips]);
 
   const spec = FORMATS[format];
   const fit = Math.max(0, Math.min((box.w - PAD * 2) / spec.width, (box.h - PAD * 2) / spec.height));

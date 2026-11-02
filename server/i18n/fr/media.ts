@@ -54,6 +54,7 @@ export default {
     noDetail: 'aucun détail',
     soundMissing: (file: string) => `Effet sonore introuvable : ${file}`,
     soundFormat: (file: string, rate: number) => `Effet sonore au mauvais format : ${file} (${rate} Hz attendus)`,
+    clipSound: (file: string, error: string) => `Impossible de lire le son de assets/${file} : ${error}`,
     invalidSounds: (error: string) => `Sons de la vidéo invalides : ${error}`,
     soundsTimeout: (seconds: number) => `sounds() a dépassé ${seconds} s (boucle infinie ?)`,
   },
@@ -141,10 +142,23 @@ export default {
     cues: {
       notArray: 'sounds() doit renvoyer un tableau de sons',
       tooMany: (max: number) => `sounds() renvoie plus de ${max} sons`,
-      notObject: (index: number) => `son ${index} : un objet { at, sound, gain? } est attendu`,
+      notObject: (index: number) =>
+        `son ${index} : un objet { at, sound, gain? } ou { at, clip, from?, duration?, gain? } est attendu`,
       at: (index: number, duration: number) => `son ${index} : at doit être un nombre de secondes entre 0 et ${duration}`,
       sound: (index: number, received: string, known: string) => `son ${index} : son inconnu ${received} (${known})`,
       gain: (index: number) => `son ${index} : gain doit être un nombre entre 0 et 1`,
+      both: (index: number) => `son ${index} : sound ou clip, pas les deux`,
+      clipUnknown: (index: number, received: string) =>
+        `son ${index} : clip ${received} n’est pas une vidéo de assets/ de ce projet`,
+      clipPreparing: (index: number, file: string) =>
+        `son ${index} : la vidéo assets/${file} est en cours de préparation ; l’aperçu se met à jour quand elle est prête.`,
+      clipFailed: (index: number, file: string, error: string) =>
+        `son ${index} : impossible de préparer la vidéo assets/${file} : ${error}`,
+      clipSilent: (index: number, file: string) => `son ${index} : la vidéo assets/${file} n’a pas de son`,
+      clipFrom: (index: number, file: string, duration: number) =>
+        `son ${index} : from doit être un nombre de secondes à partir de 0 et inférieur à ${duration}, la durée de assets/${file}`,
+      clipDuration: (index: number) => `son ${index} : duration doit être un nombre de secondes supérieur à 0`,
+      clipTotal: (seconds: number) => `sounds() : les sons de clips durent plus de ${seconds} s en tout`,
     },
   },
   clips: {
@@ -154,6 +168,7 @@ export default {
     diskFull: (name: string) =>
       `« ${name} » : le disque est presque plein, extraction arrêtée. Libérez de la place puis importez la vidéo de nouveau`,
     notPrepared: (name: string, error: string) => `[cadence] images de « ${name} » non préparées : ${error}`,
+    noSound: (name: string) => `« ${name} » n'est pas une vidéo préparée avec du son`,
     unreadable: (name: string) => `« ${name} » n'est pas une vidéo que ffmpeg sait lire`,
     notJpeg: 'ffmpeg a sorti autre chose que des images JPEG',
     noDuration: (name: string) =>

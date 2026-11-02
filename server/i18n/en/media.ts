@@ -55,6 +55,7 @@ export default {
     noDetail: 'no detail',
     soundMissing: (file: string) => `Sound effect not found: ${file}`,
     soundFormat: (file: string, rate: number) => `Sound effect in the wrong format: ${file} (${rate} Hz expected)`,
+    clipSound: (file: string, error: string) => `Could not read the sound of assets/${file}: ${error}`,
     invalidSounds: (error: string) => `Invalid sounds in the video: ${error}`,
     soundsTimeout: (seconds: number) => `sounds() took more than ${seconds} s (infinite loop?)`,
   },
@@ -140,10 +141,23 @@ export default {
     cues: {
       notArray: 'sounds() must return an array of cues',
       tooMany: (max: number) => `sounds() returns more than ${max} cues`,
-      notObject: (index: number) => `sound cue ${index}: expected an object { at, sound, gain? }`,
+      notObject: (index: number) =>
+        `sound cue ${index}: expected an object { at, sound, gain? } or { at, clip, from?, duration?, gain? }`,
       at: (index: number, duration: number) => `sound cue ${index}: at must be a number of seconds from 0 to ${duration}`,
       sound: (index: number, received: string, known: string) => `sound cue ${index}: unknown sound ${received} (${known})`,
       gain: (index: number) => `sound cue ${index}: gain must be a number from 0 to 1`,
+      both: (index: number) => `sound cue ${index}: sound or clip, not both`,
+      clipUnknown: (index: number, received: string) =>
+        `sound cue ${index}: clip ${received} is not a video under assets/ of this project`,
+      clipPreparing: (index: number, file: string) =>
+        `sound cue ${index}: the video assets/${file} is being prepared; the preview updates when it is ready.`,
+      clipFailed: (index: number, file: string, error: string) =>
+        `sound cue ${index}: could not prepare the video assets/${file}: ${error}`,
+      clipSilent: (index: number, file: string) => `sound cue ${index}: the video assets/${file} has no sound`,
+      clipFrom: (index: number, file: string, duration: number) =>
+        `sound cue ${index}: from must be a number of seconds from 0 and below ${duration}, the length of assets/${file}`,
+      clipDuration: (index: number) => `sound cue ${index}: duration must be a number of seconds above 0`,
+      clipTotal: (seconds: number) => `sounds(): the clip cues are heard more than ${seconds} s in all`,
     },
   },
   clips: {
@@ -153,6 +167,7 @@ export default {
     diskFull: (name: string) =>
       `"${name}": the disk is almost full, extraction stopped. Free some space, then import the video again`,
     notPrepared: (name: string, error: string) => `[cadence] frames of "${name}" not prepared: ${error}`,
+    noSound: (name: string) => `"${name}" is not a prepared video with sound`,
     unreadable: (name: string) => `"${name}" is not a video ffmpeg can read`,
     notJpeg: 'ffmpeg printed something other than JPEG frames',
     noDuration: (name: string) =>

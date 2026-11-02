@@ -13,10 +13,23 @@ const TEXTS = {
     soundCues: {
       notArray: 'sounds() doit renvoyer un tableau de sons',
       tooMany: (max: number) => `sounds() renvoie plus de ${max} sons`,
-      notObject: (index: number) => `son ${index} : un objet { at, sound, gain? } est attendu`,
+      notObject: (index: number) =>
+        `son ${index} : un objet { at, sound, gain? } ou { at, clip, from?, duration?, gain? } est attendu`,
       at: (index: number, duration: number) => `son ${index} : at doit être un nombre de secondes entre 0 et ${duration}`,
       sound: (index: number, received: string, known: string) => `son ${index} : son inconnu ${received} (${known})`,
       gain: (index: number) => `son ${index} : gain doit être un nombre entre 0 et 1`,
+      both: (index: number) => `son ${index} : sound ou clip, pas les deux`,
+      clipUnknown: (index: number, received: string) =>
+        `son ${index} : clip ${received} n’est pas une vidéo de assets/ de ce projet`,
+      clipPreparing: (index: number, file: string) =>
+        `son ${index} : la vidéo assets/${file} est en cours de préparation ; l’aperçu se met à jour quand elle est prête.`,
+      clipFailed: (index: number, file: string, error: string) =>
+        `son ${index} : impossible de préparer la vidéo assets/${file} : ${error}`,
+      clipSilent: (index: number, file: string) => `son ${index} : la vidéo assets/${file} n’a pas de son`,
+      clipFrom: (index: number, file: string, duration: number) =>
+        `son ${index} : from doit être un nombre de secondes à partir de 0 et inférieur à ${duration}, la durée de assets/${file}`,
+      clipDuration: (index: number) => `son ${index} : duration doit être un nombre de secondes supérieur à 0`,
+      clipTotal: (seconds: number) => `sounds() : les sons de clips durent plus de ${seconds} s en tout`,
     },
     kitExport: 'index.tsx doit exporter par défaut le BrandKit de la marque',
     brandFailed: (id: string, error: string) => `Impossible de charger la marque « ${id} » : ${error}`,
@@ -60,10 +73,23 @@ const TEXTS = {
     soundCues: {
       notArray: 'sounds() must return an array of cues',
       tooMany: (max: number) => `sounds() returns more than ${max} cues`,
-      notObject: (index: number) => `sound cue ${index}: expected an object { at, sound, gain? }`,
+      notObject: (index: number) =>
+        `sound cue ${index}: expected an object { at, sound, gain? } or { at, clip, from?, duration?, gain? }`,
       at: (index: number, duration: number) => `sound cue ${index}: at must be a number of seconds from 0 to ${duration}`,
       sound: (index: number, received: string, known: string) => `sound cue ${index}: unknown sound ${received} (${known})`,
       gain: (index: number) => `sound cue ${index}: gain must be a number from 0 to 1`,
+      both: (index: number) => `sound cue ${index}: sound or clip, not both`,
+      clipUnknown: (index: number, received: string) =>
+        `sound cue ${index}: clip ${received} is not a video under assets/ of this project`,
+      clipPreparing: (index: number, file: string) =>
+        `sound cue ${index}: the video assets/${file} is being prepared; the preview updates when it is ready.`,
+      clipFailed: (index: number, file: string, error: string) =>
+        `sound cue ${index}: could not prepare the video assets/${file}: ${error}`,
+      clipSilent: (index: number, file: string) => `sound cue ${index}: the video assets/${file} has no sound`,
+      clipFrom: (index: number, file: string, duration: number) =>
+        `sound cue ${index}: from must be a number of seconds from 0 and below ${duration}, the length of assets/${file}`,
+      clipDuration: (index: number) => `sound cue ${index}: duration must be a number of seconds above 0`,
+      clipTotal: (seconds: number) => `sounds(): the clip cues are heard more than ${seconds} s in all`,
     },
     kitExport: "index.tsx must export the brand's BrandKit as its default",
     brandFailed: (id: string, error: string) => `Could not load the brand "${id}": ${error}`,

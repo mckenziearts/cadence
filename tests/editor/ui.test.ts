@@ -3350,7 +3350,12 @@ describe('preview', () => {
   type Start = { duration: number; lead: number; offset: number };
 
   /** A project whose one scene, `name`, plays `cues` and opens the video. */
-  async function soundProject(id: string, name: string, cues: { at: number; sound: string; gain?: number }[], duration?: number) {
+  async function soundProject(
+    id: string,
+    name: string,
+    cues: ({ at: number; sound: string; gain?: number } | { at: number; clip: string })[],
+    duration?: number,
+  ) {
     await api('POST', '/api/projects', { name, id, brand: 'cadence', formats: ['16:9'], fps: 30 });
     await api('POST', `/api/projects/${id}/scenes`, {
       name,
@@ -3418,6 +3423,36 @@ describe('preview', () => {
     await page.getByRole('button', { name: 'Présenter', exact: true }).click();
     await startsReach(1, 15_000);
     assert.equal((await starts())[0].duration, impact.duration, 'a cold Present plays its opening cue');
+    await page.context().close();
+  });
+
+  it('plays a clip cue with the sound of the prepared video, in the preview and in Present', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-sc`;
+    await soundProject(id, 'Clip', [{ at: 0.2, clip: 'talk.mp4' }]);
+    const assets = path.join(server.config.projectsDir, id, 'assets');
+    await mkdir(assets, { recursive: true });
+    await promisify(execFile)(server.config.ffmpegPath, [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=64x36:r=10:d=3', '-f', 'lavfi', '-i', 'sine=duration=3'],
+      ...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-shortest', path.join(assets, 'talk.mp4')],
+    ]);
+    // Each read of the project syncs its clips: the new file is prepared in the background.
+    const ready = async () => (await api<ProjectState>('GET', `/api/projects/${id}`)).clips['talk.mp4']?.status === 'ready';
+    for (let i = 0; i < 100 && !(await ready()); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    const page = await newPage();
+    const { starts, startsReach } = await recordStarts(page);
+    await open(`${id}/clip`, page);
+    const shown = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(shown, null, { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+    await startsReach(1, 10_000);
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    // The 3 s of the clip's sound, decoded from the WAV the server extracts: no library sound lasts that long.
+    const [heard] = await starts();
+    assert.ok(Math.abs(heard.duration - 3) < 0.05 && heard.offset < 0.1, JSON.stringify(await starts()));
+    await page.evaluate(() => ((window as unknown as { starts: unknown[] }).starts.length = 0));
+    await page.getByRole('button', { name: 'Présenter', exact: true }).click();
+    await startsReach(1, 15_000);
+    assert.ok(Math.abs((await starts())[0].duration - 3) < 0.05, JSON.stringify(await starts()));
     await page.context().close();
   });
 

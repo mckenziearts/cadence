@@ -2,7 +2,7 @@
 // cancel, files; transparent ProRes and WebM, GIF, still PNG and PNG sequence.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { lstat, lutimes, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { lstat, lutimes, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { PNG } from 'pngjs';
 import { outputSupport } from '../../server/capture/encoders';
 import { FfmpegRenderService } from '../../server/capture/render';
+import { LocalClipService } from '../../server/clips/service';
 import type { CadenceConfig, ProjectStore } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import { HttpError } from '../../server/util';
@@ -536,6 +537,102 @@ export default function A({ t, music }: SceneProps) {
       await restore();
     }
   });
+
+  it('mixes the sound of a clip cue at its time, from its point in the clip, for its duration', { timeout: 60_000 }, async () => {
+    const dir = h.store.dir(id);
+    // Silent for 1 s, then a 440 Hz sine: the cue reads 0.5 s of the sine, from 1 s in the clip, at 1 s in the video.
+    await mkdir(path.join(dir, 'assets'), { recursive: true });
+    await run('ffmpeg', [
+      ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=2'],
+      ...['-f', 'lavfi', '-i', "aevalsrc='if(gte(t,1),0.5*sin(2*PI*440*t),0)':s=48000:d=2"],
+      ...['-pix_fmt', 'yuv420p', '-shortest', path.join(dir, 'assets', 'talk.mp4')],
+    ]);
+    const local = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+    h.store.setClipsProvider((project) => local.sync(project));
+    await setDuration('b', 2);
+    const restore = await withSounds({ b: "[{ at: 0.5, clip: '/talk.mp4', from: 1, duration: 0.5, gain: 0.8 }]" });
+    try {
+      await local.whenIdle(id);
+      const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' });
+      const [before, sine, afterwards] = await Promise.all([
+        rmsDb(file, 0.6, 0.95),
+        rmsDb(file, 1.05, 1.45),
+        rmsDb(file, 1.6, 1.9),
+      ]);
+      assert.ok(sine > -30, `the clip's sine, ${sine} dB`);
+      assert.ok(before < -60, `silence before the cue, ${before} dB`);
+      assert.ok(afterwards < -60, `silence after its duration, ${afterwards} dB`);
+    } finally {
+      await restore();
+      await setDuration('b', 0.5);
+      h.store.setClipsProvider(async () => ({}));
+      await rm(path.join(dir, 'assets', 'talk.mp4'), { force: true });
+      await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+    }
+  });
+
+  it(
+    'cancels a render while it reads the sound of a clip, within seconds, and leaves no file behind',
+    { timeout: 60_000 },
+    async () => {
+      const dir = h.store.dir(id);
+      await mkdir(path.join(dir, 'assets'), { recursive: true });
+      await run('ffmpeg', [
+        ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=2'],
+        ...['-f', 'lavfi', '-i', 'sine=duration=2', '-pix_fmt', 'yuv420p', '-shortest', path.join(dir, 'assets', 'talk.mp4')],
+      ]);
+      // The real ffmpeg, except for the read of the clip's sound, which says it started and then hangs.
+      const wrapper = path.join(dir, 'ffmpeg-slow-clip-sound');
+      const started = `${wrapper}.started`;
+      await writeFile(
+        wrapper,
+        `#!/bin/sh
+case "$*" in
+  *s16le*) touch "${started}"; exec sleep 30 ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const local = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+      h.store.setClipsProvider((project) => local.sync(project));
+      const restore = await withSounds({ b: "[{ at: 0.1, clip: '/talk.mp4', duration: 0.3 }]" });
+      const slow = new FfmpegRenderService({
+        config: { ...h.config, ffmpegPath: wrapper },
+        store: h.store,
+        music,
+        clips,
+        voiceOver,
+        hub,
+      });
+      try {
+        await local.whenIdle(id);
+        const rendersDir = path.join(dir, 'renders');
+        const existing = await readdir(rendersDir).catch(() => [] as string[]);
+        const [queued] = await slow.start(id, { formats: ['16:9'], quality: 'draft' });
+        while (!(await stat(started).catch(() => null))) await new Promise((resolve) => setTimeout(resolve, 20));
+        const cancelledAt = Date.now();
+        slow.cancel(queued.id);
+        const job = await slow.wait(queued.id);
+        assert.equal(job.status, 'cancelled', job.error ?? job.status);
+        assert.ok(Date.now() - cancelledAt < 5_000, 'ffmpeg is killed, not waited for');
+        const left = (await readdir(rendersDir)).filter((n) => !existing.includes(n) && /\.(part|mp4|wav)$/.test(n));
+        assert.deepEqual(left, []);
+        const tracks = await readdir(path.join(dir, '.cadence', 'sounds')).catch(() => [] as string[]);
+        assert.deepEqual(
+          tracks.filter((n) => n.startsWith(queued.id)),
+          [],
+        );
+      } finally {
+        await restore();
+        h.store.setClipsProvider(async () => ({}));
+        await rm(path.join(dir, 'assets', 'talk.mp4'), { force: true });
+        await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+        await rm(wrapper, { force: true });
+        await rm(started, { force: true });
+      }
+    },
+  );
 
   it('fails the render with the message of the frame when a scene declares an invalid cue', async () => {
     // Scene a's cue still gets a track written: the failed render removes it too.

@@ -45,8 +45,18 @@ const click = (from: number, samples: number, gain = 1): Required<SoundCue> => (
   gain,
 });
 
+/** What the fake clip reader was asked for, in samples: [clip, first sample, samples]. */
+let reads: [string, number, number][] = [];
+/** A clip whose sample n (from its start) is n + 1, so a sample tells which part of the clip it comes from. */
+const readClip = async (clip: string, from: number, duration: number) => {
+  const first = Math.round(from * SR);
+  reads.push([clip, first, Math.round(duration * SR)]);
+  return Int16Array.from({ length: Math.round(duration * SR) }, (_, i) => first + i + 1);
+};
+
 async function track(cues: Required<SoundCue>[], from: number, duration: number): Promise<Int16Array | null> {
-  const file = await soundTrack({ cues, from, duration, library, file: output });
+  reads = [];
+  const file = await soundTrack({ cues, from, duration, library, file: output, readClip });
   if (!file) return null;
   const pcm = readWav(await fs.readFile(file));
   assert.equal(pcm.sampleRate, SR);
@@ -72,6 +82,7 @@ test('lands the peak of a real library sound on `at`', async () => {
     duration: 1,
     library: real,
     file: output,
+    readClip,
   });
   const { samples } = readWav(await fs.readFile(file!));
   let loudest = 0;
@@ -114,13 +125,13 @@ test('gives no track when no cue is heard in the range', async () => {
 });
 
 test('writes the track atomically to the file it is given', async () => {
-  assert.equal(await soundTrack({ cues: [click(0, 100)], from: 0, duration: 1, library, file: output }), output);
+  assert.equal(await soundTrack({ cues: [click(0, 100)], from: 0, duration: 1, library, file: output, readClip }), output);
   assert.deepEqual(await fs.readdir(cache), ['job.wav']);
   assert.equal(readWav(await fs.readFile(output)).samples[100], 1);
 });
 
 test('writes a 16-bit mono WAV whose bytes are its header and its little-endian samples', async () => {
-  const file = (await soundTrack({ cues: [click(0, 100, 0.5)], from: 0, duration: 0.01, library, file: output }))!;
+  const file = (await soundTrack({ cues: [click(0, 100, 0.5)], from: 0, duration: 0.01, library, file: output, readClip }))!;
   const samples = Array.from({ length: 441 }, (_, i) => (i < 100 ? 0 : Math.round((i - 99) * 0.5)));
   const expected = Buffer.alloc(44 + 882);
   expected.write('RIFF', 0, 'ascii');
@@ -142,23 +153,141 @@ test('writes a 16-bit mono WAV whose bytes are its header and its little-endian 
 test('fails naming the library file that is missing, without its folder', async () => {
   setLanguage('en');
   await fs.rm(path.join(library, 'pop.wav'));
-  await assert.rejects(soundTrack({ cues: [{ at: 0.5, sound: 'pop', gain: 1 }], from: 0, duration: 1, library, file: output }), {
-    message: 'Sound effect not found: pop.wav',
-  });
+  await assert.rejects(
+    soundTrack({ cues: [{ at: 0.5, sound: 'pop', gain: 1 }], from: 0, duration: 1, library, file: output, readClip }),
+    {
+      message: 'Sound effect not found: pop.wav',
+    },
+  );
 });
 
 test('refuses a library file at another sample rate, which would play at the wrong speed', async () => {
   setLanguage('en');
   await fs.writeFile(path.join(library, 'click.wav'), writeWav({ sampleRate: 48000, samples: RAMP }));
-  await assert.rejects(soundTrack({ cues: [click(0, 100)], from: 0, duration: 1, library, file: output }), {
+  await assert.rejects(soundTrack({ cues: [click(0, 100)], from: 0, duration: 1, library, file: output, readClip }), {
     message: 'Sound effect in the wrong format: click.wav (44100 Hz expected)',
   });
+});
+
+/** A clip cue heard from `samples` samples after the range start, for `length` samples of the clip from sample `first`. */
+const clipCue = (from: number, samples: number, first: number, length: number, gain = 1): Required<SoundCue> => ({
+  at: from + samples / SR,
+  clip: 'demo/talk.mp4',
+  from: first / SR,
+  duration: length / SR,
+  gain,
+});
+
+test('places a clip cue on `at`, from its `from`, for its duration, scaled by its gain', async () => {
+  const samples = (await track([clipCue(0, 11025, 4410, 441), clipCue(0, 22050, 100, 200, 0.5)], 0, 1))!;
+  assert.deepEqual([samples[11024], samples[11025], samples[11025 + 440], samples[11025 + 441]], [0, 4411, 4851, 0]);
+  assert.deepEqual([samples[22049], samples[22050], samples[22050 + 199], samples[22050 + 200]], [0, 51, 150, 0]);
+  assert.deepEqual(reads, [['demo/talk.mp4', 100, 4751]]);
+});
+
+test('reads parts of one clip less than 30 s apart at once, and farther parts and other clips apart', async () => {
+  const other = { ...clipCue(0, 3000, SR, 441), clip: 'demo/other.mp4' };
+  // 20 s after the first part: one read; 60 s: a read of its own.
+  const cues = [clipCue(0, 2000, 60 * SR, 441), clipCue(0, 1000, 20 * SR, 441), clipCue(0, 0, 0, 441), other];
+  const samples = (await track(cues, 0, 1))!;
+  assert.deepEqual(reads, [
+    ['demo/other.mp4', SR, 441],
+    ['demo/talk.mp4', 0, 20 * SR + 441],
+    ['demo/talk.mp4', 60 * SR, 441],
+  ]);
+  // The fake clip's samples wrap at 16 bits like the WAV's.
+  const at = (n: number) => Int16Array.of(n + 1)[0];
+  assert.deepEqual(
+    [samples[0], samples[440], samples[1000], samples[1440], samples[2000], samples[3000], samples[3441]],
+    [at(0), at(440), at(20 * SR), at(20 * SR + 440), at(60 * SR), at(SR), 0],
+  );
+});
+
+test('many cues spread over a long clip never ask more than 600 s per read', async () => {
+  // One cue every 29 s of an hour-long clip: each is near the next, but one read for all of them would hold the hour.
+  const cues = Array.from({ length: 121 }, (_, k) => clipCue(0, k * 100, 29 * k * SR, 441));
+  const asked: number[] = [];
+  const counting = async (_clip: string, _from: number, duration: number) => (asked.push(duration), new Int16Array(0));
+  await soundTrack({ cues, from: 0, duration: 1, library, file: output, readClip: counting });
+  assert.ok(Math.max(...asked) <= 600, `${Math.max(...asked)} s`);
+  // 21 cues fit in 600 s, so 6 reads for 121 cues.
+  assert.equal(asked.length, 6);
+});
+
+test('parts of one clip spanning exactly 600 s share one read; one more sample starts another', async () => {
+  // Every 29 s from 0 to 580 s, then 599.5 s: each part is near the next, and 22050 samples are exactly 0.5 s.
+  const part = (from: number, samples = 22050): Required<SoundCue> => ({
+    at: 0,
+    clip: 'demo/talk.mp4',
+    from,
+    duration: samples / SR,
+    gain: 1,
+  });
+  const near = Array.from({ length: 21 }, (_, k) => part(29 * k));
+  for (const [last, reads] of [
+    [part(599.5), [600 * SR]],
+    [part(599.5, 22051), [580.5 * SR, 22051]],
+  ] as const) {
+    const asked: number[] = [];
+    const counting = async (_clip: string, _from: number, duration: number) => {
+      asked.push(Math.round(duration * SR));
+      return new Int16Array(0);
+    };
+    await soundTrack({ cues: [...near, last], from: 0, duration: 1, library, file: output, readClip: counting });
+    assert.deepEqual(asked, reads);
+  }
+});
+
+test('reads only the part of a clip cue the range hears, and sums it with the one-shots', async () => {
+  // Starts 100 samples before the range and ends 100 samples after it: the range hears samples 100 to 22149 of the cue.
+  const samples = (await track([clipCue(2, -100, 1000, 22250), click(2, 0)], 2, 0.5))!;
+  assert.deepEqual(reads, [['demo/talk.mp4', 1100, 22050]]);
+  assert.deepEqual(
+    [samples[0], samples[1], samples[440], samples[441], samples.at(-1)],
+    [1101 + 1, 1102 + 2, 1541 + 441, 1542, 23150],
+  );
+});
+
+test('reads no clip cue the range does not hear, and an identical part once', async () => {
+  const same = [clipCue(0, 100, 0, 441), clipCue(0, 5000, 0, 441, 0.5)];
+  // Ends right before the range, starts right after it.
+  const unheard = [clipCue(0, -441, 0, 441), clipCue(0, 22050, 0, 441)];
+  const samples = (await track([...unheard, ...same], 0, 0.5))!;
+  assert.deepEqual(reads, [['demo/talk.mp4', 0, 441]]);
+  assert.deepEqual([samples[100], samples[100 + 440], samples[5000], samples[5000 + 440]], [1, 441, 1, 221]);
+  assert.equal(await track(unheard, 0, 0.5), null);
+  assert.deepEqual(reads, []);
+});
+
+test('a clip whose sound ends before its video leaves the rest of the cue to the other sounds', async () => {
+  // ffmpeg gives what the file holds: a sound track shorter than the video is read shorter than asked.
+  const short = async (clip: string, from: number, duration: number) => (await readClip(clip, from, duration)).subarray(0, 100);
+  const file = await soundTrack({
+    cues: [clipCue(0, 0, 0, 441), click(0, 0)],
+    from: 0,
+    duration: 0.5,
+    library,
+    file: output,
+    readClip: short,
+  });
+  const samples = readWav(await fs.readFile(file!)).samples;
+  assert.deepEqual([samples[99], samples[100], samples[200]], [100 + 100, 101, 201]);
+});
+
+test('fails with the error of the clip reader, and writes no track', async () => {
+  const failing = () => Promise.reject(new Error('Could not read the sound of assets/demo/talk.mp4: broken'));
+  await assert.rejects(
+    soundTrack({ cues: [clipCue(0, 0, 0, 441)], from: 0, duration: 1, library, file: output, readClip: failing }),
+    { message: 'Could not read the sound of assets/demo/talk.mp4: broken' },
+  );
+  assert.deepEqual(await fs.readdir(cache).catch(() => []), []);
 });
 
 /** A render page whose `sounds()` gives `value`, or throws `error`. */
 const page = (value: unknown, error?: Error) =>
   ({ evaluate: () => (error ? Promise.reject(error) : Promise.resolve(value)) }) as unknown as Page;
-const project = (scenes: number) => ({ duration: 2, scenes: Array.from({ length: scenes }, () => ({})) }) as ProjectState;
+const project = (scenes: number, clips: ProjectState['clips'] = {}) =>
+  ({ duration: 2, scenes: Array.from({ length: scenes }, () => ({})), clips }) as ProjectState;
 
 test('caps the cues of the whole video at the per-scene maximum times the number of scenes', async () => {
   setLanguage('en');
@@ -177,6 +306,25 @@ test('caps the cues of a video of many scenes at a fixed total, which keeps the 
   assert.equal((await soundCues(page(cues(MAX_VIDEO_SOUND_CUES)), project(20))).length, MAX_VIDEO_SOUND_CUES);
   await assert.rejects(soundCues(page(cues(MAX_VIDEO_SOUND_CUES + 1)), project(20)), {
     message: `Invalid sounds in the video: sounds() returns more than ${MAX_VIDEO_SOUND_CUES} cues`,
+  });
+});
+
+test('checks the clip cues of the video against the clips of the project', async () => {
+  setLanguage('en');
+  const talk = {
+    status: 'ready',
+    key: 'talk-0123456789ab',
+    fps: 30,
+    frames: 90,
+    width: 32,
+    height: 32,
+    duration: 3,
+    audio: true,
+  } as const;
+  const cues = [{ at: 1, clip: 'demo/talk.mp4', from: 0.5, duration: 0.5, gain: 0.8 }];
+  assert.deepEqual(await soundCues(page(cues), project(1, { 'demo/talk.mp4': talk })), cues);
+  await assert.rejects(soundCues(page(cues), project(1, { 'demo/talk.mp4': { ...talk, audio: false } })), {
+    message: 'Invalid sounds in the video: sound cue 0: the video assets/demo/talk.mp4 has no sound',
   });
 });
 

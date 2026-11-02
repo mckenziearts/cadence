@@ -1,17 +1,19 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { getEventListeners } from 'node:events';
 import fs, { type FileHandle } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, test, type TestContext } from 'node:test';
 import { promisify } from 'node:util';
-import { type FfmpegRun, JpegSplitter, LocalClipService } from '../../server/clips/service';
+import { type FfmpegRun, JpegSplitter, LocalClipService, readClipAudio } from '../../server/clips/service';
 import type { Hub } from '../../server/contracts';
 import { FileAssetStore } from '../../server/store/assets';
 import { m } from '../../server/i18n';
 import { FileProjectStore } from '../../server/store/projects';
 import type { ClipState, ServerEvent } from '../../src/shared/types';
+import { SR } from '../../server/music/synth';
 import { hasFfmpeg } from '../music/synth';
 import { makeRoot } from './helpers';
 
@@ -908,5 +910,145 @@ describe('clip frame cache', () => {
       status: 'error',
       error: m().media.ffmpegStart(bin, `spawn ${bin} ENOENT`),
     });
+  });
+});
+
+describe('readClipAudio', { skip: !hasFfmpeg && 'ffmpeg introuvable', timeout: 60_000 }, () => {
+  async function project(t: TestContext): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-clip-sound-'));
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+    await fs.mkdir(path.join(dir, 'assets'));
+    return dir;
+  }
+  const rms = (samples: Int16Array, from: number, to: number) => {
+    const part = samples.subarray(Math.round(from * SR), Math.round(to * SR));
+    return Math.sqrt(part.reduce((sum, s) => sum + s * s, 0) / part.length);
+  };
+
+  test('reads the asked part of the sound, mono at the sounds rate, from the file given as fd 3', async (t) => {
+    const dir = await project(t);
+    // Silent for 1 s, then a 440 Hz sine: what is read from 0.5 s is half silence, half sine.
+    await promisify(execFile)('ffmpeg', [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=2'],
+      ...['-f', 'lavfi', '-i', "aevalsrc='if(gte(t,1),0.5*sin(2*PI*440*t),0)':s=48000:c=stereo:d=2"],
+      ...['-pix_fmt', 'yuv420p', '-shortest', path.join(dir, 'assets', 'talk.mp4')],
+    ]);
+    const samples = await readClipAudio('ffmpeg', dir, 'talk.mp4', 0.5, 1);
+    assert.ok(Math.abs(samples.length - SR) < SR * 0.03, String(samples.length));
+    assert.ok(rms(samples, 0.05, 0.4) < 30, String(rms(samples, 0.05, 0.4)));
+    // A sine of amplitude 0.5 has an RMS of 0.5 / sqrt(2) of full scale.
+    assert.ok(Math.abs(rms(samples, 0.6, 0.95) - (0.5 / Math.SQRT2) * 32767) < 1500, String(rms(samples, 0.6, 0.95)));
+  });
+
+  test('a time JavaScript writes in exponent form still reaches ffmpeg as seconds', async (t) => {
+    const dir = await project(t);
+    await promisify(execFile)('ffmpeg', [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=1'],
+      ...['-f', 'lavfi', '-i', 'sine=duration=1', '-pix_fmt', 'yuv420p', '-shortest', path.join(dir, 'assets', 'talk.mp4')],
+    ]);
+    const samples = await readClipAudio('ffmpeg', dir, 'talk.mp4', 1e-7, 0.5);
+    assert.ok(Math.abs(samples.length - SR / 2) < SR * 0.03, String(samples.length));
+  });
+
+  test('the demuxer is forced from the extension: an MP4 renamed .webm is refused', async (t) => {
+    const dir = await project(t);
+    // ffmpeg 8 already refuses an HLS or concat list given as fd 3; the forced demuxer is what refuses a mismatched file.
+    await promisify(execFile)('ffmpeg', [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'sine=duration=1', path.join(dir, 'assets', 'talk.webm.mp4')],
+    ]);
+    await fs.rename(path.join(dir, 'assets', 'talk.webm.mp4'), path.join(dir, 'assets', 'talk.webm'));
+    await assert.rejects(readClipAudio('ffmpeg', dir, 'talk.webm', 0, 1), (e: Error) =>
+      e.message.startsWith(m().media.render.clipSound('talk.webm', '')),
+    );
+  });
+
+  test('a link in place of the asset is not followed', async (t) => {
+    const dir = await project(t);
+    const outside = await project(t);
+    await promisify(execFile)('ffmpeg', [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'sine=duration=1', path.join(outside, 'assets', 'real.m4a')],
+    ]);
+    await fs.symlink(path.join(outside, 'assets', 'real.m4a'), path.join(dir, 'assets', 'talk.mp4'));
+    await assert.rejects(readClipAudio('ffmpeg', dir, 'talk.mp4', 0, 1), (e: Error) => {
+      assert.equal(e.message, m().media.render.clipSound('talk.mp4', m().media.clips.unreadable('talk.mp4')));
+      assert.ok(!e.message.includes(dir));
+      return true;
+    });
+  });
+
+  test('a file whose timestamps squeeze a long sound gives no more than the asked duration', async (t) => {
+    const dir = await project(t);
+    // 20 s of sound stamped over 0.2 s: ffmpeg's -t lets all of it through.
+    await promisify(execFile)('ffmpeg', [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'sine=duration=20', '-af', 'asetpts=PTS/100', '-c:a', 'aac'],
+      path.join(dir, 'assets', 'talk.mp4'),
+    ]);
+    const file = path.join(dir, 'assets', 'talk.mp4');
+    const raw = spawnSync(
+      'ffmpeg',
+      ['-v', 'error', '-ss', '0', '-t', '0.5', '-i', file, '-vn', '-ac', '1', '-ar', String(SR), '-f', 's16le', 'pipe:1'],
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
+    if (raw.stdout.length <= SR) return t.skip('this ffmpeg stops at -t on its own: nothing to cut');
+    const samples = await readClipAudio('ffmpeg', dir, 'talk.mp4', 0, 0.5);
+    assert.equal(samples.length, Math.round(0.5 * SR));
+  });
+
+  test('a read past the end of the sound gives what the file holds, without an error', async (t) => {
+    const dir = await project(t);
+    await promisify(execFile)('ffmpeg', [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=2'],
+      ...['-f', 'lavfi', '-i', 'sine=duration=2', '-pix_fmt', 'yuv420p', '-shortest', path.join(dir, 'assets', 'talk.mp4')],
+    ]);
+    const samples = await readClipAudio('ffmpeg', dir, 'talk.mp4', 1.5, 2);
+    assert.ok(Math.abs(samples.length - SR / 2) < SR * 0.05, String(samples.length));
+    assert.ok(rms(samples, 0.05, 0.4) > 2000, String(rms(samples, 0.05, 0.4)));
+  });
+
+  test(
+    'an ffmpeg that gives more than the asked duration is stopped once it is read, and the read keeps it',
+    { timeout: 10_000 },
+    async (t) => {
+      const dir = await project(t);
+      await fs.writeFile(path.join(dir, 'assets', 'talk.mp4'), 'never decoded');
+      // A sound without end: only the full buffer ends the read before the stall timer.
+      const ffmpeg = path.join(dir, 'ffmpeg');
+      await fs.writeFile(ffmpeg, '#!/bin/sh\nexec cat /dev/zero\n', { mode: 0o755 });
+      const samples = await readClipAudio(ffmpeg, dir, 'talk.mp4', 0, 0.5);
+      assert.equal(samples.length, Math.round(0.5 * SR));
+    },
+  );
+
+  test('a read leaves no abort listener on its signal, whether it succeeds or fails', async (t) => {
+    const dir = await project(t);
+    await fs.writeFile(path.join(dir, 'assets', 'talk.mp4'), 'never decoded');
+    const ffmpeg = path.join(dir, 'ffmpeg');
+    // A render reads every clip with the same signal: a listener left behind by each read would pile up.
+    const signal = new AbortController().signal;
+    for (const body of ['exec cat /dev/zero', 'echo broken >&2; exit 1']) {
+      await fs.writeFile(ffmpeg, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      await readClipAudio(ffmpeg, dir, 'talk.mp4', 0, 0.1, signal).catch(() => undefined);
+      assert.equal(getEventListeners(signal, 'abort').length, 0, body);
+    }
+  });
+
+  test('an abort stops the read, whether it comes before or after ffmpeg starts', async (t) => {
+    const dir = await project(t);
+    await fs.writeFile(path.join(dir, 'assets', 'talk.mp4'), 'never decoded');
+    // An ffmpeg that never answers: only the abort ends the read before the stall timer.
+    const ffmpeg = path.join(dir, 'ffmpeg');
+    await fs.writeFile(ffmpeg, '#!/bin/sh\ntouch "$0.started"\nexec sleep 30\n', { mode: 0o755 });
+    for (const running of [false, true]) {
+      await fs.rm(`${ffmpeg}.started`, { force: true });
+      const abort = new AbortController();
+      const read = readClipAudio(ffmpeg, dir, 'talk.mp4', 0, 1, abort.signal);
+      while (running && !(await fs.stat(`${ffmpeg}.started`).catch(() => null))) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const started = Date.now();
+      abort.abort();
+      await assert.rejects(read, { name: 'AbortError' });
+      assert.ok(Date.now() - started < 5000, `${running}: ${Date.now() - started} ms`);
+    }
   });
 });

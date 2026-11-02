@@ -1123,7 +1123,7 @@ describe('scene sounds', () => {
     await addScene('sounds-other', draw('#0000ff'));
     await h.store.syncCode(id);
     const page = await open({ scene: 'sounds-stale' });
-    assert.equal((await page.evaluate(() => window.__cadence!.sounds()))[0].sound, 'pop');
+    assert.deepEqual((await page.evaluate(() => window.__cadence!.sounds()))[0], { at: 0.25, sound: 'pop', gain: 1 });
     await page.evaluate(() => window.__cadence!.setScene('sounds-other'));
 
     await writeFile(

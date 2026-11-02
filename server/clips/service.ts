@@ -7,6 +7,7 @@ import type { Readable } from 'node:stream';
 import type { ClipInfo, ClipState } from '../../src/shared/types';
 import type { CadenceConfig, ClipService, Hub, ProjectStore } from '../contracts';
 import { m } from '../i18n';
+import { SR } from '../music/synth';
 import {
   createFileInside,
   KeyedMutex,
@@ -339,6 +340,79 @@ function jpegSize(frame: Buffer): { width: number; height: number } | null {
     }
   }
   return null;
+}
+
+/**
+ * The sound of assets/<rel> from `from` for `duration` seconds, as 16-bit samples at SR: read like the frames, from the
+ * file opened without following links and with the probe's forced demuxer. At most `duration` seconds are kept: ffmpeg
+ * gives more than `-t` asks of a file whose timestamps squeeze a long sound into a short time. `signal` stops ffmpeg.
+ */
+export async function readClipAudio(
+  ffmpegPath: string,
+  dir: string,
+  rel: string,
+  from: number,
+  duration: number,
+  signal?: AbortSignal,
+): Promise<Int16Array> {
+  const fail = (error: string) => new Error(m().media.render.clipSound(rel, error));
+  // A link or a folder swapped in since the listing: the error names the asset, never the absolute path.
+  const input = await openFileNoFollow(dir, path.join(dir, 'assets', rel)).catch(() => {
+    throw fail(m().media.clips.unreadable(rel));
+  });
+  try {
+    // Checked after the open: an abort that came during it has no listener to stop ffmpeg.
+    signal?.throwIfAborted();
+    // Fixed decimals: ffmpeg refuses the exponent form String() gives a tiny number (1e-7).
+    const source = [
+      '-hide_banner',
+      '-v',
+      'error',
+      '-protocol_whitelist',
+      'file',
+      '-ss',
+      from.toFixed(6),
+      '-t',
+      duration.toFixed(6),
+    ];
+    // ponytail: downmixed to mono like the rest of the sounds track, so a stereo clip loses its image; a stereo sounds
+    // track if that matters.
+    const output = ['-vn', '-ac', '1', '-ar', String(SR), '-f', 's16le', 'pipe:1'];
+    const proc = spawnFfmpeg(ffmpegPath)([...source, '-f', DEMUXERS[extension(rel)], '-i', '/dev/fd/3', ...output], input);
+    let stderr = '';
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+      if (stderr.length > STDERR_LIMIT) stderr = stderr.slice(-STDERR_LIMIT / 2);
+    });
+    const timer = setTimeout(() => proc.kill(), STALL_MS);
+    signal?.addEventListener('abort', proc.kill, { once: true });
+    const samples = new Int16Array(Math.round(duration * SR));
+    // Bytes, not samples: a chunk may end in the middle of one.
+    const bytes = new Uint8Array(samples.buffer);
+    let filled = 0;
+    let code: number | null;
+    try {
+      for await (const chunk of proc.stdout as AsyncIterable<Buffer>) {
+        const taken = Math.min(chunk.length, bytes.length - filled);
+        bytes.set(chunk.subarray(0, taken), filled);
+        filled += taken;
+        if (filled === bytes.length) {
+          proc.kill();
+          break;
+        }
+      }
+      code = await proc.exit;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', proc.kill);
+    }
+    signal?.throwIfAborted();
+    if (code !== 0 && filled < bytes.length) throw fail(lastLine(stderr) ?? m().media.clips.unreadable(rel));
+    // s16le read as the platform's Int16Array: every platform Cadence runs on is little-endian.
+    return samples.subarray(0, filled >> 1);
+  } finally {
+    await input.close();
+  }
 }
 
 function extension(file: string): string {

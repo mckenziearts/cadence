@@ -47,6 +47,7 @@ test('API.md warns about what renders do differently from the preview', () => {
     'Its cost grows with the extent of its children',
     'a cut is invisible below 0.05 %',
     'gate it with `music.hasTrack`',
+    'the preview plays only its first 10 minutes',
   ]) {
     assert.ok(api.replace(/\s+/g, ' ').includes(rule), rule);
   }

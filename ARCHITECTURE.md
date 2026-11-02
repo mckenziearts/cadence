@@ -943,6 +943,7 @@ POST   /api/projects/:id/assets                    ?name=, body = the file (raw)
                                                    500 MiB videos, 10 MiB Lottie, 1536 MiB per project (413)
 DELETE /api/projects/:id/assets                    ?path= 
 GET    /api/projects/:id/assets/file               ?path=, answers file
+GET    /api/projects/:id/clips/audio               ?path=, the sound of a ready clip (its first 10 minutes) as mono 44.1 kHz audio/wav, 404 without one
 POST   /api/projects/:id/refs                      CaptureRefInput, answers AssetInfo
 GET    /api/projects/:id/capture-hosts             { hosts }: the hosts approved for the agent's captures
 POST   /api/projects/:id/capture-hosts             { host } as URL.host writes it (400 otherwise), answers { hosts }
@@ -1011,13 +1012,26 @@ that starts before the range is trimmed, one that runs past it is cut. When no c
 at all; otherwise the track is one more `-filter_complex` input, alone or mixed with the music and the voice by
 `amix=normalize=0`, through the same limiter and fade, so a video with neither music nor voice-over still gets audio.
 A missing or non-44.1 kHz library file fails the render naming it.
+A clip cue (`{ at, clip, from, duration, gain }`) is checked against `project.clips` (ready, with a sound track; `from`
+inside it, `duration` cut at the clip's and the scene's end) and starts on `at`. The track reads only the part of it
+the range hears, with `readClipAudio` (`server/clips/service.ts`): ffmpeg on the asset opened without following links,
+as fd 3, with the probe's forced demuxer and `-ss from -t duration`, downmixed to mono 44.1 kHz 16-bit. ffmpeg gives
+more than `-t` asks of a file whose timestamps squeeze a long sound, so the read keeps at most `duration` and stops it;
+parts of one clip less than 30 s apart share one read of at most 600 s, and a cancelled render stops it. The clip cues
+of a scene are heard at most 8 times its length in all, which bounds the mix. A read that fails fails the render naming
+the asset, never its absolute path.
 The preview and Present play the same cues: the frame posts `{type: 'sounds', sceneId, cues}` whenever they change
 (scene seconds in scene mode, video seconds for the whole video), and the editor ignores a message for a scene it does not
 show and checks the cues again with the same caps. `src/editor/lib/sounds.ts` decodes the library once per page, then
 at each playback frame schedules on Web Audio the cues of the next 0.15 s, through one limiter, at most 64 sounding at
 once. A cue whose peak the playhead passed (the first frame after play, a seek, a loop or a dropped frame) lands at
 most 0.1 s after its cue; later than that it is skipped, so a seek past a cue's peak skips it in the preview, where the
-MP4 mixes its tail. Pause, mute and a change of cues stop the sounds already playing.
+MP4 mixes its tail. Pause, mute and a change of cues stop the sounds already playing. A clip cue is checked against
+the project's clips too; its sound is fetched as a WAV from `/clips/audio` (a video's AAC does not decode in every
+Chromium build; the route stops its ffmpeg when the request is dropped) on the first plan that needs it and decoded whole
+(once per clip key for every player of the page, the preview's and Present's, dropped when the clip leaves the project or
+when no player's shown scene cues it any more, not while a frame reloads), and it starts from where the playhead is in it:
+a seek, a late tick or a slow decode joins it in time. The preview plays a clip's first 10 minutes and cuts a cue there.
 Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.<mp4|webm|mov|gif|png>`, or the folder
 `<project>-<16x9>-<YYYYMMDD-HHmmss>/` of a PNG sequence. ffmpeg writes `<name>.part` (a folder for a sequence), renamed
 once the job is done; a cancel or a failure removes it, and one a killed process left (a file, or a folder named like a

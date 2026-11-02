@@ -52,6 +52,7 @@ export function Present() {
     () => sounds.show({ sceneId: null, duration: total, scenes: project.scenes.length }),
     [sounds, total, project.scenes.length],
   );
+  useEffect(() => sounds.setClips(project.id, project.clips), [sounds, project.id, project.clips]);
 
   // Fullscreen is requested by the button that opened this (it needs the click's user activation).
   useEffect(() => {

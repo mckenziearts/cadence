@@ -37,7 +37,7 @@ import type {
 } from '../../server/contracts';
 import { SseHub } from '../../server/hub';
 import { createEditorHandler } from '../../server/http';
-import { setLanguage } from '../../server/i18n';
+import { m, setLanguage } from '../../server/i18n';
 import { FileSettingsStore } from '../../server/settings';
 import { FileAssetStore } from '../../server/store/assets';
 import { FileBrandStore } from '../../server/store/brands';
@@ -45,11 +45,12 @@ import { FileCaptureHosts } from '../../server/store/captureHosts';
 import { FileProjectStore } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import { FileVersionStore } from '../../server/store/versions';
+import { SR } from '../../server/music/synth';
 import { FileUsageLog } from '../../server/usage';
 import { HttpError, pathExists, resolveInside } from '../../server/util';
 import { sidecarFile } from '../../server/voiceover/elevenlabs';
 import { LocalVoiceOverService } from '../../server/voiceover/service';
-import { writeWav } from '../../server/voiceover/wav';
+import { readWav, writeWav } from '../../server/voiceover/wav';
 import {
   DEFAULT_FEATURES,
   MODELS,
@@ -2007,6 +2008,106 @@ test(
       setLanguage('fr');
     }
     assert.deepEqual(await fs.readdir(path.join(store.dir('demo'), 'assets')), ['refs']);
+  },
+);
+
+test(
+  'clip audio: the sound of a prepared video as a mono WAV at the sounds rate, 404 for a clip without one',
+  { skip: !hasFfmpeg && 'ffmpeg introuvable' },
+  async () => {
+    const file = path.join(store.dir('demo'), 'assets', 'talk.mp4');
+    const made = spawnSync('ffmpeg', [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=1'],
+      ...['-f', 'lavfi', '-i', 'sine=duration=1', '-pix_fmt', 'yuv420p', '-shortest', file],
+    ]);
+    assert.equal(made.status, 0, String(made.stderr));
+    const info = { key: 'k', fps: 10, frames: 10, width: 64, height: 48, duration: 1 };
+    store.setClipsProvider(async () => ({
+      'talk.mp4': { status: 'ready', ...info, audio: true },
+      'mute.mp4': { status: 'ready', ...info, audio: false },
+      'wait.mp4': { status: 'preparing' },
+    }));
+    const res = await call('GET', '/api/projects/demo/clips/audio?path=talk.mp4');
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'audio/wav');
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    const wav = Buffer.from(await res.arrayBuffer());
+    assert.equal(wav.readUInt16LE(22), 1);
+    const { sampleRate, samples } = readWav(wav);
+    assert.equal(sampleRate, SR);
+    assert.ok(Math.abs(samples.length - SR) < SR * 0.03, String(samples.length));
+    // lavfi's sine has an amplitude of 1/8: an RMS of 0.125 / sqrt(2) of full scale.
+    const rms = Math.sqrt(samples.reduce((sum, s) => sum + s * s, 0) / samples.length);
+    assert.ok(rms > 2000, String(rms));
+    for (const name of ['mute.mp4', 'wait.mp4', 'nope.mp4', 'constructor']) {
+      assert.deepEqual(await json('GET', `/api/projects/demo/clips/audio?path=${name}`), {
+        status: 404,
+        body: { error: m().media.clips.noSound(name) },
+      });
+    }
+    assert.equal((await json('GET', '/api/projects/demo/clips/audio')).status, 400);
+    assert.equal((await json('GET', '/api/projects/nope/clips/audio?path=talk.mp4')).status, 404);
+  },
+);
+
+/** An ffmpeg that runs `body` (sh) and keeps the arguments it was given in `<file>.args`. */
+async function scriptedFfmpeg(file: string, body: string): Promise<string> {
+  await fs.writeFile(file, `#!/bin/sh\necho "$*" > "$0.args"\n${body}\n`, { mode: 0o755 });
+  return file;
+}
+
+test('clip audio: reads at most the first 10 minutes of a clip, and a failed read names the asset, not its folder', async (ctx) => {
+  ctx.mock.method(console, 'error', () => undefined);
+  await fs.writeFile(path.join(store.dir('demo'), 'assets', 'long.mp4'), 'not read');
+  const info = { key: 'k', fps: 10, frames: 36_000, width: 64, height: 48, duration: 3600 };
+  store.setClipsProvider(async () => ({ 'long.mp4': { status: 'ready', ...info, audio: true } }));
+  const real = t.config.ffmpegPath;
+  const ffmpeg = await scriptedFfmpeg(path.join(t.root, 'ffmpeg-args'), 'echo "Invalid data found" >&2; exit 1');
+  t.config.ffmpegPath = ffmpeg;
+  try {
+    const { status, body } = await json('GET', '/api/projects/demo/clips/audio?path=long.mp4');
+    assert.equal(status, 500);
+    assert.equal(body.error, m().api.internalError(m().media.render.clipSound('long.mp4', 'Invalid data found')));
+    assert.ok(!body.error.includes(store.dir('demo')), body.error);
+    assert.match(await fs.readFile(`${ffmpeg}.args`, 'utf8'), / -t 600\.000000 /);
+  } finally {
+    t.config.ffmpegPath = real;
+  }
+});
+
+test(
+  'clip audio: a connection the tab closes stops its ffmpeg at once, without an error in the log; a short clip is read whole',
+  { timeout: 10_000 },
+  async (ctx) => {
+    const logged = ctx.mock.method(console, 'error', () => undefined);
+    await fs.writeFile(path.join(store.dir('demo'), 'assets', 'long.mp4'), 'not read');
+    const info = { key: 'k', fps: 10, frames: 100, width: 64, height: 48, duration: 10 };
+    store.setClipsProvider(async () => ({ 'long.mp4': { status: 'ready', ...info, audio: true } }));
+    const real = t.config.ffmpegPath;
+    const ffmpeg = await scriptedFfmpeg(path.join(t.root, 'ffmpeg-slow'), 'touch "$0.started"; exec sleep 30');
+    t.config.ffmpegPath = ffmpeg;
+    // Through node-server, which aborts the request's signal with a string where app.fetch would give a DOMException.
+    let answered: Promise<unknown> = Promise.resolve();
+    const server = http.createServer(getRequestListener((req, env) => (answered = Promise.resolve(app.fetch(req, env)))));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const leave = new AbortController();
+      const url = `http://127.0.0.1:${port}/api/projects/demo/clips/audio?path=long.mp4`;
+      const asked = fetch(url, { signal: leave.signal });
+      while (!(await pathExists(`${ffmpeg}.started`))) await new Promise((resolve) => setTimeout(resolve, 20));
+      const left = Date.now();
+      leave.abort();
+      await assert.rejects(asked);
+      // The handler waits for ffmpeg to exit: it settles only once the process is gone.
+      await answered.catch(() => undefined);
+      assert.ok(Date.now() - left < 2_000, `${Date.now() - left} ms`);
+      assert.equal(logged.mock.callCount(), 0);
+      assert.match(await fs.readFile(`${ffmpeg}.args`, 'utf8'), / -t 10\.000000 /);
+    } finally {
+      server.close();
+      t.config.ffmpegPath = real;
+    }
   },
 );
 
