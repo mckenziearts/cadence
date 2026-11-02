@@ -1,7 +1,7 @@
 // The math behind the frame's text checks: WCAG contrast, the large-text threshold, and which findings come first.
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { contrastRatio, requiredRatio, worstFirst } from '../../src/frame/audit';
+import { contrastRatio, gifName, requiredRatio, worstFirst } from '../../src/frame/audit';
 import type { AuditFinding } from '../../src/shared/frameProtocol';
 import type { RGBA } from '../../src/runtime/index';
 
@@ -60,6 +60,19 @@ describe('worstFirst', () => {
     );
   });
 
+  test('a GIF in an <img> comes after hidden text and before contrast and the safe margins', () => {
+    const sorted = worstFirst([
+      finding('outsideSafe', 'margin'),
+      finding('contrast', 'faint', 1.5, 3),
+      finding('gif', 'spin.gif'),
+      finding('underCaptions', 'covered'),
+    ]);
+    assert.deepEqual(
+      sorted.map((f) => f.text),
+      ['covered', 'spin.gif', 'faint', 'margin'],
+    );
+  });
+
   test('contrast goes by how far it falls short of the ratio it needs, not by the raw ratio', () => {
     assert.deepEqual(
       worstFirst([finding('contrast', 'large', 2.9, 3), finding('contrast', 'small', 4.2, 4.5)]).map((f) => f.text),
@@ -73,5 +86,25 @@ describe('worstFirst', () => {
       worstFirst([finding('clipped', 'cut'), ...many]).map((f) => f.text),
       ['cut', 't0', 't1', 't2', 't3', 't4'],
     );
+  });
+});
+
+describe('gifName', () => {
+  test('the path under assets/ of an image URL ending in .gif, decoded, query and case ignored', () => {
+    assert.equal(gifName('http://p.localhost/@fs/home/a/demo/assets/loops/my%20spin.gif'), 'loops/my spin.gif');
+    assert.equal(gifName('http://p.localhost/@fs/home/a/demo/assets/spin.GIF?v=2#top'), 'spin.GIF');
+    assert.equal(gifName('http://p.localhost/images/spin.gif'), 'spin.gif');
+  });
+
+  test('null for any other image', () => {
+    assert.equal(gifName('http://p.localhost/@fs/home/a/demo/assets/logo.png'), null);
+    assert.equal(gifName('http://p.localhost/@fs/home/a/demo/assets/logo.png?file=a.gif'), null);
+    assert.equal(gifName('http://p.localhost/@fs/home/a/demo/assets/gif'), null);
+    assert.equal(gifName('data:image/gif;base64,R0lGODlhAQABAAAAACw='), null);
+    assert.equal(gifName(''), null);
+  });
+
+  test('gifName never throws on a lone percent sign in the path', () => {
+    assert.equal(gifName('http://a/@fs/h/demo/assets/100%.gif'), '100%.gif');
   });
 });

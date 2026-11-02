@@ -131,9 +131,9 @@ background: withAlpha(brand.colors.accent, 0.12)
   `square` falls back to `portrait`). `safe` = `{ top, right, bottom, left }` margins kept clear of social-app UI:
   220 / 60 / 380 / 60 in 9:16, 60 in 1:1 and 4:5, 72 in 16:9.
 - `asset(path): string`: URL of the project's `assets/<path>`: `<img src={asset('screens/home.png')} />`. Animated
-  GIF/WebP/SVG images freeze on their first frame in frames and renders (the preview may still play them): drive
-  motion from `t` instead (an image sequence, transforms).
-- Frame internals (never use in scenes): `SceneContext`, `BrandContext`, `setAssetBase`, `createMusic`.
+  GIF/WebP/SVG images freeze on their first frame in frames and renders (the preview may still play them): show
+  animated GIFs and videos with `<Clip>` (see Video clips and GIFs), drive other motion from `t`.
+- Frame internals (never use in scenes): `SceneContext`, `BrandContext`, `ClipContext`, `setAssetBase`, `createMusic`.
 
 ```tsx
 const { ui, colors } = useBrand();
@@ -531,6 +531,26 @@ const onSave = progress(t, 1.6, 1.8);                                  // the cu
     )}
   </MotionBlur>
 </div>
+```
+
+## Video clips and GIFs
+
+- `<Clip src="loops/spin.gif" time={t - 1.5} loop? fit? style? />`: a video or GIF of the project, never a `<video>`
+  (it plays by the wall clock). `src` is its path under `assets/`, like `asset()`. Shows the frame
+  `floor(time * fps)` of the frames Cadence extracted from it (the source's own rate, 60 fps at most), so it is a
+  pure function of `time`: offset it from the scene's `t` yourself. Before 0 it shows the first frame and past the
+  end it holds the last frame; `loop` wraps around instead. An `<img>` sized by `style` (its own pixel size
+  otherwise); `fit` (CSS `object-fit`, default 'contain') places the frame in that box.
+- Frames are opaque JPEG (no alpha) and the clip plays no sound.
+- An asset that is not a video or GIF, still being prepared (extracted after an upload: the preview updates when it
+  is ready, renders wait for it) or that failed to extract throws an error naming it; so does a frame that does not
+  load when the frame is captured.
+
+```tsx
+// A product demo recorded as a video, in a browser window, from 1.5 s into the scene.
+<BrowserFrame width={1280} height={800} url="acme.dev" style={{ position: 'absolute', left: 320, top: 140 }}>
+  <Clip src="demo/onboarding.mp4" time={t - 1.5} fit="cover" style={{ width: '100%', height: '100%' }} />
+</BrowserFrame>
 ```
 
 ## Seam checklist

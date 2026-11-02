@@ -35,3 +35,6 @@ export function createMusic(input: CreateMusicInput) {
 
 // The real component: its e2e test measures the pixels it composites.
 export { MotionBlur } from '../../../src/runtime/motionBlur';
+
+// The real component and context: the frame provides the clips, and the frame tests capture what it shows.
+export { Clip, ClipContext } from '../../../src/runtime/clip';

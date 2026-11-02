@@ -551,6 +551,20 @@ export default function A({ t, music }: SceneProps) {
     }
   });
 
+  it('fails the render with the message of the frame when a scene shows a clip the project does not have', async () => {
+    const restore = await withScenes(
+      `import { Clip } from 'cadence';\nexport default function Scene({ t }) {\n  return <Clip src="loops/none.gif" time={t} />;\n}\n`,
+    );
+    try {
+      const [queued] = await renders.start(id, { formats: ['16:9'], quality: 'draft' });
+      const job = await renders.wait(queued.id);
+      assert.equal(job.status, 'error');
+      assert.match(job.error!, /<Clip> : assets\/loops\/none\.gif n\u2019est ni une vid\u00e9o ni un GIF de ce projet/);
+    } finally {
+      await restore();
+    }
+  });
+
   it('keeps sounds over the music, the voice or both under the limiter ceiling', async () => {
     const dir = path.join(h.store.dir(id), 'sounds-test');
     await mkdir(dir, { recursive: true });

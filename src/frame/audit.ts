@@ -1,7 +1,8 @@
-// Text checks of a rendered frame for the agent (render_frames): text cut by its container, off the canvas, in the
-// safe margins, under the captions or too faint. Capture mode only: the stage sits at 0,0 at scale 1, so client rects
-// are canvas px. Reads layout and computed styles; the one write, a sheet that lets hit-tests see click-through text, is
-// undone before returning: capture pages render up to 150 frames each.
+// Checks of a rendered frame for the agent (render_frames): text cut by its container, off the canvas, in the safe
+// margins, under the captions or too faint, and GIFs drawn with <img>, which renders freeze on their first frame. Capture
+// mode only: the stage sits at 0,0 at scale 1, so client rects are canvas px. Reads layout and computed styles; the one
+// write, a sheet that lets hit-tests see click-through text, is undone before returning: capture pages render up to 150
+// frames each.
 // Straight from the module, not 'cadence': the frame e2e harness stands in a reduced runtime for it.
 import { parseColor, type RGBA } from '../runtime/color';
 import type { AuditFinding, AuditKind } from '../shared/frameProtocol';
@@ -20,7 +21,7 @@ const MAX_CONTRAST_CHECKS = 100;
 /** Fainter overlays (a tint, film grain) do not hide the text under them; tints are blended in. */
 const MIN_COVER_OPACITY = 0.1;
 const REPLACED = ['IMG', 'CANVAS', 'VIDEO', 'IFRAME', 'OBJECT', 'EMBED'];
-const ORDER: AuditKind[] = ['clipped', 'offCanvas', 'underCaptions', 'contrast', 'outsideSafe'];
+const ORDER: AuditKind[] = ['clipped', 'offCanvas', 'underCaptions', 'gif', 'contrast', 'outsideSafe'];
 
 interface Box {
   left: number;
@@ -60,6 +61,24 @@ export function worstFirst(findings: AuditFinding[]): AuditFinding[] {
   const rank = (f: AuditFinding) => ORDER.indexOf(f.kind);
   const shortfall = (f: AuditFinding) => (f.kind === 'contrast' ? f.ratio! / f.required! : 0);
   return [...findings].sort((a, b) => rank(a) - rank(b) || shortfall(a) - shortfall(b)).slice(0, MAX_FINDINGS);
+}
+
+/** The path under assets/ (else the file name) of an image URL whose path ends in .gif, or null. */
+export function gifName(src: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(src).pathname;
+  } catch {
+    return null;
+  }
+  if (!/\.gif$/i.test(pathname)) return null;
+  const at = pathname.lastIndexOf('/assets/');
+  const name = at < 0 ? pathname.slice(pathname.lastIndexOf('/') + 1) : pathname.slice(at + '/assets/'.length);
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
 }
 
 function color(value: string): RGBA | null {
@@ -359,5 +378,19 @@ function audit(stage: HTMLElement, spec: FormatSpec): AuditFinding[] {
     },
     ...group.contrast,
   }));
-  return worstFirst(findings);
+  return worstFirst([...findings, ...gifs(stage, canvas)]);
+}
+
+/** One finding per GIF file shown with <img>: the preview plays it by the wall clock, renders freeze its first frame. */
+function gifs(stage: HTMLElement, canvas: Box): AuditFinding[] {
+  const found = new Map<string, AuditFinding>();
+  for (const img of stage.querySelectorAll('img')) {
+    const name = gifName(img.src);
+    if (name === null || found.has(name) || img.closest('[data-cadence-decor]')) continue;
+    const r = img.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0 || !overlaps(r, canvas)) continue;
+    const box = { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+    found.set(name, { kind: 'gif', text: Array.from(name).slice(0, TEXT_CHARS).join(''), box });
+  }
+  return [...found.values()];
 }

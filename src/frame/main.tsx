@@ -8,6 +8,7 @@ import '@fontsource-variable/inter/wght-italic.css';
 import '@fontsource-variable/jetbrains-mono';
 import {
   BrandContext,
+  ClipContext,
   SceneContext,
   createMusic,
   setAssetBase,
@@ -26,6 +27,7 @@ import { parseSoundCues, videoSoundCues, type SceneSounds, type SoundCue, type S
 import { FORMATS, isFormatId, type FormatId, type FormatSpec, type ProjectState, type SceneState } from '../shared/types';
 import { auditStage } from './audit';
 import { Captions } from './captions';
+import { clipSources, decodeImages } from './clips';
 import { editorOrigins, postToEditor } from './editor';
 import { readSpectrum, spectrumFor, spectrumUrl } from './spectrum';
 import { pickScene, type Picked } from './pick';
@@ -92,6 +94,8 @@ let loadedGeneration = 0;
 let scenes = new Map<string, LoadedScene>();
 /** The band levels of the selected track, loaded with the project; null without music or while it is analysed. */
 let spectrum: MusicSpectrumData | null = null;
+/** What <Clip> shows of each asset, from the loaded project. */
+let clips = clipSources('', {}, texts);
 const musicCache = new Map<string, Music>();
 const voiceOverCache = new Map<string, VoiceOverInfo>();
 /** Per scene and format, like the props `sounds()` gets; cleared with the music on every load. */
@@ -288,6 +292,7 @@ async function load(): Promise<void> {
   data = next;
   spectrum = nextSpectrum;
   scenes = nextScenes;
+  clips = clipSources(next.project.dir, next.project.clips, texts);
   // Scenes pick their copy with brand.language: the project's setting wins (a language change is no code change).
   kit = brandKit && { ...brandKit, language: next.project.language ?? brandKit.language };
   loadedGeneration = next.project.codeGeneration;
@@ -485,9 +490,11 @@ function Stage(props: { spec: FormatSpec; view: View }) {
             ) : (
               <BrandContext.Provider value={layer.props.brand}>
                 <SceneContext.Provider value={layer.props}>
-                  <Boundary key={layer.key} sceneId={layer.scene.id} label={layer.label}>
-                    <layer.Comp {...layer.props} />
-                  </Boundary>
+                  <ClipContext.Provider value={clips}>
+                    <Boundary key={layer.key} sceneId={layer.scene.id} label={layer.label}>
+                      <layer.Comp {...layer.props} />
+                    </Boundary>
+                  </ClipContext.Provider>
                 </SceneContext.Provider>
               </BrandContext.Provider>
             )}
@@ -546,32 +553,32 @@ function renderAt(t: number): FrameRenderResult {
     const sounds = soundsOf(project, l.scene, spec);
     if ('error' in sounds) errors.push(`${texts.soundsError(l.label)}\n${sounds.error}`);
   }
+  report(errors);
+  return { errors, sceneId: picked?.scene.id ?? null, localTime: picked?.local ?? 0 };
+}
+
+function report(errors: string[]): void {
   lastErrors = errors;
   const signature = errors.join('\n\u0000\n');
   if (signature !== lastPosted) {
     lastPosted = signature;
     post({ source: 'cadence-frame', type: 'errors', errors });
   }
-  return { errors, sceneId: picked?.scene.id ?? null, localTime: picked?.local ?? 0 };
 }
 
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-/** Wait until what was rendered is what gets painted: fonts loaded, images decoded, two frames presented. */
-async function settle(): Promise<void> {
+/**
+ * Wait until what was rendered is what gets painted: fonts loaded, images decoded, two frames presented. Returns the
+ * errors of clip frames that did not decode: a missing or damaged frame would be captured blank.
+ */
+async function settle(): Promise<string[]> {
   void document.body.offsetHeight; // style + layout now, so the fonts this frame needs start loading
   await document.fonts.ready;
-  const images = Array.from(document.images).filter((img) => decodedSrc.get(img) !== img.src);
-  await Promise.all(
-    images.map((img) =>
-      img.decode().then(
-        () => decodedSrc.set(img, img.src),
-        () => undefined,
-      ),
-    ),
-  );
+  const failed = await decodeImages(document.images, decodedSrc, texts);
   await nextFrame();
   await nextFrame();
+  return failed;
 }
 
 // Public API (headless capture) and postMessage bridge (editor)
@@ -589,8 +596,11 @@ const api: FrameApi = {
   seek: (t) =>
     serial(async () => {
       const result = renderAt(t);
-      await settle();
-      return result;
+      const failed = await settle();
+      if (failed.length === 0) return result;
+      const errors = [...result.errors, ...failed];
+      report(errors);
+      return { ...result, errors };
     }),
   reload: (generation = 0) =>
     serial(async () => {

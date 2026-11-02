@@ -134,6 +134,7 @@ const FINDING_LABELS: Record<Exclude<AuditKind, 'contrast'>, string> = {
   offCanvas: 'partly off the canvas',
   outsideSafe: 'in the safe margins',
   underCaptions: 'under the captions',
+  gif: 'animated GIF in an <img>, frozen on its first frame in renders: show it with <Clip src time>',
 };
 
 /** The text is JSON-quoted: scene text cannot pass for another line of the summary. */

@@ -27,6 +27,7 @@ import { sceneTimeline } from '../../../server/store/projects';
 import { HttpError, KeyedMutex, pathExists, readJson, sha256, shortHash } from '../../../server/util';
 import type {
   BrandFile,
+  ClipState,
   MusicAnalysis,
   ProjectFile,
   ProjectState,
@@ -49,6 +50,8 @@ export class FixtureProjectStore implements ProjectStore {
   readonly voiceOverLines = new Map<string, VoiceOverLine[]>();
   /** ProjectState.musicGrid and music.spectrum, per project with music: none while its analysis runs. */
   readonly analysedMusic = new Map<string, AnalysedMusic>();
+  /** ProjectState.clips: none unless a test sets a provider, like the real store's setClipsProvider. */
+  clipsOf: (id: string) => Promise<Record<string, ClipState>> = async () => ({});
   private hashes = new Map<string, string>();
   private generations = new Map<string, number>();
   private invalidate: (dirs: string[]) => void = () => undefined;
@@ -117,7 +120,7 @@ export class FixtureProjectStore implements ProjectStore {
       voiceOverPending: [],
       voiceOverError: null,
       captions: file.captions ?? false,
-      clips: {},
+      clips: await this.clipsOf(id),
       codeGeneration: this.generation(id),
       createdAt: file.createdAt,
       updatedAt: file.updatedAt,
@@ -169,7 +172,9 @@ export class FixtureProjectStore implements ProjectStore {
   writeArtDirection = unused;
   setMusicGridProvider = unused;
   setVoiceOverProvider = unused;
-  setClipsProvider = unused;
+  setClipsProvider(fn: (id: string) => Promise<Record<string, ClipState>>): void {
+    this.clipsOf = fn;
+  }
   adopt = unused;
 }
 

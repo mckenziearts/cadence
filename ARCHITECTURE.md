@@ -16,7 +16,8 @@ This document is the contract between modules. Shared types: `src/shared/types.t
 ## Principles
 
 1. **Every frame is a pure function of time.** Scenes render from props only. No state/effects-driven animation,
-   timers, `requestAnimationFrame`, `Date.now()`, `Math.random()`, CSS transitions/animations, videos, network.
+   timers, `requestAnimationFrame`, `Date.now()`, `Math.random()`, CSS transitions/animations, `<video>`, network.
+   Videos and GIFs go through `<Clip>`, which shows the frame extracted for its time (see "Clip frames").
    Frames are rendered out of order, one at a time, in several browsers at once.
 2. **What you see is what renders.** The editor preview, thumbnails, the agent's frames, seam checks and the MP4
    renderer all use the same page (`frame.html`).
@@ -363,8 +364,8 @@ scenes' errors and the incoming scene's id; the text checks skip frames inside a
 `{ ...kit, language }` to scenes, and the agent's turn context names it.
 
 Caches kept on disk (thumbnails, seams) are keyed by a random run id per service instance plus the code generation,
-because generations restart at 0 in every process; the scene signature also covers the scene's `codeVersion` and the
-project language.
+because generations restart at 0 in every process; the scene signature also covers the scene's `codeVersion`, the
+project language and the project's clips (a replaced asset gets a new clip key).
 
 ## Scene contract
 
@@ -411,7 +412,7 @@ the agent's system prompt):
   `Dimension` (measure line + label), `RadiusArc`, `Guide` (dashed line), `Tag` (pill label), `Highlight`
   (outline around a rect with a label), `Cursor` (pointer following keyframes, press/hover), `ClickRipple`,
   `BrowserFrame`, `PhoneFrame`, `Grain` (animated-by-seed noise to avoid banding), `Vignette`, `MotionBlur`
-  (render prop drawn at earlier times and averaged).
+  (render prop drawn at earlier times and averaged), `Clip` (a video or GIF asset at a time, from its extracted frames).
 - Music: `createMusic({ grid, tempo, musicStart, sceneStart, sceneDuration }): Music` with `hasTrack, bpm,
   beatLength, barLength, beatsPerBar, beats, downbeats, phrases, sections, accents, beat(n), bar(n), phrase(n),
   bars(n)` (seconds for n bars), `snap(t, 'beat'|'bar'|'phrase'|'half'|'quarter'), pulse(t, {grid, decay}),
@@ -719,7 +720,7 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `get_brand` | yes | yes | tokens, kit, extras, copy |
 | `get_music_context` | yes | yes | tempo, bars, phrases in scene-local seconds |
 | `list_templates` | yes | yes | scene + campaign templates |
-| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images and, per frame, text checks from the frame page (clipped, off canvas, outside the safe area, low contrast, under the captions; at most 6, never an error); or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
+| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images and, per frame, text checks from the frame page (clipped, off canvas, outside the safe area, low contrast, under the captions, a GIF in an `<img>`; at most 6, never an error); or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
 | `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 %; a cut with a transition is listed as one, never compared |
 | `check_motion` | own scene | any (every scene by default) | half-size PNG samples every 0.25 s (≤ 120 per scene, ≤ 600 per call, the step widens beyond), captured 12 at a time and diffed as they arrive (memory holds one batch, and `render_frames` can take the capture slot in between), odd samples one video frame late so a beat pulse is not sampled on its hits, consecutive samples diffed like `check_seams`; lists still stretches of about 2 s or more, measured between samples (under 0.01 % of pixels changing), an error when a scene of ≥ 2 s never moves; a render error stops that scene; a 240 s budget (`deadline` on `CaptureService.frames`) stops the scene in progress ("out of time") and the next ones ("not checked"); also an error when no scene could be checked |
 | `set_scene_duration` | own scene | any | ms precision |
@@ -1057,6 +1058,16 @@ queued the new key.
 
 A render waits for the project's running extractions before it opens a page (`whenIdle`, cancelable like the music
 wait). Vite's watcher leaves `clips/` out, and so does an archive.
+
+Scenes show clips with `<Clip src time loop? fit? style?>` (`src/runtime/clip.tsx`), never a `<video>`. The frame page
+provides `ClipContext` around each scene, built from `ProjectState.clips` (`src/frame/clips.ts`): a ready clip's
+frame `floor(time * fps)` (clamped, or wrapped with `loop`) is `<img src="/@fs<projectDir>/clips/<key>/<n>.jpg">`,
+served by `serveManagedFile` on the project's frame origin; an unknown, preparing or failed asset throws a translated
+error naming it, caught by the scene's boundary like any runtime error. `seek()` waits for the frames to decode
+(`decodeImages`, same file): an `<img data-cadence-clip>` that does not (missing or damaged file) adds an error naming
+the asset to the seek result, so render_frames shows it, the render job fails and no blank frame is captured. A clip becoming ready sends
+`project-changed`, which reloads the preview's frame. A GIF shown with `<img>` plays by the wall clock in the preview
+and freezes in renders: the text checks report it (`gif`) with the `<Clip>` fix.
 
 ## Music
 

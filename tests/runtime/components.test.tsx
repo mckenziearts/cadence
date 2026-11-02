@@ -8,6 +8,8 @@ import {
   Callout,
   Camera,
   ClickRipple,
+  Clip,
+  ClipContext,
   Counter,
   Cursor,
   Dimension,
@@ -42,6 +44,7 @@ import {
   useFormat,
   useScene,
   type BrandKit,
+  type ClipSource,
   type FormatId,
   type SceneProps,
 } from '../../src/runtime/index';
@@ -93,6 +96,12 @@ const PATH = [
   { t: 0, x: 100, y: 100 },
   { t: 1, x: 500, y: 300 },
 ];
+
+/** A 25 fps clip of 50 frames under `loops/spin.gif`; any other asset is unknown. */
+const fakeClips = (src: string): ClipSource | Error =>
+  src === 'loops/spin.gif'
+    ? { fps: 25, frames: 50, url: (index) => `/clips/spin/${index}.jpg` }
+    : new Error(`unknown clip ${src}`);
 
 const gallery: [string, ReactElement][] = [
   ['Fill', <Fill center>x</Fill>],
@@ -150,6 +159,12 @@ const gallery: [string, ReactElement][] = [
     <MotionBlur t={1} fps={30}>
       {(time) => <i>{time}</i>}
     </MotionBlur>,
+  ],
+  [
+    'Clip',
+    <ClipContext.Provider value={fakeClips}>
+      <Clip src="loops/spin.gif" time={0.5} />
+    </ClipContext.Provider>,
   ],
 ];
 
@@ -528,5 +543,89 @@ describe('motion blur', () => {
 
   test('sample times never go below 0', () => {
     close(times(blur({ t: 0.01, samples: 4, shutter: 1 })), [0.01, 0.01 - 1 / 120, 0, 0]);
+  });
+});
+
+describe('clip', () => {
+  const shown = (props: { time: number; loop?: boolean; src?: string }) => {
+    const html = render(
+      <ClipContext.Provider value={fakeClips}>
+        <Clip src="loops/spin.gif" {...props} />
+      </ClipContext.Provider>,
+    );
+    return Number(/src="\/clips\/spin\/(\d+)\.jpg"/.exec(html)?.[1]);
+  };
+
+  test('shows source frame floor(time * fps)', () => {
+    assert.equal(shown({ time: 0 }), 0);
+    assert.equal(shown({ time: 0.039 }), 0);
+    assert.equal(shown({ time: 0.04 }), 1);
+    assert.equal(shown({ time: 1.5 }), 37);
+  });
+
+  test('lands on the frame a time names despite float error: 0.29 s at 100 fps is frame 29', () => {
+    const lookup = (): ClipSource => ({ fps: 100, frames: 1000, url: (index) => `/clips/spin/${index}.jpg` });
+    const html = render(
+      <ClipContext.Provider value={lookup}>
+        <Clip src="loops/spin.gif" time={0.29} />
+      </ClipContext.Provider>,
+    );
+    assert.match(html, /\/29\.jpg/);
+  });
+
+  test('holds the first frame before 0 and the last one past the end', () => {
+    assert.equal(shown({ time: -1 }), 0);
+    assert.equal(shown({ time: 2 }), 49);
+    assert.equal(shown({ time: 60 }), 49);
+  });
+
+  test('loop wraps past the end and before 0', () => {
+    assert.equal(shown({ time: 2, loop: true }), 0);
+    assert.equal(shown({ time: 2.5, loop: true }), 12);
+    assert.equal(shown({ time: -0.04, loop: true }), 49);
+    assert.equal(shown({ time: -2.04, loop: true }), 49);
+  });
+
+  test('a time that is not a finite number is a RangeError naming <Clip>', () => {
+    assert.throws(() => shown({ time: NaN }), { name: 'RangeError', message: /<Clip>/ });
+    assert.throws(() => shown({ time: Infinity, loop: true }), { name: 'RangeError', message: /<Clip>/ });
+  });
+
+  test("throws the frame's error for an asset it cannot show", () => {
+    assert.throws(() => shown({ time: 0, src: 'missing.mp4' }), { message: 'unknown clip missing.mp4' });
+  });
+
+  test('throws outside a scene', () => {
+    assert.throws(() => renderToStaticMarkup(<Clip src="loops/spin.gif" time={0} />), /<Clip>.*inside a Cadence scene/);
+  });
+
+  test('takes its path relative to assets/, like asset(): a leading slash is dropped for the lookup and the marker', () => {
+    const html = render(
+      <ClipContext.Provider value={fakeClips}>
+        <Clip src="//loops/spin.gif" time={0} />
+      </ClipContext.Provider>,
+    );
+    assert.match(html, /data-cadence-clip="loops\/spin\.gif"/);
+  });
+
+  test('an <img> marked with its asset, no alt text, object-fit contain by default, style last', () => {
+    const html = render(
+      <ClipContext.Provider value={fakeClips}>
+        <Clip src="loops/spin.gif" time={0} fit="cover" style={{ width: 400, objectPosition: 'top' }} />
+      </ClipContext.Provider>,
+    );
+    // Server rendering adds a preload link before it; the frame renders on the client.
+    assert.equal(
+      /<img [^>]*\/>/.exec(html)?.[0],
+      '<img src="/clips/spin/0.jpg" alt="" data-cadence-clip="loops/spin.gif" style="display:block;object-fit:cover;width:400px;object-position:top"/>',
+    );
+    assert.match(
+      render(
+        <ClipContext.Provider value={fakeClips}>
+          <Clip src="loops/spin.gif" time={0} />
+        </ClipContext.Provider>,
+      ),
+      /object-fit:contain/,
+    );
   });
 });

@@ -60,6 +60,7 @@ const CHECKS = new Map<number, AuditFinding[] | null>([
     ],
   ],
   [0.5, null],
+  [0.75, [{ kind: 'gif', text: 'loops/spin.gif', box: { x: 40, y: 60, width: 320, height: 180 } }]],
 ]);
 /** A PNG of its own per time, to see the sheet get the strip's frames in order. */
 const tileAt = (t: number) => Buffer.concat([PNG, Buffer.from(String(t))]);
@@ -621,6 +622,21 @@ describe('MCP endpoint', () => {
 
       await call(client, 'render_frames', { strip: { at: 0.25, frames: 4 } });
       assert.equal((calls.frames.at(-1) as [string, { audit?: boolean }])[1].audit, undefined, 'strips run no checks');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('render_frames lists a GIF in an <img> with the <Clip> hint', async () => {
+    const client = await connect(tokens.issue({ kind: 'scene', projectId: 'demo', sceneId: 'intro' }));
+    try {
+      const checked = await call(client, 'render_frames', { times: [0.75], format: '16:9' });
+      assert.equal(checked.isError, false);
+      assert.equal(
+        texts(checked)[0].split('\n').slice(1).join('\n'),
+        'Checks at 0.750 s (16:9):\n' +
+          '- animated GIF in an <img>, frozen on its first frame in renders: show it with <Clip src time>: "loops/spin.gif" at 40,60 (320\u00d7180)',
+      );
     } finally {
       await client.close();
     }

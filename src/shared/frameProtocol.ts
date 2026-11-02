@@ -17,11 +17,11 @@ export interface FrameRenderResult {
 }
 
 /** What the frame's text checks flag; render_frames reports them to the agent as warnings. */
-export type AuditKind = 'clipped' | 'offCanvas' | 'outsideSafe' | 'contrast' | 'underCaptions';
+export type AuditKind = 'clipped' | 'offCanvas' | 'outsideSafe' | 'contrast' | 'underCaptions' | 'gif';
 
 export interface AuditFinding {
   kind: AuditKind;
-  /** The first 40 characters of the text, whitespace collapsed. */
+  /** The first 40 characters of the text, whitespace collapsed; for a GIF, its path under assets/. */
   text: string;
   /** Canvas px. */
   box: { x: number; y: number; width: number; height: number };

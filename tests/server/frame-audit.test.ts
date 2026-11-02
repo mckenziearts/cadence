@@ -116,3 +116,37 @@ test('still judges scene text hidden from assistive tech', { timeout: 30_000 }, 
     'offCanvas Hidden from readers, past the edge',
   ]);
 });
+
+const img = (src: string, left = 100, extra = '') =>
+  `<img src="${src}" alt="" style="position:absolute;left:${left}px;top:100px;width:200px;height:100px;${extra}">`;
+
+test('flags an <img> of a GIF once per file, with its path under assets/ and its box', { timeout: 30_000 }, async (t) => {
+  if (!needsChromium(t)) return;
+  const base = 'http://127.0.0.1:9/@fs/home/a/demo/assets';
+  await page.setContent(
+    `<body style="margin:0"><div data-cadence-stage style="position:relative;width:1920px;height:1080px;overflow:hidden">${img(`${base}/loops/spin.GIF?v=1`)}${img(`${base}/loops/spin.GIF?v=1`, 400)}${img(`${base}/logo.png`, 700)}</div></body>`,
+  );
+  await page.addScriptTag({ content: script });
+  const findings = await page.evaluate(
+    (spec) =>
+      (Reflect.get(window, 'cadenceAudit') as typeof import('../../src/frame/audit')).auditStage(
+        document.querySelector<HTMLElement>('[data-cadence-stage]')!,
+        spec,
+      ),
+    FORMATS['16:9'],
+  );
+  assert.deepEqual(findings, [{ kind: 'gif', text: 'loops/spin.GIF', box: { x: 100, y: 100, width: 200, height: 100 } }]);
+});
+
+test('leaves out GIFs in runtime decor, hidden, zero-size or off the canvas, and clip frames', { timeout: 30_000 }, async (t) => {
+  if (!needsChromium(t)) return;
+  const base = 'http://127.0.0.1:9/@fs/home/a/demo';
+  assert.deepEqual(
+    await audit(
+      `<div data-cadence-decor="">${img(`${base}/assets/decor.gif`)}</div>${img(`${base}/assets/hidden.gif`, 100, 'display:none')}` +
+        `${img(`${base}/assets/away.gif`, 3000)}${img(`${base}/assets/flat.gif`, 500, 'width:0')}${img(`${base}/assets/thin.gif`, 800, 'height:0')}<img data-cadence-clip="spin.gif" src="${base}/clips/spin-1a2b/000001.jpg">`,
+    ),
+    [],
+  );
+  assert.deepEqual(await audit(img(`${base}/assets/shown.gif`)), ['gif shown.gif']);
+});

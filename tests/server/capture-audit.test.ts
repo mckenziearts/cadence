@@ -60,4 +60,9 @@ describe('auditFrame', () => {
       { kind: 'offCanvas', text: 'Off', box },
     ]);
   });
+
+  test('a gif finding passes through with its path under assets/ as text', async () => {
+    const gif = { kind: 'gif', text: 'loops/spin.gif', box };
+    assert.deepEqual(await auditFrame(answering([gif])), [gif]);
+  });
 });

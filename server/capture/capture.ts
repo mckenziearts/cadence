@@ -232,7 +232,7 @@ const auditFindings = z
   .array(
     z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('contrast'), ...auditFinding, ratio: z.number(), required: z.number() }),
-      z.object({ kind: z.enum(['clipped', 'offCanvas', 'outsideSafe', 'underCaptions']), ...auditFinding }),
+      z.object({ kind: z.enum(['clipped', 'offCanvas', 'outsideSafe', 'underCaptions', 'gif']), ...auditFinding }),
     ]),
   )
   .max(6);
@@ -253,8 +253,8 @@ export async function auditFrame(page: Page, timeoutMs = AUDIT_TIMEOUT_MS): Prom
 }
 
 /**
- * What a scene renders from besides shared code: its file, timing, position, fps, tempo, music, brand and language.
- * Components and brand files are only covered by the code generation.
+ * What a scene renders from besides shared code: its file, timing, position, fps, tempo, music, brand, language and the
+ * project's clips (a replaced asset gets a new key). Components and brand files are only covered by the code generation.
  */
 export function sceneSignature(project: ProjectState, scene: SceneState): string {
   return shortHash(
@@ -271,6 +271,8 @@ export function sceneSignature(project: ProjectState, scene: SceneState): string
       project.language,
       project.music?.start ?? null,
       project.musicGrid,
+      // ponytail: every clip of the project, not only the scene's: any clip change re-renders all thumbnails (rare).
+      Object.entries(project.clips).map(([file, clip]) => [file, clip.status === 'ready' ? clip.key : clip.status]),
     ]),
   );
 }

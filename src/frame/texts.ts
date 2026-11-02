@@ -26,6 +26,11 @@ const TEXTS = {
     spectrumPending:
       'music.spectrum() n’est pas encore disponible : l’analyse de la musique est en cours, ou elle a échoué (voir l’onglet Musique).',
     fontFailed: (face: string) => `La police préchargée « ${face} » ne se charge pas`,
+    clipUnknown: (file: string) => `<Clip> : assets/${file} n’est ni une vidéo ni un GIF de ce projet`,
+    clipPreparing: (file: string) =>
+      `<Clip> : les images de assets/${file} sont en cours d’extraction ; l’aperçu se met à jour quand elles sont prêtes.`,
+    clipFailed: (file: string, error: string) => `<Clip> : impossible d’extraire les images de assets/${file} : ${error}`,
+    clipFrameFailed: (file: string, frame: string) => `<Clip> : l’image ${frame} de assets/${file} ne se charge pas`,
     sampleFailed: (name: string, error: string) => `${name} : ${error}`,
     sections: { colors: 'Couleurs', fonts: 'Polices', components: 'Composants', extras: 'Extras' },
     sheet: {
@@ -67,6 +72,11 @@ const TEXTS = {
     spectrumSize: (size: number, expected: number) => `${size} bytes instead of ${expected}`,
     spectrumPending: 'music.spectrum() is not available yet: the music analysis is running, or it failed (see the Music tab).',
     fontFailed: (face: string) => `The preloaded font "${face}" does not load`,
+    clipUnknown: (file: string) => `<Clip>: assets/${file} is not a video or GIF of this project`,
+    clipPreparing: (file: string) =>
+      `<Clip>: the frames of assets/${file} are being extracted; the preview updates when they are ready.`,
+    clipFailed: (file: string, error: string) => `<Clip>: could not extract the frames of assets/${file}: ${error}`,
+    clipFrameFailed: (file: string, frame: string) => `<Clip>: frame ${frame} of assets/${file} does not load`,
     sampleFailed: (name: string, error: string) => `${name}: ${error}`,
     sections: { colors: 'Colors', fonts: 'Fonts', components: 'Components', extras: 'Extras' },
     sheet: {

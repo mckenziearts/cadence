@@ -2,6 +2,7 @@
 // reloads (scene, component, Tailwind class), text checks, CSP and the postMessage bridge.
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -10,7 +11,7 @@ import { after, before, describe, it } from 'node:test';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
 import { PNG } from 'pngjs';
-import { auditFrame, CHROMIUM_ARGS, PlaywrightCapture } from '../../server/capture/capture';
+import { auditFrame, CHROMIUM_ARGS, PlaywrightCapture, seekFrame } from '../../server/capture/capture';
 import { LOCAL } from '../../server/capture/policy';
 import { LocalClipService } from '../../server/clips/service';
 import type { CadenceConfig } from '../../server/contracts';
@@ -75,6 +76,16 @@ async function addScene(sceneId: string, code: string, duration = 1): Promise<vo
   const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
   project.scenes.push({ id: sceneId, name: sceneId, duration });
   await writeFile(file, JSON.stringify(project, null, 2));
+}
+
+/** Takes scenes added by addScene out of the shared project again, so the tests after it see the project they expect. */
+async function removeScenes(...sceneIds: string[]): Promise<void> {
+  const file = path.join(h.store.dir(id), 'project.json');
+  const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
+  project.scenes = project.scenes.filter((scene) => !sceneIds.includes(scene.id));
+  await writeFile(file, JSON.stringify(project, null, 2));
+  await Promise.all(sceneIds.map((sceneId) => rm(h.store.sceneFile(id, sceneId), { force: true })));
+  await h.store.syncCode(id);
 }
 
 /** A raw request to 127.0.0.1 with the Host header of the project's frame origin, or `host`: Node does not resolve every
@@ -2522,4 +2533,122 @@ describe('clip frames', () => {
       await rm(path.join(dir, 'clips'), { recursive: true, force: true });
     }
   });
+
+  it(
+    'shows the clip frame at the scene time, the same on every run, and reports a frame that does not load',
+    { skip, timeout: 90_000 },
+    async () => {
+      const dir = h.store.dir(id);
+      await mkdir(path.join(dir, 'assets', 'clips-e2e'), { recursive: true });
+      await promisify(execFile)('ffmpeg', [
+        ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=2', '-pix_fmt', 'yuv420p'],
+        path.join(dir, 'assets', 'clips-e2e', 'test src.mp4'),
+      ]);
+      const clips = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+      h.store.setClipsProvider((project) => clips.sync(project));
+      const style = "{{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}";
+      // A broken <img> that is no clip frame is not reported: only <Clip> frames are.
+      await addScene(
+        'clip-play',
+        `import { Clip } from 'cadence';\nexport default function Play({ t }) {\n  return <><img src="/nowhere.png" alt="" /><Clip src="clips-e2e/test src.mp4" time={t} style=${style} /></>;\n}\n`,
+      );
+      await addScene(
+        'clip-unknown',
+        `import { Clip } from 'cadence';\nexport default function Unknown({ t }) {\n  return <Clip src="clips-e2e/missing.mp4" time={t} />;\n}\n`,
+      );
+      try {
+        await clips.whenIdle(id);
+        await h.store.syncCode(id);
+        const shot = async (time: number) => {
+          const page = await open({ scene: 'clip-play' });
+          assert.deepEqual((await seek(page, time)).errors, []);
+          const png = await page.screenshot({ type: 'png' });
+          await page.context().close();
+          return createHash('sha256').update(png).digest('hex');
+        };
+        const [early, late] = [await shot(0.2), await shot(0.6)];
+        assert.notEqual(early, late, 'two times show two source frames');
+        assert.equal(await shot(0.2), early, 'a second run shows the same frame');
+        assert.equal(await shot(0.6), late, 'a second run shows the same frame');
+
+        const unknown = await open({ scene: 'clip-unknown' });
+        const { errors } = await seek(unknown, 0.2);
+        assert.ok(
+          errors.some((error) => error.includes('<Clip>') && error.includes('assets/clips-e2e/missing.mp4')),
+          JSON.stringify(errors),
+        );
+        await unknown.context().close();
+
+        // 0.5 s and 0.8 s show source frames 16 and 25 (files numbered from 1).
+        const { key } = (await clips.sync(id))['clips-e2e/test src.mp4'] as { key: string };
+        await rm(path.join(dir, 'clips', key, '000016.jpg'));
+        await writeFile(path.join(dir, 'clips', key, '000025.jpg'), 'not a jpeg');
+        for (const [time, frame] of [
+          [0.5, '000016.jpg'],
+          [0.8, '000025.jpg'],
+        ] as const) {
+          const page = await open({ scene: 'clip-play' });
+          const result = await seekFrame(page, time);
+          assert.ok(
+            result.errors.some(
+              (error) => error.includes('<Clip>') && error.includes('assets/clips-e2e/test src.mp4') && error.includes(frame),
+            ),
+            `${time} s: ${JSON.stringify(result.errors)}`,
+          );
+          assert.deepEqual(await page.evaluate(() => window.__cadence!.errors()), result.errors, 'the editor shows them too');
+          await page.context().close();
+        }
+      } finally {
+        h.store.setClipsProvider(async () => ({}));
+        await removeScenes('clip-play', 'clip-unknown');
+        await rm(path.join(dir, 'assets', 'clips-e2e'), { recursive: true, force: true });
+        await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
+    'a scene showing a preparing clip shows its frame after reload once the clip is ready',
+    { skip, timeout: 90_000 },
+    async () => {
+      const dir = h.store.dir(id);
+      await mkdir(path.join(dir, 'assets', 'clips-e2e'), { recursive: true });
+      await promisify(execFile)('ffmpeg', [
+        ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=1', '-pix_fmt', 'yuv420p'],
+        path.join(dir, 'assets', 'clips-e2e', 'ready.mp4'),
+      ]);
+      const clips = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+      h.store.setClipsProvider(async () => ({ 'clips-e2e/ready.mp4': { status: 'preparing' } }));
+      await addScene(
+        'clip-ready',
+        `import { Clip } from 'cadence';\nexport default function Ready({ t }) {\n  return <Clip src="clips-e2e/ready.mp4" time={t} />;\n}\n`,
+      );
+      try {
+        await h.store.syncCode(id);
+        const page = await open({ scene: 'clip-ready' });
+        const preparing = (await seek(page, 0.2)).errors;
+        assert.ok(
+          preparing.some((error) => error.includes('assets/clips-e2e/ready.mp4') && /en cours d.extraction/.test(error)),
+          JSON.stringify(preparing),
+        );
+
+        await clips.whenIdle(id);
+        h.store.setClipsProvider((projectId) => clips.sync(projectId));
+        // What the editor does on project-changed, which a clip becoming ready sends.
+        await page.evaluate((g) => window.__cadence!.reload(g), h.store.generation(id));
+        assert.deepEqual((await seek(page, 0.2)).errors, []);
+        assert.equal(
+          await page.evaluate(() => document.querySelector<HTMLImageElement>('img[data-cadence-clip]')?.naturalWidth),
+          320,
+          'the frame is drawn',
+        );
+        await page.context().close();
+      } finally {
+        h.store.setClipsProvider(async () => ({}));
+        await removeScenes('clip-ready');
+        await rm(path.join(dir, 'assets', 'clips-e2e'), { recursive: true, force: true });
+        await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -20,7 +20,7 @@ const REQUIRED = [
   ...['SplitText', 'typed', 'measureText', 'TypeOn', 'SwapWords', 'Counter'],
   ...['Fill', 'SceneContext', 'useScene', 'BrandContext', 'useBrand', 'useFormat', 'asset', 'setAssetBase'],
   ...['Stage3D', 'Camera', 'DrawPath', 'Glow', 'Callout', 'Dimension', 'RadiusArc', 'Guide', 'Tag', 'Highlight'],
-  ...['Cursor', 'ClickRipple', 'BrowserFrame', 'PhoneFrame', 'Grain', 'Vignette', 'MotionBlur'],
+  ...['Cursor', 'ClickRipple', 'BrowserFrame', 'PhoneFrame', 'Grain', 'Vignette', 'MotionBlur', 'Clip'],
   ...PATH_TOOLS,
   'createMusic',
   'voiceLevel',
@@ -105,6 +105,28 @@ test('API.md documents MotionBlur', () => {
   ]) {
     assert.ok(api.includes(rule), rule);
   }
+});
+
+test('API.md documents Clip, its errors and the <video> ban', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## Video clips and GIFs'), api.indexOf('## Seam checklist'));
+  assert.ok(api.includes('## Video clips and GIFs'));
+  for (const rule of [
+    '<Clip src="loops/spin.gif" time={t - 1.5}',
+    'path under `assets/`, like `asset()`',
+    'floor(time * fps)',
+    'holds the last frame',
+    '`loop`',
+    "`fit` (CSS `object-fit`, default 'contain')",
+    'never a `<video>`',
+    'still being prepared',
+    'opaque',
+    'no sound',
+  ]) {
+    assert.ok(section.includes(rule), rule);
+  }
+  assert.ok(api.includes('show animated GIFs and videos with `<Clip>`'));
+  assert.ok(api.includes('`ClipContext`'));
 });
 
 test('three lives in cadence/three only, so a scene without it never loads three', () => {
