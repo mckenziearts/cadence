@@ -25,3 +25,15 @@ test('`new` creates the project with its initial version', async (t) => {
     [['v0001', 'baseline', 'État initial']],
   );
 });
+
+test('`render --output` refuses an unknown output, before starting a server', async () => {
+  const run = promisify(execFile)(process.execPath, ['--import', 'tsx', 'bin/cadence.ts', 'render', 'demo', '--output', 'avi'], {
+    cwd: ROOT,
+    env: { ...process.env, CADENCE_LANGUAGE: 'fr' },
+  });
+  await assert.rejects(
+    run,
+    (e: { code: number; stderr: string }) =>
+      e.code !== 0 && e.stderr.startsWith('Sortie inconnue : avi (mp4, webm, mov, gif, png, png-sequence)'),
+  );
+});

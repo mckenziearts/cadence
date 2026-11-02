@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -12,7 +12,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { chromium, type Browser, type Locator, type Page } from 'playwright';
+import { chromium, type Browser, type Locator, type Page, type Request } from 'playwright';
 import type { AgentProvider, BrandSource, ElevenLabsApi, SpeechEngine } from '../../server/contracts';
 import type { Soundtrack } from '../../server/music/soundtracks';
 import { startServer, type RunningServer } from '../../server/index';
@@ -25,11 +25,13 @@ import {
   type AppState,
   type BrandBuild,
   type ChatState,
+  type ClipState,
   type Features,
   type MusicAnalysis,
   type MusicGridData,
   type ProjectState,
   type ProjectSummary,
+  type PublishJob,
   type RenderJob,
   type ScriptLine,
 } from '../../src/shared/types';
@@ -1075,7 +1077,7 @@ describe('editor', () => {
     const page = await open(B);
     await page.getByRole('button', { name: 'Rendu' }).click();
     const card = page.getByRole('listitem').filter({ hasText: name });
-    await card.getByRole('button', { name: 'Supprimer la vidéo' }).click();
+    await card.getByRole('button', { name: 'Supprimer le rendu' }).click();
     await card.getByRole('button', { name: 'Supprimer ?' }).click();
     await card.waitFor({ state: 'detached' });
     const trash = await readdir(path.join(server.config.projectsDir, B, '.cadence', 'trash'));
@@ -1086,6 +1088,414 @@ describe('editor', () => {
       .waitFor();
     await page.context().close();
   });
+
+  it(
+    'picks a render output: the reason of a missing one, transparency where it applies, a PNG image at the playhead',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-out`;
+      await api('POST', '/api/projects', { name: 'Sorties', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const scene = await api<{ id: string }>('POST', `/api/projects/${id}/scenes`, { name: 'Plan', duration: 2 });
+      const start = (await api<ProjectState>('GET', `/api/projects/${id}`)).scenes.find((s) => s.id === scene.id)!.start;
+      assert.ok(start > 0);
+      // Half a second into the scene: the image is taken at the video time, the scene's start plus the playhead.
+      const playhead = start + 0.5;
+      const page = await newPage();
+      const reason = 'Ce ffmpeg ne sait pas encoder le VP9.';
+      const missing: Record<string, string> = { webm: reason };
+      const sent: unknown[] = [];
+      await page.route(`**/api/projects/${id}/renders`, async (route) => {
+        if (route.request().method() === 'POST') {
+          sent.push(route.request().postDataJSON());
+          return route.fulfill({ json: [] });
+        }
+        const response = await route.fetch();
+        const body = await response.json();
+        const off = Object.fromEntries(Object.entries(missing).map(([name, why]) => [name, { available: false, reason: why }]));
+        return route.fulfill({ response, json: { ...body, outputs: { ...body.outputs, ...off } } });
+      });
+      const outputs = page.getByRole('radiogroup', { name: 'Sortie' });
+      const output = (name: string) => outputs.getByRole('radio', { name: new RegExp(`^${name}`) });
+      const label = (seconds: number) => `${seconds.toFixed(2).replace('.', ',')}${NBSP}s`;
+      const playheadAt = (seconds: string) =>
+        page.locator(`[role="slider"][aria-label="Tête de lecture"][aria-valuetext="${seconds}"]`).waitFor();
+      await open(`${id}/${scene.id}`, page);
+      // At the scene's end, the whole video already shows the next scene: the image is this scene's last frame.
+      for (let i = 0; i < 2; i++) await page.keyboard.press('Shift+ArrowRight');
+      await playheadAt(`2,00${NBSP}s`);
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      await output('Image PNG').click();
+      await page.getByText(`L’image à ${label(start + 2 - 1 / 30)}, où se trouve la tête de lecture.`).waitFor();
+      await page.getByRole('button', { name: 'Scènes', exact: true }).click();
+      await page.keyboard.press('Home');
+      for (let i = 0; i < 15; i++) await page.keyboard.press('ArrowRight');
+      await playheadAt(`0,50${NBSP}s`);
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      const startButton = page.getByRole('button', { name: 'Lancer le rendu' });
+      const summary = startButton.locator('xpath=following-sibling::p[1]');
+      const transparent = page.getByRole('checkbox', { name: /Fond transparent/ });
+
+      await output('WebM').getByText(reason).waitFor();
+      assert.equal(await output('WebM').isDisabled(), true);
+      assert.equal(await output('MP4').getAttribute('aria-checked'), 'true');
+      assert.match((await summary.textContent()) ?? '', new RegExp(`^MP4 · 1${NBSP}rendu · `));
+      assert.equal(await transparent.count(), 0);
+
+      await output('GIF').click();
+      assert.equal(await transparent.count(), 0, 'a GIF has no alpha channel');
+      await output('ProRes').click();
+      await transparent.waitFor();
+      await page.getByText('Le fond qu’une scène dessine elle-même reste.', { exact: false }).waitFor();
+
+      await output('Image PNG').click();
+      const at = label(playhead);
+      await page.getByText(`L’image à ${at}, où se trouve la tête de lecture.`).waitFor();
+      assert.equal(await summary.textContent(), `Image PNG · 1${NBSP}rendu · image à ${at}`);
+      await transparent.check();
+      await startButton.click();
+      for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+      const request = sent[0] as { output: string; transparent: boolean; range: { from: number; to: number } };
+      assert.equal(request.output, 'png');
+      assert.equal(request.transparent, true);
+      assert.equal(request.range.from, playhead);
+      assert.ok(request.range.to > request.range.from);
+
+      // In the whole video, the playhead already is the video time: the same point, not the scene's start added again.
+      await page.getByRole('button', { name: 'Scènes', exact: true }).click();
+      await page.getByRole('group', { name: 'Aperçu', exact: true }).getByRole('button', { name: 'Vidéo entière' }).click();
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      await output('Image PNG').click();
+      await page.getByText(`L’image à ${at}, où se trouve la tête de lecture.`).waitFor();
+      await startButton.click();
+      for (let i = 0; i < 50 && sent.length === 1; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal((sent[1] as typeof request).range.from, playhead);
+
+      // An ffmpeg without H.264: MP4 stays picked on opening, the summary says why nothing can start.
+      missing.mp4 = 'Ce ffmpeg ne sait pas encoder le H.264.';
+      await page.reload();
+      await page.getByRole('group', { name: 'Panneau' }).waitFor({ timeout: 60_000 });
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      await output('MP4').getByText(missing.mp4).waitFor();
+      assert.equal(await summary.getAttribute('aria-live'), 'polite');
+      assert.equal(await summary.textContent(), missing.mp4);
+      assert.equal(await startButton.isDisabled(), true);
+      await page.context().close();
+    },
+  );
+
+  it(
+    'shows each render by its output and hands the focus on when one is deleted, down to the empty state',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-files`;
+      await api('POST', '/api/projects', { name: 'Fichiers', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const renders = path.join(server.config.projectsDir, id, 'renders');
+      await mkdir(path.join(renders, `${id}-16x9-seq`), { recursive: true });
+      const ffmpeg = (...args: string[]) =>
+        promisify(execFile)(server.config.ffmpegPath, [
+          ...['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x36:r=10:d=1'],
+          ...args,
+        ]);
+      // Newest first on the shelf: the mtimes set this order.
+      const names = [
+        `${id}-16x9.mp4`,
+        `${id}-16x9.mov`,
+        `${id}-16x9.webm`,
+        `${id}-16x9.png`,
+        `${id}-16x9.gif`,
+        `${id}-16x9-seq`,
+        `${id}-9x16.mov`,
+      ];
+      await ffmpeg('-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(renders, names[0]!));
+      await ffmpeg('-c:v', 'prores_ks', path.join(renders, names[1]!));
+      await ffmpeg('-c:v', 'libvpx-vp9', path.join(renders, names[2]!));
+      await ffmpeg('-frames:v', '1', path.join(renders, names[3]!));
+      await ffmpeg(path.join(renders, names[4]!));
+      await ffmpeg('-frames:v', '2', path.join(renders, names[5]!, '%06d.png'));
+      // A real ProRes render has its PCM sound: Chromium then reads the metadata and finds no picture, instead of an error.
+      await ffmpeg(
+        ...['-f', 'lavfi', '-i', 'sine=d=1', '-c:v', 'prores_ks', '-profile:v', '3', '-c:a', 'pcm_s16le', '-shortest'],
+        path.join(renders, names[6]!),
+      );
+      for (const [i, name] of names.entries()) {
+        const at = new Date(Date.UTC(2026, 0, 1, 12, 0, 60 - i));
+        await utimes(path.join(renders, name), at, at);
+      }
+
+      const page = await newPage();
+      // The ProRes files wait until the focus is placed: the note that replaces a deck takes it over only from that deck.
+      const releases = new Map<string, () => void>();
+      for (const name of [names[1]!, names[6]!]) {
+        const held = new Promise<void>((resolve) => releases.set(name, resolve));
+        await page.route(`**/${name}*`, async (route) => {
+          await held;
+          return route.fallback();
+        });
+      }
+      const gifRequests: string[] = [];
+      page.on('request', (request) => {
+        if (request.url().includes(names[4]!)) gifRequests.push(request.url());
+      });
+      await open(id, page);
+      await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+      const card = (name: string) => page.locator(`li[data-file="${name}"]`);
+      for (const name of names) await card(name).waitFor();
+      // The 1 s fixtures have their metadata read: a WebM or MP4 the browser could not show would already be a note.
+      for (const name of [names[0]!, names[2]!]) await card(name).locator('[role="slider"][aria-valuemax="1"]').waitFor();
+      const has = async (name: string, role: 'link' | 'button', label: string) =>
+        (await card(name).getByRole(role, { name: label, exact: true }).count()) === 1;
+
+      // Without sound, the .mov fails to load; with it, the metadata come with no picture: both end on the note.
+      // The note takes the focus only from its own deck: elsewhere (here the Rendu tab) the focus stays put.
+      const tab = page.getByRole('button', { name: 'Rendu', exact: true });
+      for (const [name, from, to] of [
+        [names[1]!, card(names[1]!).getByRole('button', { name: 'Lecture' }), 'note'],
+        [names[6]!, tab, 'tab'],
+      ] as const) {
+        await from.focus();
+        releases.get(name)!();
+        const note = card(name).getByText('Aperçu indisponible dans ce navigateur');
+        await note.waitFor();
+        assert.equal(await focused(to === 'note' ? note : tab), true, `the focus goes to the ${to} (${name})`);
+        assert.equal(await has(name, 'link', 'Télécharger'), true);
+        assert.equal(await has(name, 'button', 'Publier'), false);
+      }
+
+      assert.equal(await card(names[0]!).locator('video').count(), 1);
+      assert.equal(await has(names[0]!, 'button', 'Publier'), true);
+      assert.equal(await card(names[2]!).locator('video').count(), 1);
+      assert.equal(await card(names[2]!).getByText('Aperçu indisponible dans ce navigateur').count(), 0);
+      assert.equal(await has(names[2]!, 'button', 'Publier'), false);
+      // A GIF loops and can weigh hundreds of MB: nothing loads before its play key, which hands the focus to the image.
+      assert.equal(await card(names[4]!).getByRole('img').count(), 0);
+      assert.deepEqual(gifRequests, []);
+      await card(names[4]!).getByRole('button', { name: 'Lire le GIF' }).click();
+      assert.equal(await focused(card(names[4]!).getByRole('img', { name: names[4]! })), true);
+      for (const name of [names[3]!, names[4]!]) {
+        const image = card(name).getByRole('img', { name });
+        assert.equal(await image.getAttribute('loading'), 'lazy', 'an image loads when its card comes near the view');
+        await image.scrollIntoViewIfNeeded();
+        await page.waitForFunction((el) => (el as HTMLImageElement).naturalWidth > 0, await image.elementHandle());
+        assert.equal(await has(name, 'link', 'Télécharger'), true);
+        assert.equal(await has(name, 'button', 'Publier'), false);
+      }
+      await card(names[5]!).getByText('2 images', { exact: false }).waitFor();
+      assert.equal(await has(names[5]!, 'button', 'Copier le chemin'), true);
+      assert.equal(await has(names[5]!, 'link', 'Télécharger'), false);
+      assert.equal(await has(names[5]!, 'button', 'Publier'), false);
+
+      // From the keyboard: the card in the deleted one's place, the one before after the last, then the empty state.
+      const remove = (name: string) => card(name).getByRole('button', { name: 'Supprimer le rendu' });
+      const press = async (name: string) => {
+        await page.keyboard.press('Enter');
+        await card(name).getByRole('button', { name: 'Supprimer ?' }).waitFor();
+        await page.keyboard.press('Enter');
+        await card(name).waitFor({ state: 'detached' });
+      };
+      await remove(names[6]!).focus();
+      await press(names[6]!);
+      assert.equal(await focused(remove(names[5]!)), true, 'after the last card, the one before');
+      await remove(names[1]!).focus();
+      await press(names[1]!);
+      assert.equal(await focused(remove(names[2]!)), true, 'the next card takes the focus');
+      await remove(names[5]!).focus();
+      await press(names[5]!);
+      assert.equal(await focused(remove(names[4]!)), true, 'after the last card, the one before');
+      for (const [name, next] of [
+        [names[4]!, names[3]!],
+        [names[3]!, names[2]!],
+        [names[2]!, names[0]!],
+      ] as const) {
+        await press(name);
+        assert.equal(await focused(remove(next)), true, `${next} after ${name}`);
+      }
+      await press(names[0]!);
+      const empty = page.locator('[data-control="empty"]');
+      assert.equal(await focused(empty), true, 'the empty state takes the focus after the last render');
+      await empty.getByText('Aucun rendu exporté').waitFor();
+      await page.context().close();
+    },
+  );
+
+  it('hands the focus to the next card when its delete button is off while it uploads', { timeout: 60_000 }, async () => {
+    const id = `${PREFIX}-sending`;
+    await api('POST', '/api/projects', { name: 'Envoi', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+    const renders = path.join(server.config.projectsDir, id, 'renders');
+    await mkdir(renders, { recursive: true });
+    const [first, second] = [`${id}-16x9.mp4`, `${id}-9x16.mp4`];
+    for (const [i, name] of [first, second].entries()) {
+      await promisify(execFile)(server.config.ffmpegPath, [
+        ...['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x36:r=10:d=1'],
+        ...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(renders, name)],
+      ]);
+      const at = new Date(Date.UTC(2026, 0, 1, 12, 0, 60 - i));
+      await utimes(path.join(renders, name), at, at);
+    }
+    const page = await newPage();
+    const job: PublishJob = {
+      id: 'job-1',
+      projectId: id,
+      file: second,
+      network: 'youtube',
+      status: 'uploading',
+      progress: 0.4,
+      createdAt: new Date().toISOString(),
+    };
+    await page.route(`**/api/projects/${id}/publications`, (route) =>
+      route.request().method() === 'GET' ? route.fulfill({ json: { jobs: [job], publications: [] } }) : route.fallback(),
+    );
+    await open(id, page);
+    await page.getByRole('button', { name: 'Rendu', exact: true }).click();
+    const card = (name: string) => page.locator(`li[data-file="${name}"]`);
+    const remove = (name: string) => card(name).getByRole('button', { name: 'Supprimer le rendu' });
+    await remove(second).waitFor();
+    assert.equal(await remove(second).isDisabled(), true, 'a render cannot go while it uploads');
+
+    await remove(first).focus();
+    await page.keyboard.press('Enter');
+    await card(first).getByRole('button', { name: 'Supprimer ?' }).waitFor();
+    await page.keyboard.press('Enter');
+    await card(first).waitFor({ state: 'detached' });
+    assert.equal(await focused(card(second).locator('button:not(:disabled)').first()), true, 'a control of the remaining card');
+    await page.context().close();
+  });
+
+  it(
+    'takes videos and Lottie files in Médias, says how each clip is doing and why an upload failed',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-medias`;
+      await api('POST', '/api/projects', { name: 'Médias', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const talk = path.join(stateDir, 'talk.mp4');
+      await promisify(execFile)(server.config.ffmpegPath, [
+        ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=64x36:r=10:d=1', '-f', 'lavfi', '-i', 'sine=d=1'],
+        ...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-shortest', talk],
+      ]);
+      const page = await newPage();
+      // The clip state the page sees, until null hands it the server's own.
+      let clip: ClipState | null = { status: 'preparing' };
+      await rewriteProject(
+        page,
+        (project) => (clip ? { ...project, clips: { ...project.clips, 'talk.mp4': clip } } : project),
+        id,
+      );
+      const changed = async (next: ClipState | null) => {
+        clip = next;
+        const fetched = page.waitForResponse((r) => r.url().endsWith(`/api/projects/${id}`));
+        server.services.hub.send({ type: 'project-changed', projectId: id });
+        await fetched;
+      };
+      await open(id, page);
+      await panel(page, 'Médias');
+      const input = page.locator('input[type="file"]');
+      const accept = (await input.getAttribute('accept'))!.split(',');
+      for (const ext of ['.mp4', '.mov', '.m4v', '.webm', '.json']) assert.ok(accept.includes(ext), `accepts ${ext}`);
+
+      // Each live region added to the page keeps the text it came with: a region added along with its text is often not read.
+      await page.evaluate(() =>
+        new MutationObserver((records) => {
+          for (const node of records.flatMap((record) => [...record.addedNodes])) {
+            if (!(node instanceof HTMLElement)) continue;
+            for (const region of [node, ...node.querySelectorAll<HTMLElement>('*')].filter((el) => el.matches('[role="status"]')))
+              region.dataset.born ??= region.textContent ?? '';
+          }
+        }).observe(document.body, { childList: true, subtree: true }),
+      );
+      await input.setInputFiles(talk);
+      const card = (name: string) => page.locator(`li[data-asset="${name}"]`);
+      const status = card('talk.mp4').getByRole('status');
+      await status.getByText('Préparation des images...').waitFor();
+      assert.equal(await status.getAttribute('data-born'), '', 'mounted before its text');
+      const video = card('talk.mp4').locator('video');
+      assert.equal(await video.getAttribute('preload'), 'metadata');
+      assert.equal(await video.getAttribute('src'), `/api/projects/${id}/assets/file?path=talk.mp4`);
+      assert.equal(await video.evaluate((el: HTMLVideoElement) => el.muted), true);
+      await page.waitForFunction(
+        (el) => (el as HTMLVideoElement).readyState >= 1 && (el as HTMLVideoElement).videoWidth === 64,
+        await video.elementHandle(),
+      );
+
+      await server.services.clips.whenIdle(id);
+      await changed(null);
+      await status.getByText(`Prête, 1,0${NBSP}s`).waitFor();
+      assert.equal(await status.getAttribute('data-born'), '', 'the same live region');
+      await changed({ status: 'error', error: 'ffmpeg a planté' });
+      await status.getByText('ffmpeg a planté').waitFor();
+      assert.equal(await status.getAttribute('data-born'), '', 'the same live region');
+      await changed(null);
+
+      const lottie = { v: '5.12.2', fr: 30, ip: 0, op: 60, w: 512, h: 512, layers: [] };
+      await input.setInputFiles([
+        { name: 'faux.mp4', mimeType: 'video/mp4', buffer: Buffer.from('pas une vidéo') },
+        {
+          name: 'externe.json',
+          mimeType: 'application/json',
+          buffer: Buffer.from(JSON.stringify({ ...lottie, assets: [{ id: 'img_0', u: 'images/', p: 'a.png' }] })),
+        },
+        { name: 'gros.json', mimeType: 'application/json', buffer: Buffer.alloc(11 * 1024 * 1024, 32) },
+        { name: 'anim.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(lottie)) },
+      ]);
+      const upload = (name: string) => page.locator(`li[data-upload="${name}"]`);
+      const errors = {
+        'faux.mp4': "« faux.mp4 » n'est pas une vidéo que ffmpeg sait lire",
+        'externe.json': '« externe.json » charge une image externe (a.png)',
+        'gros.json': 'Fichier trop volumineux : gros.json (10 Mo max)',
+      };
+      for (const [name, error] of Object.entries(errors)) {
+        await upload(name).getByRole('status').getByText(error).waitFor({ timeout: 30_000 });
+        assert.equal(await upload(name).getByRole('status').getAttribute('data-born'), '', `${name}: mounted before its text`);
+        assert.equal(await page.getByText(error).count(), 1, `${name}: said on its row, not in a toast too`);
+      }
+      await card('anim.json').getByText('Animation Lottie').waitFor();
+      assert.equal(await upload('anim.json').count(), 0, 'a file that went through leaves no upload row');
+
+      // Removing a row hands the focus to the row now in its place, then to the text that says the list is empty.
+      await upload('externe.json').getByRole('button', { name: 'Retirer externe.json' }).focus();
+      await page.keyboard.press('Enter');
+      await upload('externe.json').waitFor({ state: 'detached' });
+      assert.equal(await focused(upload('gros.json')), true, 'the row now in its place');
+      await upload('gros.json').getByRole('button', { name: 'Retirer gros.json' }).click();
+      assert.equal(await focused(card('anim.json')), true, 'the first file once the uploads are gone');
+      await upload('faux.mp4').getByRole('button', { name: 'Retirer faux.mp4' }).click();
+      assert.equal(await focused(card('anim.json')), true);
+      const remove = async (name: string) => {
+        await card(name)
+          .getByRole('button', { name: `Supprimer ${name}` })
+          .focus();
+        await page.keyboard.press('Enter');
+        await card(name).getByRole('button', { name: 'Supprimer ?' }).waitFor();
+        await page.keyboard.press('Enter');
+        await card(name).waitFor({ state: 'detached' });
+      };
+      // The asset lists the page asks for wait here, each read when it was asked.
+      const isList = (url: URL) => url.pathname === `/api/projects/${id}/assets`;
+      const held: (() => void)[] = [];
+      let asked!: () => void;
+      const listed = new Promise<void>((resolve) => (asked = resolve));
+      await page.route(isList, async (route) => {
+        if (route.request().method() !== 'GET') return route.continue();
+        const response = await route.fetch();
+        asked();
+        await new Promise<void>((resolve) => held.push(resolve));
+        await route.fulfill({ response });
+      });
+      await remove('talk.mp4');
+      assert.equal(await focused(card('anim.json')), true, 'the last card hands the focus to the one before it');
+      await listed;
+      await remove('anim.json');
+      assert.equal(await focused(page.getByText(/^Logos, photos, illustrations et polices/)), true, 'the empty list text');
+      // A list asked before the deletion and answered after it does not bring the card back.
+      const landed = page.waitForResponse((r) => r.request().method() === 'GET' && isList(new URL(r.url())));
+      for (const release of held.splice(0)) release();
+      await landed;
+      await page.waitForTimeout(200);
+      assert.equal(await card('anim.json').count(), 0, 'a deleted card stays gone');
+      assert.equal(await focused(page.getByText(/^Logos, photos, illustrations et polices/)), true);
+      await page.unroute(isList);
+      for (const release of held.splice(0)) release();
+      await page.context().close();
+    },
+  );
 
   it(
     'writes a scene voice-over in Voix: spoken once the field is left, heard in the preview, moved, removed',
@@ -2561,6 +2971,166 @@ describe('editor', () => {
     },
   );
 
+  it(
+    'sets the transition of a cut from the keyboard: the video shortens by the overlap, a restored version brings it back',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-transition`;
+      await undoProject(id);
+      const [before] = await api<{ id: string }[]>('GET', `/api/projects/${id}/versions`);
+      const page = await open(`${id}/duree`);
+      await page.getByRole('group', { name: 'Aperçu', exact: true }).getByRole('button', { name: 'Vidéo entière' }).click();
+      // « Titre » lasts 2 bars at 120 BPM, « Durée » 3 s.
+      const whole = 7;
+      const length = (seconds: number) =>
+        page
+          .locator(`[role="slider"][aria-label="Tête de lecture"][aria-valuemax="${Math.round(seconds * 100) / 100}"]`)
+          .waitFor({ timeout: 10_000 });
+      const control = page.getByRole('button', { name: /^Transition Titre \u2192 Durée : / });
+      const named = (label: string) =>
+        page.getByRole('button', { name: `Transition Titre \u2192 Durée : ${label}`, exact: true }).waitFor({ timeout: 10_000 });
+      const focused = async (target: Locator) =>
+        page.waitForFunction((el) => document.activeElement === el, await target.elementHandle(), { timeout: 10_000 });
+      const cut = page.getByRole('button', { name: /Titre \u2192 Durée/ });
+      const dialog = page.getByRole('dialog', { name: 'Transition Titre \u2192 Durée' });
+      const isPut = (request: Request) => request.method() === 'PUT' && request.url().endsWith('/scenes/duree/transition');
+      const put = () => page.waitForResponse((r) => isPut(r.request()));
+      const sent: unknown[] = [];
+      page.on('request', (request) => {
+        if (isPut(request)) sent.push(request.postDataJSON().transition);
+      });
+      await length(whole);
+      await named('aucune');
+      assert.equal(await cut.count(), 2, 'the seam badge and the cut control');
+
+      await control.focus();
+      await page.keyboard.press('Enter');
+      await focused(dialog.getByRole('button', { name: 'Aucune' }));
+      assert.equal(await dialog.getByRole('button', { name: 'Aucune' }).getAttribute('aria-pressed'), 'true');
+      await page.keyboard.press('Tab');
+      await focused(dialog.getByRole('button', { name: 'Fondu' }));
+      await Promise.all([put(), page.keyboard.press('Enter')]);
+      await length(whole - 0.5);
+      await named('fondu, 0,5\u00a0s');
+      assert.equal(await cut.count(), 1, 'the transition shows in place of the seam status');
+      assert.equal(await dialog.getByRole('button', { name: /^Vers / }).count(), 0, 'a fade has no direction');
+
+      await Promise.all([put(), dialog.getByRole('button', { name: 'Glissement' }).click()]);
+      assert.equal(await dialog.getByRole('button', { name: 'Vers la gauche' }).getAttribute('aria-pressed'), 'true');
+      await Promise.all([put(), dialog.getByRole('button', { name: 'Vers le haut' }).click()]);
+      await named('glissement vers le haut, 0,5\u00a0s');
+      // The dialog keeps its keys: the arrows neither change the scene nor step the playhead under it.
+      const playhead = page.locator('[role="slider"][aria-label="T\u00eate de lecture"]');
+      const at = await playhead.getAttribute('aria-valuenow');
+      await page.keyboard.press('ArrowUp');
+      await page.keyboard.press('ArrowRight');
+      assert.equal(new URL(page.url()).hash, `#/${id}/duree`);
+      assert.equal(await playhead.getAttribute('aria-valuenow'), at);
+      // 9 s typed: 5 s at most, of which the 4 s and 3 s scenes play 1.5 s.
+      await dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).fill('9');
+      await Promise.all([put(), dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).press('Enter')]);
+      await named('glissement vers le haut, 1,5\u00a0s au lieu de 5\u00a0s');
+      await dialog.getByText(/^Jouée sur 1,5\u00a0s au lieu de 5\u00a0s/).waitFor({ timeout: 10_000 });
+      await length(whole - 1.5);
+
+      // Escape drops what was typed: the blur that closing causes sends nothing.
+      await dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).fill('2');
+      await page.keyboard.press('Escape');
+      await dialog.waitFor({ state: 'detached' });
+      await focused(control);
+
+      // A length typed then left by a press outside is sent before the dialog goes.
+      await page.keyboard.press('Enter');
+      await dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).fill('1,2');
+      await Promise.all([
+        put(),
+        page.getByRole('group', { name: 'Aperçu', exact: true }).getByRole('button', { name: 'Vidéo entière' }).click(),
+      ]);
+      await dialog.waitFor({ state: 'detached' });
+      await named('glissement vers le haut, 1,2\u00a0s');
+      await length(whole - 1.2);
+
+      // Opened from the bottom of the window, the dialog grows above its control, whose second press closes it.
+      await control.click();
+      await dialog.waitFor();
+      const [panel, opener] = [await dialog.boundingBox(), await control.boundingBox()];
+      assert.ok(panel && opener && panel.y + panel.height <= opener.y, 'the dialog leaves its control in sight');
+      await control.click();
+      await dialog.waitFor({ state: 'detached' });
+      await focused(control);
+
+      // Safari and Firefox leave the focus in the field on that press: the typed length is sent all the same.
+      await page.keyboard.press('Enter');
+      await dialog.getByRole('textbox', { name: /^Durée \(0,1 à 5/ }).fill('0,8');
+      await Promise.all([put(), control.dispatchEvent('pointerdown').then(() => control.dispatchEvent('click'))]);
+      await dialog.waitFor({ state: 'detached' });
+      await named('glissement vers le haut, 0,8\u00a0s');
+      await length(whole - 0.8);
+      await control.focus();
+
+      await page.keyboard.press('Enter');
+      await Promise.all([put(), dialog.getByRole('button', { name: 'Aucune' }).click()]);
+      await dialog.waitFor({ state: 'detached' });
+      await focused(control);
+      await named('aucune');
+      await length(whole);
+
+      await page.keyboard.press('Enter');
+      await Promise.all([put(), dialog.getByRole('button', { name: 'Fondu' }).click()]);
+      await length(whole - 0.5);
+      await page.keyboard.press('Escape');
+      assert.deepEqual(sent, [
+        { kind: 'fade', duration: 0.5 },
+        { kind: 'slide', direction: 'left', duration: 0.5 },
+        { kind: 'slide', direction: 'up', duration: 0.5 },
+        { kind: 'slide', direction: 'up', duration: 5 },
+        { kind: 'slide', direction: 'up', duration: 1.2 },
+        { kind: 'slide', direction: 'up', duration: 0.8 },
+        null,
+        { kind: 'fade', duration: 0.5 },
+      ]);
+
+      // The step before the first transition is an editor write, which the versions panel does not list: restored as the
+      // agent would, the page follows through the events stream like after the panel's button.
+      await api('POST', `/api/projects/${id}/versions/${before.id}/restore`, {});
+      await length(whole);
+      await named('aucune');
+      await page.context().close();
+    },
+  );
+
+  it(
+    'opens the scene menu on its first item, moves through it with the arrows and closes on Escape or a press outside',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-scene-menu`;
+      await undoProject(id);
+      const page = await open(`${id}/duree`);
+      const card = page.getByRole('button', { name: 'Scène 2 : Durée' });
+      const menu = page.getByRole('menu', { name: 'Scène Durée' });
+      const focused = async (name: string | RegExp) =>
+        page.waitForFunction((el) => document.activeElement === el, await menu.getByRole('menuitem', { name }).elementHandle(), {
+          timeout: 10_000,
+        });
+      await card.click({ button: 'right' });
+      await focused(/^Renommer/);
+      await page.keyboard.press('ArrowDown');
+      await focused('Dupliquer');
+      await page.keyboard.press('ArrowUp');
+      await page.keyboard.press('ArrowUp');
+      await focused('Supprimer');
+      await page.keyboard.press('Escape');
+      await menu.waitFor({ state: 'detached' });
+
+      await card.click({ button: 'right' });
+      await focused(/^Renommer/);
+      // The menu opens at the pointer: the card's corner stays clear of it.
+      await card.click({ position: { x: 4, y: 4 } });
+      await menu.waitFor({ state: 'detached' });
+      await page.context().close();
+    },
+  );
+
   it('sends one undo at a time while Cmd-Z is held, and none from the render view', { timeout: 90_000 }, async () => {
     const id = `${PREFIX}-undo-held`;
     const duration = await undoProject(id);
@@ -2617,13 +3187,15 @@ describe('editor', () => {
     // A track without an audio file: the server's project, analysis and track answers get one.
     const withTrack = (project: ProjectState) => ({
       ...project,
-      music: { file: 'music/a.wav', start: 0, volume: 1 },
+      music: { file: 'music/a.wav', start: 0, volume: 1, spectrum: null },
       musicGrid: grid,
     });
     const page = await newPage();
     await rewriteProject(page, withTrack);
     await page.route('**/music/analysis', (route) =>
-      route.fulfill({ json: { version: 2, sampleRate: 44100, ...grid } satisfies MusicAnalysis }),
+      route.fulfill({
+        json: { version: 3, sampleRate: 44100, spectrum: { bands: 24, rate: 25, frames: 0 }, ...grid } satisfies MusicAnalysis,
+      }),
     );
     await page.route('**/music/tracks', (route) =>
       route.fulfill({ json: [{ file: 'music/a.wav', size: 1000, analysed: true }] }),
@@ -2684,7 +3256,7 @@ describe('editor', () => {
     // A track without an audio file: the editor's <audio> still takes a volume.
     const withTrack = (project: ProjectState, volume = 1): ProjectState => ({
       ...project,
-      music: { file: 'music/a.wav', start: 0, volume },
+      music: { file: 'music/a.wav', start: 0, volume, spectrum: null },
       musicUrl: `/api/projects/${A}/music/audio?file=music%2Fa.wav`,
     });
     const page = await newPage();
@@ -2916,7 +3488,12 @@ describe('preview', () => {
   type Start = { duration: number; lead: number; offset: number };
 
   /** A project whose one scene, `name`, plays `cues` and opens the video. */
-  async function soundProject(id: string, name: string, cues: { at: number; sound: string; gain?: number }[], duration?: number) {
+  async function soundProject(
+    id: string,
+    name: string,
+    cues: ({ at: number; sound: string; gain?: number } | { at: number; clip: string })[],
+    duration?: number,
+  ) {
     await api('POST', '/api/projects', { name, id, brand: 'cadence', formats: ['16:9'], fps: 30 });
     await api('POST', `/api/projects/${id}/scenes`, {
       name,
@@ -2987,6 +3564,36 @@ describe('preview', () => {
     await page.context().close();
   });
 
+  it('plays a clip cue with the sound of the prepared video, in the preview and in Present', { timeout: 90_000 }, async () => {
+    const id = `${PREFIX}-sc`;
+    await soundProject(id, 'Clip', [{ at: 0.2, clip: 'talk.mp4' }]);
+    const assets = path.join(server.config.projectsDir, id, 'assets');
+    await mkdir(assets, { recursive: true });
+    await promisify(execFile)(server.config.ffmpegPath, [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=64x36:r=10:d=3', '-f', 'lavfi', '-i', 'sine=duration=3'],
+      ...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-shortest', path.join(assets, 'talk.mp4')],
+    ]);
+    // Each read of the project syncs its clips: the new file is prepared in the background.
+    const ready = async () => (await api<ProjectState>('GET', `/api/projects/${id}`)).clips['talk.mp4']?.status === 'ready';
+    for (let i = 0; i < 100 && !(await ready()); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    const page = await newPage();
+    const { starts, startsReach } = await recordStarts(page);
+    await open(`${id}/clip`, page);
+    const shown = () => document.querySelector('[data-canvas]')?.querySelectorAll(':scope > div').length === 0;
+    await page.waitForFunction(shown, null, { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Lecture', exact: true }).click();
+    await startsReach(1, 10_000);
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    // The 3 s of the clip's sound, decoded from the WAV the server extracts: no library sound lasts that long.
+    const [heard] = await starts();
+    assert.ok(Math.abs(heard.duration - 3) < 0.05 && heard.offset < 0.1, JSON.stringify(await starts()));
+    await page.evaluate(() => ((window as unknown as { starts: unknown[] }).starts.length = 0));
+    await page.getByRole('button', { name: 'Présenter', exact: true }).click();
+    await startsReach(1, 15_000);
+    assert.ok(Math.abs((await starts())[0].duration - 3) < 0.05, JSON.stringify(await starts()));
+    await page.context().close();
+  });
+
   it('plays no sound effect while the preview is muted, and the next cue once unmuted', { timeout: 90_000 }, async () => {
     const id = `${PREFIX}-sm`;
     await soundProject(
@@ -3005,7 +3612,7 @@ describe('preview', () => {
       page,
       (project) => ({
         ...project,
-        music: { file: 'music/a.wav', start: 0, volume: 1 },
+        music: { file: 'music/a.wav', start: 0, volume: 1, spectrum: null },
         musicUrl: `/api/projects/${id}/music/audio?file=music%2Fa.wav`,
       }),
       id,

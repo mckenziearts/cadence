@@ -199,6 +199,8 @@ export function activityLabel(name: string, input: Record<string, unknown>, proj
       return words.move(scene, String(input.position ?? '?'));
     case 'rename_scene':
       return words.rename(scene, str(input.name));
+    case 'set_transition':
+      return words.transition(scene, !input.transition);
     case 'snap_cuts_to_music':
       return words.snap(words.grids[str(input.grid, 'bar')] ?? words.grid);
     case 'capture_reference':

@@ -10,16 +10,18 @@ import { FileBrandStore } from '../../server/store/brands';
 import { FileProjectStore, parseSceneVoiceOver } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import {
+  createFileInside,
   HttpError,
   listInside,
   readFileNoFollow,
   removeFileInside,
   removeTreeInside,
+  renameInside,
   shortHash,
   writeFileAtomic,
   writeFileInside,
 } from '../../server/util';
-import type { SceneVoiceOver, VoiceOverSettings } from '../../src/shared/types';
+import type { ProjectState, SceneTransition, SceneVoiceOver, VoiceOverSettings } from '../../src/shared/types';
 import { makeRoot, nextEvent, rejectsWithStatus, SCENE_TEMPLATE_CODE, type TestRoot } from './helpers';
 
 let t: TestRoot;
@@ -36,6 +38,7 @@ afterEach(async () => {
 });
 
 const base = { brand: null, formats: ['16:9' as const], fps: 60 };
+const fileOf = async (dir: string) => JSON.parse(await fs.readFile(path.join(dir, 'project.json'), 'utf8'));
 
 describe('create', () => {
   test('without template: one branded title scene, folders and art direction from the brand', async () => {
@@ -264,10 +267,13 @@ test('music settings are validated and exposed with a stream URL and the provide
   await rejectsWithStatus(store.setMusic(p.id, { file: '../x.mp3', start: 0, volume: 1 }), 400);
   await rejectsWithStatus(store.setMusic(p.id, { file: 'music/a.mp3', start: 0, volume: 3 }), 400);
   let nested: unknown = 'unset';
+  let analysing = false;
+  const spectrum = { bands: 24, rate: 25, file: 'music/a b.mp3.spectrum.bin', size: 24 * 251 };
   store.setMusicGridProvider(async (id) => {
     // The music service reads the project through get(): it must not recurse forever.
     nested = (await store.get(id)).musicGrid;
-    return {
+    if (analysing) return null;
+    const grid = {
       bpm: 128,
       beatsPerBar: 4,
       beats: [0],
@@ -279,12 +285,20 @@ test('music settings are validated and exposed with a stream URL and the provide
       duration: 10,
       confidence: 1,
     };
+    return { grid, spectrum };
   });
-  const state = await store.setMusic(p.id, { file: 'music/a b.mp3', start: 1.23456, volume: 0.5 });
-  assert.equal(state.music!.start, 1.235);
+  let state = await store.setMusic(p.id, { file: 'music/a b.mp3', start: 1.23456, volume: 0.5 });
+  assert.deepEqual(state.music, { file: 'music/a b.mp3', start: 1.235, volume: 0.5, spectrum });
   assert.equal(state.musicUrl, `/api/projects/son/music/audio?file=${encodeURIComponent('music/a b.mp3')}`);
   assert.equal(state.musicGrid!.bpm, 128);
   assert.equal(nested, null);
+  // ProjectState's spectrum never reaches project.json, even when a caller hands the state's music back.
+  state = await store.setMusic(p.id, state.music);
+  const file = JSON.parse(await fs.readFile(path.join(state.dir, 'project.json'), 'utf8'));
+  assert.deepEqual(file.music, { file: 'music/a b.mp3', start: 1.235, volume: 0.5 });
+  analysing = true;
+  state = await store.get(p.id);
+  assert.deepEqual([state.music?.spectrum, state.musicGrid], [null, null], 'no spectrum while the analysis runs');
   assert.equal((await store.setMusic(p.id, null)).musicUrl, null);
 });
 
@@ -292,6 +306,173 @@ test('withLock is re-entrant, so store methods can run inside a critical section
   const p = await store.create({ ...base, name: 'Verrou' });
   const state = await store.withLock(p.id, () => store.updateScene(p.id, 'titre', { duration: 2 }));
   assert.equal(state.scenes[0].duration, 2);
+});
+
+describe('transitions', () => {
+  /** Scenes titre (4 s), b (3 s) and c (5 s), as in the plan's design. */
+  async function threeScenes() {
+    const p = await store.create({ ...base, name: 'Coupes' });
+    await store.updateScene(p.id, 'titre', { duration: 4 });
+    await store.createScene(p.id, { name: 'B', duration: 3, code: 'export default () => null;\n' });
+    await store.createScene(p.id, { name: 'C', duration: 5, code: 'export default () => null;\n' });
+    return p;
+  }
+  const starts = (p: ProjectState) => p.scenes.map((s) => [s.id, s.start]);
+
+  test('a transition is stored as declared; anything but fade, slide, wipe or flip within 0.1-5 s is refused, translated', async () => {
+    const p = await threeScenes();
+    await store.setTransition(p.id, 'b', { kind: 'fade', duration: 0.5004 });
+    await store.setTransition(p.id, 'c', { kind: 'slide', duration: 1 });
+    let file = await fileOf(p.dir);
+    assert.deepEqual(file.scenes[1].transition, { kind: 'fade', duration: 0.5 });
+    assert.deepEqual(file.scenes[2].transition, { kind: 'slide', direction: 'left', duration: 1 }, 'left by default');
+    await store.setTransition(p.id, 'c', { kind: 'wipe', direction: 'up', duration: 0.1 });
+    await store.setTransition(p.id, 'b', { kind: 'flip', direction: 'right', duration: 5 });
+    file = await fileOf(p.dir);
+    assert.deepEqual(file.scenes[2].transition, { kind: 'wipe', direction: 'up', duration: 0.1 });
+    assert.deepEqual(file.scenes[1].transition, { kind: 'flip', direction: 'right', duration: 5 });
+
+    const refusals: [unknown, RegExp][] = [
+      [{ kind: 'iris', duration: 1 }, /^Transition invalide : kind \(fade, slide, wipe ou flip\)$/],
+      [{ duration: 1 }, /kind \(fade, slide, wipe ou flip\)/],
+      [{ kind: 'fade', duration: 0.09 }, /^Transition invalide : duration \(entre 0,1 et 5 s\)$/],
+      [{ kind: 'fade', duration: 5.001 }, /duration \(entre 0,1 et 5 s\)/],
+      [{ kind: 'fade', duration: '1' }, /duration \(entre 0,1 et 5 s\)/],
+      [{ kind: 'fade', duration: Number.NaN }, /duration \(entre 0,1 et 5 s\)/],
+      [{ kind: 'fade', direction: 'left', duration: 1 }, /^Transition invalide : direction \(un fondu n'a pas de direction\)$/],
+      [{ kind: 'wipe', direction: 'diagonal', duration: 1 }, /direction \(left, right, up ou down\)/],
+      ['fade', /^Transition invalide : racine \(un objet \{ kind, direction\?, duration \}\)$/],
+    ];
+    for (const [transition, message] of refusals) {
+      await rejectsWithStatus(store.setTransition(p.id, 'c', transition as SceneTransition), 400, message);
+    }
+    assert.deepEqual((await fileOf(p.dir)).scenes[2].transition, { kind: 'wipe', direction: 'up', duration: 0.1 });
+
+    // A hand-edited project.json is read through the same schema.
+    file.scenes[2].transition = { kind: 'iris', duration: 1 };
+    await fs.writeFile(path.join(p.dir, 'project.json'), JSON.stringify(file));
+    await rejectsWithStatus(store.get(p.id), 500, /project\.json invalide.*fade, slide, wipe ou flip/);
+  });
+
+  test('setTransition writes under the project lock; null removes it; the first scene and unknown scenes are refused', async () => {
+    const p = await threeScenes();
+    await Promise.all([
+      store.setTransition(p.id, 'b', { kind: 'fade', duration: 0.5 }),
+      store.setTransition(p.id, 'c', { kind: 'wipe', direction: 'down', duration: 1 }),
+    ]);
+    assert.deepEqual(
+      (await fileOf(p.dir)).scenes.map((s: { transition?: unknown }) => s.transition),
+      [undefined, { kind: 'fade', duration: 0.5 }, { kind: 'wipe', direction: 'down', duration: 1 }],
+    );
+    await rejectsWithStatus(store.setTransition(p.id, 'titre', { kind: 'fade', duration: 0.5 }), 400, /première scène/);
+    await rejectsWithStatus(store.setTransition(p.id, 'absente', { kind: 'fade', duration: 0.5 }), 404);
+    await rejectsWithStatus(store.setTransition(p.id, 'absent', null), 404);
+
+    const state = await store.setTransition(p.id, 'b', null);
+    assert.equal(state.scenes[1].transition, undefined);
+    assert.ok(!('transition' in (await fileOf(p.dir)).scenes[1]), 'no key left in project.json');
+    await store.setTransition(p.id, 'titre', null);
+  });
+
+  test('get() starts a scene earlier by its transition, clamped to half of either neighbour; the video gets shorter', async () => {
+    const p = await threeScenes();
+    let state = await store.setTransition(p.id, 'b', { kind: 'fade', duration: 0.5 });
+    assert.deepEqual(starts(state), [
+      ['titre', 0],
+      ['b', 3.5],
+      ['c', 6.5],
+    ]);
+    assert.equal(state.duration, 11.5);
+    assert.deepEqual(state.scenes[1].transition, { kind: 'fade', duration: 0.5 });
+    assert.deepEqual(state.scenes[1].declaredTransition, { kind: 'fade', duration: 0.5 });
+    assert.equal(state.scenes[2].transition, undefined);
+
+    // Half of b (3 s) is shorter than the 5 s declared, and than half of c.
+    state = await store.setTransition(p.id, 'c', { kind: 'slide', direction: 'up', duration: 5 });
+    assert.deepEqual(state.scenes[2].transition, { kind: 'slide', direction: 'up', duration: 1.5 });
+    assert.deepEqual(state.scenes[2].declaredTransition, { kind: 'slide', direction: 'up', duration: 5 });
+    assert.deepEqual(starts(state), [
+      ['titre', 0],
+      ['b', 3.5],
+      ['c', 5],
+    ]);
+    assert.equal(state.duration, 10);
+
+    // A neighbour shortened later clamps the effective value only: nothing changes on disk.
+    state = await store.updateScene(p.id, 'titre', { duration: 0.401 });
+    assert.deepEqual(state.scenes[1].transition, { kind: 'fade', duration: 0.2 }, 'half of 0.401 s, rounded down');
+    assert.deepEqual(starts(state), [
+      ['titre', 0],
+      ['b', 0.201],
+      ['c', 1.701],
+    ]);
+    assert.equal(state.duration, 6.701);
+    assert.equal((await fileOf(p.dir)).scenes[1].transition.duration, 0.5);
+    assert.equal((await store.list()).find((s) => s.id === p.id)!.duration, 6.701, 'the project list agrees');
+
+    // Half of the incoming scene clamps it too.
+    state = await store.updateScene(p.id, 'c', { duration: 1 });
+    assert.deepEqual(state.scenes[2].transition, { kind: 'slide', direction: 'up', duration: 0.5 });
+    assert.equal(state.duration, 3.701);
+  });
+
+  test('never lets the two cuts around a scene take more than the scene, even at an odd ms duration', async () => {
+    const p = await threeScenes();
+    await store.setTransition(p.id, 'b', { kind: 'fade', duration: 5 });
+    await store.setTransition(p.id, 'c', { kind: 'fade', duration: 5 });
+    for (const middle of [3.001, 2.345, 0.101]) {
+      const state = await store.updateScene(p.id, 'b', { duration: middle });
+      const [a, b, c] = state.scenes;
+      assert.ok(c.start >= a.start + a.duration, `${middle} s: c starts at ${c.start}, before titre ends`);
+      assert.ok(b.transition!.duration + c.transition!.duration <= b.duration, `${middle} s: both cuts fit in b`);
+    }
+    assert.deepEqual(
+      (await store.get(p.id)).scenes[2].transition,
+      { kind: 'fade', duration: 0.05 },
+      'half of 0.101 s, rounded down',
+    );
+  });
+
+  test('a project without transitions keeps the starts and duration it had', async () => {
+    const dir = path.join(t.config.projectsDir, 'images');
+    await fs.mkdir(dir);
+    await fs.copyFile(path.join(import.meta.dirname, '../fixtures/projects/frames/project.json'), path.join(dir, 'project.json'));
+    const p = await store.get('images');
+    assert.deepEqual(
+      p.scenes.map((s) => s.start),
+      [0, 1, 1.5, 2, 3, 4],
+    );
+    assert.equal(p.duration, 5);
+    assert.ok(p.scenes.every((s) => !('transition' in s) && !('declaredTransition' in s)));
+  });
+
+  test('duplicate copies the transition, a move keeps it (inactive first), a delete leaves the next one as is', async () => {
+    const p = await threeScenes();
+    const wipe = { kind: 'wipe', direction: 'right', duration: 0.5 } as const;
+    await store.setTransition(p.id, 'b', wipe);
+    const copy = await store.duplicateScene(p.id, 'b');
+    assert.deepEqual(copy.transition, wipe);
+    assert.deepEqual((await fileOf(p.dir)).scenes[2].transition, wipe);
+
+    let state = await store.reorderScenes(p.id, ['b', 'titre', copy.id, 'c']);
+    assert.equal(state.scenes[0].transition, undefined, 'the first scene draws no transition');
+    assert.deepEqual(state.scenes[0].declaredTransition, wipe);
+    assert.deepEqual((await fileOf(p.dir)).scenes[0].transition, wipe, 'kept on disk');
+    assert.deepEqual(starts(state), [
+      ['b', 0],
+      ['titre', 3],
+      [copy.id, 6.5],
+      ['c', 9.5],
+    ]);
+
+    state = await store.deleteScene(p.id, 'titre');
+    assert.deepEqual(state.scenes[1].transition, wipe);
+    assert.deepEqual(starts(state), [
+      ['b', 0],
+      [copy.id, 2.5],
+      ['c', 5.5],
+    ]);
+  });
 });
 
 describe('code generations', () => {
@@ -370,7 +551,6 @@ describe('speakers and script lines', () => {
   const camille = { id: 'camille', name: 'Camille', voice: 'fr_FR-siwis-medium', color: '#ff2e88' };
   const leo = { id: 'leo', name: 'Léo', voice: 'fr_FR-tom-medium' };
   const refused = (e: unknown) => e instanceof HttpError && e.status === 400;
-  const fileOf = async (dir: string) => JSON.parse(await fs.readFile(path.join(dir, 'project.json'), 'utf8'));
 
   test('speakers are written with the voice settings, and an empty list writes no key', async () => {
     const p = await store.create({ ...base, name: 'Dialogue' });
@@ -1086,6 +1266,42 @@ describe('writeFileInside', () => {
   }
 });
 
+describe('createFileInside', () => {
+  test('creates the file and its missing folders, and never writes over a name that exists', async () => {
+    const project = path.join(t.root, 'p');
+    await fs.mkdir(path.join(project, 'components'), { recursive: true });
+    const file = path.join(project, 'components', 'a', 'b', 'x.ts');
+    await createFileInside(project, file, 'written');
+    assert.equal(await fs.readFile(file, 'utf8'), 'written');
+    await assert.rejects(createFileInside(project, file, 'again'), /EEXIST/);
+    assert.equal(await fs.readFile(file, 'utf8'), 'written');
+  });
+
+  test('refuses a folder that is a link out of its root, creating nothing through it', async () => {
+    const { project, outside, link } = await linkedOut();
+    await assert.rejects(createFileInside(project, path.join(link, 'new.ts'), 'written'), REFUSED);
+    await assert.rejects(createFileInside(project, path.join(link, 'deep', 'x.ts'), 'written'), REFUSED);
+    assert.deepEqual(await fs.readdir(outside), ['x.ts']);
+  });
+
+  test('writes nothing into another folder of its root through a link to it', async () => {
+    const { project, inner, link } = await linkedInward();
+    await assert.rejects(createFileInside(project, path.join(link, 'new.json'), 'written'), REFUSED);
+    await assert.rejects(createFileInside(project, path.join(link, 'deep', 'x.ts'), 'written'), REFUSED);
+    assert.deepEqual(await fs.readdir(inner), ['chat.json']);
+  });
+
+  test('refuses a name that is a link, and a file named outside its root', async () => {
+    const { project, outside } = await linkedOut();
+    const file = path.join(project, 'components', 'b', 'z.ts');
+    await fs.symlink(path.join(outside, 'x.ts'), file);
+    await assert.rejects(createFileInside(project, file, 'written'), /EEXIST|ELOOP/);
+    await assert.rejects(createFileInside(project, path.join(t.root, 'x.ts'), 'written'), /outside/);
+    assert.equal(await fs.readFile(path.join(outside, 'x.ts'), 'utf8'), 'TOPSECRET');
+    await assert.rejects(fs.access(path.join(t.root, 'x.ts')));
+  });
+});
+
 describe('removeFileInside', () => {
   test('removes a file inside its root; a missing file or folder is no error', async () => {
     const { project, file } = await swappable();
@@ -1129,6 +1345,50 @@ describe('removeFileInside', () => {
     assert.equal(await fs.readFile(path.join(outside, 'x.ts'), 'utf8'), 'TOPSECRET');
     await removeFileInside(path.join(t.root, 'gone'), path.join(t.root, 'gone', 'scenes', 'x.ts'));
   });
+});
+
+describe('renameInside', () => {
+  test('renames a file within its folder, replacing what has the new name', async () => {
+    const { project, file } = await swappable();
+    const folder = path.dirname(file);
+    await fs.writeFile(path.join(folder, 'y.ts'), 'replaced');
+    await renameInside(project, file, path.join(folder, 'y.ts'));
+    assert.deepEqual(await fs.readdir(folder), ['y.ts']);
+    assert.equal(await fs.readFile(path.join(folder, 'y.ts'), 'utf8'), 'inside');
+  });
+
+  test('refuses two names in different folders, moving nothing', async () => {
+    const project = path.join(t.root, 'p');
+    await fs.mkdir(path.join(project, 'a'), { recursive: true });
+    await fs.mkdir(path.join(project, 'b'));
+    await fs.writeFile(path.join(project, 'a', 'x.ts'), 'a');
+    await fs.writeFile(path.join(project, 'b', 'x.ts'), 'b');
+    await assert.rejects(renameInside(project, path.join(project, 'a', 'x.ts'), path.join(project, 'b', 'y.ts')), /same folder/);
+    assert.deepEqual(await fs.readdir(path.join(project, 'a')), ['x.ts']);
+    assert.deepEqual(await fs.readdir(path.join(project, 'b')), ['x.ts']);
+  });
+
+  test('moves nothing through a folder that is a link out of its root', async () => {
+    const { project, outside, link } = await linkedOut();
+    await assert.rejects(renameInside(project, path.join(link, 'x.ts'), path.join(link, 'y.ts')), REFUSED);
+    assert.deepEqual(await fs.readdir(outside), ['x.ts']);
+  });
+
+  test('moves nothing through a link to another folder inside its root', async () => {
+    const { project, inner, link } = await linkedInward();
+    await assert.rejects(renameInside(project, path.join(link, 'chat.json'), path.join(link, 'moved.json')), REFUSED);
+    assert.deepEqual(await fs.readdir(inner), ['chat.json']);
+  });
+
+  for (const swapped of ['scenes/sub', 'scenes']) {
+    test(`moves nothing outside when ${swapped} was swapped for a link out of its root`, async () => {
+      const setup = await swappable(swapped);
+      await setup.toLink();
+      const to = path.join(path.dirname(setup.file), 'y.ts');
+      await assert.rejects(renameInside(setup.project, setup.file, to), REFUSED);
+      await setup.outsideUntouched();
+    });
+  }
 });
 
 describe('listInside', () => {

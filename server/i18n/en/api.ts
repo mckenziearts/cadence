@@ -46,8 +46,6 @@ export default {
     invalidBody: (issues: string[]) => `Invalid request: ${issues.join('; ')}`,
     rangeOrder: 'the end must come after the start',
     fileTooLarge: (mb: number) => `File too large (${mb} MB max)`,
-    invalidUpload: 'Invalid file upload (multipart/form-data expected)',
-    noFile: 'No file received ("file" field)',
     unknownChat: (key: string) => `Unknown chat: ${key}`,
     unknownNetwork: (id: string) => `Unknown network: ${id}`,
     missingParam: (name: string) => `Missing "${name}" parameter`,
@@ -60,6 +58,7 @@ export default {
     artDirectionEdited: 'Art direction edited',
     sceneAdded: (scene: string) => `Scene added: ${scene}`,
     sceneEdited: (scene: string) => `Scene edited: ${scene}`,
+    transitionSet: (scene: string) => `Transition edited: ${scene}`,
     sceneDeleted: 'Scene deleted',
     scenesReordered: 'Scenes reordered',
     musicAdded: (file: string) => `Music added: ${file}`,
@@ -101,6 +100,7 @@ export default {
     relativePath: 'expected a path relative to the project',
     duplicateScene: (id: string) => `duplicate scene "${id}"`,
     musicGrid: (id: string, error: string) => `[cadence] music grid unavailable (${id}): ${error}`,
+    clips: (id: string, error: string) => `[cadence] clip frames unavailable (${id}): ${error}`,
     voiceOver: (id: string, error: string) => `[cadence] voice-over unavailable (${id}): ${error}`,
     voiceOverSettings: (issues: string) => `Invalid voice-over settings: ${issues}`,
     sceneVoiceOver: (issues: string) => `Invalid voice-over: ${issues}`,
@@ -118,6 +118,13 @@ export default {
     tempo: (value: unknown) => `Invalid tempo: ${value} (between 30 and 300 BPM)`,
     captions: (value: unknown) => `Invalid captions setting: ${String(value)} (true or false)`,
     duration: (value: unknown) => `Invalid duration: ${value}`,
+    transition: (issues: string) => `Invalid transition: ${issues}`,
+    transitionObject: 'an object { kind, direction?, duration }',
+    transitionKind: 'fade, slide, wipe or flip',
+    transitionDirection: 'left, right, up or down',
+    transitionDuration: (min: number, max: number) => `between ${min} and ${max} s`,
+    fadeDirection: 'a fade has no direction',
+    firstSceneTransition: 'The first scene has no transition: no scene comes before it',
     root: 'root',
     artDirection: `# Art direction
 
@@ -149,9 +156,11 @@ This document is reread before every change. Describe here the style all scenes 
   },
   assets: {
     unsupported: (name: string) =>
-      `Unsupported file type: ${name} (PNG, JPEG, WebP, GIF or SVG images, WOFF, WOFF2, TTF or OTF fonts)`,
+      `Unsupported file type: ${name} (PNG, JPEG, WebP, GIF or SVG images, MP4, MOV, M4V or WebM videos, Lottie JSON animations, WOFF, WOFF2, TTF or OTF fonts)`,
     empty: (name: string) => `Empty file: ${name}`,
-    tooLarge: (name: string) => `File too large: ${name} (50 MB max)`,
+    tooLarge: (name: string, mb: number) => `File too large: ${name} (${mb} MB max)`,
+    projectFull: (name: string, mb: number) =>
+      `No room for ${name}: a project keeps ${mb} MB of assets at most, so that its export can be imported again`,
     invalidUrl: (url: string) => `Invalid URL: ${url}`,
     httpOnly: (url: string) => `Only http:// and https:// URLs can be captured: ${url}`,
     unknownDevice: (device: string) => `Unknown device: ${device}`,

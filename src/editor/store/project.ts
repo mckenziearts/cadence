@@ -2,11 +2,12 @@
 // publications, cost).
 import { ApiError, api, ignore } from '../api';
 import { browserLanguage, t } from '../i18n';
-import type { AgentId, CreateSceneInput, FormatId, ProjectState, SeamResult } from '../../shared/types';
+import type { AgentId, CreateSceneInput, FormatId, ProjectState, SceneTransition, SeamResult } from '../../shared/types';
 import { seamTone } from '../lib/format';
 import { parseHash } from '../lib/routing';
 import { oneAtATime, sceneInPlace, undoAllowed } from '../lib/shortcuts';
-import { clamp, currentScene, get, previewDuration, sceneAt, set, useStore, type PreviewMode } from '.';
+import { sceneAt } from '../lib/timeline';
+import { clamp, currentScene, get, previewDuration, set, useStore, type PreviewMode } from '.';
 import { flushMusic } from './music';
 import { toast } from './ui';
 
@@ -346,6 +347,12 @@ export async function setSceneDuration(sceneId: string, duration: number): Promi
   applyProject(await api.updateScene(project.id, sceneId, { duration: Math.round(duration * 1000) / 1000 }));
 }
 
+export async function setTransition(sceneId: string, transition: SceneTransition | null): Promise<void> {
+  const project = get().project;
+  if (!project) return;
+  applyProject(await api.setTransition(project.id, sceneId, transition));
+}
+
 export async function duplicateScene(sceneId: string): Promise<void> {
   const project = get().project;
   if (!project) return;
@@ -423,6 +430,36 @@ async function historyStep(direction: 'undo' | 'redo'): Promise<void> {
  */
 export const undo = (): Promise<void> => historyStep('undo');
 export const redo = (): Promise<void> => historyStep('redo');
+
+// Assets
+
+let uploadSeq = 0;
+
+/**
+ * Sends `files` to the open project's assets one after the other. Each one has its row in Médias while it travels; a
+ * refused one keeps it with the server's reason (a clip ffmpeg cannot read, a Lottie file loading an image) until the
+ * person dismisses it, so it says why without a toast that goes away.
+ */
+export async function uploadAssets(files: File[]): Promise<void> {
+  const projectId = get().project?.id;
+  if (!projectId) return;
+  const rows = files.map((file) => ({ id: ++uploadSeq, projectId, name: file.name, error: null }));
+  set((s) => ({ uploads: [...s.uploads, ...rows] }));
+  for (const [i, file] of files.entries()) {
+    const { id } = rows[i];
+    try {
+      await api.uploadAsset(projectId, file, { quiet: true });
+      set((s) => ({ uploads: s.uploads.filter((row) => row.id !== id), assetsTick: s.assetsTick + 1 }));
+    } catch (e) {
+      const error = (e as Error).message;
+      set((s) => ({ uploads: s.uploads.map((row) => (row.id === id ? { ...row, error } : row)) }));
+    }
+  }
+}
+
+export function dismissUpload(id: number): void {
+  set((s) => ({ uploads: s.uploads.filter((row) => row.id !== id) }));
+}
 
 // Seams, renders, cost
 

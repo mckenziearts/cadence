@@ -1,20 +1,24 @@
 // FfmpegRenderService against the frame harness: MP4 length, frame count, colors, soundtrack, voice-over, sound effects,
-// cancel, files.
+// cancel, files; transparent ProRes and WebM, GIF, still PNG and PNG sequence.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { lutimes, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { lstat, lutimes, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { promisify } from 'node:util';
+import { PNG } from 'pngjs';
+import { outputSupport } from '../../server/capture/encoders';
 import { FfmpegRenderService } from '../../server/capture/render';
+import { LocalClipService } from '../../server/clips/service';
 import type { CadenceConfig, ProjectStore } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import { HttpError } from '../../server/util';
 import { writeWav } from '../../server/voiceover/wav';
 import type { ProjectFile, ProjectState, RenderJob, ServerEvent } from '../../src/shared/types';
 import {
+  FixtureClipService,
   FixtureMusicService,
   FixtureVoiceOverService,
   near,
@@ -29,6 +33,7 @@ const run = promisify(execFile);
 
 let h: Harness;
 let hub: RecordingHub;
+const clips = new FixtureClipService();
 let music: FixtureMusicService;
 let voiceOver: FixtureVoiceOverService;
 let renders: FfmpegRenderService;
@@ -39,7 +44,7 @@ before(async () => {
   hub = new RecordingHub();
   music = new FixtureMusicService();
   voiceOver = new FixtureVoiceOverService();
-  renders = new FfmpegRenderService({ config: h.config, store: h.store, music, voiceOver, hub });
+  renders = new FfmpegRenderService({ config: h.config, store: h.store, music, clips, voiceOver, hub });
   id = await h.project('render');
 });
 
@@ -108,6 +113,21 @@ async function frameAt(file: string, t: number): Promise<Buffer> {
   return stdout;
 }
 
+/** One pixel of a decoded frame with its alpha; `decoder` forces one (ffmpeg's own VP9 decoder drops the alpha). */
+async function rgbaAt(file: string, t: number, x: number, y: number, decoder?: string): Promise<number[]> {
+  const { stdout } = await run(
+    'ffmpeg',
+    [
+      ...['-v', 'error', '-ss', String(t), ...(decoder ? ['-c:v', decoder] : []), '-i', file],
+      ...['-frames:v', '1', '-pix_fmt', 'rgba', '-f', 'image2pipe', '-c:v', 'png', '-'],
+    ],
+    { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 },
+  );
+  const image = PNG.sync.read(stdout);
+  const i = (image.width * y + x) * 4;
+  return [...image.data.subarray(i, i + 4)];
+}
+
 async function renderOne(
   request: Parameters<FfmpegRenderService['start']>[1],
   service = renders,
@@ -140,13 +160,26 @@ async function withSounds(cues: Record<string, string>): Promise<() => Promise<v
   };
 }
 
+/** Gives scenes a and b `code`; the returned function puts their code back. */
+async function withScenes(code: string): Promise<() => Promise<void>> {
+  const files = ['a', 'b'].map((sceneId) => h.store.sceneFile(id, sceneId));
+  const saved = await Promise.all(files.map((file) => readFile(file, 'utf8')));
+  await Promise.all(files.map((file) => writeFile(file, code)));
+  return async () => {
+    await Promise.all(files.map((file, i) => writeFile(file, saved[i])));
+  };
+}
+
 /** A render service whose store reads go through `onRead` (read 1: start(), read 2: the job itself). */
-function renderingWith(onRead: (read: number, project: ProjectState) => Promise<ProjectState>): FfmpegRenderService {
+function renderingWith(
+  onRead: (read: number, project: ProjectState) => Promise<ProjectState>,
+  musicService: FixtureMusicService = music,
+): FfmpegRenderService {
   let reads = 0;
   const store: ProjectStore = Object.assign(Object.create(h.store) as FixtureProjectStore, {
     get: async (projectId: string) => onRead(++reads, await h.store.get(projectId)),
   });
-  return new FfmpegRenderService({ config: h.config, store, music, voiceOver, hub });
+  return new FfmpegRenderService({ config: h.config, store, music: musicService, clips, voiceOver, hub });
 }
 
 describe('FfmpegRenderService', () => {
@@ -277,13 +310,148 @@ export default function A({ voiceOver }: SceneProps) {
       },
     });
     try {
-      const service = new FfmpegRenderService({ config: h.config, store: h.store, music, voiceOver: speaking, hub });
+      const service = new FfmpegRenderService({ config: h.config, store: h.store, music, clips, voiceOver: speaking, hub });
       const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' }, service);
       assert.ok(near(pixel(await frameAt(file, 0.2), 1500, 800), [0, 255, 0], 6), 'green: scene a has its sentence');
     } finally {
       h.store.voiceOverLines.delete(id);
       await writeFile(sceneFile, code);
     }
+  });
+
+  it('waits for the music analysis before the pages load the project, and fails with the frame text when it failed', async () => {
+    // Scene a turns green on a loud spectrum. The spectrum reaches the project state only when analysis() ends, as when
+    // the analyzer still runs as the export starts.
+    const dir = h.store.dir(id);
+    const projectFile = path.join(dir, 'project.json');
+    const sceneFile = h.store.sceneFile(id, 'a');
+    const [savedProject, code] = await Promise.all([readFile(projectFile, 'utf8'), readFile(sceneFile, 'utf8')]);
+    await writeFile(
+      sceneFile,
+      `import type { SceneProps } from 'cadence';
+
+export default function A({ t, music }: SceneProps) {
+  return <div style={{ position: 'absolute', inset: 0, background: music.spectrum(t, 1)[0] > 0.5 ? '#00ff00' : '#ff0000' }} />;
+}
+`,
+    );
+    await mkdir(path.join(dir, 'music'), { recursive: true });
+    const track = path.join(dir, 'music', 'tone.wav');
+    // -y: the soundtrack test leaves this file behind, and ffmpeg would wait on stdin to overwrite it.
+    await run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4', '-ar', '44100', track]);
+    const spectrum = new Uint8Array(4 * 25 * 24).fill(255);
+    await writeFile(`${track}.spectrum.bin`, spectrum);
+    const project = JSON.parse(savedProject) as ProjectFile;
+    await writeFile(projectFile, JSON.stringify({ ...project, music: { file: 'music/tone.wav', start: 0, volume: 1 } }));
+    const grid = {
+      bpm: 120,
+      beatsPerBar: 4,
+      beats: [0, 0.5, 1],
+      downbeats: [0],
+      phrases: [0],
+      sections: [],
+      accents: [],
+      waveform: [],
+      duration: 4,
+      confidence: 1,
+    };
+    const analysing = Object.assign(new FixtureMusicService(), {
+      analysis: async (projectId: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        h.store.analysedMusic.set(projectId, {
+          grid,
+          spectrum: { bands: 24, rate: 25, file: 'music/tone.wav.spectrum.bin', size: spectrum.length },
+        });
+        return null;
+      },
+    });
+    const failing = Object.assign(new FixtureMusicService(), {
+      analysis: async () => {
+        throw new HttpError(422, 'analysis failed');
+      },
+    });
+    analysing.audio.set(id, track);
+    failing.audio.set(id, track);
+    try {
+      let spectrumAtStart: unknown = null;
+      const waiting = renderingWith(async (read, state) => {
+        if (read === 2) spectrumAtStart = state.music?.spectrum ?? null;
+        return state;
+      }, analysing);
+      const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' }, waiting);
+      assert.ok(spectrumAtStart, 'the job reads the project once the analysis has ended');
+      assert.ok(near(pixel(await frameAt(file, 0.2), 1500, 800), [0, 255, 0], 6), 'green: scene a has its spectrum');
+
+      h.store.analysedMusic.delete(id);
+      const failed = new FfmpegRenderService({ config: h.config, store: h.store, music: failing, clips, voiceOver, hub });
+      const [queued] = await failed.start(id, { formats: ['16:9'], quality: 'draft' });
+      const job = await failed.wait(queued.id);
+      assert.equal(job.status, 'error');
+      assert.match(job.error!, /music\.spectrum\(\) n’est pas encore disponible/);
+    } finally {
+      h.store.analysedMusic.delete(id);
+      await writeFile(projectFile, savedProject);
+      await writeFile(sceneFile, code);
+      await rm(path.join(dir, 'music'), { recursive: true, force: true });
+    }
+  });
+
+  it('cancels a render still waiting for the music analysis, without opening a page', { timeout: 10_000 }, async () => {
+    let asked!: () => void;
+    const analysing = new Promise<void>((resolve) => (asked = resolve));
+    const stuck = Object.assign(new FixtureMusicService(), {
+      analysis: () => {
+        asked();
+        return new Promise<never>(() => {});
+      },
+    });
+    let launched = false;
+    const service = new FfmpegRenderService({
+      config: h.config,
+      store: h.store,
+      music: stuck,
+      clips,
+      voiceOver,
+      hub,
+      browserServer: async () => {
+        launched = true;
+        throw new Error('no browser while the analysis runs');
+      },
+    });
+    const [queued] = await service.start(id, { formats: ['16:9'], quality: 'draft' });
+    await analysing;
+    service.cancel(queued.id);
+    assert.equal((await service.wait(queued.id)).status, 'cancelled');
+    assert.equal(launched, false);
+  });
+
+  it('waits for the clip frames before opening a page, and a cancel does not wait for them', { timeout: 10_000 }, async () => {
+    let asked!: (projectId: string) => void;
+    const waited = new Promise<string>((resolve) => (asked = resolve));
+    const preparing = Object.assign(new FixtureClipService(), {
+      whenIdle: (projectId: string) => {
+        asked(projectId);
+        return new Promise<never>(() => {});
+      },
+    });
+    let launched = false;
+    const service = new FfmpegRenderService({
+      config: h.config,
+      store: h.store,
+      music,
+      clips: preparing,
+      voiceOver,
+      hub,
+      browserServer: async () => {
+        launched = true;
+        throw new Error('no browser while clip frames are extracted');
+      },
+    });
+    const [queued] = await service.start(id, { formats: ['16:9'], quality: 'draft' });
+    assert.equal(await waited, id);
+    service.cancel(queued.id);
+    assert.equal((await service.wait(queued.id)).status, 'cancelled');
+    assert.equal(launched, false);
   });
 
   it('burns the captions into the MP4 when the project has them on', async () => {
@@ -370,6 +538,102 @@ export default function A({ voiceOver }: SceneProps) {
     }
   });
 
+  it('mixes the sound of a clip cue at its time, from its point in the clip, for its duration', { timeout: 60_000 }, async () => {
+    const dir = h.store.dir(id);
+    // Silent for 1 s, then a 440 Hz sine: the cue reads 0.5 s of the sine, from 1 s in the clip, at 1 s in the video.
+    await mkdir(path.join(dir, 'assets'), { recursive: true });
+    await run('ffmpeg', [
+      ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=2'],
+      ...['-f', 'lavfi', '-i', "aevalsrc='if(gte(t,1),0.5*sin(2*PI*440*t),0)':s=48000:d=2"],
+      ...['-pix_fmt', 'yuv420p', '-shortest', path.join(dir, 'assets', 'talk.mp4')],
+    ]);
+    const local = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+    h.store.setClipsProvider((project) => local.sync(project));
+    await setDuration('b', 2);
+    const restore = await withSounds({ b: "[{ at: 0.5, clip: '/talk.mp4', from: 1, duration: 0.5, gain: 0.8 }]" });
+    try {
+      await local.whenIdle(id);
+      const { file } = await renderOne({ formats: ['16:9'], quality: 'draft' });
+      const [before, sine, afterwards] = await Promise.all([
+        rmsDb(file, 0.6, 0.95),
+        rmsDb(file, 1.05, 1.45),
+        rmsDb(file, 1.6, 1.9),
+      ]);
+      assert.ok(sine > -30, `the clip's sine, ${sine} dB`);
+      assert.ok(before < -60, `silence before the cue, ${before} dB`);
+      assert.ok(afterwards < -60, `silence after its duration, ${afterwards} dB`);
+    } finally {
+      await restore();
+      await setDuration('b', 0.5);
+      h.store.setClipsProvider(async () => ({}));
+      await rm(path.join(dir, 'assets', 'talk.mp4'), { force: true });
+      await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+    }
+  });
+
+  it(
+    'cancels a render while it reads the sound of a clip, within seconds, and leaves no file behind',
+    { timeout: 60_000 },
+    async () => {
+      const dir = h.store.dir(id);
+      await mkdir(path.join(dir, 'assets'), { recursive: true });
+      await run('ffmpeg', [
+        ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=2'],
+        ...['-f', 'lavfi', '-i', 'sine=duration=2', '-pix_fmt', 'yuv420p', '-shortest', path.join(dir, 'assets', 'talk.mp4')],
+      ]);
+      // The real ffmpeg, except for the read of the clip's sound, which says it started and then hangs.
+      const wrapper = path.join(dir, 'ffmpeg-slow-clip-sound');
+      const started = `${wrapper}.started`;
+      await writeFile(
+        wrapper,
+        `#!/bin/sh
+case "$*" in
+  *s16le*) touch "${started}"; exec sleep 30 ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const local = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+      h.store.setClipsProvider((project) => local.sync(project));
+      const restore = await withSounds({ b: "[{ at: 0.1, clip: '/talk.mp4', duration: 0.3 }]" });
+      const slow = new FfmpegRenderService({
+        config: { ...h.config, ffmpegPath: wrapper },
+        store: h.store,
+        music,
+        clips,
+        voiceOver,
+        hub,
+      });
+      try {
+        await local.whenIdle(id);
+        const rendersDir = path.join(dir, 'renders');
+        const existing = await readdir(rendersDir).catch(() => [] as string[]);
+        const [queued] = await slow.start(id, { formats: ['16:9'], quality: 'draft' });
+        while (!(await stat(started).catch(() => null))) await new Promise((resolve) => setTimeout(resolve, 20));
+        const cancelledAt = Date.now();
+        slow.cancel(queued.id);
+        const job = await slow.wait(queued.id);
+        assert.equal(job.status, 'cancelled', job.error ?? job.status);
+        assert.ok(Date.now() - cancelledAt < 5_000, 'ffmpeg is killed, not waited for');
+        const left = (await readdir(rendersDir)).filter((n) => !existing.includes(n) && /\.(part|mp4|wav)$/.test(n));
+        assert.deepEqual(left, []);
+        const tracks = await readdir(path.join(dir, '.cadence', 'sounds')).catch(() => [] as string[]);
+        assert.deepEqual(
+          tracks.filter((n) => n.startsWith(queued.id)),
+          [],
+        );
+      } finally {
+        await restore();
+        h.store.setClipsProvider(async () => ({}));
+        await rm(path.join(dir, 'assets', 'talk.mp4'), { force: true });
+        await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+        await rm(wrapper, { force: true });
+        await rm(started, { force: true });
+      }
+    },
+  );
+
   it('fails the render with the message of the frame when a scene declares an invalid cue', async () => {
     // Scene a's cue still gets a track written: the failed render removes it too.
     const restore = await withSounds({ a: "[{ at: 0.1, sound: 'pop' }]", b: "[{ at: 0.1, sound: 'boing' }]" });
@@ -379,6 +643,20 @@ export default function A({ voiceOver }: SceneProps) {
       assert.equal(job.status, 'error');
       assert.match(job.error!, /Erreur dans sounds\(\) \u00b7 scenes\/b\.tsx\nson 0 : son inconnu "boing"/);
       assert.deepEqual(await readdir(path.join(h.store.dir(id), '.cadence', 'sounds')), []);
+    } finally {
+      await restore();
+    }
+  });
+
+  it('fails the render with the message of the frame when a scene shows a clip the project does not have', async () => {
+    const restore = await withScenes(
+      `import { Clip } from 'cadence';\nexport default function Scene({ t }) {\n  return <Clip src="loops/none.gif" time={t} />;\n}\n`,
+    );
+    try {
+      const [queued] = await renders.start(id, { formats: ['16:9'], quality: 'draft' });
+      const job = await renders.wait(queued.id);
+      assert.equal(job.status, 'error');
+      assert.match(job.error!, /<Clip> : assets\/loops\/none\.gif n\u2019est ni une vid\u00e9o ni un GIF de ce projet/);
     } finally {
       await restore();
     }
@@ -444,6 +722,374 @@ export default function A({ voiceOver }: SceneProps) {
       assert.ok(near(pixel(await frameAt(file, 0.3), 270, 600), [0, 0, 255], 6), `then scene b, supersample ${supersample}`);
     }
   });
+
+  it('renders a transparent ProRes 4444 and VP9 WebM without the brand background, in true colors', async (t) => {
+    // One red square in the middle of the 16:9 canvas (861-1060 × 440-640), on nothing: 430-530 × 220-320 at 0.5×, its
+    // left column half covered. A mid-tone square (200-400 × 200-400, 100-200 at 0.5×) catches a tv/pc range error that
+    // saturated red hides: #3366cc read back as pc range is about 41,99,213.
+    const restore = await withScenes(
+      `export default () => <>\n` +
+        `  <div style={{ position: 'absolute', left: 861, top: 440, width: 199, height: 200, background: '#ff0000' }} />\n` +
+        `  <div style={{ position: 'absolute', left: 200, top: 200, width: 200, height: 200, background: '#3366cc' }} />\n` +
+        `</>;\n`,
+    );
+    try {
+      const request = {
+        formats: ['16:9' as const],
+        quality: 'draft' as const,
+        scale: 0.5 as const,
+        supersample: true,
+        transparent: true,
+      };
+      const { job, file } = await renderOne({ ...request, output: 'mov' });
+      assert.match(job.file!, /\.mov$/);
+      const video = (await probe(file)).streams.find((s) => s.codec_type === 'video')!;
+      assert.deepEqual([video.codec_name, video.width, video.height, video.pix_fmt], ['prores', 960, 540, 'yuva444p12le']);
+      assert.equal(video.nb_read_frames, '30');
+      assert.equal((await rgbaAt(file, 0.2, 5, 5))[3], 0, 'corner: transparent');
+      assert.ok(near(await rgbaAt(file, 0.2, 480, 270), [255, 0, 0, 255], 6), 'centre: opaque red');
+      assert.ok(near(await rgbaAt(file, 0.2, 150, 150), [51, 102, 204, 255], 6), 'mid tone in tv range');
+      // Resized premultiplied: the half-covered edge is red at half alpha, not darkened by the transparent black beside it.
+      const edge = await rgbaAt(file, 0.2, 430, 270);
+      assert.ok(edge[3] > 64 && edge[3] < 192 && near(edge.slice(0, 3), [255, 0, 0], 12), `edge: half-transparent red, ${edge}`);
+
+      // The CDP screenshot comes in device pixels: at a device pixel ratio of 0.5 or 2 the crop must still frame the canvas.
+      for (const [scale, supersample] of [
+        [0.5, false],
+        [1, true],
+      ] as const) {
+        const k = scale * 2;
+        const other = await renderOne({ ...request, scale, supersample, output: 'mov' });
+        const stream = (await probe(other.file)).streams.find((s) => s.codec_type === 'video')!;
+        const ratio = `ratio ${scale * (supersample ? 2 : 1)}`;
+        assert.deepEqual([stream.width, stream.height], [960 * k, 540 * k], ratio);
+        assert.equal((await rgbaAt(other.file, 0.2, 5, 5))[3], 0, `${ratio} corner: transparent`);
+        const centre = await rgbaAt(other.file, 0.2, 480 * k, 270 * k);
+        assert.ok(near(centre, [255, 0, 0, 255], 6), `${ratio} centre: opaque red, ${centre}`);
+        const mid = await rgbaAt(other.file, 0.2, 150 * k, 150 * k);
+        assert.ok(near(mid, [51, 102, 204, 255], 6), `${ratio} mid tone, ${mid}`);
+      }
+
+      if (!(await outputSupport(h.config.ffmpegPath)).webm.available) return t.skip('the local ffmpeg has no libvpx-vp9');
+      const webm = await renderOne({ ...request, output: 'webm' });
+      assert.match(webm.job.file!, /\.webm$/);
+      assert.equal((await rgbaAt(webm.file, 0.2, 5, 5, 'libvpx-vp9'))[3], 0, 'webm corner: transparent');
+      assert.ok(near(await rgbaAt(webm.file, 0.2, 480, 270, 'libvpx-vp9'), [255, 0, 0, 255], 6), 'webm centre: opaque red');
+      assert.ok(near(await rgbaAt(webm.file, 0.2, 150, 150, 'libvpx-vp9'), [51, 102, 204, 255], 6), 'webm mid tone in tv range');
+    } finally {
+      await restore();
+    }
+  });
+
+  it("renders a ProRes with PCM audio and a WebM with opus, ffmpeg's own when the build has no libopus", async (t) => {
+    const musicDir = path.join(h.store.dir(id), 'music');
+    await mkdir(musicDir, { recursive: true });
+    const track = path.join(musicDir, 'tone.wav');
+    await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4', '-ar', '44100', track]);
+    const projectFile = path.join(h.store.dir(id), 'project.json');
+    const project = JSON.parse(await readFile(projectFile, 'utf8')) as ProjectFile;
+    project.music = { file: 'music/tone.wav', start: 0, volume: 1 };
+    await writeFile(projectFile, JSON.stringify(project, null, 2));
+    music.audio.set(id, track);
+    const request = { formats: ['16:9' as const], quality: 'draft' as const, scale: 0.5 as const };
+    const audioOf = async (file: string) => {
+      const audio = (await probe(file)).streams.filter((s) => s.codec_type === 'audio');
+      return audio.map((s) => [s.codec_name, s.sample_rate]);
+    };
+    try {
+      assert.deepEqual(await audioOf((await renderOne({ ...request, output: 'mov' })).file), [['pcm_s16le', '48000']]);
+
+      if (!(await outputSupport(h.config.ffmpegPath)).webm.available) return t.skip('the local ffmpeg has no libvpx-vp9');
+      assert.deepEqual(await audioOf((await renderOne({ ...request, output: 'webm' })).file), [['opus', '48000']]);
+
+      // The same ffmpeg, but its encoders list leaves libopus out.
+      const wrapper = path.join(h.store.dir(id), 'ffmpeg-no-libopus');
+      await writeFile(
+        wrapper,
+        `#!/bin/sh
+printf '%s\\n' "$*" >> "$0.log"
+case "$*" in
+  *-encoders*) "${h.config.ffmpegPath}" "$@" | grep -v ' libopus ' ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const native = new FfmpegRenderService({
+        config: { ...h.config, ffmpegPath: wrapper },
+        store: h.store,
+        music,
+        clips,
+        voiceOver,
+        hub,
+      });
+      assert.deepEqual(await audioOf((await renderOne({ ...request, output: 'webm' }, native)).file), [['opus', '48000']]);
+      assert.match(await readFile(`${wrapper}.log`, 'utf8'), / -c:a opus -strict -2 /);
+    } finally {
+      project.music = null;
+      await writeFile(projectFile, JSON.stringify(project, null, 2));
+      music.audio.delete(id);
+    }
+  });
+
+  it('renders a GIF with every frame and true colors, supersampled', async () => {
+    const { job, file } = await renderOne({ formats: ['16:9'], quality: 'draft', scale: 0.5, supersample: true, output: 'gif' });
+    assert.match(job.file!, /\.gif$/);
+    const info = await probe(file);
+    assert.deepEqual(
+      info.streams.map((s) => [s.codec_type, s.codec_name, s.width, s.height, s.nb_read_frames]),
+      [['video', 'gif', 960, 540, '30']],
+    );
+    assert.ok(near(pixel(await frameAt(file, 0.2), 750, 400), [255, 0, 0], 6), 'red');
+    assert.ok(near(pixel(await frameAt(file, 0.8), 750, 400), [0, 0, 255], 6), 'blue');
+    const partial = (await readdir(path.join(h.store.dir(id), 'renders'))).filter((n) => n.endsWith('.part'));
+    assert.deepEqual(partial, [], 'the frames file is gone too');
+  });
+
+  it('reports a failed GIF palette pass with what ffmpeg said, and leaves no file behind', async () => {
+    // The real ffmpeg, except for the second pass.
+    const wrapper = path.join(h.store.dir(id), 'ffmpeg-no-palette');
+    await writeFile(
+      wrapper,
+      `#!/bin/sh
+case "$*" in
+  *paletteuse*) echo boom >&2; exit 3 ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const failing = new FfmpegRenderService({
+      config: { ...h.config, ffmpegPath: wrapper },
+      store: h.store,
+      music,
+      clips,
+      voiceOver,
+      hub,
+    });
+    const rendersDir = path.join(h.store.dir(id), 'renders');
+    const existing = await readdir(rendersDir).catch(() => [] as string[]);
+    const [queued] = await failing.start(id, { formats: ['16:9'], quality: 'draft', scale: 0.5, output: 'gif' });
+    const job = await failing.wait(queued.id);
+    assert.equal(job.status, 'error');
+    assert.equal(job.error, 'ffmpeg a échoué (code 3) : boom');
+    const left = (await readdir(rendersDir)).filter((n) => !existing.includes(n) && /\.(part|gif)$/.test(n));
+    assert.deepEqual(left, []);
+  });
+
+  it('cancels a GIF during its palette pass, within seconds, and leaves no file behind', { timeout: 30_000 }, async () => {
+    // The real ffmpeg, except for the second pass, which says it started and then hangs.
+    const wrapper = path.join(h.store.dir(id), 'ffmpeg-slow-palette');
+    const started = `${wrapper}.started`;
+    await writeFile(
+      wrapper,
+      `#!/bin/sh
+case "$*" in
+  *paletteuse*) touch "${started}"; exec sleep 30 ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const slow = new FfmpegRenderService({
+      config: { ...h.config, ffmpegPath: wrapper },
+      store: h.store,
+      music,
+      clips,
+      voiceOver,
+      hub,
+    });
+    const rendersDir = path.join(h.store.dir(id), 'renders');
+    const existing = await readdir(rendersDir).catch(() => [] as string[]);
+    const [queued] = await slow.start(id, { formats: ['16:9'], quality: 'draft', scale: 0.5, output: 'gif' });
+    while (
+      !(await readFile(started).then(
+        () => true,
+        () => false,
+      ))
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(slow.jobs(id).find((j) => j.id === queued.id)!.status, 'encoding');
+    const cancelledAt = Date.now();
+    slow.cancel(queued.id);
+    const job = await slow.wait(queued.id);
+    assert.equal(job.status, 'cancelled');
+    assert.ok(Date.now() - cancelledAt < 5_000, 'ffmpeg is killed, not waited for');
+    const left = (await readdir(rendersDir)).filter((n) => !existing.includes(n) && /\.(part|gif)$/.test(n));
+    assert.deepEqual(left, []);
+  });
+
+  it('renders one PNG frame at the range start, or at 0 without a range, supersampled, in true colors', async () => {
+    const request = { formats: ['16:9' as const], quality: 'draft' as const, scale: 0.5 as const, supersample: true };
+    const [queued] = await renders.start(id, { ...request, output: 'png' });
+    assert.equal(queued.framesTotal, 1);
+    const job = await renders.wait(queued.id);
+    assert.equal(job.status, 'done', job.error ?? job.status);
+    assert.match(job.file!, /\.png$/);
+    const first = await readFile(renders.resolveFile(id, job.file!));
+    const image = PNG.sync.read(first);
+    assert.deepEqual([image.width, image.height, job.framesTotal], [960, 540, 1]);
+    assert.ok(near(pixel(first, 750, 400), [255, 0, 0], 6), 'scene a at 0');
+    const across = await renderOne({ ...request, output: 'png', range: { from: 0.4, to: 0.9 } });
+    assert.ok(near(pixel(await readFile(across.file), 750, 400), [255, 0, 0], 6), 'scene a at 0.4, not scene b at 0.9');
+    const later = await renderOne({ ...request, output: 'png', range: { from: 0.8, to: 0.9 } });
+    assert.ok(near(pixel(await readFile(later.file), 750, 400), [0, 0, 255], 6), 'scene b at 0.8');
+    for (const range of [
+      { from: 0.8, to: 0.81 },
+      { from: 3, to: 4 },
+    ]) {
+      const short = await renderOne({ ...request, output: 'png', range });
+      assert.equal(short.job.framesTotal, 1);
+      assert.ok(near(pixel(await readFile(short.file), 750, 400), [0, 0, 255], 6), `scene b from ${range.from}`);
+    }
+    const partial = (await readdir(path.join(h.store.dir(id), 'renders'))).filter((n) => n.endsWith('.part'));
+    assert.deepEqual(partial, []);
+  });
+
+  it('renders a transparent PNG frame with its alpha and the RGB of the page', async () => {
+    const restore = await withScenes(
+      `export default () => <>\n` +
+        `  <div style={{ position: 'absolute', left: 861, top: 440, width: 199, height: 200, background: '#ff0000' }} />\n` +
+        `  <div style={{ position: 'absolute', left: 200, top: 200, width: 200, height: 200, background: '#3366cc' }} />\n` +
+        `</>;\n`,
+    );
+    try {
+      const request = { formats: ['16:9' as const], quality: 'draft' as const, scale: 0.5 as const, supersample: true };
+      const { file } = await renderOne({ ...request, output: 'png', transparent: true });
+      const image = PNG.sync.read(await readFile(file));
+      const rgba = (x: number, y: number) => [...image.data.subarray((image.width * y + x) * 4, (image.width * y + x) * 4 + 4)];
+      assert.equal(rgba(5, 5)[3], 0, 'corner: transparent');
+      assert.ok(near(rgba(480, 270), [255, 0, 0, 255], 2), `centre: opaque red, ${rgba(480, 270)}`);
+      assert.ok(near(rgba(150, 150), [51, 102, 204, 255], 2), `mid tone unchanged, ${rgba(150, 150)}`);
+    } finally {
+      await restore();
+    }
+  });
+
+  it('captures an opaque PNG losslessly: a 1 px red line on blue keeps its exact pixels', async () => {
+    const restore = await withScenes(
+      `export default () => <div style={{ position: 'absolute', inset: 0, background: '#0000ff' }}>\n` +
+        `  <div style={{ position: 'absolute', left: 1001, top: 0, width: 1, height: 1080, background: '#ff0000' }} />\n` +
+        `</div>;\n`,
+    );
+    try {
+      for (const output of ['png', 'png-sequence'] as const) {
+        const { file } = await renderOne({ formats: ['16:9'], quality: 'draft', range: { from: 0, to: 1 / 30 }, output });
+        const frame = await readFile(output === 'png' ? file : path.join(file, '000001.png'));
+        assert.deepEqual(
+          [999, 1000, 1001, 1002].map((x) => pixel(frame, x, 540)),
+          [
+            [0, 0, 255],
+            [0, 0, 255],
+            [255, 0, 0],
+            [0, 0, 255],
+          ],
+          output,
+        );
+      }
+    } finally {
+      await restore();
+    }
+  });
+
+  it('renders a PNG sequence folder with one numbered frame per frame, listed with its size and frames, then trashed', async () => {
+    const { job, file } = await renderOne({
+      formats: ['16:9'],
+      quality: 'draft',
+      scale: 0.5,
+      range: { from: 0.4, to: 1 },
+      output: 'png-sequence',
+    });
+    assert.match(job.file!, /^[\w-]+$/);
+    assert.ok((await lstat(file)).isDirectory());
+    const frames = (await readdir(file)).sort();
+    assert.equal(job.framesTotal, 18);
+    assert.deepEqual(
+      frames,
+      Array.from({ length: job.framesTotal }, (_, i) => `${String(i + 1).padStart(6, '0')}.png`),
+    );
+    const first = await readFile(path.join(file, frames[0]));
+    assert.deepEqual([PNG.sync.read(first).width, PNG.sync.read(first).height], [960, 540]);
+    assert.ok(near(pixel(first, 750, 400), [255, 0, 0], 6), 'scene a first');
+    assert.ok(near(pixel(await readFile(path.join(file, frames.at(-1)!)), 750, 400), [0, 0, 255], 6), 'scene b last');
+    const rendersDir = path.join(h.store.dir(id), 'renders');
+    assert.deepEqual(
+      (await readdir(rendersDir)).filter((n) => n.endsWith('.part')),
+      [],
+    );
+
+    const sizes = await Promise.all(frames.map(async (name) => (await lstat(path.join(file, name))).size));
+    const listed = (await renders.files(id)).find((f) => f.name === job.file)!;
+    assert.deepEqual(
+      [listed.output, listed.frames, listed.size, listed.format],
+      ['png-sequence', 18, sizes.reduce((a, b) => a + b, 0), '16:9'],
+    );
+    await renders.remove(id, job.file!);
+    assert.equal(
+      (await renders.files(id)).some((f) => f.name === job.file),
+      false,
+    );
+    const trash = path.join(h.store.dir(id), '.cadence', 'trash');
+    const trashed = (await readdir(trash)).find((name) => name.endsWith(`-${job.file}`))!;
+    assert.equal((await readdir(path.join(trash, trashed))).length, 18);
+  });
+
+  it(
+    'removes the partial folder of a PNG sequence when ffmpeg fails or the render is cancelled',
+    { timeout: 60_000 },
+    async () => {
+      // The real ffmpeg writes every frame, then says it failed.
+      const wrapper = path.join(h.store.dir(id), 'ffmpeg-failing-sequence');
+      await writeFile(
+        wrapper,
+        `#!/bin/sh
+case "$*" in
+  *%06d.png*) "${h.config.ffmpegPath}" "$@"; echo boom >&2; exit 3 ;;
+  *) exec "${h.config.ffmpegPath}" "$@" ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const failing = new FfmpegRenderService({
+        config: { ...h.config, ffmpegPath: wrapper },
+        store: h.store,
+        music,
+        clips,
+        voiceOver,
+        hub,
+      });
+      const rendersDir = path.join(h.store.dir(id), 'renders');
+      const existing = await readdir(rendersDir).catch(() => [] as string[]);
+      const request = {
+        formats: ['16:9' as const],
+        quality: 'draft' as const,
+        scale: 0.5 as const,
+        output: 'png-sequence' as const,
+      };
+      const [queued] = await failing.start(id, request);
+      const job = await failing.wait(queued.id);
+      assert.equal(job.status, 'error');
+      assert.equal(job.error, 'ffmpeg a échoué (code 3) : boom');
+      assert.deepEqual(
+        (await readdir(rendersDir)).filter((n) => !existing.includes(n)),
+        [],
+      );
+
+      const [running] = await renders.start(id, { ...request, fps: 120 });
+      while (renders.jobs(id).find((j) => j.id === running.id)!.framesDone < 2) await new Promise((r) => setTimeout(r, 20));
+      const folders = (await readdir(rendersDir)).filter((n) => !existing.includes(n));
+      assert.equal(folders.length, 1);
+      assert.match(folders[0], /\.part$/);
+      renders.cancel(running.id);
+      const cancelled = await renders.wait(running.id);
+      assert.equal(cancelled.status, 'cancelled');
+      assert.ok(cancelled.framesDone < cancelled.framesTotal);
+      assert.deepEqual(
+        (await readdir(rendersDir)).filter((n) => !existing.includes(n)),
+        [],
+      );
+    },
+  );
 
   it('sizes the video from what its pages show when an edit lands as the job starts', async () => {
     // Scene b gets longer (a PATCH right after POST /renders) once the job has read the project, before its pages load it.
@@ -539,18 +1185,30 @@ export default function A({ voiceOver }: SceneProps) {
     );
   });
 
-  it('removes the partial file a killed render left, never a live one', async () => {
+  it('removes the partial file or PNG sequence folder a killed render left, never a live one or a link', async () => {
     const dir = path.join(h.store.dir(id), 'renders');
     await mkdir(dir, { recursive: true });
     const [old, live] = [path.join(dir, 'killed-16x9.mp4.part'), path.join(dir, 'live-16x9.mp4.part')];
+    const [oldSequence, liveSequence] = [path.join(dir, 'killed-16x9.part'), path.join(dir, 'live-16x9.part')];
+    const link = path.join(dir, 'linked-16x9.part');
     await writeFile(old, 'x');
     await writeFile(live, 'x');
+    for (const folder of [oldSequence, liveSequence]) {
+      await mkdir(folder);
+      await writeFile(path.join(folder, '000001.png'), 'x');
+    }
+    await symlink(liveSequence, link);
     const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
-    await utimes(old, twoHoursAgo, twoHoursAgo);
-    await renders.files(id);
-    const parts = (await readdir(dir)).filter((n) => n.endsWith('.part'));
-    assert.deepEqual(parts, ['live-16x9.mp4.part']);
-    await rm(live);
+    for (const file of [old, path.join(oldSequence, '000001.png'), oldSequence]) await utimes(file, twoHoursAgo, twoHoursAgo);
+    await lutimes(link, twoHoursAgo, twoHoursAgo);
+    try {
+      await renders.files(id);
+      const parts = (await readdir(dir)).filter((n) => n.endsWith('.part')).sort();
+      assert.deepEqual(parts, ['linked-16x9.part', 'live-16x9.mp4.part', 'live-16x9.part']);
+      assert.deepEqual(await readdir(liveSequence), ['000001.png']);
+    } finally {
+      for (const file of [old, live, oldSequence, liveSequence, link]) await rm(file, { recursive: true, force: true });
+    }
   });
 
   it('removes the sounds track and temporary file a killed render left, never a live one', async () => {
@@ -655,7 +1313,7 @@ describe('FfmpegRenderService on a frame origin with a request secret', () => {
   it('renders with the secret its pages send, and fails without it', async () => {
     const { job } = await renderOne(
       { formats: ['16:9'], quality: 'draft' },
-      new FfmpegRenderService({ config, store: h.store, music, voiceOver, hub }),
+      new FfmpegRenderService({ config, store: h.store, music, clips, voiceOver, hub }),
     );
     assert.deepEqual([job.framesTotal, job.framesDone], [30, 30]);
 
@@ -663,6 +1321,7 @@ describe('FfmpegRenderService on a frame origin with a request secret', () => {
       config: { ...config, requestSecret: undefined },
       store: h.store,
       music,
+      clips,
       voiceOver,
       hub,
     });

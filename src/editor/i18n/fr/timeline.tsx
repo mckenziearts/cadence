@@ -36,6 +36,21 @@ export default {
     jump: 'petit saut visible',
     cut: 'coupe franche',
   },
+  transitions: {
+    control: (from: string, to: string, summary: string) => `Transition ${from} \u2192 ${to} : ${summary}`,
+    dialog: (from: string, to: string) => `Transition ${from} \u2192 ${to}`,
+    kind: 'Type de transition',
+    none: 'Aucune',
+    kinds: { fade: 'Fondu', slide: 'Glissement', wipe: 'Volet', flip: 'Retournement' },
+    direction: 'Direction',
+    directions: { left: 'Vers la gauche', right: 'Vers la droite', up: 'Vers le haut', down: 'Vers le bas' },
+    duration: 'Durée (0,1 à 5\u00a0s)',
+    summary: (kind: string, direction: string | null, duration: string) =>
+      `${kind}${direction ? ` ${direction}` : ''}, ${duration}`,
+    clamped: (played: string, declared: string) => `${played} au lieu de ${declared}`,
+    clampedNote: (played: string, declared: string) =>
+      `Jouée sur ${played} au lieu de ${declared} : une transition dure au plus la moitié de chaque scène.`,
+  },
   seamModal: {
     title: (from: string, to: string) => `Raccord ${from} \u2192 ${to}`,
     subtitle: (from: string, to: string, format: string) =>

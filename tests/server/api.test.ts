@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -16,10 +17,14 @@ import { createApi } from '../../server/api';
 import { ProjectArchiver } from '../../server/archive/projects';
 import { readTar } from '../../server/archive/tar';
 import { LOCAL } from '../../server/capture/policy';
+import { FfmpegRenderService } from '../../server/capture/render';
+import { LocalClipService } from '../../server/clips/service';
 import type {
   BrandBuildService,
   BrandSource,
   ApiDeps,
+  BrowserServer,
+  AssetStore,
   CaptureService,
   ChatService,
   ElevenLabsApi,
@@ -32,7 +37,7 @@ import type {
 } from '../../server/contracts';
 import { SseHub } from '../../server/hub';
 import { createEditorHandler } from '../../server/http';
-import { setLanguage } from '../../server/i18n';
+import { m, setLanguage } from '../../server/i18n';
 import { FileSettingsStore } from '../../server/settings';
 import { FileAssetStore } from '../../server/store/assets';
 import { FileBrandStore } from '../../server/store/brands';
@@ -40,11 +45,12 @@ import { FileCaptureHosts } from '../../server/store/captureHosts';
 import { FileProjectStore } from '../../server/store/projects';
 import { FileTemplateStore } from '../../server/store/templates';
 import { FileVersionStore } from '../../server/store/versions';
+import { SR } from '../../server/music/synth';
 import { FileUsageLog } from '../../server/usage';
 import { HttpError, pathExists, resolveInside } from '../../server/util';
 import { sidecarFile } from '../../server/voiceover/elevenlabs';
 import { LocalVoiceOverService } from '../../server/voiceover/service';
-import { writeWav } from '../../server/voiceover/wav';
+import { readWav, writeWav } from '../../server/voiceover/wav';
 import {
   DEFAULT_FEATURES,
   MODELS,
@@ -54,6 +60,7 @@ import {
   type ChatState,
   type NetworkAccount,
   type NetworkId,
+  type RenderFile,
   type RenderJob,
   type RepoListing,
   type SeamResult,
@@ -61,7 +68,7 @@ import {
   type VoiceInfo,
   type VoiceOverSettings,
 } from '../../src/shared/types';
-import { fakeNetwork, makeRoot, writeCompleteBrand, type TestRoot } from './helpers';
+import { ENCODERS_FULL, ENCODERS_NO_VPX, fakeFfmpeg, fakeNetwork, makeRoot, writeCompleteBrand, type TestRoot } from './helpers';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 const SIWIS: VoiceInfo = {
@@ -257,7 +264,7 @@ beforeEach(async () => {
     brands,
     templates,
     versions: new FileVersionStore(store, brands),
-    assets: new FileAssetStore(store, capture),
+    assets: new FileAssetStore(store, capture, t.config.ffmpegPath),
     capture,
     seams,
     renders,
@@ -404,6 +411,37 @@ test('scenes: create (template insert is versioned), update, duplicate, order, d
   assert.equal(res.body.scenes.length, 2);
   res = await json('DELETE', '/api/projects/demo/scenes/absente');
   assert.equal(res.status, 404);
+});
+
+test('scenes: a transition is set on a cut, read back declared and effective, removed with null; bad bodies are refused', async () => {
+  await json('PATCH', '/api/projects/demo/scenes/titre', { duration: 4 });
+  await json('POST', '/api/projects/demo/scenes', { name: 'Fin', duration: 5 });
+  const url = '/api/projects/demo/scenes/fin/transition';
+  let res = await json('PUT', url, { transition: { kind: 'slide', duration: 3 } });
+  assert.equal(res.status, 200);
+  const fin = res.body.scenes[1];
+  // Capped at half of the 4 s scene before it; slide goes left when no direction is given.
+  assert.deepEqual(fin.declaredTransition, { kind: 'slide', direction: 'left', duration: 3 });
+  assert.deepEqual(fin.transition, { kind: 'slide', direction: 'left', duration: 2 });
+  assert.equal(fin.start, 2);
+  assert.equal(res.body.duration, 7);
+  assert.deepEqual((await json('GET', '/api/projects/demo')).body.scenes[1].declaredTransition, fin.declaredTransition);
+
+  res = await json('PUT', url, { transition: null });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.scenes[1].transition, undefined);
+  assert.equal(res.body.scenes[1].declaredTransition, undefined);
+
+  res = await json('PUT', url, { transition: { kind: 'zoom', duration: 1 } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /^Requête invalide/);
+  assert.equal((await json('PUT', url, {})).status, 400);
+  assert.equal((await json('PUT', url, { transition: { kind: 'fade', duration: -1 } })).status, 400);
+  res = await json('PUT', '/api/projects/demo/scenes/titre/transition', { transition: { kind: 'fade', duration: 0.5 } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /première scène/);
+  assert.equal((await json('PUT', '/api/projects/demo/scenes/absente/transition', { transition: null })).status, 404);
+  assert.equal((await json('PUT', '/api/projects/absent/scenes/fin/transition', { transition: null })).status, 404);
 });
 
 test('thumbnails are JPEGs with an ETag; diagnostics are relative to the project', async () => {
@@ -1356,7 +1394,7 @@ test('undo and redo: { entry } or { entry: null }, 404 for an unknown project, 4
   }
 });
 
-test('undo and redo need the editor token', async () => {
+test('undo, redo and transitions need the editor token', async () => {
   const server = http.createServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
@@ -1380,6 +1418,16 @@ test('undo and redo need the editor token', async () => {
       assert.equal((await fetch(url, { method: 'POST', headers: { 'x-cadence-token': `${token}x` } })).status, 403, route);
       assert.equal((await fetch(url, { method: 'POST', headers: { 'x-cadence-token': token } })).status, 200, route);
     }
+    await store.createScene('demo', { name: 'Fin' });
+    const transition = (headers: Record<string, string>) =>
+      fetch(`http://127.0.0.1:${port}/api/projects/demo/scenes/fin/transition`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ transition: { kind: 'fade', duration: 0.5 } }),
+      });
+    assert.equal((await transition({})).status, 403);
+    assert.equal((await store.get('demo')).scenes[1].transition, undefined);
+    assert.equal((await transition({ 'x-cadence-token': token })).status, 200);
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -1425,6 +1473,12 @@ test('editor writes: each one is one undo step saying what changed; a clean proj
     ['POST', '/api/projects/demo/scenes', { name: 'Pause' }, ['edit', 'Scène ajoutée : Pause']],
     ['PATCH', '/api/projects/demo/scenes/fin', { duration: 2.5 }, ['edit', 'Scène modifiée : Fin']],
     ['PATCH', '/api/projects/demo/scenes/fin', { name: 'Clôture' }, ['edit', 'Scène modifiée : Clôture']],
+    [
+      'PUT',
+      '/api/projects/demo/scenes/fin/transition',
+      { transition: { kind: 'wipe', direction: 'up', duration: 0.5 } },
+      ['edit', 'Transition modifiée : Clôture'],
+    ],
     ['POST', '/api/projects/demo/scenes/fin/duplicate', undefined, ['edit', 'Scène ajoutée : Clôture (copie)']],
     ['PUT', '/api/projects/demo/order', order, ['edit', 'Scènes réordonnées']],
     ['POST', '/api/projects/demo/music?name=Theme.MP3', new Blob(['ID3']), ['edit', 'Musique ajoutée : theme.mp3']],
@@ -1493,6 +1547,8 @@ test('editor writes: a write the store refuses records no step, so undo never re
     ['DELETE', '/api/projects/demo/scenes/titre', undefined, 400],
     ['PATCH', '/api/projects/demo/scenes/absent', { duration: 2 }, 404],
     ['POST', '/api/projects/demo/scenes/absent/duplicate', undefined, 404],
+    ['PUT', '/api/projects/demo/scenes/titre/transition', { transition: { kind: 'fade', duration: 0.5 } }, 400],
+    ['PUT', '/api/projects/demo/scenes/absent/transition', { transition: null }, 404],
     ['PUT', '/api/projects/demo/order', { ids: ['absent'] }, 400],
   ];
   for (const [method, url, payload, status] of refused) {
@@ -1689,7 +1745,20 @@ test('renders: validated requests, jobs and files, cancel, MP4 streaming, deleti
   const req = { formats: ['16:9', '9:16'], quality: 'master', scale: 2, supersample: true, range: { from: 0, to: 4 } };
   assert.deepEqual((await json('POST', '/api/projects/demo/renders', req)).body, [job]);
   assert.deepEqual(calls.render, [{ id: 'demo', req }]);
-  assert.deepEqual((await json('GET', '/api/projects/demo/renders')).body, { jobs: [job], files: [] });
+  t.config.ffmpegPath = await fakeFfmpeg(path.join(t.root, 'ffmpeg'), ENCODERS_NO_VPX);
+  const available = { available: true };
+  assert.deepEqual((await json('GET', '/api/projects/demo/renders')).body, {
+    jobs: [job],
+    files: [],
+    outputs: {
+      mp4: available,
+      webm: { available: false, reason: 'Le ffmpeg utilisé n’a pas d’encodeur libvpx-vp9' },
+      mov: available,
+      gif: available,
+      png: available,
+      'png-sequence': available,
+    },
+  });
   assert.deepEqual((await json('DELETE', '/api/renders/job-1')).body, { ok: true });
   assert.deepEqual(calls.cancel, ['job-1']);
   const renders = path.join(store.dir('demo'), 'renders');
@@ -1702,6 +1771,181 @@ test('renders: validated requests, jobs and files, cancel, MP4 streaming, deleti
   assert.equal((await call('GET', '/api/projects/demo/renders/..%2Fproject.json')).status, 400);
   assert.deepEqual((await json('DELETE', '/api/projects/demo/renders/demo.mp4')).body, { ok: true });
   assert.deepEqual(calls.removeRender, [{ id: 'demo', name: 'demo.mp4' }]);
+});
+
+test('renders: an output is optional, one this version renders accepted, transparent a boolean', async () => {
+  const req = { formats: ['16:9'], quality: 'draft' };
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'mp4', transparent: false })).status, 200);
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'png-sequence' })).status, 200);
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, output: 'avi' })).status, 400);
+  assert.equal((await json('POST', '/api/projects/demo/renders', { ...req, transparent: 'yes' })).status, 400);
+  assert.deepEqual(calls.render, [
+    { id: 'demo', req: { ...req, output: 'mp4', transparent: false } },
+    { id: 'demo', req: { ...req, output: 'png-sequence' } },
+  ]);
+});
+
+/** The API on a real render service, for its files and its checks before a job starts. */
+function realRenders(browserServer?: () => Promise<BrowserServer>): FfmpegRenderService {
+  const renders = new FfmpegRenderService({
+    config: t.config,
+    store,
+    music: deps.music,
+    clips: new LocalClipService({ config: t.config, store, hub }),
+    voiceOver: deps.voiceOver,
+    hub,
+    browserServer,
+  });
+  app = createApi({ ...deps, renders });
+  return renders;
+}
+
+test('renders: a render the ffmpeg in use cannot encode is refused with the reason, before any job', async () => {
+  const renders = realRenders();
+  await store.createScene('demo', { name: 'Fin' });
+  const encoders = ENCODERS_FULL.replace(/^.* (libx264|aac) .*\n/gm, '');
+  t.config.ffmpegPath = await fakeFfmpeg(path.join(t.root, 'ffmpeg'), encoders);
+  assert.deepEqual(await json('POST', '/api/projects/demo/renders', { formats: ['16:9'], quality: 'draft' }), {
+    status: 422,
+    body: { error: 'Le ffmpeg utilisé n’a pas d’encodeur libx264 ni aac' },
+  });
+  assert.deepEqual(renders.jobs('demo'), []);
+});
+
+test('renders: a WebM the ffmpeg in use cannot encode is refused before any job, a MOV from the same ffmpeg is not', async () => {
+  const renders = realRenders(() => Promise.reject(new Error('no browser in this test')));
+  await store.createScene('demo', { name: 'Fin' });
+  t.config.ffmpegPath = await fakeFfmpeg(path.join(t.root, 'ffmpeg'), ENCODERS_NO_VPX);
+  const req = { formats: ['16:9'], quality: 'draft' };
+  assert.deepEqual(await json('POST', '/api/projects/demo/renders', { ...req, output: 'webm' }), {
+    status: 422,
+    body: { error: 'Le ffmpeg utilisé n’a pas d’encodeur libvpx-vp9' },
+  });
+  assert.deepEqual(renders.jobs('demo'), []);
+  const mov = await json('POST', '/api/projects/demo/renders', { ...req, output: 'mov' });
+  assert.equal(mov.status, 200);
+  assert.equal((await renders.wait(mov.body[0].id)).request.output, 'mov');
+});
+
+test('renders: every kind of file is listed, served with its type and moved to the trash; links are refused', async () => {
+  realRenders();
+  const dir = path.join(store.dir('demo'), 'renders');
+  const sequence = path.join(dir, 'demo-16x9-20261030-101506');
+  await fs.mkdir(sequence, { recursive: true });
+  await fs.writeFile(path.join(sequence, '000001.png'), Buffer.alloc(30, 1));
+  await fs.writeFile(path.join(sequence, '000002.png'), Buffer.alloc(40, 1));
+  await fs.mkdir(path.join(sequence, 'nested'));
+  const kinds = { mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', gif: 'image/gif', png: 'image/png' };
+  const names = Object.keys(kinds).map((ext, i) => `demo-16x9-20261030-10150${i}.${ext}`);
+  for (const [i, name] of names.entries()) await fs.writeFile(path.join(dir, name), Buffer.alloc(10 + i, 1));
+  const outside = path.join(t.root, 'outside.mp4');
+  await fs.writeFile(outside, Buffer.alloc(5, 1));
+  await fs.symlink(outside, path.join(sequence, '000003.png'));
+  await fs.symlink(outside, path.join(dir, 'linked.mp4'));
+  await fs.symlink(sequence, path.join(dir, 'linked-sequence'));
+  await fs.writeFile(path.join(dir, 'notes.txt'), 'x');
+  await fs.mkdir(path.join(dir, 'demo-16x9-20261030-101507.part'));
+  // What a killed render left an hour ago: its sequence folder goes with what it holds, never what a link inside points
+  // to; a link and a folder no sequence would be named like stay.
+  const staleSequence = path.join(dir, 'demo-16x9-20261030-101508.part');
+  await fs.mkdir(staleSequence);
+  await fs.writeFile(path.join(staleSequence, '000001.png'), 'x');
+  await fs.symlink(outside, path.join(staleSequence, '000002.png'));
+  await fs.symlink(staleSequence, path.join(dir, 'demo-16x9-20261030-101509.part'));
+  await fs.mkdir(path.join(dir, 'kept-16x9.mp4.part'));
+  const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
+  for (const name of ['000001.png', '']) await fs.utimes(path.join(staleSequence, name), twoHoursAgo, twoHoursAgo);
+  await fs.lutimes(path.join(staleSequence, '000002.png'), twoHoursAgo, twoHoursAgo);
+  await fs.lutimes(path.join(dir, 'demo-16x9-20261030-101509.part'), twoHoursAgo, twoHoursAgo);
+  await fs.utimes(path.join(dir, 'kept-16x9.mp4.part'), twoHoursAgo, twoHoursAgo);
+  for (const [i, name] of [...names, path.basename(sequence)].entries()) {
+    const time = new Date(Date.UTC(2026, 9, 30, 10, 15, i));
+    await fs.utimes(path.join(dir, name), time, time);
+  }
+
+  const { body } = await json('GET', '/api/projects/demo/renders');
+  assert.deepEqual((await fs.readdir(dir)).filter((name) => name.endsWith('.part')).sort(), [
+    'demo-16x9-20261030-101507.part',
+    'demo-16x9-20261030-101509.part',
+    'kept-16x9.mp4.part',
+  ]);
+  assert.equal((await fs.lstat(path.join(dir, 'demo-16x9-20261030-101509.part'))).isSymbolicLink(), true);
+  assert.equal((await fs.readFile(outside)).length, 5, 'the file a link in the stale folder points to stays');
+  assert.deepEqual(
+    body.files.map((f: RenderFile) => [f.name, f.output, f.size, f.format, f.frames]),
+    [
+      ['demo-16x9-20261030-101506', 'png-sequence', 70, '16:9', 2],
+      ['demo-16x9-20261030-101504.png', 'png', 14, '16:9', undefined],
+      ['demo-16x9-20261030-101503.gif', 'gif', 13, '16:9', undefined],
+      ['demo-16x9-20261030-101502.mov', 'mov', 12, '16:9', undefined],
+      ['demo-16x9-20261030-101501.webm', 'webm', 11, '16:9', undefined],
+      ['demo-16x9-20261030-101500.mp4', 'mp4', 10, '16:9', undefined],
+    ],
+  );
+  assert.equal(body.files[0].url, '/api/projects/demo/renders/demo-16x9-20261030-101506');
+
+  for (const [i, type] of Object.values(kinds).entries()) {
+    const res = await call('GET', `/api/projects/demo/renders/${names[i]}`, undefined, { range: 'bytes=0-4' });
+    assert.equal(res.status, 206, names[i]);
+    assert.equal(res.headers.get('content-type'), type);
+    assert.equal((await res.arrayBuffer()).byteLength, 5);
+  }
+  const webm = `/api/projects/demo/renders/${names[1]}`;
+  const whole = await call('GET', webm);
+  assert.equal(whole.status, 200);
+  assert.equal(whole.headers.get('content-length'), '11');
+  assert.deepEqual(Buffer.from(await whole.arrayBuffer()), Buffer.alloc(11, 1));
+  const head = await call('HEAD', webm);
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('content-length'), '11');
+  assert.equal(head.body, null);
+  const etag = whole.headers.get('etag')!;
+  assert.ok(etag);
+  assert.equal((await call('GET', webm, undefined, { 'if-none-match': etag })).status, 304);
+  const beyond = await call('GET', webm, undefined, { range: 'bytes=11-' });
+  assert.equal(beyond.status, 416);
+  assert.equal(beyond.headers.get('content-range'), 'bytes */11');
+  assert.equal((await call('GET', '/api/projects/demo/renders/linked.mp4')).status, 404, 'a link is not served');
+  assert.equal(
+    (await call('GET', `/api/projects/demo/renders/${path.basename(sequence)}`)).status,
+    404,
+    'a folder is not a file',
+  );
+  assert.equal((await call('GET', '/api/projects/demo/renders/notes.txt')).status, 400);
+  assert.equal((await call('GET', '/api/projects/demo/renders/..%2Fproject.json')).status, 400);
+  assert.equal((await call('GET', '/api/projects/demo/renders/demo.mp4.part')).status, 400);
+
+  assert.equal((await json('DELETE', '/api/projects/demo/renders/linked.mp4')).status, 404);
+  assert.equal((await json('DELETE', '/api/projects/demo/renders/linked-sequence')).status, 404);
+  assert.equal((await json('DELETE', '/api/projects/demo/renders/..%2Fproject.json')).status, 400);
+  assert.deepEqual((await json('DELETE', `/api/projects/demo/renders/${names[1]}`)).body, { ok: true });
+  assert.deepEqual((await json('DELETE', `/api/projects/demo/renders/${path.basename(sequence)}`)).body, { ok: true });
+  const trash = await fs.readdir(path.join(store.dir('demo'), '.cadence', 'trash'));
+  assert.deepEqual(trash.map((name) => name.replace(/^\d+-/, '')).sort(), [path.basename(sequence), names[1]].sort());
+  assert.deepEqual(
+    await fs
+      .readdir(
+        path.join(
+          store.dir('demo'),
+          '.cadence',
+          'trash',
+          trash.find((n) => !n.endsWith('.webm'))!,
+        ),
+      )
+      .then((entries) => entries.sort()),
+    ['000001.png', '000002.png', '000003.png', 'nested'],
+  );
+  assert.equal((await fs.lstat(path.join(dir, 'linked.mp4'))).isSymbolicLink(), true, 'the link stays');
+  assert.equal((await fs.readFile(outside)).length, 5);
+
+  // A renders folder that is itself a link lists, serves and deletes nothing.
+  const elsewhere = path.join(t.root, 'elsewhere');
+  await fs.rename(dir, elsewhere);
+  await fs.symlink(elsewhere, dir);
+  assert.deepEqual((await json('GET', '/api/projects/demo/renders')).body.files, []);
+  assert.equal((await call('GET', `/api/projects/demo/renders/${names[0]}`)).status, 404);
+  assert.equal((await json('DELETE', `/api/projects/demo/renders/${names[0]}`)).status, 404);
+  assert.ok(await pathExists(path.join(elsewhere, names[0])));
 });
 
 test('brand builds: repositories through gh, validated starts, cancel, running builds in the state', async () => {
@@ -1721,9 +1965,7 @@ test('brand builds: repositories through gh, validated starts, cancel, running b
 });
 
 test('assets and references', async () => {
-  const form = new FormData();
-  form.append('file', new File([PNG], 'Capture écran.png', { type: 'image/png' }));
-  let res = await json('POST', '/api/projects/demo/assets', form);
+  let res = await json('POST', `/api/projects/demo/assets?name=${encodeURIComponent('Capture écran.png')}`, new Blob([PNG]));
   assert.equal(res.body.path, 'capture-ecran.png');
   const file = await call('GET', `/api/projects/demo/assets/file?path=${encodeURIComponent('capture-ecran.png')}`);
   assert.equal(file.headers.get('content-type'), 'image/png');
@@ -1743,6 +1985,193 @@ test('assets and references', async () => {
   );
   assert.deepEqual((await json('DELETE', '/api/projects/demo/assets?path=capture-ecran.png')).body, { ok: true });
   assert.equal((await json('GET', '/api/projects/demo/assets')).body.length, 1);
+});
+
+const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
+
+test(
+  'asset uploads: the name is required, a file ffmpeg cannot read answers 422 (fr, en) and is not kept',
+  { skip: !hasFfmpeg && 'ffmpeg introuvable' },
+  async () => {
+    assert.equal((await json('POST', '/api/projects/demo/assets', new Blob([PNG]))).status, 400);
+    const fake = () => new Blob([Buffer.from('#EXTM3U\n#EXTINF:1,\nseg.ts\n')]);
+    assert.deepEqual(await json('POST', '/api/projects/demo/assets?name=clip.mp4', fake()), {
+      status: 422,
+      body: { error: "« clip.mp4 » n'est pas une vidéo que ffmpeg sait lire" },
+    });
+    setLanguage('en');
+    try {
+      assert.deepEqual((await json('POST', '/api/projects/demo/assets?name=clip.webm', fake())).body, {
+        error: '"clip.webm" is not a video ffmpeg can read',
+      });
+    } finally {
+      setLanguage('fr');
+    }
+    assert.deepEqual(await fs.readdir(path.join(store.dir('demo'), 'assets')), ['refs']);
+  },
+);
+
+test(
+  'clip audio: the sound of a prepared video as a mono WAV at the sounds rate, 404 for a clip without one',
+  { skip: !hasFfmpeg && 'ffmpeg introuvable' },
+  async () => {
+    const file = path.join(store.dir('demo'), 'assets', 'talk.mp4');
+    const made = spawnSync('ffmpeg', [
+      ...['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=1'],
+      ...['-f', 'lavfi', '-i', 'sine=duration=1', '-pix_fmt', 'yuv420p', '-shortest', file],
+    ]);
+    assert.equal(made.status, 0, String(made.stderr));
+    const info = { key: 'k', fps: 10, frames: 10, width: 64, height: 48, duration: 1 };
+    store.setClipsProvider(async () => ({
+      'talk.mp4': { status: 'ready', ...info, audio: true },
+      'mute.mp4': { status: 'ready', ...info, audio: false },
+      'wait.mp4': { status: 'preparing' },
+    }));
+    const res = await call('GET', '/api/projects/demo/clips/audio?path=talk.mp4');
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'audio/wav');
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    const wav = Buffer.from(await res.arrayBuffer());
+    assert.equal(wav.readUInt16LE(22), 1);
+    const { sampleRate, samples } = readWav(wav);
+    assert.equal(sampleRate, SR);
+    assert.ok(Math.abs(samples.length - SR) < SR * 0.03, String(samples.length));
+    // lavfi's sine has an amplitude of 1/8: an RMS of 0.125 / sqrt(2) of full scale.
+    const rms = Math.sqrt(samples.reduce((sum, s) => sum + s * s, 0) / samples.length);
+    assert.ok(rms > 2000, String(rms));
+    for (const name of ['mute.mp4', 'wait.mp4', 'nope.mp4', 'constructor']) {
+      assert.deepEqual(await json('GET', `/api/projects/demo/clips/audio?path=${name}`), {
+        status: 404,
+        body: { error: m().media.clips.noSound(name) },
+      });
+    }
+    assert.equal((await json('GET', '/api/projects/demo/clips/audio')).status, 400);
+    assert.equal((await json('GET', '/api/projects/nope/clips/audio?path=talk.mp4')).status, 404);
+  },
+);
+
+/** An ffmpeg that runs `body` (sh) and keeps the arguments it was given in `<file>.args`. */
+async function scriptedFfmpeg(file: string, body: string): Promise<string> {
+  await fs.writeFile(file, `#!/bin/sh\necho "$*" > "$0.args"\n${body}\n`, { mode: 0o755 });
+  return file;
+}
+
+test('clip audio: reads at most the first 10 minutes of a clip, and a failed read names the asset, not its folder', async (ctx) => {
+  ctx.mock.method(console, 'error', () => undefined);
+  await fs.writeFile(path.join(store.dir('demo'), 'assets', 'long.mp4'), 'not read');
+  const info = { key: 'k', fps: 10, frames: 36_000, width: 64, height: 48, duration: 3600 };
+  store.setClipsProvider(async () => ({ 'long.mp4': { status: 'ready', ...info, audio: true } }));
+  const real = t.config.ffmpegPath;
+  const ffmpeg = await scriptedFfmpeg(path.join(t.root, 'ffmpeg-args'), 'echo "Invalid data found" >&2; exit 1');
+  t.config.ffmpegPath = ffmpeg;
+  try {
+    const { status, body } = await json('GET', '/api/projects/demo/clips/audio?path=long.mp4');
+    assert.equal(status, 500);
+    assert.equal(body.error, m().api.internalError(m().media.render.clipSound('long.mp4', 'Invalid data found')));
+    assert.ok(!body.error.includes(store.dir('demo')), body.error);
+    assert.match(await fs.readFile(`${ffmpeg}.args`, 'utf8'), / -t 600\.000000 /);
+  } finally {
+    t.config.ffmpegPath = real;
+  }
+});
+
+test(
+  'clip audio: a connection the tab closes stops its ffmpeg at once, without an error in the log; a short clip is read whole',
+  { timeout: 10_000 },
+  async (ctx) => {
+    const logged = ctx.mock.method(console, 'error', () => undefined);
+    await fs.writeFile(path.join(store.dir('demo'), 'assets', 'long.mp4'), 'not read');
+    const info = { key: 'k', fps: 10, frames: 100, width: 64, height: 48, duration: 10 };
+    store.setClipsProvider(async () => ({ 'long.mp4': { status: 'ready', ...info, audio: true } }));
+    const real = t.config.ffmpegPath;
+    const ffmpeg = await scriptedFfmpeg(path.join(t.root, 'ffmpeg-slow'), 'touch "$0.started"; exec sleep 30');
+    t.config.ffmpegPath = ffmpeg;
+    // Through node-server, which aborts the request's signal with a string where app.fetch would give a DOMException.
+    let answered: Promise<unknown> = Promise.resolve();
+    const server = http.createServer(getRequestListener((req, env) => (answered = Promise.resolve(app.fetch(req, env)))));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const leave = new AbortController();
+      const url = `http://127.0.0.1:${port}/api/projects/demo/clips/audio?path=long.mp4`;
+      const asked = fetch(url, { signal: leave.signal });
+      while (!(await pathExists(`${ffmpeg}.started`))) await new Promise((resolve) => setTimeout(resolve, 20));
+      const left = Date.now();
+      leave.abort();
+      await assert.rejects(asked);
+      // The handler waits for ffmpeg to exit: it settles only once the process is gone.
+      await answered.catch(() => undefined);
+      assert.ok(Date.now() - left < 2_000, `${Date.now() - left} ms`);
+      assert.equal(logged.mock.callCount(), 0);
+      assert.match(await fs.readFile(`${ffmpeg}.args`, 'utf8'), / -t 10\.000000 /);
+    } finally {
+      server.close();
+      t.config.ffmpegPath = real;
+    }
+  },
+);
+
+test('asset uploads: a chunked body reaches the store as it comes, stopped past 500 MiB', { timeout: 30_000 }, async () => {
+  // The rest of the body is sent only once the store has read its start: a route holding it whole would wait forever.
+  let read = 0;
+  let started!: () => void;
+  const reading = new Promise<void>((resolve) => (started = resolve));
+  const real = deps.assets;
+  const assets: AssetStore = Object.assign(Object.create(real), {
+    upload: (projectId: string, file: Upload) =>
+      real.upload(projectId, {
+        name: file.name,
+        body: (async function* () {
+          for await (const chunk of file.body) {
+            read += chunk.byteLength;
+            started();
+            yield chunk;
+          }
+        })(),
+      }),
+  });
+  app = createApi({ ...deps, assets });
+  const chunk = new Uint8Array(256 * 1024 * 1024);
+  const next = (async function* () {
+    yield chunk.subarray(0, 1);
+    await reading;
+    for (let i = 0; i < 9; i++) yield chunk;
+  })();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await next.next();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+  });
+  const res = await app.fetch(
+    new Request('http://127.0.0.1:5299/api/projects/demo/assets?name=long.mp4', {
+      method: 'POST',
+      body,
+      duplex: 'half',
+    } as RequestInit),
+  );
+  assert.equal(res.status, 413);
+  assert.match((await res.json()).error, /500/);
+  assert.ok(read > 500 * 1024 * 1024 && read <= 1 + 2 * chunk.length, `${read} bytes reached the store`);
+  assert.deepEqual(await fs.readdir(path.join(store.dir('demo'), 'assets')), ['refs']);
+});
+
+test('asset files are served with the MIME type of their extension', async () => {
+  const types: [string, string][] = [
+    ['clip.mp4', 'video/mp4'],
+    ['clip.m4v', 'video/mp4'],
+    ['clip.webm', 'video/webm'],
+    ['clip.mov', 'video/quicktime'],
+    ['loader.gif', 'image/gif'],
+    ['anim.json', 'application/json'],
+  ];
+  for (const [name, type] of types) {
+    await fs.writeFile(path.join(store.dir('demo'), 'assets', name), 'x');
+    const res = await call('GET', `/api/projects/demo/assets/file?path=${name}`);
+    assert.equal(res.headers.get('content-type'), type, name);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  }
 });
 
 test("capture hosts: the person approves hosts for one project's agent captures; deleting the project drops them", async () => {
@@ -1943,6 +2372,7 @@ test('seams are checked again after edits that move or change cuts', async () =>
     ['PATCH', '/api/projects/demo/scenes/fin', { name: 'Clôture' }, 0],
     ['PATCH', '/api/projects/demo/scenes/fin', { duration: 2.5 }, 1],
     ['PUT', '/api/projects/demo/order', { ids: ['fin', 'titre'] }, 1],
+    ['PUT', '/api/projects/demo/scenes/titre/transition', { transition: { kind: 'flip', duration: 0.4 } }, 1],
     ['PATCH', '/api/projects/demo', { name: 'Démo 2', fps: 30 }, 0],
     ['PATCH', '/api/projects/demo', { formats: ['16:9', '9:16'] }, 1],
     ['PATCH', '/api/projects/demo', { language: 'en' }, 1],
@@ -1971,7 +2401,10 @@ test('bodies get the JSON size limit, except on the two upload routes', async ()
   };
   assert.deepEqual(await json('POST', '/api/projects', big()), { status: 413, body: { error: 'Requête trop volumineuse' } });
   assert.equal((await json('PUT', '/api/projects/demo/art-direction', big())).status, 413);
-  assert.equal((await json('POST', '/api/projects/demo/assets', big())).body.path, 'grand.png');
+  assert.equal(
+    (await json('POST', '/api/projects/demo/assets?name=grand.png', new Blob([Buffer.alloc(3 * 1024 * 1024, 1)]))).body.path,
+    'grand.png',
+  );
   assert.equal(
     (await call('POST', '/api/projects/demo/music?name=grand.wav', new Blob([Buffer.alloc(3 * 1024 * 1024, 1)]))).status,
     200,
@@ -2179,6 +2612,11 @@ test('publishing: the video goes out in the background, the project keeps the li
     body: { error: 'Vidéo introuvable : absent.mp4' },
   });
   assert.equal((await json('POST', '/api/projects/demo/publications', publishBody('../project.json'))).status, 400);
+  await fs.writeFile(path.join(renders, 'demo-16x9.gif'), Buffer.alloc(1000, 1));
+  assert.deepEqual(await json('POST', '/api/projects/demo/publications', publishBody('demo-16x9.gif')), {
+    status: 422,
+    body: { error: 'Seule une vidéo MP4 peut être publiée : demo-16x9.gif' },
+  });
   assert.equal(
     (await json('POST', '/api/projects/demo/publications', { ...publishBody('demo-16x9.mp4'), title: '' })).status,
     400,

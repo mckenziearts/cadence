@@ -55,6 +55,13 @@ export class PixelSeamService implements SeamService {
         const to = project.scenes[i + 1];
         if (opts.sceneId && from.id !== opts.sceneId && to.id !== opts.sceneId) continue;
         const key = `${from.id}|${to.id}|${format}`;
+        if (to.transition) {
+          const result = { from: from.id, to: to.id, format, diffPercent: 0, checkedAt: nowIso(), transition: to.transition };
+          // No signature: once the transition goes, the cut is compared like any other.
+          cache.set(key, { signature: '', result });
+          results.push(result);
+          continue;
+        }
         const signature = this.signature(project, from, to);
         const hit = cache.get(key);
         if (hit?.signature === signature) {
@@ -97,9 +104,12 @@ export class PixelSeamService implements SeamService {
     const b = project.scenes.find((s) => s.id === to);
     if (!a || !b) throw new HttpError(404, m().media.sceneNotFound(a ? to : from));
     const { result, fromImage, toImage, diffImage } = await this.compare(project, a, b, format ?? project.formats[0], true);
-    const cache = this.cache(projectId);
-    cache.set(`${a.id}|${b.id}|${result.format}`, { signature: this.signature(project, a, b), result });
-    await this.save(project, cache);
+    // A transition cut keeps its `transition` entry: the dialog may still look at both frames, the badge never compares.
+    if (!b.transition) {
+      const cache = this.cache(projectId);
+      cache.set(`${a.id}|${b.id}|${result.format}`, { signature: this.signature(project, a, b), result });
+      await this.save(project, cache);
+    }
     return { result, fromImage, toImage, diffImage: diffImage! };
   }
 

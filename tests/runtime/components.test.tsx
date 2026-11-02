@@ -8,6 +8,8 @@ import {
   Callout,
   Camera,
   ClickRipple,
+  Clip,
+  ClipContext,
   Counter,
   Cursor,
   Dimension,
@@ -18,6 +20,7 @@ import {
   Guide,
   Highlight,
   Layer3D,
+  MotionBlur,
   PhoneFrame,
   RadiusArc,
   SceneContext,
@@ -41,6 +44,7 @@ import {
   useFormat,
   useScene,
   type BrandKit,
+  type ClipSource,
   type FormatId,
   type SceneProps,
 } from '../../src/runtime/index';
@@ -93,6 +97,12 @@ const PATH = [
   { t: 1, x: 500, y: 300 },
 ];
 
+/** A 25 fps clip of 50 frames under `loops/spin.gif`; any other asset is unknown. */
+const fakeClips = (src: string): ClipSource | Error =>
+  src === 'loops/spin.gif'
+    ? { fps: 25, frames: 50, url: (index) => `/clips/spin/${index}.jpg` }
+    : new Error(`unknown clip ${src}`);
+
 const gallery: [string, ReactElement][] = [
   ['Fill', <Fill center>x</Fill>],
   ['SplitText', <SplitText text="Every part" by="words" piece={(i) => ({ opacity: i / 2 })} />],
@@ -144,6 +154,18 @@ const gallery: [string, ReactElement][] = [
   ['PhoneFrame', <PhoneFrame />],
   ['Grain', <Grain seed={2} t={1} />],
   ['Vignette', <Vignette />],
+  [
+    'MotionBlur',
+    <MotionBlur t={1} fps={30}>
+      {(time) => <i>{time}</i>}
+    </MotionBlur>,
+  ],
+  [
+    'Clip',
+    <ClipContext.Provider value={fakeClips}>
+      <Clip src="loops/spin.gif" time={0.5} />
+    </ClipContext.Provider>,
+  ],
 ];
 
 describe('components render deterministically', () => {
@@ -459,5 +481,151 @@ describe('cursor', () => {
     assert.equal(render(<ClickRipple x={0} y={0} t={0.9} at={1} />), '');
     assert.notEqual(render(<ClickRipple x={0} y={0} t={1.2} at={1} />), '');
     assert.equal(render(<ClickRipple x={0} y={0} t={1.6} at={1} />), '');
+  });
+});
+
+describe('motion blur', () => {
+  const times = (html: string) => [...html.matchAll(/<i>([^<]*)<\/i>/g)].map((m) => Number(m[1]));
+  const opacities = (html: string) => [...html.matchAll(/filter:opacity\(([\d.]+)\)/g)].map((m) => Number(m[1]));
+  const blur = (props: { t: number; fps?: number; samples?: number; shutter?: number }) =>
+    render(
+      <MotionBlur fps={30} {...props}>
+        {(time) => <i>{time}</i>}
+      </MotionBlur>,
+    );
+  const close = (actual: number[], expected: number[]) => {
+    assert.equal(actual.length, expected.length, `${actual} vs ${expected}`);
+    actual.forEach((value, i) => assert.ok(Math.abs(value - expected[i]) < 1e-9, `${actual} vs ${expected}`));
+  };
+
+  test('draws one layer per sample, evenly spaced over the shutter before t, averaged by their opacities', () => {
+    const html = blur({ t: 1, samples: 4, shutter: 0.6 });
+    // 0.6 of a 30 fps frame is 20 ms: 4 samples 5 ms apart, ending at t.
+    close(times(html), [1, 0.995, 0.99, 0.985]);
+    // A filter, not the opacity property: Chromium rounds each opacity composite down, 3 levels off after 8 copies.
+    close(opacities(html), [1 / 2, 1 / 3, 1 / 4]);
+    // Every layer is its own stacking context, so a zIndex or a blend mode in the content stays inside its copy.
+    assert.equal((html.match(/position:absolute;inset:0;isolation:isolate/g) ?? []).length, 4);
+    assert.doesNotMatch(html, /[;"]opacity:/);
+  });
+
+  test('spreads the shutter over a frame of the given fps', () => {
+    close(times(blur({ t: 1, fps: 60, samples: 4, shutter: 0.6 })), [1, 0.9975, 0.995, 0.9925]);
+    close(times(blur({ t: 1, fps: 24, samples: 4, shutter: 0.6 })), [1, 0.99375, 0.9875, 0.98125]);
+  });
+
+  test('copies are hidden from assistive tech and the text checks, the layer at t is not', () => {
+    const html = blur({ t: 1, samples: 3 });
+    assert.match(html, /^<div style="position:absolute;inset:0;isolation:isolate"><i>1<\/i>/);
+    assert.equal((html.match(/aria-hidden="true"/g) ?? []).length, 2);
+    assert.equal((html.match(/data-cadence-decor=""/g) ?? []).length, 2);
+  });
+
+  test('defaults to 8 samples over half a frame', () => {
+    close(
+      times(blur({ t: 2 })),
+      Array.from({ length: 8 }, (_, k) => 2 - (k * 0.5) / 30 / 8),
+    );
+  });
+
+  test('clamps samples to 1-16 and shutter to 0-1', () => {
+    assert.equal(times(blur({ t: 1, samples: 100 })).length, 16);
+    assert.equal(times(blur({ t: 1, samples: 2.6 })).length, 3);
+    assert.equal(times(blur({ t: 1, samples: 2.4 })).length, 2);
+    assert.equal(blur({ t: 1, samples: 3, shutter: 2 }), blur({ t: 1, samples: 3, shutter: 1 }));
+    close(times(blur({ t: 1, samples: 3, shutter: -1 })), [1, 1, 1]);
+  });
+
+  test('one sample draws exactly the child at t', () => {
+    assert.equal(blur({ t: 0.5, samples: 1 }), '<i>0.5</i>');
+    assert.equal(blur({ t: 0.5, samples: 0 }), '<i>0.5</i>');
+  });
+
+  test('sample times never go below 0', () => {
+    close(times(blur({ t: 0.01, samples: 4, shutter: 1 })), [0.01, 0.01 - 1 / 120, 0, 0]);
+  });
+});
+
+describe('clip', () => {
+  const shown = (props: { time: number; loop?: boolean; src?: string }) => {
+    const html = render(
+      <ClipContext.Provider value={fakeClips}>
+        <Clip src="loops/spin.gif" {...props} />
+      </ClipContext.Provider>,
+    );
+    return Number(/src="\/clips\/spin\/(\d+)\.jpg"/.exec(html)?.[1]);
+  };
+
+  test('shows source frame floor(time * fps)', () => {
+    assert.equal(shown({ time: 0 }), 0);
+    assert.equal(shown({ time: 0.039 }), 0);
+    assert.equal(shown({ time: 0.04 }), 1);
+    assert.equal(shown({ time: 1.5 }), 37);
+  });
+
+  test('lands on the frame a time names despite float error: 0.29 s at 100 fps is frame 29', () => {
+    const lookup = (): ClipSource => ({ fps: 100, frames: 1000, url: (index) => `/clips/spin/${index}.jpg` });
+    const html = render(
+      <ClipContext.Provider value={lookup}>
+        <Clip src="loops/spin.gif" time={0.29} />
+      </ClipContext.Provider>,
+    );
+    assert.match(html, /\/29\.jpg/);
+  });
+
+  test('holds the first frame before 0 and the last one past the end', () => {
+    assert.equal(shown({ time: -1 }), 0);
+    assert.equal(shown({ time: 2 }), 49);
+    assert.equal(shown({ time: 60 }), 49);
+  });
+
+  test('loop wraps past the end and before 0', () => {
+    assert.equal(shown({ time: 2, loop: true }), 0);
+    assert.equal(shown({ time: 2.5, loop: true }), 12);
+    assert.equal(shown({ time: -0.04, loop: true }), 49);
+    assert.equal(shown({ time: -2.04, loop: true }), 49);
+  });
+
+  test('a time that is not a finite number is a RangeError naming <Clip>', () => {
+    assert.throws(() => shown({ time: NaN }), { name: 'RangeError', message: /<Clip>/ });
+    assert.throws(() => shown({ time: Infinity, loop: true }), { name: 'RangeError', message: /<Clip>/ });
+  });
+
+  test("throws the frame's error for an asset it cannot show", () => {
+    assert.throws(() => shown({ time: 0, src: 'missing.mp4' }), { message: 'unknown clip missing.mp4' });
+  });
+
+  test('throws outside a scene', () => {
+    assert.throws(() => renderToStaticMarkup(<Clip src="loops/spin.gif" time={0} />), /<Clip>.*inside a Cadence scene/);
+  });
+
+  test('takes its path relative to assets/, like asset(): a leading slash is dropped for the lookup and the marker', () => {
+    const html = render(
+      <ClipContext.Provider value={fakeClips}>
+        <Clip src="//loops/spin.gif" time={0} />
+      </ClipContext.Provider>,
+    );
+    assert.match(html, /data-cadence-clip="loops\/spin\.gif"/);
+  });
+
+  test('an <img> marked with its asset, no alt text, object-fit contain by default, style last', () => {
+    const html = render(
+      <ClipContext.Provider value={fakeClips}>
+        <Clip src="loops/spin.gif" time={0} fit="cover" style={{ width: 400, objectPosition: 'top' }} />
+      </ClipContext.Provider>,
+    );
+    // Server rendering adds a preload link before it; the frame renders on the client.
+    assert.equal(
+      /<img [^>]*\/>/.exec(html)?.[0],
+      '<img src="/clips/spin/0.jpg" alt="" data-cadence-clip="loops/spin.gif" style="display:block;object-fit:cover;width:400px;object-position:top"/>',
+    );
+    assert.match(
+      render(
+        <ClipContext.Provider value={fakeClips}>
+          <Clip src="loops/spin.gif" time={0} />
+        </ClipContext.Provider>,
+      ),
+      /object-fit:contain/,
+    );
   });
 });

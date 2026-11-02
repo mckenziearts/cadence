@@ -10,17 +10,6 @@ import { useCanvas, useKitTheme } from './scene';
 import { Overlay, Pin, useCameraZoom } from './stage';
 import type { Point } from './types';
 
-/** Rounded-rectangle path starting at the top-left corner, clockwise (for DrawPath wireframes). */
-export function rectPath(x: number, y: number, w: number, h: number, r = 0): string {
-  const k = Math.max(0, Math.min(r, w / 2, h / 2));
-  if (k === 0) return `M${x},${y}H${x + w}V${y + h}H${x}Z`;
-  const arc = (ex: number, ey: number) => `A${k},${k} 0 0 1 ${ex},${ey}`;
-  return (
-    `M${x + k},${y}H${x + w - k}${arc(x + w, y + k)}V${y + h - k}${arc(x + w - k, y + h)}` +
-    `H${x + k}${arc(x, y + h - k)}V${y + k}${arc(x + k, y)}Z`
-  );
-}
-
 export interface DrawPathProps {
   /** SVG path data (see rectPath). */
   d: string;

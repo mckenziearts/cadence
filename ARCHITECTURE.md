@@ -16,7 +16,8 @@ This document is the contract between modules. Shared types: `src/shared/types.t
 ## Principles
 
 1. **Every frame is a pure function of time.** Scenes render from props only. No state/effects-driven animation,
-   timers, `requestAnimationFrame`, `Date.now()`, `Math.random()`, CSS transitions/animations, videos, network.
+   timers, `requestAnimationFrame`, `Date.now()`, `Math.random()`, CSS transitions/animations, `<video>`, network.
+   Videos and GIFs go through `<Clip>`, which shows the frame extracted for its time (see "Clip frames").
    Frames are rendered out of order, one at a time, in several browsers at once.
 2. **What you see is what renders.** The editor preview, thumbnails, the agent's frames, seam checks and the MP4
    renderer all use the same page (`frame.html`).
@@ -62,6 +63,7 @@ cadence/
     networks/               youtube.ts, linkedin.ts, instagram.ts (through Facebook Login), tiktok.ts (drafts)
     api/                    Hono routes under /api (index.ts = createApi)
     archive/                tar.ts (ustar reader and writer, no dependency), projects.ts (ProjectArchiver)
+    clips/                  probe.ts (what ffmpeg says of a video), service.ts (LocalClipService: frame cache)
     frames/                 vite.ts (Vite dev server + plugins), frameServer.ts (frame-origin handler)
     capture/                capture.ts (Playwright), browser-host.ts + chromium-server.mjs (Chromium in a child
                             process), serve-chromium.mjs (the Chromium server that process runs, exported for a
@@ -79,6 +81,7 @@ cadence/
   src/
     shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks),
                             subtitles.ts (subtitle cues from the voice-over sentences, SRT and WebVTT)
+                            lottie.ts (the Lottie files an upload and `<Lottie>` refuse: header, outside images, fonts, other files)
     runtime/                the `cadence` module scenes import (+ API.md, the reference the agent reads)
     frame/main.tsx          frame page app
     frame/captions.tsx      burned-in captions over the scene
@@ -257,7 +260,9 @@ Vite (`server/frames/vite.ts`): `root = <root>`, `appType: 'custom'`, `server.mi
 by), `node_modules/` (+ `CADENCE_VITE_CACHE_DIR`), so the
 server code and root files are never served; `server.fs.deny` adds `**/.cadence/**`, `**/.git/**`, `.env*`. `CADENCE_VITE_CACHE_DIR`
 gives a server its own dependency cache.
-Aliases: `cadence` for `src/runtime/index.ts`, `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
+Aliases: `cadence` for `src/runtime/index.ts`, `cadence/three` for `src/runtime/three.tsx` and `cadence/lottie` for
+`src/runtime/lottie.tsx` (exact matches, so three and lottie-web load only in scenes that import them; both are
+pre-bundled with React), `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
 `@tailwindcss/vite` (its `transform` skips every file under projects/, brands/, templates/), and a Cadence plugin whose
 `hotUpdate` returns `[]` for files under those dirs (Cadence reloads frames itself). Its `transform` compiles a
 stylesheet under those dirs itself (`compileStylesheet()`, with `compile()` from `tailwindcss`), so Tailwind opens no
@@ -318,14 +323,16 @@ so imports are fresh.
 
 ```
 projects/<id>/
-  project.json          ProjectFile (name, brand, fps, formats, tempo, language, scenes[] (voiceOver?), music,
-                        voiceOver, captions)
+  project.json          ProjectFile (name, brand, fps, formats, tempo, language, scenes[] (voiceOver?,
+                        transition?), music, voiceOver, captions)
   art-direction.md      the look every scene follows (copied from the brand, then edited)
   scenes/<scene>.tsx    one component per scene (default export)
   components/           shared components/constants for this project (relative imports)
-  assets/               images, SVGs, fonts; assets/refs/ = reference screenshots for the agent
-  music/                audio tracks + <file>.analysis.json caches
-  renders/              exported MP4s (gitignored)
+  assets/               images, SVGs, fonts, videos (MP4, MOV, M4V, WebM), Lottie JSON; assets/refs/ = reference
+                        screenshots for the agent; 1536 MiB in all, so an export stays under the 2048 MB import
+  music/                audio tracks + <file>.analysis.json caches and <file>.spectrum.bin band levels
+  renders/              exported videos, GIFs, PNG frames and PNG sequence folders (gitignored)
+  clips/<key>/          frames of each video or GIF asset (000001.jpg...) and clip.json, see "Clip frames"
   .cadence/             internal, gitignored: chats/ (project.json, scene-<id>.json, archive/), versions/,
                         thumbs/ (<scene>-<16x9>-<t>-g<run>.<gen>-<sig>.jpg), frames/ (what the agent rendered),
                         seams.json (version 2), publications.json (Publication[], newest first), trash/,
@@ -339,13 +346,28 @@ they do not exist: one that does not parse is a 500 naming the file (`readJsonOr
 what it held. Caches (`seams.json`, `<file>.analysis.json`) are measured again instead.
 
 Scene durations: seconds rounded to the ms, min 0.1. Scene order = `project.json` order.
+A scene's `transition` (`{ kind: fade | slide | wipe | flip, direction?: left | right | up | down, duration }`, 0.1 to
+5 s, direction for slide, wipe and flip only, `left` when left out) is the cut into it: the scene starts that much
+before the previous one ends. `ProjectStore.setTransition` writes it (null removes it, the first scene is refused);
+duplicating a scene copies it, moving or deleting a scene leaves it on disk, and on the first scene it draws nothing.
+`get()` clamps it to half of the scene and of the previous one, rounded down to the ms so the two cuts around a scene
+never take more than the scene (`sceneTimeline` in `server/store/projects.ts`):
+`SceneState.transition` is that effective cut (absent on the first scene), `declaredTransition` what `project.json`
+holds, so a scene shortened later never breaks the timeline and nothing cascades on disk. `start` = previous start +
+previous duration - effective transition, rounded to the ms; `ProjectState.duration` and the project list's duration
+subtract the overlaps. Without transitions, starts and durations are the running sums they always were.
+During an overlap the frame page draws both scenes (`pickScene` in `src/frame/pick.ts`), the incoming one on top, each
+at its own local time and in its own error boundary; `presentation()` (`src/frame/transitions.ts`) styles them for each
+frame from the eased progress, never with CSS transitions. A frame exactly at the outgoing scene's end shows the
+incoming scene alone. The brand background and the captions are drawn once, outside both scenes; `seek()` answers both
+scenes' errors and the incoming scene's id; the text checks skip frames inside a cut; scene mode shows one scene and no cut.
 `tempo` (default 120) is the fallback beat grid and converts template bars to seconds (1 bar = 240 / tempo s).
 `language` (`fr` | `en` | null = the brand's) sets the on-screen language: the frame passes
 `{ ...kit, language }` to scenes, and the agent's turn context names it.
 
 Caches kept on disk (thumbnails, seams) are keyed by a random run id per service instance plus the code generation,
-because generations restart at 0 in every process; the scene signature also covers the scene's `codeVersion` and the
-project language.
+because generations restart at 0 in every process; the scene signature also covers the scene's `codeVersion`, the
+project language and the project's clips (a replaced asset gets a new clip key).
 
 ## Scene contract
 
@@ -391,7 +413,8 @@ the agent's system prompt):
   `DrawPath` (SVG path drawn by progress), `Glow` (SVG glow filter + helper), `Callout` (dot, elbow line, then label),
   `Dimension` (measure line + label), `RadiusArc`, `Guide` (dashed line), `Tag` (pill label), `Highlight`
   (outline around a rect with a label), `Cursor` (pointer following keyframes, press/hover), `ClickRipple`,
-  `BrowserFrame`, `PhoneFrame`, `Grain` (animated-by-seed noise to avoid banding), `Vignette`.
+  `BrowserFrame`, `PhoneFrame`, `Grain` (animated-by-seed noise to avoid banding), `Vignette`, `MotionBlur`
+  (render prop drawn at earlier times and averaged), `Clip` (a video or GIF asset at a time, from its extracted frames).
 - Music: `createMusic({ grid, tempo, musicStart, sceneStart, sceneDuration }): Music` with `hasTrack, bpm,
   beatLength, barLength, beatsPerBar, beats, downbeats, phrases, sections, accents, beat(n), bar(n), phrase(n),
   bars(n)` (seconds for n bars), `snap(t, 'beat'|'bar'|'phrase'|'half'|'quarter'), pulse(t, {grid, decay}),
@@ -501,7 +524,8 @@ patch records nothing. A failed snapshot is logged and the write stands. While a
 runs (`ChatService.busy(id)`, checked before and after the write), these versions are skipped, and restore, undo, redo
 and project/scene deletion answer 409, checked again once their turn behind the steps comes: the agent's own version would otherwise record someone else's change.
 `restore()` first snapshots unsaved changes (`external`), writes the files (and for a scene restore: only that
-scene file + its duration), then records a `restore` version. Nothing is ever deleted and objects are stored as
+scene file, its duration, voice-over and the transition into it, left as is when the scene is now first or the version's
+cannot be read), then records a `restore` version. A version that only changes a transition is listed under that scene. Nothing is ever deleted and objects are stored as
 is: each editor write adds a full copy of every file it changed plus a manifest of all tracked files, and the history
 travels in project exports.
 
@@ -698,15 +722,16 @@ Scopes: `scene` (one scene), `project`, `open` (terminal token), `brand` (a bran
 | `get_brand` | yes | yes | tokens, kit, extras, copy |
 | `get_music_context` | yes | yes | tempo, bars, phrases in scene-local seconds |
 | `list_templates` | yes | yes | scene + campaign templates |
-| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images and, per frame, text checks from the frame page (clipped, off canvas, outside the safe area, low contrast, under the captions; at most 6, never an error); or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
-| `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 % |
+| `render_frames` | own scene / whole video | any | ≤ 8 times, format, quality low/normal/high, returns images and, per frame, text checks from the frame page (clipped, off canvas, outside the safe area, low contrast, under the captions, a GIF in an `<img>`; at most 6, never an error); or `strip` (4-24 consecutive frames around `at`, 12 by default) as one JPEG contact sheet |
+| `check_seams` | own cuts | any | diff % per format (every project format by default), images when ≥ 0.05 %; a cut with a transition is listed as one, never compared |
 | `check_motion` | own scene | any (every scene by default) | half-size PNG samples every 0.25 s (≤ 120 per scene, ≤ 600 per call, the step widens beyond), captured 12 at a time and diffed as they arrive (memory holds one batch, and `render_frames` can take the capture slot in between), odd samples one video frame late so a beat pulse is not sampled on its hits, consecutive samples diffed like `check_seams`; lists still stretches of about 2 s or more, measured between samples (under 0.01 % of pixels changing), an error when a scene of ≥ 2 s never moves; a render error stops that scene; a 240 s budget (`deadline` on `CaptureService.frames`) stops the scene in progress ("out of time") and the next ones ("not checked"); also an error when no scene could be checked |
 | `set_scene_duration` | own scene | any | ms precision |
 | `set_voice_over` | own scene | any | `text` or `lines` (`{ speaker, text, gesture? }`, exclusive) + `at` (kept when left out); speaks it, answers each line's start and end in scene seconds with its speaker; refuses a text over a scene written in lines |
 | `list_voices` | no | yes | the voices of the project's engine (installed Piper voices, or the ElevenLabs catalogue of the account or the host app) with id, name, language; without an ElevenLabs key, the message saying where to add one |
 | `set_speakers` | no | yes | replaces the project speakers through `ProjectStore.update` (its checks: voice per engine, at most 10, no removing a speaker a line uses) |
 | `create_scene`, `duplicate_scene`, `delete_scene`, `move_scene`, `rename_scene` | no | yes | `create_scene` takes a template id or TSX code |
-| `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns |
+| `set_transition` | no | yes | the cut into a scene (null cuts hard); answers declared and effective duration and the scene table |
+| `snap_cuts_to_music` | no | yes | beat / bar / phrase, `keepBars` for campaigns; every scene start lands on the grid, overlaps included |
 | `capture_reference` | no | yes | screenshot an http(s) page into assets/refs/, from a host the person approved for the project only |
 | `save_version` | yes | yes | named snapshot |
 
@@ -767,7 +792,7 @@ written and read by `server/archive/tar.ts` with no dependency. Entries, in orde
 - `brands/<id>/<path>` once per brand the projects use. Never `brands/cadence`: every installation has it.
 
 What is left out, by `exportableProjectPath` and `exportableBrandPath` (the same rule decides what an import keeps):
-`renders/` (videos are made again from the code), a project's `tsconfig.json` (its `extends` points into this
+`renders/` (videos are made again from the code), `clips/` (frames are extracted again from the assets), a project's `tsconfig.json` (its `extends` points into this
 installation and breaks Vite on another one), `node_modules/` and `package.json` under any case (the frame server
 refuses them above a stylesheet), dotfiles (`.building` included), and in `.cadence/`
 everything but `chats/`, `versions/` and `voice-over/` (thumbnails, frames, seams, sounds, trash and publications are
@@ -857,6 +882,7 @@ PATCH  /api/projects/:id/scenes/:sid               { name?, duration?, voiceOver
 POST   /api/projects/:id/scenes/:sid/duplicate     answers SceneState
 DELETE /api/projects/:id/scenes/:sid               answers ProjectState (409 while a turn runs)
 PUT    /api/projects/:id/order                     { ids }, answers ProjectState
+PUT    /api/projects/:id/scenes/:sid/transition    { transition: SceneTransition | null }, answers ProjectState (400 on the first scene)
 GET    /api/projects/:id/scenes/:sid/thumbnail     ?t=&format=, answers image/jpeg
 GET    /api/projects/:id/scenes/:sid/diagnostics   { error: string | null }
 GET    /api/projects/:id/seams                     SeamResult[] (cached)
@@ -904,15 +930,22 @@ POST   /api/projects/:id/chats/:key/stop
 DELETE /api/projects/:id/chats/:key                answers ChatState
 GET    /api/projects/:id/agent-frames/:name        image/jpeg or image/png (frames the agent rendered)
 GET    /api/projects/:id/cost                      { totalUsd }
-POST   /api/projects/:id/renders                   RenderRequest, answers RenderJob[]
-GET    /api/projects/:id/renders                   { jobs: RenderJob[], files: RenderFile[] }
+POST   /api/projects/:id/renders                   RenderRequest (output mp4 | webm | mov | gif | png | png-sequence,
+                                                   transparent), answers RenderJob[]; 422 when the ffmpeg in use lacks
+                                                   the output's encoder or the output has no alpha
+GET    /api/projects/:id/renders                   { jobs: RenderJob[], files: RenderFile[], outputs: { [output]:
+                                                   OutputSupport } } (a sequence's file has its size and frames)
 DELETE /api/renders/:jobId                         cancel
-GET    /api/projects/:id/renders/:name             video/mp4 (Range support)
-DELETE /api/projects/:id/renders/:name             moves the MP4 to .cadence/trash (409 while it uploads)
+GET    /api/projects/:id/renders/:name             video/mp4, video/webm, video/quicktime, image/gif or image/png
+                                                   (Range support); a sequence folder is not served (404)
+DELETE /api/projects/:id/renders/:name             moves the file or sequence folder to .cadence/trash (409 while it
+                                                   uploads)
 GET    /api/projects/:id/assets                    AssetInfo[]
-POST   /api/projects/:id/assets                    multipart "file", answers AssetInfo
+POST   /api/projects/:id/assets                    ?name=, body = the file (raw), answers AssetInfo; 50 MiB images/fonts,
+                                                   500 MiB videos, 10 MiB Lottie, 1536 MiB per project (413)
 DELETE /api/projects/:id/assets                    ?path= 
 GET    /api/projects/:id/assets/file               ?path=, answers file
+GET    /api/projects/:id/clips/audio               ?path=, the sound of a ready clip (its first 10 minutes) as mono 44.1 kHz audio/wav, 404 without one
 POST   /api/projects/:id/refs                      CaptureRefInput, answers AssetInfo
 GET    /api/projects/:id/capture-hosts             { hosts }: the hosts approved for the agent's captures
 POST   /api/projects/:id/capture-hosts             { host } as URL.host writes it (400 otherwise), answers { hosts }
@@ -945,14 +978,32 @@ answers `{ brand, brandId, brandUrl }`. Each answers only the id of the origin i
 `FfmpegRenderService`: jobs run one at a time (one job per requested format). A job opens up to
 `min(4, cpus/2)` capture pages at the format's canvas × scale (× 2 when supersampling), splits the frame range in
 contiguous chunks, captures `t = i / fps` with `seek()`, and feeds frames to ffmpeg in order
-(`image2pipe`). Encoding: libx264, yuv420p, BT.709, `+faststart`; quality presets
-draft (CRF 23, veryfast, JPEG q80) / standard (CRF 16, medium, JPEG q95) / master (CRF 10, slow, JPEG q100).
+(`image2pipe`). `RenderRequest.output` picks what ffmpeg writes (mp4 by default):
+
+| Output | Encoding | Audio |
+|---|---|---|
+| `mp4` | libx264, yuv420p, `+faststart` | AAC 192 k |
+| `webm` | libvpx-vp9 `-b:v 0`, VP9 CRF, `-row-mt 1`, yuv420p or yuva420p | libopus, else ffmpeg's opus with `-strict -2` |
+| `mov` | prores_ks profile 4444 yuva444p10le (transparent) or profile 3 (422 HQ) yuv422p10le | pcm_s16le |
+| `gif` | lossless FFV1 frames into `<name>.frames.part`, then `palettegen=stats_mode=diff` and `paletteuse` in a second pass; above 50 fps every second or third frame is kept | none |
+| `png` | one frame at `range.from` (0 without a range), rgb24 or rgba, `-frames:v 1 -update 1 -f image2` | none |
+| `png-sequence` | `-f image2` `%06d.png` (from 000001.png) into the folder `<name>.part/`, renamed `<name>/` at the end | none |
+
+Quality presets: draft (CRF 23, veryfast, VP9 CRF 38, JPEG q80) / standard (CRF 16, medium, VP9 CRF 31, JPEG q95) /
+master (CRF 10, slow, VP9 CRF 24, JPEG q100). `GET renders` reads the encoders of the ffmpeg in use once per build
+(`server/capture/encoders.ts`); an output whose encoder is missing is refused with the reason (422).
+Frames are JPEG screenshots for mp4, gif and opaque webm/mov. PNG outputs and `transparent` ones are captured as PNG
+through one CDP session per page, within a capture window sized from the pixels (256 MB at 1.7 bytes a pixel); with
+`transparent` (webm, mov, png, png-sequence only, 422 otherwise) the stage drops the brand background and the PNG
+keeps its alpha.
 Sizes are rounded down to even numbers and the `-vf` chain starts with a crop to that size (× 2 when
 supersampling), so odd sizes are cropped, never stretched (4:5 at 0,5× = 540 × 674); supersampling then downsizes
-with `scale=W:H:flags=lanczos`, and `setparams` tags the frames BT.709 (tv range). Once the render pages are open,
+with `scale=W:H:flags=lanczos` for every output. Video outputs convert to BT.709 tv range and `setparams` tags the
+frames (a transparent frame is resized premultiplied, then unpremultiplied); PNG outputs keep the page's RGB, untagged.
+Once the render pages are open,
 their duration and code generation are compared with the job's; on a mismatch they reload, and a second mismatch
 fails the job (« Le projet a changé pendant le lancement du rendu »). Audio (when the project has music): track from
-`music.start`, AAC 192 k, `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length. With a
+`music.start`, in the output's codec (none for a GIF or PNG), `volume`, 0.6 s fade-out, `loudnorm=I=-14:TP=-1.5:LRA=11`, cut to the video length. With a
 voice-over, its track is a second input (see "Voice-over"), unless no sentence falls in the rendered range, and the
 audio goes through `-filter_complex`, voice alone or mixed, ending with the same limiter.
 Sound effects: before capture, the render reads `__cadence.sounds()` on its first page (the cues of every scene, in
@@ -963,15 +1014,76 @@ that starts before the range is trimmed, one that runs past it is cut. When no c
 at all; otherwise the track is one more `-filter_complex` input, alone or mixed with the music and the voice by
 `amix=normalize=0`, through the same limiter and fade, so a video with neither music nor voice-over still gets audio.
 A missing or non-44.1 kHz library file fails the render naming it.
+A clip cue (`{ at, clip, from, duration, gain }`) is checked against `project.clips` (ready, with a sound track; `from`
+inside it, `duration` cut at the clip's and the scene's end) and starts on `at`. The track reads only the part of it
+the range hears, with `readClipAudio` (`server/clips/service.ts`): ffmpeg on the asset opened without following links,
+as fd 3, with the probe's forced demuxer and `-ss from -t duration`, downmixed to mono 44.1 kHz 16-bit. ffmpeg gives
+more than `-t` asks of a file whose timestamps squeeze a long sound, so the read keeps at most `duration` and stops it;
+parts of one clip less than 30 s apart share one read of at most 600 s, and a cancelled render stops it. The clip cues
+of a scene are heard at most 8 times its length in all, which bounds the mix. A read that fails fails the render naming
+the asset, never its absolute path.
 The preview and Present play the same cues: the frame posts `{type: 'sounds', sceneId, cues}` whenever they change
 (scene seconds in scene mode, video seconds for the whole video), and the editor ignores a message for a scene it does not
 show and checks the cues again with the same caps. `src/editor/lib/sounds.ts` decodes the library once per page, then
 at each playback frame schedules on Web Audio the cues of the next 0.15 s, through one limiter, at most 64 sounding at
 once. A cue whose peak the playhead passed (the first frame after play, a seek, a loop or a dropped frame) lands at
 most 0.1 s after its cue; later than that it is skipped, so a seek past a cue's peak skips it in the preview, where the
-MP4 mixes its tail. Pause, mute and a change of cues stop the sounds already playing.
-Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.mp4`. Deleting one moves it to the project's
-`.cadence/trash/` (`RenderService.remove`); what the networks received stays in `publications.json`.
+MP4 mixes its tail. Pause, mute and a change of cues stop the sounds already playing. A clip cue is checked against
+the project's clips too; its sound is fetched as a WAV from `/clips/audio` (a video's AAC does not decode in every
+Chromium build; the route stops its ffmpeg when the request is dropped) on the first plan that needs it and decoded whole
+(once per clip key for every player of the page, the preview's and Present's, dropped when the clip leaves the project or
+when no player's shown scene cues it any more, not while a frame reloads), and it starts from where the playhead is in it:
+a seek, a late tick or a slow decode joins it in time. The preview plays a clip's first 10 minutes and cuts a cue there.
+Output: `projects/<id>/renders/<project>-<16x9>-<YYYYMMDD-HHmmss>.<mp4|webm|mov|gif|png>`, or the folder
+`<project>-<16x9>-<YYYYMMDD-HHmmss>/` of a PNG sequence. ffmpeg writes `<name>.part` (a folder for a sequence), renamed
+once the job is done; a cancel or a failure removes it, and one a killed process left (a file, or a folder named like a
+sequence's) is swept after an hour untouched. The listing gives a sequence the size and number of its plain
+files. Deleting a file or a sequence folder moves it to the project's `.cadence/trash/` (`RenderService.remove`); only
+an MP4 can be published, and what the networks received stays in `publications.json`.
+
+## Clip frames
+
+`LocalClipService` (`server/clips/service.ts`) turns every video and GIF under `assets/` (the extensions of
+`DEMUXERS`) into JPEG frames a scene can show at an exact time. It prepares an asset on upload and on the watcher
+(both send `assets-changed`), and at start for every project; `ProjectStore.get()` calls `sync()`, so
+`ProjectState.clips`, keyed by the path under `assets/`, is `preparing`, `ready` (`key`, `fps`, `frames`, `width`,
+`height`, `duration`, `audio`) or `error` (the last line ffmpeg printed).
+
+The key is `<slug>-<shortHash(path, size, mtime)>`: a replaced asset gets a new key, and `sync()` removes the folder of a
+key no asset has any more, a deleted asset's included, and a `.part` folder with no new frame for 2 minutes (a killed
+server's: a running extraction, in any server sharing `projects/`, adds one at least every 60 s). ffmpeg runs one at a
+time per server; a second request for the same key joins the running one. It reads the asset as fd 3 (opened with
+`openFileNoFollow`, demuxer forced, `-protocol_whitelist file`, like the probe) and prints frames at
+`min(source fps, 60)`, at most 3840 px on either side, aspect kept and sides even
+(`fps=N,scale=w='min(iw,3840)':h='min(ih,3840)':force_original_aspect_ratio=decrease:force_divisible_by=2`; the fps
+filter also evens out a GIF's frame delays; `JpegSplitter` holds a whole frame in memory, however tall), as MJPEG `-q:v 3` on stdout. `JpegSplitter` cuts the stream at each EOI; each frame goes to
+`clips/<key>.<random id>.part/000001.jpg...` through `createFileInside` (exclusive, no link followed, and no shell on
+macOS, where `writeFileInside` spawns one per file), `clip.json` last, then the folder is renamed `clips/<key>/`, unless
+another server already prepared that key: its folder stays and this `.part` is removed, as after a failure. The size is
+the first frame's SOF. A `clips` entry that is not a real folder is never listed, written through or removed (the
+extraction fails); an `assets` one is never listed (no clip). An extraction that fails is kept as `error` and not
+tried again until the asset changes, unless another server prepared its frames; one that prints no frame for 60 s is
+killed. One extraction gives at most 10 minutes at 60 fps or 2 GiB of frames: it is refused before it starts when the
+probe's duration times the frame rate is over, and killed as soon as the frames printed go past either (the probe reads
+the duration from the file, which can state any), the clip in error and its `.part` removed. That budget is per clip,
+so the disk holding the project keeps 2 GiB and 100 000 files free (`statfs`, on the first frame and every 250): below
+either, the extraction stops the same way. A filesystem that reports no file count (btrfs, some network ones) is not
+checked on files. `duration` is `frames / fps`,
+from the frames written. A job whose asset changed again before its turn does nothing: the sync that saw the change
+queued the new key.
+
+A render waits for the project's running extractions before it opens a page (`whenIdle`, cancelable like the music
+wait). Vite's watcher leaves `clips/` out, and so does an archive.
+
+Scenes show clips with `<Clip src time loop? fit? style?>` (`src/runtime/clip.tsx`), never a `<video>`. The frame page
+provides `ClipContext` around each scene, built from `ProjectState.clips` (`src/frame/clips.ts`): a ready clip's
+frame `floor(time * fps)` (clamped, or wrapped with `loop`) is `<img src="/@fs<projectDir>/clips/<key>/<n>.jpg">`,
+served by `serveManagedFile` on the project's frame origin; an unknown, preparing or failed asset throws a translated
+error naming it, caught by the scene's boundary like any runtime error. `seek()` waits for the frames, and the SVG
+`<image>` elements a `<Lottie>` draws, to decode (`decodeImages`, same file): an `<img data-cadence-clip>` that does not
+(missing or damaged file) adds an error naming the asset to the seek result, so render_frames shows it, the render job fails and no blank frame is captured. A clip becoming ready sends
+`project-changed`, which reloads the preview's frame. A GIF shown with `<img>` plays by the wall clock in the preview
+and freezes in renders: the text checks report it (`gif`) with the `<Clip>` fix.
 
 ## Music
 
@@ -981,7 +1093,10 @@ plus: overrides (`bpm`, `beatsPerBar`, `barOffset`, `gridOffset`) applied in `gr
 click tracks with known tempo and downbeats. A reading of 140 BPM or more is halved when nothing sits between the
 beats (a backbeat read as beats). `snapCuts` moves each cut to the nearest grid point in video time; with
 `keepBars` each scene keeps its bar count (round(duration × tempo / 240), at least 1), cuts land on the detected
-downbeats (the lead-in joins the first scene) and `project.tempo` becomes 240 / bar length.
+downbeats (the lead-in joins the first scene) and `project.tempo` becomes 240 / bar length. With transitions, both snap
+the slots from one start to the next, then add each overlap back to the scene before it (`withOverlaps`), so every
+scene start lands on the grid; each overlap is worked out again from its declared length with the half-scene caps of the
+new lengths, so it can grow back or shrink.
 
 The analysis runs in a worker thread (`server/music/worker.mjs`, JavaScript so that it loads tsx itself: Node 22.12
 starts a worker without the parent's `--import` hooks): its DSP would hold the server for about 1 s per 10 minutes of
@@ -999,7 +1114,9 @@ Seams (`PixelSeamService`): the last frame of a scene and the first of the next,
 format, compared with `pixelmatch({ threshold: 0.01, includeAA: true })`. Under 0.05 % of pixels the cut is
 invisible. Structural changes (duration, order, deletion, snap, formats, brand, tempo, language) re-check in the
 background once the edits settle (`recheck`: 1.5 s after the last one, one check for a burst). Only the seam dialog
-(`detail`) draws the diff image.
+(`detail`) draws the diff image. A cut into a scene with a transition captures nothing: its result carries the
+effective `transition` and a `diffPercent` of 0, in its place among the other cuts. `detail` still draws such a cut
+for the dialog but leaves that cached result in place.
 
 ## Voice-over
 
@@ -1097,7 +1214,7 @@ arguments, no shell), then renames each WAV into place in the order of Piper's m
 ## CLI (`npm run cadence -- <command>`)
 
 - `start [--port] [--frame-port]`
-- `render <project> [--formats 16:9,9:16] [--quality standard] [--scale 1] [--fps 60] [--supersample]`
+- `render <project> [--formats 16:9,9:16] [--quality standard] [--scale 1] [--fps 60] [--supersample] [--output mp4]`
 - `analyze <audio>`
 - `new <name> --brand <id> [--template <id>] [--formats ...] [--fps 60]`
 - `list`, `doctor`, `mcp`

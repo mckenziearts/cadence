@@ -20,7 +20,7 @@ export default {
     failed: (agent: string | null) =>
       agent ? `${agent} s’est arrêté sur une erreur.` : 'Notre IA s’est arrêtée sur une erreur.',
     seam: (r: SeamResult) =>
-      `${r.from} \u2192 ${r.to} (${r.format}) : ${r.diffPercent.toFixed(2).replace('.', ',')} %${r.error ? ` (erreur : ${r.error})` : ''}`,
+      `${r.from} \u2192 ${r.to} (${r.format}) : ${r.transition ? 'transition, non comparée' : `${r.diffPercent.toFixed(2).replace('.', ',')} %`}${r.error ? ` (erreur : ${r.error})` : ''}`,
     notSaved: '[cadence] Chat non enregistré :',
     turnFailed: '[cadence] Tour de chat en échec :',
     wrapUpFailed: (projectId: string, key: string) => `[cadence] Fin du tour (${projectId}, ${key}) :`,
@@ -51,6 +51,7 @@ export default {
       remove: (scene: string) => `Suppression de ${scene}`,
       move: (scene: string, position: string) => `Déplacement de ${scene} en position ${position}`,
       rename: (scene: string, name: string) => `Renommage de ${scene} en « ${name} »`,
+      transition: (scene: string, removed: boolean) => (removed ? `Coupe franche avant ${scene}` : `Transition vers ${scene}`),
       grids: { beat: 'les temps', bar: 'les mesures', phrase: 'les phrases' } as Record<string, string | undefined>,
       grid: 'la grille',
       snap: (grid: string) => `Coupes calées sur ${grid}`,

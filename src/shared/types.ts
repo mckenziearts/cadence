@@ -97,6 +97,21 @@ export interface SceneFile {
   template?: string | null;
   /** What the project's voice says over this scene; absent = no voice-over. */
   voiceOver?: SceneVoiceOver;
+  /** The cut into this scene, as declared; the first scene's has no effect. Absent = a hard cut. */
+  transition?: SceneTransition;
+}
+
+export const TRANSITION_KINDS = ['fade', 'slide', 'wipe', 'flip'] as const;
+export type TransitionKind = (typeof TRANSITION_KINDS)[number];
+export const TRANSITION_DIRECTIONS = ['left', 'right', 'up', 'down'] as const;
+export type TransitionDirection = (typeof TRANSITION_DIRECTIONS)[number];
+
+/** The incoming scene overlaps the previous one by `duration` seconds (0.1-5, ms precision). */
+export interface SceneTransition {
+  kind: TransitionKind;
+  /** Slide, wipe and flip only: written as `left` when sent without one. A fade has none. */
+  direction?: TransitionDirection;
+  duration: number;
 }
 
 /** A scene's voice-over: spoken sentence by sentence by the project's voice, from `at`. */
@@ -249,6 +264,24 @@ export interface MusicSettings {
   gridOffset?: number;
 }
 
+/**
+ * Band levels of the track, frame-major: byte `frame * bands + band`, frame i at i / rate seconds of TRACK time,
+ * 0..255 for -80..0 dB. Bands are log-spaced from 40 Hz to 11 kHz.
+ */
+export interface MusicSpectrum {
+  bands: number;
+  rate: number;
+  /** Path relative to the project folder, e.g. `music/track.mp3.spectrum.bin`. */
+  file: string;
+  /** Bytes in the file. */
+  size: number;
+}
+
+export interface ProjectMusic extends MusicSettings {
+  /** null without an analysis yet (running, failed or never started). */
+  spectrum: MusicSpectrum | null;
+}
+
 /** PATCH /api/projects/:id/music body. null resets an override to the detected value. */
 export interface MusicSettingsPatch {
   start?: number;
@@ -284,8 +317,15 @@ export interface ProjectFile {
 
 export interface SceneState extends SceneFile {
   index: number;
-  /** Global start time in the video, seconds. */
+  /** Global start time in the video, seconds: the previous scene's end minus this scene's transition. */
   start: number;
+  /**
+   * The cut as drawn: the declared duration clamped to half of this scene and of the previous one, rounded to the ms.
+   * Absent on the first scene and without a declared transition.
+   */
+  transition?: SceneTransition;
+  /** SceneFile.transition, as project.json declares it. */
+  declaredTransition?: SceneTransition;
   /** Absolute path of `scenes/<id>.tsx`. */
   file: string;
   /** Module URL the frame page imports (e.g. `/@fs/abs/path/scenes/intro.tsx`), without cache-busting query. */
@@ -307,9 +347,9 @@ export interface ProjectState {
   /** See ProjectFile.language (null = the brand's language). */
   language: 'fr' | 'en' | null;
   scenes: SceneState[];
-  /** Sum of scene durations, seconds. */
+  /** Sum of scene durations minus the transitions' overlaps, seconds. */
   duration: number;
-  music: MusicSettings | null;
+  music: ProjectMusic | null;
   /** URL (editor origin) the browser can stream the audio from, or null. */
   musicUrl: string | null;
   /** Beat grid after manual overrides, in TRACK seconds; null without music or while analysing. */
@@ -326,11 +366,24 @@ export interface ProjectState {
   voiceOverError: string | null;
   /** See ProjectFile.captions. */
   captions: boolean;
+  clips: Record<string, ClipState>;
   /** Bumped whenever any code file of the project (or its brand) changes; frames re-import when it moves. */
   codeGeneration: number;
   createdAt: string;
   updatedAt: string;
 }
+
+export interface ClipInfo {
+  fps: number;
+  frames: number;
+  width: number;
+  height: number;
+  duration: number;
+  audio: boolean;
+}
+
+export type ClipState =
+  { status: 'preparing' } | ({ status: 'ready'; key: string } & ClipInfo) | { status: 'error'; error: string };
 
 export interface ProjectSummary {
   id: string;
@@ -403,7 +456,7 @@ export interface CreateSceneInput {
 
 /** Output of the music analyzer. All times are seconds of TRACK time. */
 export interface MusicAnalysis {
-  version: 2;
+  version: 3;
   duration: number;
   sampleRate: number;
   bpm: number;
@@ -419,6 +472,8 @@ export interface MusicAnalysis {
   accents: { t: number; strength: number }[];
   /** Evenly spaced peak amplitudes 0..1 across the whole track (about 1000 points), for drawing. */
   waveform: number[];
+  /** Layout of the band spectrum stored beside the analysis: `frames` rows of `bands` bytes, `rate` rows per second. */
+  spectrum: { bands: number; rate: number; frames: number };
   /** 0..1, how regular the beat grid is. */
   confidence: number;
 }
@@ -792,13 +847,21 @@ export interface SeamResult {
   from: string;
   to: string;
   format: FormatId;
-  /** Percentage of pixels that differ (0..100). */
+  /** Percentage of pixels that differ (0..100); 0 for a cut with a transition, which is never compared. */
   diffPercent: number;
   checkedAt: string;
   error?: string;
+  /** The transition drawn across this cut (as it plays, capped): both scenes show at once, so no frame must match. */
+  transition?: SceneTransition;
 }
 
 export type RenderQuality = 'draft' | 'standard' | 'master';
+
+export const RENDER_OUTPUTS = ['mp4', 'webm', 'mov', 'gif', 'png', 'png-sequence'] as const;
+/** What a render writes: a video, a GIF, one PNG frame, or a folder of numbered PNG frames. */
+export type RenderOutput = (typeof RENDER_OUTPUTS)[number];
+/** Whether the ffmpeg in use can make an output, and why not. */
+export type OutputSupport = { available: true } | { available: false; reason: string };
 
 export interface RenderRequest {
   formats: FormatId[];
@@ -811,6 +874,10 @@ export interface RenderRequest {
   supersample?: boolean;
   /** Optional sub-range of the video, seconds. */
   range?: { from: number; to: number };
+  /** Defaults to mp4. */
+  output?: RenderOutput;
+  /** Keep the alpha channel: frames without the brand background. */
+  transparent?: boolean;
 }
 
 export interface RenderJob {
@@ -841,9 +908,12 @@ export interface RenderFile {
   size: number;
   createdAt: string;
   format: FormatId | null;
+  output: RenderOutput;
+  /** A PNG sequence's frames: the plain files of its folder. */
+  frames?: number;
 }
 
-export type AssetKind = 'image' | 'svg' | 'font' | 'audio' | 'other';
+export type AssetKind = 'image' | 'svg' | 'font' | 'audio' | 'video' | 'lottie' | 'other';
 
 export interface AssetInfo {
   /** Path relative to the project's assets/ folder, e.g. `refs/dashboard-desktop.png`. */

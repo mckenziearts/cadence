@@ -219,7 +219,7 @@ export function editorOrigins(config: CadenceConfig): string[] {
  * embed the frame. Vite dev modules are same-origin scripts and CSS arrives as <style> tags. Vite's client still tries
  * its HMR websocket (another port, HMR is off): the CSP blocks it, which is intended.
  */
-function frameCsp(config: CadenceConfig): string {
+export function frameCsp(config: CadenceConfig): string {
   return [
     "default-src 'self'",
     "script-src 'self'",

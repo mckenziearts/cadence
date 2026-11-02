@@ -1,10 +1,11 @@
 import { createReadStream } from 'node:fs';
-import fs from 'node:fs/promises';
+import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { Context } from 'hono';
+import type { StatusCode } from 'hono/utils/http-status';
 import { m } from '../i18n';
-import { HttpError, shortHash } from '../util';
+import { HttpError, openFileNoFollow, shortHash } from '../util';
 
 const TYPES: Record<string, string> = {
   png: 'image/png',
@@ -25,6 +26,10 @@ const TYPES: Record<string, string> = {
   flac: 'audio/flac',
   ogg: 'audio/ogg',
   mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  json: 'application/json',
 };
 
 /** Served files are inert: an uploaded SVG opened directly must not run script on the editor origin. */
@@ -37,10 +42,28 @@ export function contentType(file: string): string {
   return TYPES[path.extname(file).slice(1).toLowerCase()] ?? 'application/octet-stream';
 }
 
-/** Stream a file with ETag revalidation and single-range requests (audio/video seeking). */
-export async function sendFile(c: Context, file: string, type = contentType(file)): Promise<Response> {
-  const stat = await fs.stat(file).catch(() => null);
+/**
+ * Stream a file with ETag revalidation and single-range requests (audio/video seeking). With `root`, the file is opened
+ * without following a link on the way from `root`.
+ */
+export async function sendFile(c: Context, file: string, type = contentType(file), root?: string): Promise<Response> {
+  const handle = root ? await openFileNoFollow(root, file).catch(() => null) : undefined;
+  if (handle === null) throw new HttpError(404, m().api.fileNotFound(path.basename(file)));
+  try {
+    return await sendOpened(c, file, type, handle);
+  } catch (e) {
+    await handle?.close();
+    throw e;
+  }
+}
+
+async function sendOpened(c: Context, file: string, type: string, handle: FileHandle | undefined): Promise<Response> {
+  const stat = await (handle ? handle.stat() : fs.stat(file)).catch(() => null);
   if (!stat?.isFile()) throw new HttpError(404, m().api.fileNotFound(path.basename(file)));
+  const answer = async (status: StatusCode, headers: Record<string, string>): Promise<Response> => {
+    await handle?.close();
+    return c.body(null, status, headers);
+  };
   const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
   const headers: Record<string, string> = {
     ...FILE_HEADERS,
@@ -49,15 +72,16 @@ export async function sendFile(c: Context, file: string, type = contentType(file
     'Cache-Control': 'private, no-cache',
     ETag: etag,
   };
-  if (c.req.header('if-none-match') === etag) return c.body(null, 304, headers);
+  if (c.req.header('if-none-match') === etag) return answer(304, headers);
   const range = parseRange(c.req.header('range'), stat.size);
-  if (range === 'unsatisfiable') return c.body(null, 416, { ...headers, 'Content-Range': `bytes */${stat.size}` });
+  if (range === 'unsatisfiable') return answer(416, { ...headers, 'Content-Range': `bytes */${stat.size}` });
   const { start, end } = range ?? { start: 0, end: stat.size - 1 };
   headers['Content-Length'] = String(end - start + 1);
   if (range) headers['Content-Range'] = `bytes ${start}-${end}/${stat.size}`;
   const status = range ? 206 : 200;
-  if (c.req.method === 'HEAD' || stat.size === 0) return c.body(null, status, headers);
-  return c.body(Readable.toWeb(createReadStream(file, { start, end })) as ReadableStream, status, headers);
+  if (c.req.method === 'HEAD' || stat.size === 0) return answer(status, headers);
+  const stream = handle ? handle.createReadStream({ start, end }) : createReadStream(file, { start, end });
+  return c.body(Readable.toWeb(stream) as ReadableStream, status, headers);
 }
 
 /** In-memory image (thumbnails) with a content ETag. */

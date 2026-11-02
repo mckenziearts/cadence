@@ -1,5 +1,6 @@
 // Music grid marks for the scrubber and scene lengths in bars, computed with the runtime's own createMusic so the
 // editor shows exactly the grid scenes animate on (no track: steady project tempo restarting at every scene).
+import { pickScene } from '../../frame/pick';
 import { createMusic, type Music } from '../../runtime/music';
 import type { ProjectState, SceneState } from '../../shared/types';
 
@@ -83,4 +84,9 @@ export function playbackTime(clock: number, elapsed: number, heard: number | nul
 export function rulerStep(duration: number, width: number): number {
   const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
   return steps.find((step) => (width / Math.max(duration, 0.001)) * step >= 64) ?? 600;
+}
+
+/** Scene playing at video time t, by the frame page's own rule: during a transition, the incoming scene. */
+export function sceneAt(project: ProjectState, t: number): SceneState | null {
+  return pickScene(project.scenes, t, null)?.scene ?? null;
 }

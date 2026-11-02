@@ -76,6 +76,7 @@ async function render(args: string[]): Promise<number> {
       scale: { type: 'string' },
       fps: { type: 'string' },
       supersample: { type: 'boolean' },
+      output: { type: 'string' },
     },
     true,
   );
@@ -87,6 +88,9 @@ async function render(args: string[]): Promise<number> {
   if (!['draft', 'standard', 'master'].includes(quality)) throw new UsageError(m().media.cli.unknownQuality(quality));
   if (scale !== undefined && ![0.5, 1, 2].includes(scale)) throw new UsageError(m().media.invalidScale(values.scale));
   if (fps !== undefined && ![24, 30, 60].includes(fps)) throw new UsageError(m().media.invalidFps(values.fps));
+  const { ACCEPTED_OUTPUTS, isAcceptedOutput } = await import('../server/capture/render');
+  const output = values.output ?? 'mp4';
+  if (!isAcceptedOutput(output)) throw new UsageError(m().media.cli.unknownOutput(output, ACCEPTED_OUTPUTS.join(', ')));
 
   const { startServer } = await import('../server/index');
   const server = await startServer({ editorPort: 0, framePort: 0, quiet: true });
@@ -107,7 +111,7 @@ async function render(args: string[]): Promise<number> {
     const project = await store.get(projectId);
     const formats = values.formats ? formatList(values.formats) : project.formats;
     console.log(m().media.cli.exporting(project.name, formatSeconds(project.duration), formats.join(', '), quality));
-    jobs = await renders.start(projectId, { formats, quality, scale, fps, supersample: values.supersample });
+    jobs = await renders.start(projectId, { formats, quality, scale, fps, supersample: values.supersample, output });
     let failed = 0;
     for (const job of jobs) {
       const done = await renders.wait(job.id);

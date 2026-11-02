@@ -15,7 +15,7 @@ import type {
   SceneState,
   SnapGrid,
 } from '../../src/shared/types';
-import type { CadenceConfig, Hub, MusicService, ProjectStore, Upload } from '../contracts';
+import type { AnalysedMusic, CadenceConfig, Hub, MusicService, ProjectStore, Upload } from '../contracts';
 import { language, m } from '../i18n';
 import {
   HttpError,
@@ -26,6 +26,7 @@ import {
   roundMs,
   slugify,
   uniqueId,
+  writeFileInside,
   writeJsonAtomic,
 } from '../util';
 import { applyOverrides, BEATS_PER_BAR_CHOICES, BPM_MAX, BPM_MIN, MAX_GRID_OFFSET } from './grid';
@@ -48,8 +49,8 @@ type SettingsPatch = { [K in keyof Omit<MusicSettings, 'file'>]?: MusicSettings[
 export class LocalMusicService implements MusicService {
   /** Analyses in progress, by absolute track path: concurrent callers share one. */
   private running = new Map<string, Promise<MusicAnalysis>>();
-  // Never evicted: one entry (about 50 KB) per analysed track.
-  private memory = new Map<string, CacheEntry>();
+  // Never evicted: one entry (about 50 KB) per analysed track. noSpectrum: this run could not write its spectrum file.
+  private memory = new Map<string, CacheEntry & { noSpectrum?: boolean }>();
   /** Failed analyses by track path, with the file stamp they failed on: grid() runs on every project read and must not retry in a loop. */
   private failed = new Map<string, { stamp: string; error: string }>();
 
@@ -139,14 +140,20 @@ export class LocalMusicService implements MusicService {
     return this.analyse(projectId, file);
   }
 
-  async grid(projectId: string): Promise<MusicGridData | null> {
+  async grid(projectId: string): Promise<AnalysedMusic | null> {
     const music = await this.settings(projectId);
     if (!music) return null;
     const file = this.trackPathOrNull(projectId, music.file);
     const stat = file ? await fs.stat(file).catch(() => null) : null;
     if (!file || !stat) return null;
     const analysis = await this.cached(file, stat);
-    if (analysis) return applyOverrides(analysis, music);
+    if (analysis) {
+      const { bands, rate, frames } = analysis.spectrum;
+      const spectrum = this.memory.get(file)?.noSpectrum
+        ? null
+        : { bands, rate, file: `music/${path.basename(file)}.spectrum.bin`, size: frames * bands };
+      return { grid: applyOverrides(analysis, music), spectrum };
+    }
     // New track, stale cache or a restart mid-analysis: analyse in the background (the editor hears about it on the
     // hub) and report no grid meanwhile. A file that already failed as it is now is not retried.
     if (this.failed.get(file)?.stamp !== stampOf(stat)) void this.analyse(projectId, file).catch(() => undefined);
@@ -164,13 +171,19 @@ export class LocalMusicService implements MusicService {
       const video = (points: number[]) => points.map((t) => t - music.start);
       if (opts.keepBars) {
         const bar = (data.beatsPerBar * 60) / data.bpm;
-        await store.setDurations(projectId, barDurations(scenes, video(data.downbeats), bar, tempo));
+        await store.setDurations(
+          projectId,
+          withOverlaps(scenes, (slots) => barDurations(slots, video(data.downbeats), bar, tempo)),
+        );
         // Scene lengths are now bars of the track: count them at its tempo from now on (a second snap keeps them,
         // inserted templates get its bar length). 240 / tempo is one bar, whatever the track's beats per bar.
         return store.update(projectId, { tempo: Math.min(300, Math.max(30, 240 / bar)) });
       }
       const points = grid === 'beat' ? data.beats : grid === 'bar' || data.phrases.length < 2 ? data.downbeats : data.phrases;
-      return store.setDurations(projectId, snapDurations(scenes, video(points)));
+      return store.setDurations(
+        projectId,
+        withOverlaps(scenes, (slots) => snapDurations(slots, video(points))),
+      );
     });
   }
 
@@ -253,7 +266,7 @@ export class LocalMusicService implements MusicService {
   /** Memory, then `<file>.analysis.json`, when they describe the file as it is now (size + mtime). */
   private async cached(file: string, stat: Stats): Promise<MusicAnalysis | null> {
     const fresh = (entry: CacheEntry | null | undefined): entry is CacheEntry =>
-      Boolean(entry && entry.size === stat.size && entry.mtimeMs === stat.mtimeMs && entry.analysis?.version === 2);
+      Boolean(entry && entry.size === stat.size && entry.mtimeMs === stat.mtimeMs && entry.analysis?.version === 3);
     const memory = this.memory.get(file);
     if (fresh(memory)) return memory.analysis;
     // A damaged cache is a miss: the analysis runs again and rewrites it.
@@ -280,8 +293,9 @@ export class LocalMusicService implements MusicService {
     const { hub, config } = this.deps;
     hub.send({ type: 'music', projectId, status: 'analyzing' });
     let analysis: MusicAnalysis;
+    let spectrum: Uint8Array;
     try {
-      analysis = await analyzeInWorker(file, config.ffmpegPath);
+      ({ analysis, spectrum } = await analyzeInWorker(file, config.ffmpegPath));
     } catch (e) {
       const error = m().media.music.analysisFailed(path.basename(file), (e as Error).message);
       this.failed.set(file, { stamp: stampOf(stat), error });
@@ -289,17 +303,24 @@ export class LocalMusicService implements MusicService {
       throw new HttpError(422, error);
     }
     const entry: CacheEntry = { size: stat.size, mtimeMs: stat.mtimeMs, analysis };
-    this.memory.set(file, entry);
-    await writeJsonAtomic(`${file}.analysis.json`, entry).catch((e: Error) =>
-      console.warn(m().media.music.cacheNotWritten(path.basename(file), e.message)),
+    const bytes = Buffer.from(spectrum.buffer, spectrum.byteOffset, spectrum.byteLength);
+    const warn = (e: Error) => console.warn(m().media.music.cacheNotWritten(path.basename(file), e.message));
+    // The spectrum file before the caches that report it. Without it, no disk cache: the next start analyses again.
+    const written = await writeFileInside(this.deps.store.dir(projectId), `${file}.spectrum.bin`, bytes).then(
+      () => true,
+      (e: Error) => (warn(e), false),
     );
+    if (written) await writeJsonAtomic(`${file}.analysis.json`, entry).catch(warn);
+    this.memory.set(file, { ...entry, noSpectrum: !written });
     hub.send({ type: 'music', projectId, status: 'ready' });
+    // Frames hold the project they loaded while the analysis ran (no spectrum yet): they re-fetch it.
+    hub.send({ type: 'project-changed', projectId });
     return analysis;
   }
 }
 
 /** The analysis off the server's thread (worker.mjs): the server keeps answering while it runs. */
-function analyzeInWorker(file: string, ffmpegPath: string): Promise<MusicAnalysis> {
+function analyzeInWorker(file: string, ffmpegPath: string): Promise<{ analysis: MusicAnalysis; spectrum: Uint8Array }> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./worker.mjs', import.meta.url), {
       workerData: { file, ffmpegPath, language: language() },
@@ -382,6 +403,33 @@ function mergeSettings(current: MusicSettings, patch: SettingsPatch, detectedBea
     } else next.gridOffset = roundMs(patch.gridOffset);
   }
   return next;
+}
+
+/**
+ * Snaps scene starts rather than scene ends: `snap` gets each scene's slot (its start to the next start, the last
+ * scene's duration) and moves them; each scene then gets back the part its successor's transition overlaps, capped as
+ * sceneTimeline caps it, so the starts it computes are the snapped ones.
+ */
+function withOverlaps(
+  scenes: Pick<SceneState, 'id' | 'start' | 'duration' | 'declaredTransition'>[],
+  snap: (slots: Pick<SceneState, 'id' | 'duration'>[]) => Record<string, number>,
+): Record<string, number> {
+  const ms = (seconds: number) => Math.round(seconds * 1000);
+  const slots = snap(
+    scenes.map((s, i) => ({ id: s.id, duration: i + 1 < scenes.length ? roundMs(scenes[i + 1].start - s.start) : s.duration })),
+  );
+  const durations: Record<string, number> = {};
+  let overlap = 0;
+  for (let i = scenes.length - 1; i >= 0; i--) {
+    const { id, declaredTransition } = scenes[i];
+    const duration = ms(slots[id]) + overlap;
+    durations[id] = duration / 1000;
+    overlap =
+      i > 0 && declaredTransition
+        ? Math.min(ms(declaredTransition.duration), ms(slots[scenes[i - 1].id]), Math.floor(duration / 2))
+        : 0;
+  }
+  return durations;
 }
 
 /**

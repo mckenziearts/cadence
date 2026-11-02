@@ -1,9 +1,17 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 import * as cadence from '../../src/runtime/index';
+import * as cadenceLottie from '../../src/runtime/lottie';
+import * as cadenceThree from '../../src/runtime/three';
 import type { SoundCue, SoundName, SoundProps } from '../../src/runtime/index';
 import { SOUND_NAMES } from '../../src/shared/sounds';
+
+const PATH_TOOLS = [
+  ...['parsePath', 'getLength', 'getPointAtLength', 'getTangentAtLength', 'evolvePath', 'interpolatePath'],
+  ...['rectPath', 'roundedRect', 'circle', 'ellipse', 'polygon', 'star', 'triangle', 'pie'],
+];
 
 // The exports ARCHITECTURE.md promises to scenes, templates and the frame page.
 const REQUIRED = [
@@ -14,14 +22,23 @@ const REQUIRED = [
   ...['SplitText', 'typed', 'measureText', 'TypeOn', 'SwapWords', 'Counter'],
   ...['Fill', 'SceneContext', 'useScene', 'BrandContext', 'useBrand', 'useFormat', 'asset', 'setAssetBase'],
   ...['Stage3D', 'Camera', 'DrawPath', 'Glow', 'Callout', 'Dimension', 'RadiusArc', 'Guide', 'Tag', 'Highlight'],
-  ...['Cursor', 'ClickRipple', 'BrowserFrame', 'PhoneFrame', 'Grain', 'Vignette'],
+  ...['Cursor', 'ClickRipple', 'BrowserFrame', 'PhoneFrame', 'Grain', 'Vignette', 'MotionBlur', 'Clip'],
+  ...PATH_TOOLS,
   'createMusic',
   'voiceLevel',
+  'GLCanvas',
 ];
 
 test('index exports everything the architecture requires', () => {
   const missing = REQUIRED.filter((name) => !(name in cadence));
   assert.deepEqual(missing, []);
+});
+
+test('API.md documents every path tool and shape', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8');
+  const section = api.slice(api.indexOf('## Paths & shapes'), api.indexOf('## Annotations'));
+  assert.ok(api.includes('## Paths & shapes'));
+  for (const name of PATH_TOOLS) assert.ok(section.includes(`\`${name}(`), name);
 });
 
 test('API.md warns about what renders do differently from the preview', () => {
@@ -32,6 +49,7 @@ test('API.md warns about what renders do differently from the preview', () => {
     'Its cost grows with the extent of its children',
     'a cut is invisible below 0.05 %',
     'gate it with `music.hasTrack`',
+    'the preview plays only its first 10 minutes',
   ]) {
     assert.ok(api.replace(/\s+/g, ' ').includes(rule), rule);
   }
@@ -65,4 +83,132 @@ test('API.md documents the voice-over line fields and voiceLevel', () => {
   for (const rule of ['`speaker`', '`words`', '`level`', '`gesture`', 'voiceLevel(voiceOver, t, speaker?)', '0 to 1']) {
     assert.ok(section.includes(rule), rule);
   }
+});
+
+test('API.md documents music.spectrum, its band count and its pending error', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## Music'), api.indexOf('## Voice-over'));
+  for (const rule of ['music.spectrum(t, bands = 24)', 'from 1 to 24', '40 Hz to 11 kHz', 'MusicAnalysisPending', 'zeros']) {
+    assert.ok(section.includes(rule), rule);
+  }
+});
+
+test('API.md documents MotionBlur', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  for (const rule of [
+    '<MotionBlur t={t} fps={fps}',
+    'samples={8}',
+    'shutter={0.5}',
+    '1 to 16',
+    'opaque background inside',
+    'positioned box around the path only',
+    '`samples={1}` outside the move',
+    'never nest',
+    "`useId()` called inside the render prop's own component",
+  ]) {
+    assert.ok(api.includes(rule), rule);
+  }
+});
+
+test('API.md documents Clip, its errors and the <video> ban', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## Video clips and GIFs'), api.indexOf('## Seam checklist'));
+  assert.ok(api.includes('## Video clips and GIFs'));
+  for (const rule of [
+    '<Clip src="loops/spin.gif" time={t - 1.5}',
+    'path under `assets/`, like `asset()`',
+    'floor(time * fps)',
+    'holds the last frame',
+    '`loop`',
+    "`fit` (CSS `object-fit`, default 'contain')",
+    'never a `<video>`',
+    'still being prepared',
+    'opaque',
+    'no sound',
+  ]) {
+    assert.ok(section.includes(rule), rule);
+  }
+  assert.ok(api.includes('show animated GIFs and videos with `<Clip>`'));
+  assert.ok(api.includes('`ClipContext`'));
+});
+
+test('three lives in cadence/three only, so a scene without it never loads three', () => {
+  assert.equal(typeof cadenceThree.ThreeCanvas, 'function');
+  assert.equal(typeof cadenceThree.THREE.WebGLRenderer, 'function');
+  assert.equal('THREE' in cadence, false);
+  assert.equal('ThreeCanvas' in cadence, false);
+});
+
+test('no module under src but runtime/three.tsx imports three, so neither the cadence index nor the frame pulls it in', () => {
+  const dir = new URL('../../src/', import.meta.url);
+  const importers = fs
+    .readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((file) => /\.tsx?$/.test(file))
+    .filter((file) => /(from|import)\s*\(?\s*['"]three(\/[^'"]*)?['"]/.test(fs.readFileSync(new URL(file, dir), 'utf8')));
+  assert.deepEqual(importers, ['runtime/three.tsx']);
+});
+
+test('API.md documents GLCanvas and cadence/three, software capture and the context limit', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## WebGL'));
+  assert.ok(api.includes('## WebGL'));
+  for (const rule of [
+    '<GLCanvas t={t} width={',
+    "import { THREE, ThreeCanvas } from 'cadence/three'",
+    'renders in software',
+    'pixels may differ slightly from the GPU preview',
+    '16 live WebGL contexts at most per page',
+    'no `requestAnimationFrame`',
+    'Create geometries, materials and textures in `setup` only',
+    'Never call `renderer.setAnimationLoop`, `setSize` or `setPixelRatio`',
+    'about 15 ms to each captured frame',
+  ]) {
+    assert.ok(section.includes(rule), rule);
+  }
+});
+
+test('the Lottie player lives in cadence/lottie only, so a scene without it never loads lottie-web', () => {
+  assert.equal(typeof cadenceLottie.Lottie, 'function');
+  assert.equal('Lottie' in cadence, false);
+  const dir = new URL('../../src/', import.meta.url);
+  const importers = fs
+    .readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((file) => /\.tsx?$/.test(file))
+    .flatMap((file) =>
+      [...fs.readFileSync(new URL(file, dir), 'utf8').matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)]
+        .map((match) => match[1])
+        .filter(
+          (spec) =>
+            /^(lottie-web|cadence\/lottie$)/.test(spec) ||
+            (spec.startsWith('.') && path.posix.join(path.posix.dirname(file), spec).replace(/\.tsx?$/, '') === 'runtime/lottie'),
+        )
+        .map((spec) => `${file}: ${spec}`),
+    );
+  // The full player evaluates expressions with eval, which the frame CSP refuses. A module that imports the component,
+  // by any path, would load lottie-web in every scene that imports that module.
+  assert.deepEqual(importers, ['runtime/lottie.tsx: lottie-web/build/player/lottie_light']);
+});
+
+test('API.md documents cadence/lottie and what a Lottie file may not use', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## Lottie animations'));
+  assert.ok(api.includes('## Lottie animations'));
+  for (const rule of [
+    "import { Lottie } from 'cadence/lottie'",
+    '<Lottie data={',
+    'ip + time * fr',
+    '`loop`',
+    '`fit`',
+    'expressions',
+    'embedded',
+    'convert the text to shapes',
+    'Randomize Order',
+    'One player per mount',
+    'Keep `data` stable',
+    '`segments`',
+    'at least one frame after `ip`',
+  ]) {
+    assert.ok(section.includes(rule), rule);
+  }
+  assert.ok(api.includes('Lottie files with `<Lottie>`'));
 });

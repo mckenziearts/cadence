@@ -6,8 +6,8 @@ import { chatKeyForScene, FORMATS, type FormatId } from '../../shared/types';
 import { useT } from '../i18n';
 import { bars, secsLabel } from '../lib/format';
 import { useSoundPlayer, type SoundPlayer } from '../lib/sounds';
-import { SAFE_AREAS, sceneBars } from '../lib/timeline';
-import { currentScene, get, previewDuration, sceneAt, set, useStore } from '../store';
+import { SAFE_AREAS, sceneAt, sceneBars } from '../lib/timeline';
+import { currentScene, get, previewDuration, set, useStore } from '../store';
 import { prefill } from '../store/chat';
 import { setFormat, setPlaying } from '../store/project';
 import { FrameView, type FrameHandle } from './FrameView';
@@ -146,6 +146,7 @@ function Preview({ sounds }: { sounds: SoundPlayer }) {
   const shownSceneId = mode === 'scene' ? sceneId : null;
   const scenes = mode === 'scene' ? 1 : project.scenes.length;
   useEffect(() => sounds.show({ sceneId: shownSceneId, duration, scenes }), [sounds, shownSceneId, duration, scenes]);
+  useEffect(() => sounds.setClips(project.id, project.clips), [sounds, project.id, project.clips]);
 
   const spec = FORMATS[format];
   const fit = Math.max(0, Math.min((box.w - PAD * 2) / spec.width, (box.h - PAD * 2) / spec.height));

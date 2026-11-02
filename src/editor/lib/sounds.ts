@@ -1,5 +1,5 @@
-// The scenes' sound effects in the preview and in Present: the frame's cues, played from the library with Web Audio,
-// scheduled a little ahead of the playhead so each one starts on time.
+// The scenes' sounds in the preview and in Present: the frame's cues, played from the library or the project's clips with
+// Web Audio, scheduled a little ahead of the playhead so each one starts on time.
 import { useEffect, useState } from 'react';
 import {
   MAX_SOUND_CUES,
@@ -10,6 +10,7 @@ import {
   type SoundCueTexts,
   type SoundName,
 } from '../../shared/sounds';
+import type { ClipState } from '../../shared/types';
 
 /** Seconds scheduled ahead at each tick: more than a dropped frame or two, short enough that a pause cuts nothing heard. */
 const LOOKAHEAD_S = 0.15;
@@ -37,6 +38,14 @@ const UNSHOWN: SoundCueTexts = {
   at: () => '',
   sound: () => '',
   gain: () => '',
+  both: () => '',
+  clipUnknown: () => '',
+  clipPreparing: () => '',
+  clipFailed: () => '',
+  clipSilent: () => '',
+  clipFrom: () => '',
+  clipDuration: () => '',
+  clipTotal: () => '',
 };
 
 /** The part of an AudioContext the player uses. */
@@ -62,6 +71,16 @@ interface Planned {
   gain: number;
 }
 
+interface PlannedClip {
+  at: number;
+  /** The project and the clip's key: a file replaced under the same name is decoded again. */
+  id: string;
+  file: string;
+  from: number;
+  duration: number;
+  gain: number;
+}
+
 let library: Promise<SoundLibrary> | null = null;
 
 /** Decoded once per page for the preview and Present: an AudioBuffer plays in any AudioContext, and decoding needs no gesture. */
@@ -81,7 +100,22 @@ function loadLibrary(): Promise<SoundLibrary> {
   return library;
 }
 
+type ClipAudio = Map<string, AudioBuffer | 'loading' | 'failed'>;
+/** Shared by the players of the page, the stage's and the presentation's: a clip is fetched and decoded once. */
+const sharedClipAudio: ClipAudio = new Map();
+
+// ponytail: the clip's whole sound (its first 10 minutes) as the mono WAV the server extracts, about 10.6 MB decoded per
+// minute; requests per cue range if long clips weigh on the editor.
+async function loadClipAudio(url: string): Promise<AudioBuffer> {
+  // Not from the HTTP cache: a file replaced under the same name has a new key and must not decode the old bytes.
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`${response.status} ${url}`);
+  return new OfflineAudioContext(1, 1, 44100).decodeAudioData(await response.arrayBuffer());
+}
+
 export class SoundPlayer {
+  /** The players that told which clips they cue: a clip sound stays while one of those sharing its map cues it. */
+  private static readonly cueing = new Set<SoundPlayer>();
   private ctx: AudioOut | null = null;
   /** Sums the sources into the output without clipping, like the MP4's limiter after its mix. */
   private limiter: DynamicsCompressorNode | null = null;
@@ -100,12 +134,29 @@ export class SoundPlayer {
   /** Where the playhead was at the last scheduling tick, or where playback starts: cues peaking before it are not owed. */
   private from = 0;
   private readonly sounding = new Set<AudioBufferSourceNode>();
+  private projectId = '';
+  private clips: Record<string, ClipState> = {};
+  /** Sorted by at. */
+  private clipCues: PlannedClip[] = [];
+  /** The next clip cue to schedule. */
+  private clipNext = 0;
+  /** The clips the cues of the shown scene last played; kept while a frame reloads or a new scene has not posted. */
+  private cued = new Set<string>();
   private readonly open: () => AudioOut;
   private readonly load: () => Promise<SoundLibrary>;
+  private readonly loadClip: (url: string) => Promise<AudioBuffer>;
+  private readonly clipAudio: ClipAudio;
 
-  constructor(open: () => AudioOut = () => new AudioContext(), load = loadLibrary) {
+  constructor(
+    open: () => AudioOut = () => new AudioContext(),
+    load = loadLibrary,
+    loadClip = loadClipAudio,
+    clipAudio = sharedClipAudio,
+  ) {
     this.open = open;
     this.load = load;
+    this.loadClip = loadClip;
+    this.clipAudio = clipAudio;
   }
 
   /** Call it on the play gesture (autoplay policy), with the playhead playback starts from: opens or resumes the context. */
@@ -113,6 +164,8 @@ export class SoundPlayer {
     this.reset(from);
     this.failed = false;
     this.loadIfCued();
+    for (const [id, audio] of this.clipAudio) if (audio === 'failed') this.clipAudio.delete(id);
+    this.plan();
     if (!this.ctx) {
       const ctx = (this.ctx = this.open());
       const limiter = (this.limiter = ctx.createDynamicsCompressor());
@@ -131,6 +184,15 @@ export class SoundPlayer {
     if (shown.sceneId === sceneId && shown.duration === duration && shown.scenes === scenes) return;
     this.shown = shown;
     this.plan();
+  }
+
+  /** The clips of the shown project: the cues are checked against them, and a clip cue plays its file's sound. */
+  setClips(projectId: string, clips: Record<string, ClipState>): void {
+    this.projectId = projectId;
+    this.clips = clips;
+    const kept = new Set(Object.values(clips).flatMap((clip) => (clip.status === 'ready' ? [`${projectId}/${clip.key}`] : [])));
+    for (const id of this.clipAudio.keys()) if (!kept.has(id)) this.clipAudio.delete(id);
+    this.dirty = true;
   }
 
   /** A `sounds` message from the frame; scene code can post its own, so the cues are checked again at the next tick. */
@@ -154,10 +216,12 @@ export class SoundPlayer {
     if (!playing) return this.reset(playhead);
     if (this.dirty) this.plan();
     const { ctx, buffers, limiter } = this;
-    // Not ready yet: `from` stays where playback started, so the cues since then are still owed.
-    if (!ctx || !buffers || !limiter || ctx.state !== 'running') return;
-    if (this.next < 0) this.next = firstFrom(this.cues, this.from - LONGEST_PEAK);
+    if (!ctx || !limiter || ctx.state !== 'running') return;
     const now = ctx.currentTime;
+    this.tickClips(ctx, limiter, now, playhead);
+    // Not ready yet: `from` stays where playback started, so the cues since then are still owed.
+    if (!buffers) return;
+    if (this.next < 0) this.next = firstFrom(this.cues, this.from - LONGEST_PEAK);
     for (; this.next < this.cues.length && this.cues[this.next].start < playhead + LOOKAHEAD_S; this.next++) {
       const cue = this.cues[this.next];
       if (cue.at < this.from || cue.at < playhead - LATE_S || this.sounding.size >= MAX_SOUNDING) continue;
@@ -179,15 +243,39 @@ export class SoundPlayer {
     this.from = playhead;
   }
 
+  /** A clip cue plays from where the playhead is in it: a seek, a late tick or a slow decode joins it in time. */
+  private tickClips(ctx: AudioOut, limiter: DynamicsCompressorNode, now: number, playhead: number): void {
+    for (; this.clipNext < this.clipCues.length && this.clipCues[this.clipNext].at < playhead + LOOKAHEAD_S; this.clipNext++) {
+      const cue = this.clipCues[this.clipNext];
+      const into = Math.max(0, playhead - cue.at);
+      if (into >= cue.duration) continue;
+      const audio = this.clipAudio.get(cue.id);
+      // Still decoding: this cue and the ones after it wait for a later tick, then join in time.
+      if (audio === 'loading') return;
+      if (typeof audio !== 'object' || this.sounding.size >= MAX_SOUNDING) continue;
+      const source = ctx.createBufferSource();
+      source.buffer = audio;
+      const gain = ctx.createGain();
+      gain.gain.value = cue.gain;
+      source.connect(gain).connect(limiter);
+      source.onended = () => this.sounding.delete(source);
+      source.start(now + Math.max(0, cue.at - playhead), cue.from + into, cue.duration - into);
+      this.sounding.add(source);
+    }
+  }
+
   /** Seek, pause, loop, scene change: stops what is pending; the next tick schedules again, owing the cues from `from` on. */
   reset(from: number): void {
     for (const source of this.sounding) source.stop();
     this.sounding.clear();
     this.next = -1;
+    this.clipNext = 0;
     this.from = from;
   }
 
   close(): void {
+    this.keep(new Set());
+    SoundPlayer.cueing.delete(this);
     this.reset(this.from);
     this.ctx?.close().catch(() => undefined);
     this.ctx = null;
@@ -210,15 +298,47 @@ export class SoundPlayer {
     const { sceneId, duration, scenes } = this.shown;
     const max = Math.min(MAX_SOUND_CUES * scenes, MAX_VIDEO_SOUND_CUES);
     const parsed =
-      this.message?.sceneId === sceneId ? parseSoundCues(this.message.cues, duration + 0.001, UNSHOWN, max) : { cues: [] };
-    const cues =
-      'cues' in parsed
-        ? parsed.cues.map((cue) => ({ ...cue, start: cue.at - SOUND_PEAKS[cue.sound] })).sort((a, b) => a.start - b.start)
-        : [];
+      this.message?.sceneId === sceneId
+        ? parseSoundCues(this.message.cues, duration + 0.001, UNSHOWN, this.clips, max)
+        : { cues: [] };
+    const all = 'cues' in parsed ? parsed.cues : [];
+    const cues = all
+      .flatMap((cue) => ('sound' in cue ? [{ ...cue, start: cue.at - SOUND_PEAKS[cue.sound] }] : []))
+      .sort((a, b) => a.start - b.start);
+    const clipCues = all
+      .flatMap((cue) => {
+        if (!('clip' in cue)) return [];
+        const { at, clip, from, duration, gain } = cue;
+        const state = this.clips[clip];
+        return state.status === 'ready' ? [{ at, id: `${this.projectId}/${state.key}`, file: clip, from, duration, gain }] : [];
+      })
+      .sort((a, b) => a.at - b.at);
+    clipCues.forEach((cue) => this.loadClipCue(cue));
+    if (this.message?.sceneId === sceneId && 'cues' in parsed) this.keep(new Set(clipCues.map(({ id }) => id)));
     // The frame posts again after each reload: unchanged cues must not cut and restart what is playing.
-    if (sameCues(cues, this.cues)) return;
+    if (sameCues(cues, this.cues) && JSON.stringify(clipCues) === JSON.stringify(this.clipCues)) return;
     this.cues = cues;
+    this.clipCues = clipCues;
     this.reset(this.from);
+  }
+
+  /** Up to 10 minutes of a clip decoded weigh about 100 MB: a sound no player cues any more is dropped. */
+  private keep(cued: Set<string>): void {
+    this.cued = cued;
+    SoundPlayer.cueing.add(this);
+    const sharing = [...SoundPlayer.cueing].filter((player) => player.clipAudio === this.clipAudio);
+    for (const id of this.clipAudio.keys()) if (!sharing.some((player) => player.cued.has(id))) this.clipAudio.delete(id);
+  }
+
+  private loadClipCue({ id, file }: PlannedClip): void {
+    if (this.clipAudio.has(id)) return;
+    this.clipAudio.set(id, 'loading');
+    // A clip dropped by setClips while it decodes stays dropped.
+    const settle = (audio: AudioBuffer | 'failed') =>
+      void (this.clipAudio.get(id) === 'loading' && this.clipAudio.set(id, audio));
+    this.loadClip(`/api/projects/${this.projectId}/clips/audio?path=${encodeURIComponent(file)}`).then(settle, () =>
+      settle('failed'),
+    );
   }
 }
 

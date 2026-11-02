@@ -17,6 +17,7 @@ import { GitHubSource, GitLabSource } from './brands/source';
 import { PlaywrightCapture } from './capture/capture';
 import { FfmpegRenderService } from './capture/render';
 import { PixelSeamService } from './capture/seams';
+import { LocalClipService } from './clips/service';
 import { loadConfig } from './config';
 import {
   DEFAULT_FEATURES,
@@ -109,6 +110,7 @@ export interface Services {
   capture: PlaywrightCapture;
   seams: PixelSeamService;
   music: LocalMusicService;
+  clips: LocalClipService;
   voiceOver: LocalVoiceOverService;
   renders: FfmpegRenderService;
   versions: FileVersionStore;
@@ -194,6 +196,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     capture = new PlaywrightCapture({ config, store, browserServer });
     const seams = new PixelSeamService({ store, capture, hub });
     const music = new LocalMusicService({ config, store, hub });
+    const clips = new LocalClipService({ config, store, hub });
     const engine = speech ?? new PiperEngine(config.piperPath);
     const voiceOver = new LocalVoiceOverService({
       config,
@@ -204,9 +207,9 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       elevenLabs: elevenLabs ?? new ElevenLabsClient(),
       secrets,
     });
-    const renders = new FfmpegRenderService({ config, store, music, voiceOver, hub, browserServer });
+    const renders = new FfmpegRenderService({ config, store, music, clips, voiceOver, hub, browserServer });
     const versions = new FileVersionStore(store, brands);
-    const assets = new FileAssetStore(store, capture);
+    const assets = new FileAssetStore(store, capture, config.ffmpegPath);
     const tokens = new McpTokens(config);
     // Key by key rather than a spread: an undefined flag stays on, and a key the editor does not know is not served.
     const activeFeatures = Object.fromEntries(
@@ -274,6 +277,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     const publisher = new Publisher({ store, renders, accounts, networks, hub });
     store.setModuleInvalidator((dirs) => invalidateDirs(viteServer, dirs));
     store.setMusicGridProvider((id) => music.grid(id));
+    store.setClipsProvider((id) => clips.sync(id));
     store.setVoiceOverProvider(voiceOver.provider);
     store.events.on('list-changed', () => hub.send({ type: 'projects-changed' }));
     store.events.on('changed', (projectId: string) => hub.send({ type: 'project-changed', projectId }));
@@ -335,6 +339,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     frameHandler = createFrameHandler({ config, vite, store, brands });
 
     store.watch(vite.watcher);
+    clips.start();
     await writeProjectsGuide(config);
     if (!quiet) void banner(config, provider);
 
@@ -349,6 +354,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       capture,
       seams,
       music,
+      clips,
       voiceOver,
       renders,
       versions,

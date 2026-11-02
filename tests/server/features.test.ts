@@ -1,12 +1,13 @@
 // StartOptions.features: the flags a host app passes to hide editor sections, served to the editor in /api/state.
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { startServer, type StartOptions } from '../../server/index';
+import { FileProjectStore } from '../../server/store/projects';
 import { pathExists } from '../../server/util';
-import type { AppState, ChatState, VoicesState } from '../../src/shared/types';
+import type { AppState, ChatState, ProjectState, VoicesState } from '../../src/shared/types';
 import { makeRoot, type TestRoot } from './helpers';
 
 let t: TestRoot;
@@ -194,5 +195,80 @@ test("a host app's secret store passed to startServer is where the ElevenLabs ke
     assert.equal(await pathExists(path.join(server.config.stateDir, 'elevenlabs.json')), false);
   } finally {
     await server.close();
+  }
+});
+
+test('the ffmpegPath passed to startServer is the ffmpeg that probes uploaded clips', async () => {
+  const bin = path.join(t.root, 'host-ffmpeg');
+  const gif = `Input #0, gif, from 'a.gif':\n  Duration: 00:00:01.00, start: 0.000000, bitrate: 88 kb/s\n  Stream #0:0: Video: gif, bgra, 100x80, 10 fps, 10 tbr, 100 tbn\n`;
+  await writeFile(path.join(t.root, 'gif.txt'), gif);
+  await writeFile(bin, `#!/bin/sh\necho called > "${bin}.called"\ncat "${t.root}/gif.txt" >&2\nexit 1\n`, { mode: 0o755 });
+  const server = await startServer({ ...options, ffmpegPath: bin });
+  const call = (route: string, body: BodyInit) =>
+    fetch(`${server.config.editorOrigin}/api${route}`, {
+      method: 'POST',
+      headers: { 'x-cadence-token': server.editorToken, ...(typeof body === 'string' && { 'content-type': 'application/json' }) },
+      body,
+    });
+  try {
+    const project = await call('/projects', JSON.stringify({ name: 'Clips', brand: null, formats: ['16:9'], fps: 30 }));
+    const { id } = (await project.json()) as { id: string };
+    const res = await call(`/projects/${id}/assets?name=a.gif`, new Blob([Buffer.from('GIF89a')]));
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(await readFile(`${bin}.called`, 'utf8'), 'called\n');
+  } finally {
+    await server.close();
+  }
+});
+
+test('the server prepares the clips of existing projects at start and reports them in the project state', async () => {
+  const root = await makeRoot();
+  const { projectsDir, brandsDir, templatesDir, stateDir } = root.config;
+  const { id } = await new FileProjectStore(root.config).create({ name: 'Clips', brand: null, formats: ['16:9'], fps: 30 });
+  await mkdir(path.join(projectsDir, id, 'assets'), { recursive: true });
+  await writeFile(path.join(projectsDir, id, 'assets', 'intro.mp4'), 'video');
+  const probe = `Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/dev/fd/3':\n  Duration: 00:00:01.00, start: 0.000000, bitrate: 151 kb/s\n  Stream #0:0: Video: h264, yuv420p, 16x8, 30 fps, 30 tbr, 15360 tbn\n`;
+  await writeFile(path.join(root.root, 'probe.txt'), probe);
+  // SOI, SOF0 with a 16x8 size, SOS, two bytes of scan data, EOI.
+  const frame = [
+    0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 8, 0, 16, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0, 1, 2, 0xff, 0xd9,
+  ];
+  await writeFile(path.join(root.root, 'frame.jpg'), Buffer.from(frame));
+  const bin = path.join(root.root, 'host-ffmpeg');
+  const log = `${bin}.log`;
+  const script = `case "$*" in\n  *pipe:1) echo extract >> "${log}"; cat "${root.root}/frame.jpg"; exit 0;;\n  *) echo probe >> "${log}"; cat "${root.root}/probe.txt" >&2; exit 1;;\nesac`;
+  await writeFile(bin, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  const server = await startServer({ ...options, projectsDir, brandsDir, templatesDir, stateDir, ffmpegPath: bin });
+  const poll = async <T>(fn: () => Promise<T | undefined>): Promise<T> => {
+    for (let i = 0; i < 250; i++) {
+      const value = await fn();
+      if (value !== undefined) return value;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.fail('condition never held');
+  };
+  try {
+    // Nothing asked for the project yet: start() alone runs the extraction.
+    await poll(async () => ((await readFile(log, 'utf8').catch(() => '')).includes('extract') ? true : undefined));
+    const clip = await poll(async () => {
+      const res = await fetch(`${server.config.editorOrigin}/api/projects/${id}`);
+      const state = ((await res.json()) as ProjectState).clips['intro.mp4'];
+      return state?.status === 'preparing' ? undefined : state;
+    });
+    assert.ok(clip.status === 'ready', JSON.stringify(clip));
+    assert.deepEqual(clip, {
+      status: 'ready',
+      key: clip.key,
+      fps: 30,
+      frames: 1,
+      width: 16,
+      height: 8,
+      duration: 0.033,
+      audio: false,
+    });
+    assert.equal(await readFile(log, 'utf8'), 'probe\nextract\n');
+  } finally {
+    await server.close();
+    await root.cleanup();
   }
 });

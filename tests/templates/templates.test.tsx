@@ -84,6 +84,8 @@ describe('scene templates', () => {
         [/\bfetch\(|XMLHttpRequest|<video/, 'no network or video'],
         [/\b(transition|animation)\s*:/, 'no CSS transitions or animations'],
         [/[\u00a0\u202f]/, 'no invisible no-break spaces in the source (use \\u00a0 / \\u202f)'],
+        // Two scenes are in one document during a transition: url(#id) would reach the other scene's defs.
+        [/\bid="/, 'no fixed element ids (SVG def ids come from useId())'],
       ] as const) {
         assert.doesNotMatch(code, pattern, why);
       }

@@ -1,20 +1,25 @@
 // Frame origin + frame page in a real Chromium: guards, rendering at exact times, brand/fonts/assets, errors,
 // reloads (scene, component, Tailwind class), text checks, CSP and the postMessage bridge.
 import assert from 'node:assert/strict';
-import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFile, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { cp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
-import { auditFrame, CHROMIUM_ARGS, PlaywrightCapture } from '../../server/capture/capture';
+import { PNG } from 'pngjs';
+import { auditFrame, CHROMIUM_ARGS, PlaywrightCapture, seekFrame } from '../../server/capture/capture';
 import { LOCAL } from '../../server/capture/policy';
+import { LocalClipService } from '../../server/clips/service';
 import type { CadenceConfig } from '../../server/contracts';
 import { createFrameHandler } from '../../server/frames/frameServer';
 import type { AuditFinding, FrameRenderResult } from '../../src/shared/frameProtocol';
 import { frameOriginOf } from '../../src/shared/frameOrigin';
-import type { ProjectFile } from '../../src/shared/types';
-import { near, pixel, startHarness, type Harness } from './helpers/harness';
+import type { MusicGridData, ProjectFile, SceneTransition } from '../../src/shared/types';
+import { near, pixel, RecordingHub, startHarness, type Harness } from './helpers/harness';
 
 let h: Harness;
 let browser: Browser;
@@ -71,6 +76,16 @@ async function addScene(sceneId: string, code: string, duration = 1): Promise<vo
   const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
   project.scenes.push({ id: sceneId, name: sceneId, duration });
   await writeFile(file, JSON.stringify(project, null, 2));
+}
+
+/** Takes scenes added by addScene out of the shared project again, so the tests after it see the project they expect. */
+async function removeScenes(...sceneIds: string[]): Promise<void> {
+  const file = path.join(h.store.dir(id), 'project.json');
+  const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
+  project.scenes = project.scenes.filter((scene) => !sceneIds.includes(scene.id));
+  await writeFile(file, JSON.stringify(project, null, 2));
+  await Promise.all(sceneIds.map((sceneId) => rm(h.store.sceneFile(id, sceneId), { force: true })));
+  await h.store.syncCode(id);
 }
 
 /** A raw request to 127.0.0.1 with the Host header of the project's frame origin, or `host`: Node does not resolve every
@@ -776,6 +791,206 @@ describe('frame page', () => {
   });
 });
 
+describe('transitions', () => {
+  const solid = (color: string, throwsAfter = Infinity) =>
+    `export default function Solid({ t }) {\n  if (t > ${throwsAfter}) throw new Error('Boum à ' + t);\n` +
+    `  return <div style={{ position: 'absolute', inset: 0, background: '${color}' }} />;\n}\n`;
+
+  /** A project of its own: scene `out` (1 s), then scene `in` (1 s) with `transition`, so `in` starts at 1 - duration. */
+  async function cut(
+    transition: SceneTransition,
+    out: string,
+    into: string,
+    captions = false,
+  ): Promise<{ id: string; page: Page }> {
+    const projectId = await h.project('frames');
+    const file = path.join(h.store.dir(projectId), 'project.json');
+    const project = JSON.parse(await readFile(file, 'utf8')) as ProjectFile;
+    project.scenes = [
+      { id: 'out', name: 'Sortante', duration: 1 },
+      { id: 'in', name: 'Entrante', duration: 1, transition },
+    ];
+    project.captions = captions;
+    await writeFile(file, JSON.stringify(project, null, 2));
+    await writeFile(h.store.sceneFile(projectId, 'out'), out);
+    await writeFile(h.store.sceneFile(projectId, 'in'), into);
+    await h.store.syncCode(projectId);
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 0.5 });
+    const page = await context.newPage();
+    const origin = await frameOriginOf(h.config.frameOrigin, 'project', projectId);
+    await page.goto(`${origin}/frame.html?${new URLSearchParams({ project: projectId, format: '16:9', mode: 'capture' })}`);
+    await page.evaluate(() => window.__cadence!.ready);
+    return { id: projectId, page };
+  }
+
+  const drawn = (page: Page) =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('[data-cadence-scene]')].map((el) => el.getAttribute('data-cadence-scene')),
+    );
+
+  it('blends two solid scenes halfway through a fade, then draws the incoming one alone from the end of the outgoing one', async () => {
+    const { page } = await cut({ kind: 'fade', duration: 0.5 }, solid('#ff0000'), solid('#0000ff'));
+    assert.equal(await page.evaluate(() => window.__cadence!.duration()), 1.5);
+    assert.deepEqual(await seek(page, 0.5), { errors: [], sceneId: 'in', localTime: 0 });
+    assert.ok(near(await colorAt(page, 960, 540), [255, 0, 0]), 'progress 0: the outgoing scene only');
+    assert.deepEqual(await seek(page, 0.75), { errors: [], sceneId: 'in', localTime: 0.25 });
+    assert.deepEqual(await drawn(page), ['out', 'in'], 'the incoming scene on top');
+    const mid = await colorAt(page, 960, 540);
+    assert.ok(near(mid, [128, 0, 128], 3), `between red and blue, got ${mid}`);
+    await page.evaluate(() => document.querySelector('[data-cadence-scene="in"]')!.setAttribute('data-probe', ''));
+    assert.deepEqual(await seek(page, 1), { errors: [], sceneId: 'in', localTime: 0.5 });
+    assert.deepEqual(await drawn(page), ['in']);
+    assert.ok(await page.locator('[data-cadence-scene="in"][data-probe]').count(), 'the incoming scene keeps its element');
+    assert.ok(near(await colorAt(page, 960, 540), [0, 0, 255]));
+    await page.context().close();
+  });
+
+  it("keeps drawing one scene while the other throws, and reports both scenes' errors with the incoming scene's id", async () => {
+    // A wipe to the left: the outgoing scene keeps the left part, the incoming one comes in from the right edge.
+    const { page } = await cut({ kind: 'wipe', direction: 'left', duration: 0.5 }, solid('#ff0000', 0.6), solid('#0000ff', 0.2));
+    const one = await seek(page, 0.65);
+    assert.equal(one.sceneId, 'in');
+    assert.equal(one.errors.length, 1);
+    assert.match(one.errors[0], /Erreur d’exécution · scenes\/out\.tsx/);
+    assert.ok(near(await colorAt(page, 480, 1000), [254, 243, 242]), "the outgoing scene's error");
+    assert.ok(near(await colorAt(page, 1900, 1000), [0, 0, 255]), 'the incoming scene still draws');
+    await page.evaluate(() => document.querySelector('[data-cadence-scene="in"] > div')!.setAttribute('data-probe', ''));
+    assert.equal((await seek(page, 0.68)).errors.length, 1);
+    assert.equal(
+      await page.locator('[data-cadence-scene="in"] > div[data-probe]').count(),
+      1,
+      'the outgoing scene failing again does not remount the incoming one',
+    );
+    const both = await seek(page, 0.75);
+    assert.deepEqual(
+      both.errors.map((e) => e.split('\n')[0]),
+      ['Erreur d’exécution · scenes/out.tsx', 'Erreur d’exécution · scenes/in.tsx'],
+    );
+    assert.equal(both.sceneId, 'in');
+    await page.context().close();
+  });
+
+  it('slides the incoming scene in from the side the motion comes from', async () => {
+    const { page } = await cut({ kind: 'slide', direction: 'left', duration: 0.5 }, solid('#ff0000'), solid('#0000ff'));
+    await seek(page, 0.75);
+    assert.ok(near(await colorAt(page, 480, 540), [255, 0, 0]), 'the outgoing scene leaves by the left');
+    assert.ok(near(await colorAt(page, 1440, 540), [0, 0, 255]), 'the incoming scene comes from the right');
+    await page.context().close();
+  });
+
+  it('flips the scenes without ever showing their back', async () => {
+    // The incoming scene draws its left half only: what its transparent right half lets through tells the faces apart.
+    const half =
+      'export default function Half() {\n' +
+      "  return <div style={{ position: 'absolute', left: 0, top: 0, width: '50%', height: '100%', background: '#0000ff' }} />;\n}\n";
+    const { page } = await cut({ kind: 'flip', direction: 'left', duration: 0.5 }, solid('#ff0000'), half);
+    const background: [number, number, number] = [244, 244, 245];
+    // Progress 0.4: the outgoing scene has turned under 90 degrees, the incoming one over 90, back to the viewer.
+    await seek(page, 0.7);
+    assert.ok(near(await colorAt(page, 20, 540), background), 'the outgoing scene turns away from the canvas edges');
+    assert.ok(near(await colorAt(page, 720, 540), [255, 0, 0]));
+    assert.ok(near(await colorAt(page, 1200, 540), [255, 0, 0]), "the incoming scene's mirrored half stays hidden");
+    // Progress 0.6: the faces have swapped.
+    await seek(page, 0.8);
+    assert.ok(near(await colorAt(page, 720, 540), [0, 0, 255]));
+    assert.ok(near(await colorAt(page, 1200, 540), background), "the outgoing scene's back stays hidden");
+    await page.context().close();
+  });
+
+  it("reports both scenes' sounds() and compile errors during the cut, and hides the captions over a compile error alone", async () => {
+    const sounds = `export function sounds() {\n  throw new Error('Sons cassés');\n}\n${solid('#ff0000')}`;
+    const broken = 'export default function Broken() {\n  return <div>oops</span>;\n}\n';
+    const first = await cut({ kind: 'fade', duration: 0.5 }, sounds, broken, true);
+    h.store.voiceOverLines.set(first.id, [
+      { sceneId: 'in', text: 'Sous-titre.', start: 0.5, end: 1.5, speaker: null, words: [], level: [] },
+    ]);
+    await first.page.evaluate(() => window.__cadence!.reload(0));
+    const during = await seek(first.page, 0.75);
+    assert.equal(during.sceneId, 'in');
+    assert.deepEqual(
+      during.errors.map((e) => e.split('\n')[0]),
+      ['Erreur de compilation · scenes/in.tsx', 'Erreur dans sounds() · scenes/out.tsx'],
+    );
+    assert.match(during.errors[1], /Sons cassés/);
+    assert.equal(await first.page.locator('[data-cadence-captions]').count(), 1, 'the outgoing scene still draws');
+    await seek(first.page, 1.2);
+    assert.equal(await first.page.locator('[data-cadence-captions]').count(), 0);
+    h.store.voiceOverLines.delete(first.id);
+    await first.page.context().close();
+
+    const second = await cut({ kind: 'fade', duration: 0.5 }, broken, sounds);
+    assert.deepEqual(
+      (await seek(second.page, 0.75)).errors.map((e) => e.split('\n')[0]),
+      ['Erreur de compilation · scenes/out.tsx', 'Erreur dans sounds() · scenes/in.tsx'],
+    );
+    await second.page.context().close();
+  });
+
+  it('draws the brand background and the captions once, outside both scenes', async () => {
+    const { id: projectId, page } = await cut(
+      { kind: 'slide', direction: 'left', duration: 0.5 },
+      solid('transparent'),
+      solid('transparent', 0.2),
+      true,
+    );
+    h.store.voiceOverLines.set(projectId, [
+      { sceneId: 'in', text: 'Un seul sous-titre.', start: 0.5, end: 1.5, speaker: null, words: [], level: [] },
+    ]);
+    await page.evaluate(() => window.__cadence!.reload(0));
+    const result = await seek(page, 0.6);
+    assert.deepEqual(result.errors, []);
+    const layout = await page.evaluate(() => {
+      const stage = document.querySelector('[data-cadence-stage]')!;
+      const scenes = [...stage.querySelectorAll<HTMLElement>('[data-cadence-scene]')];
+      return {
+        captions: [...stage.querySelectorAll('[data-cadence-captions]')].map((el) => [
+          el.parentElement === stage,
+          el.textContent,
+        ]),
+        stage: getComputedStyle(stage).backgroundColor,
+        scenes: scenes.map((el) => getComputedStyle(el).backgroundColor),
+      };
+    });
+    assert.deepEqual(layout, {
+      captions: [[true, 'Un seul sous-titre.']],
+      stage: 'rgb(244, 244, 245)',
+      scenes: ['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0)'],
+    });
+    // A scene that throws keeps the captions.
+    const failed = await seek(page, 0.8);
+    assert.equal(failed.errors.length, 1);
+    assert.equal(await page.locator('[data-cadence-captions]').count(), 1);
+    h.store.voiceOverLines.delete(projectId);
+    await page.context().close();
+  });
+
+  it('runs the text checks on a settled scene, not on two scenes caught halfway through a slide', async () => {
+    const centred = (text: string, extra = '') =>
+      `export default function Centred() {\n  return (\n    <div style={{ position: 'absolute', inset: 0, display: 'flex', ` +
+      `alignItems: 'center', justifyContent: 'center', background: '#ffffff', color: '#111111' }}>\n` +
+      `      <h1 style={{ margin: 0, fontSize: 96 }}>${text}</h1>\n${extra}    </div>\n  );\n}\n`;
+    const offCanvas = `      <h2 style={{ position: 'absolute', left: 1600, top: 800, margin: 0, fontSize: 80, whiteSpace: 'nowrap' }}>Hors cadre</h2>\n`;
+    const { page } = await cut(
+      { kind: 'slide', direction: 'left', duration: 0.5 },
+      centred('Avant la coupe'),
+      centred('Après la coupe', offCanvas),
+    );
+    const audit = () => page.evaluate(() => window.__cadence!.audit());
+    await seek(page, 0.25);
+    assert.deepEqual(await audit(), [], 'the outgoing scene alone, clean');
+    await seek(page, 0.75);
+    assert.deepEqual(await drawn(page), ['out', 'in']);
+    assert.deepEqual(await audit(), [], 'both headings cross a canvas edge only because the cut moves them');
+    await seek(page, 1.25);
+    assert.deepEqual(
+      (await audit()).map((f) => `${f.kind} ${f.text}`),
+      ['offCanvas Hors cadre'],
+      'the incoming scene alone is checked again',
+    );
+    await page.context().close();
+  });
+});
+
 describe('scene sounds', () => {
   const draw = (color: string) =>
     `export default function Scene() {\n  return <div style={{ position: 'absolute', inset: 0, background: '${color}' }} />;\n}\n`;
@@ -908,7 +1123,7 @@ describe('scene sounds', () => {
     await addScene('sounds-other', draw('#0000ff'));
     await h.store.syncCode(id);
     const page = await open({ scene: 'sounds-stale' });
-    assert.equal((await page.evaluate(() => window.__cadence!.sounds()))[0].sound, 'pop');
+    assert.deepEqual((await page.evaluate(() => window.__cadence!.sounds()))[0], { at: 0.25, sound: 'pop', gain: 1 });
     await page.evaluate(() => window.__cadence!.setScene('sounds-other'));
 
     await writeFile(
@@ -1442,6 +1657,45 @@ export default function Checked() {
     await page.context().close();
   });
 
+  it('judges the text of a motion blur once, at t, and leaves the copies out of the text budget', async () => {
+    // 16 copies of 40 labels would take 640 of the 500 text nodes walked: the line after the blur would go unseen.
+    await addScene(
+      'audit-blur',
+      `import { MotionBlur } from 'cadence';
+const at = (left, top, style) => ({ position: 'absolute', left, top, margin: 0, ...style });
+export default function Blurred({ t, fps }) {
+  return (
+    <div style={{ position: 'absolute', inset: 0, color: '#111111' }}>
+      <MotionBlur t={t} fps={fps} samples={16} shutter={1}>
+        {(time) => (
+          <div style={{ position: 'absolute', inset: 0, background: '#ffffff' }}>
+            {Array.from({ length: 40 }, (_, i) => (
+              <span key={i} style={at(100 + (i % 8) * 200, 100 + Math.floor(i / 8) * 60, { fontSize: 32 })}>{i}</span>
+            ))}
+            <p style={at(100, 500, { fontSize: 40, color: '#bbbbbb' })}>Faint in the blur</p>
+            <h2 style={at(1600 + 100 * time, 700, { fontSize: 80, whiteSpace: 'nowrap' })}>Half off canvas</h2>
+          </div>
+        )}
+      </MotionBlur>
+      <p style={at(1700, 900, { fontSize: 40, whiteSpace: 'nowrap' })}>After the blur, past the edge</p>
+    </div>
+  );
+}
+`,
+    );
+    await h.store.syncCode(id);
+    const page = await open({ scene: 'audit-blur' });
+    await seek(page, 0.25);
+    const findings = await audit(page);
+    await page.context().close();
+    assert.deepEqual(kinds(findings), [
+      'offCanvas Half off canvas',
+      'offCanvas After the blur, past the edge',
+      'contrast Faint in the blur',
+    ]);
+    assert.equal(findings[2].ratio, 1.92, 'judged on its own background, through the copies drawn over it');
+  });
+
   it('gives null when scene code replaces the checks with junk', { timeout: 10_000 }, async () => {
     const page = await open({ scene: 'audit' });
     await seek(page, 0.25);
@@ -1791,6 +2045,688 @@ describe('scene voice-over', () => {
       await page.context().close();
     } finally {
       h.store.voiceOverLines.delete(id);
+    }
+  });
+});
+
+describe('motion blur', () => {
+  it('keeps static content pixel-identical and leaves a trail behind a moving square', async () => {
+    const content = `<div style={{ position: 'absolute', inset: 0, background: '#1d4ed8' }}>
+      <div style={{ position: 'absolute', left: 300, top: 200, width: 500, height: 300, borderRadius: 40,
+        background: 'linear-gradient(90deg, rgba(255, 255, 255, 0.8), rgba(255, 0, 128, 0.4))' }} />
+      <div style={{ position: 'absolute', left: 1000, top: 600, fontSize: 96, color: '#ffffff' }}>Static</div>
+    </div>`;
+    await addScene('blur-plain', `export default function Plain() {\n  return ${content};\n}\n`);
+    await addScene(
+      'blur-static',
+      `import { MotionBlur } from 'cadence';
+export default function Still({ t, fps }) {
+  return <MotionBlur t={t} fps={fps} shutter={1}>{() => ${content}}</MotionBlur>;
+}
+`,
+    );
+    // 1200 px/s at 30 fps with a full shutter: 8 samples 5 canvas px apart, the square's left edge at 1000 px at 0.5 s.
+    await addScene(
+      'blur-move',
+      `import { MotionBlur } from 'cadence';
+export default function Move({ t, fps }) {
+  return (
+    <MotionBlur t={t} fps={fps} shutter={1}>
+      {(time) => (
+        <div style={{ position: 'absolute', inset: 0, background: '#000000' }}>
+          <div style={{ position: 'absolute', left: 400 + 1200 * time, top: 440, width: 200, height: 200, background: '#ffffff', zIndex: 1 }} />
+        </div>
+      )}
+    </MotionBlur>
+  );
+}
+`,
+    );
+    await h.store.syncCode(id);
+
+    const shot = async (scene: string) => {
+      const page = await open({ scene });
+      assert.deepEqual((await seek(page, 0.5)).errors, []);
+      const png = await page.screenshot({ type: 'png' });
+      await page.context().close();
+      return PNG.sync.read(png).data;
+    };
+    const [plain, still] = [await shot('blur-plain'), await shot('blur-static')];
+    assert.equal(still.length, plain.length);
+    let worst = 0;
+    for (let i = 0; i < plain.length; i++) worst = Math.max(worst, Math.abs(plain[i] - still[i]));
+    assert.ok(worst <= 1, `static content changed by ${worst} levels`);
+
+    const page = await open({ scene: 'blur-move' });
+    await seek(page, 0.5);
+    assert.ok(near(await colorAt(page, 1100, 540), [255, 255, 255]), 'covered by every sample');
+    const trail = await colorAt(page, 980, 540);
+    assert.ok(near(trail, [128, 128, 128], 3), `half the samples cover the trail: ${trail}`);
+    assert.ok(near(await colorAt(page, 950, 540), [0, 0, 0]), 'behind the oldest sample');
+    // The square's zIndex stays inside each copy: the leading edge is covered by 2 of the 8 samples, not by the copy at t alone.
+    const lead = await colorAt(page, 1192, 540);
+    assert.ok(near(lead, [64, 64, 64], 3), `two samples cover the leading edge: ${lead}`);
+    await page.context().close();
+  });
+});
+
+describe('music spectrum', () => {
+  const track = 'music/track.mp3';
+  const grid: MusicGridData = {
+    bpm: 120,
+    beatsPerBar: 4,
+    beats: [0, 0.5, 1],
+    downbeats: [0],
+    phrases: [0],
+    sections: [],
+    accents: [],
+    waveform: [],
+    duration: 60,
+    confidence: 1,
+  };
+  // 60 s at 25 rows a second; band b of row r is (r % 64) * 2 + b.
+  const rows = 60 * 25;
+  const bytes = Uint8Array.from({ length: rows * 24 }, (_, i) => (Math.floor(i / 24) % 64) * 2 + (i % 24));
+  let start = 0;
+
+  before(async () => {
+    await addScene(
+      'bars',
+      'export default ({ t, music }) => <div id="bars" data-levels={JSON.stringify(music.spectrum(t, 4))} />;\n',
+    );
+    await addScene(
+      'bars-name',
+      `export default function Name({ t, music }) {
+  try {
+    music.spectrum(t);
+    return <div id="name" data-name="" />;
+  } catch (e) {
+    return <div id="name" data-name={e.name} />;
+  }
+}
+`,
+    );
+    await h.store.syncCode(id);
+    start = (await h.store.get(id)).scenes.find((s) => s.id === 'bars')!.start;
+  });
+
+  /** Selects a track whose spectrum file holds `content` (none: no file), analysed or not; gives the project back after. */
+  async function withTrack(content: Uint8Array | null, analysed: boolean, run: () => Promise<void>): Promise<void> {
+    const dir = h.store.dir(id);
+    const file = path.join(dir, 'project.json');
+    const saved = await readFile(file, 'utf8');
+    await mkdir(path.join(dir, 'music'), { recursive: true });
+    await writeFile(path.join(dir, track), 'not really audio');
+    if (content) await writeFile(path.join(dir, `${track}.spectrum.bin`), content);
+    await writeFile(file, JSON.stringify({ ...(JSON.parse(saved) as ProjectFile), music: { file: track, start: 0, volume: 1 } }));
+    if (analysed) {
+      h.store.analysedMusic.set(id, {
+        grid,
+        spectrum: { bands: 24, rate: 25, file: `${track}.spectrum.bin`, size: bytes.length },
+      });
+    }
+    try {
+      await run();
+    } finally {
+      h.store.analysedMusic.delete(id);
+      await writeFile(file, saved);
+      await rm(path.join(dir, 'music'), { recursive: true, force: true });
+    }
+  }
+
+  /** No error at scene time `t`, and the 4 groups of the 'bars' scene read `bytes` at that time, interpolated between
+   * rows: earlier suites add scenes of 0.25 s, so the scene start is not always on a row. */
+  async function assertRowAt(page: Page, t: number): Promise<void> {
+    assert.deepEqual((await seek(page, t)).errors, []);
+    const at = videoTime(start, t) * 25;
+    const row = Math.floor(at);
+    const w = at - row;
+    const levels = JSON.parse((await page.getAttribute('#bars', 'data-levels'))!) as number[];
+    assert.equal(levels.length, 4);
+    for (const [g, level] of levels.entries()) {
+      const band = (r: number) => ((r % 64) * 2 + 6 * g + 2.5) / 255;
+      assert.ok(Math.abs(level - (band(row) * (1 - w) + band(row + 1) * w)) < 1e-6, `group ${g}: ${level}`);
+    }
+  }
+
+  it('reads the spectrum file from the frame origin and gives music.spectrum(t) in scene time', async () => {
+    await withTrack(bytes, true, async () => {
+      const page = await open({ scene: 'bars' });
+      const fetched: string[] = [];
+      page.on('request', (r) => fetched.push(r.url()));
+      await page.evaluate(() => window.__cadence!.reload());
+      assert.ok(
+        fetched.some((url) => url.startsWith(`${projectOrigin}/@fs${h.store.dir(id)}/${track}.spectrum.bin`)),
+        fetched.join('\n'),
+      );
+      await assertRowAt(page, 0.4);
+      await page.context().close();
+    });
+  });
+
+  it('gives zeros without a track', async () => {
+    const page = await open({ scene: 'bars' });
+    assert.deepEqual((await seek(page, 0.4)).errors, []);
+    assert.deepEqual(JSON.parse((await page.getAttribute('#bars', 'data-levels'))!), [0, 0, 0, 0]);
+    await page.context().close();
+  });
+
+  it('drops the pending error on reload once the analysis wrote the spectrum', async () => {
+    await withTrack(bytes, false, async () => {
+      const page = await open({ scene: 'bars' });
+      const { errors } = await seek(page, 0.4);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0], /l’analyse de la musique est en cours/);
+      h.store.analysedMusic.set(id, {
+        grid,
+        spectrum: { bands: 24, rate: 25, file: `${track}.spectrum.bin`, size: bytes.length },
+      });
+      await page.evaluate(() => window.__cadence!.reload());
+      await assertRowAt(page, 0.4);
+      await page.context().close();
+    });
+  });
+
+  it('turns a missing or truncated spectrum file into a translated load error', async () => {
+    for (const [content, reason] of [
+      [null, /HTTP 40\d/],
+      [bytes.subarray(1), new RegExp(`${bytes.length - 1} octets au lieu de ${bytes.length}`)],
+    ] as const) {
+      await withTrack(content, true, async () => {
+        const page = await open({ scene: 'green' });
+        const { errors } = await seek(page, 0.2);
+        assert.equal(errors.length, 1);
+        assert.match(errors[0], /Impossible de charger le projet/);
+        assert.match(errors[0], /Impossible de lire le spectre de la musique music\/track\.mp3\.spectrum\.bin/);
+        assert.match(errors[0], reason);
+        await page.context().close();
+      });
+    }
+  });
+
+  it('makes music.spectrum throw a named error while the analysis runs, and leaves other scenes alone', async () => {
+    await withTrack(null, false, async () => {
+      const page = await open({ scene: 'bars' });
+      const { errors } = await seek(page, 0.4);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0], /Erreur d’exécution · scenes\/bars\.tsx/);
+      assert.match(errors[0], /music\.spectrum\(\) n’est pas encore disponible : l’analyse de la musique est en cours/);
+      await page.evaluate(() => window.__cadence!.setScene('bars-name'));
+      assert.deepEqual((await seek(page, 0.4)).errors, []);
+      assert.equal(await page.getAttribute('#name', 'data-name'), 'MusicAnalysisPending');
+      await page.evaluate(() => window.__cadence!.setScene('green'));
+      assert.deepEqual((await seek(page, 0.2)).errors, []);
+      await page.context().close();
+    });
+  });
+});
+
+describe('WebGL', () => {
+  const TRIANGLE = `import { GLCanvas } from 'cadence';
+const VERTEX = \`#version 300 es
+uniform float angle;
+const vec2 corners[3] = vec2[3](vec2(0.0, 0.8), vec2(-0.7, -0.6), vec2(0.7, -0.6));
+void main() {
+  vec2 p = corners[gl_VertexID];
+  gl_Position = vec4(cos(angle) * p.x - sin(angle) * p.y, sin(angle) * p.x + cos(angle) * p.y, 0.0, 1.0);
+}\`;
+const FRAGMENT = \`#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(1.0, 0.0, 0.0, 1.0); }\`;
+function draw(gl, t) {
+  const program = gl.createProgram();
+  for (const [type, source] of [[gl.VERTEX_SHADER, VERTEX], [gl.FRAGMENT_SHADER, FRAGMENT]]) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    gl.attachShader(program, shader);
+  }
+  gl.linkProgram(program);
+  gl.useProgram(program);
+  gl.uniform1f(gl.getUniformLocation(program, 'angle'), t * Math.PI);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+// draw does not clear: GLCanvas does, so the triangle of an earlier t never stays on the canvas.
+export default ({ t, width, height }) => (
+  <div style={{ background: '#000' }}>
+    <GLCanvas t={t} width={width} height={height} draw={draw} />
+  </div>
+);
+`;
+  // Counts setups, renders and disposals on window: the test reads them back.
+  const CUBE = `import { THREE, ThreeCanvas } from 'cadence/three';
+function setup(renderer) {
+  window.setups = (window.setups ?? 0) + 1;
+  const dispose = renderer.dispose.bind(renderer);
+  renderer.dispose = () => {
+    window.disposals = (window.disposals ?? 0) + 1;
+    dispose();
+  };
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color('#202040');
+  const camera = new THREE.PerspectiveCamera(40, 16 / 9, 0.1, 100);
+  // Far enough for the whole cube to fit the width of 9:16 too.
+  camera.position.set(0, 0, 10);
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), new THREE.MeshStandardMaterial({ color: '#ff8800' }));
+  const light = new THREE.DirectionalLight('#ffffff', 3);
+  light.position.set(2, 3, 4);
+  scene.add(cube, light, new THREE.AmbientLight('#ffffff', 0.3));
+  return { scene, camera, cube };
+}
+function render({ scene, camera, cube }, t, renderer, width, height) {
+  window.renders = (window.renders ?? 0) + 1;
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  cube.rotation.set(0.5 + t, t * 2, 0);
+  renderer.render(scene, camera);
+}
+export default ({ t, width, height }) => (
+  <ThreeCanvas t={t} width={width} height={height} setup={setup} render={(state, t, renderer) => render(state, t, renderer, width, height)} />
+);
+`;
+
+  before(async () => {
+    await addScene('triangle', TRIANGLE);
+    await addScene('cube', CUBE);
+    await h.store.syncCode(id);
+  });
+
+  /** Whether the scene's canvas has lost its WebGL context once the frame shows another scene. */
+  async function lostOnUnmount(page: Page): Promise<boolean> {
+    await page.evaluate(() => Reflect.set(window, 'unmounted', document.querySelector('canvas')));
+    await page.evaluate(() => window.__cadence!.setScene('green'));
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    return page.evaluate(() => (Reflect.get(window, 'unmounted') as HTMLCanvasElement).getContext('webgl2')!.isContextLost());
+  }
+
+  /** Whether the page fetched the bundled three module. */
+  function loadedThree(page: Page): Promise<boolean> {
+    return page.evaluate(() => performance.getEntriesByType('resource').some((e) => /\/deps\/three\.js/.test(e.name)));
+  }
+
+  it('draws a GLCanvas at t through the capture path, the same pixels for the same t', async () => {
+    const capture = new PlaywrightCapture({ config: h.config, store: h.store });
+    try {
+      const [first, other, again] = await capture.frames(id, {
+        sceneId: 'triangle',
+        times: [0.2, 0.6, 0.2],
+        format: '16:9',
+        imageFormat: 'png',
+      });
+      for (const frame of [first, other, again]) assert.deepEqual(frame.errors, []);
+      assert.ok(near(pixel(first.image, 480, 270), [255, 0, 0]), String(pixel(first.image, 480, 270)));
+      assert.ok(near(pixel(first.image, 10, 10), [0, 0, 0]));
+      assert.notDeepEqual(other.image, first.image, 'the triangle turns with t');
+      assert.deepEqual(again.image, first.image);
+    } finally {
+      await capture.close();
+    }
+    const page = await open({ scene: 'triangle' });
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    assert.deepEqual(
+      await page.evaluate(() => [document.querySelector('canvas')!.width, document.querySelector('canvas')!.height]),
+      [960, 540],
+      'the drawing buffer follows the pixel ratio',
+    );
+    assert.equal(await loadedThree(page), false, 'a scene without cadence/three does not load three');
+    assert.equal(await lostOnUnmount(page), true, 'the unmounted canvas gives its WebGL context back');
+    await page.context().close();
+  });
+
+  it('sizes the drawing buffer to the preview scaled down to fit, not to the full canvas', async () => {
+    for (const scene of ['triangle', 'cube']) {
+      const page = await open({ scene, mode: 'editor' }, { width: 640, height: 360 });
+      assert.deepEqual((await seek(page, 0.2)).errors, []);
+      assert.deepEqual(
+        await page.evaluate(() => [document.querySelector('canvas')!.width, document.querySelector('canvas')!.height]),
+        [320, 180],
+        `${scene}: 1920 x 1080 canvas px shown at a third of their size, at a pixel ratio of 0.5`,
+      );
+      if (scene === 'triangle')
+        assert.ok(near(await colorAt(page, 320, 180), [255, 0, 0]), String(await colorAt(page, 320, 180)));
+      await page.context().close();
+    }
+  });
+
+  it('draws a lit three.js cube through the capture path, the same pixels for the same t', async () => {
+    const capture = new PlaywrightCapture({ config: h.config, store: h.store });
+    try {
+      const [first, other, again] = await capture.frames(id, {
+        sceneId: 'cube',
+        times: [0.2, 0.6, 0.2],
+        format: '16:9',
+        imageFormat: 'png',
+      });
+      for (const frame of [first, other, again]) assert.deepEqual(frame.errors, []);
+      const center = pixel(first.image, 480, 270);
+      assert.ok(near(pixel(first.image, 10, 10), [32, 32, 64]), 'background');
+      assert.ok(!near(center, [32, 32, 64], 10) && !near(center, [0, 0, 0], 10), `a lit cube: ${center}`);
+      assert.notDeepEqual(other.image, first.image, 'the cube turns with t');
+      assert.deepEqual(again.image, first.image);
+    } finally {
+      await capture.close();
+    }
+  });
+
+  it('creates the three.js renderer once, without an animation loop, and disposes of it on unmount', async () => {
+    const page = await open({ scene: 'cube' });
+    const counts = () => page.evaluate(() => [Reflect.get(window, 'setups'), Reflect.get(window, 'disposals') ?? 0]);
+    for (const t of [0.1, 0.5, 0.9]) assert.deepEqual((await seek(page, t)).errors, []);
+    assert.equal(await loadedThree(page), true);
+    assert.deepEqual(await counts(), [1, 0]);
+    const renders = await page.evaluate(() => Reflect.get(window, 'renders'));
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+    assert.equal(await page.evaluate(() => Reflect.get(window, 'renders')), renders, 'nothing draws between renders');
+    assert.equal(await lostOnUnmount(page), true, 'the unmounted canvas gives its WebGL context back');
+    assert.deepEqual(await counts(), [1, 1]);
+    await page.context().close();
+  });
+
+  it('draws on the whole canvas again after a format change', async () => {
+    for (const scene of ['triangle', 'cube']) {
+      const page = await open({ scene });
+      assert.deepEqual((await seek(page, 0.2)).errors, []);
+      const landscape = await colorAt(page, 960, 540);
+      await page.setViewportSize({ width: 1080, height: 1920 });
+      await page.evaluate(() => window.__cadence!.setFormat('9:16'));
+      assert.deepEqual((await seek(page, 0.2)).errors, []);
+      assert.ok(
+        near(await colorAt(page, 540, 960), landscape, 10),
+        `${scene}: ${await colorAt(page, 540, 960)} for ${landscape}`,
+      );
+      await page.context().close();
+    }
+  });
+
+  it('keeps the cube in proportion after a format change, the camera following the size render gets', async () => {
+    /** Width over height of what is not the background, in the page's screenshot. */
+    async function cubeRatio(page: Page): Promise<number> {
+      const image = PNG.sync.read(await page.screenshot({ type: 'png' }));
+      let [left, right, top, bottom] = [Infinity, -Infinity, Infinity, -Infinity];
+      for (let y = 0; y < image.height; y++) {
+        for (let x = 0; x < image.width; x++) {
+          const i = (image.width * y + x) * 4;
+          if (near([image.data[i], image.data[i + 1], image.data[i + 2]], [32, 32, 64], 10)) continue;
+          [left, right, top, bottom] = [Math.min(left, x), Math.max(right, x), Math.min(top, y), Math.max(bottom, y)];
+        }
+      }
+      return (right - left) / (bottom - top);
+    }
+    const page = await open({ scene: 'cube' });
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    const landscape = await cubeRatio(page);
+    await page.setViewportSize({ width: 1080, height: 1920 });
+    await page.evaluate(() => window.__cadence!.setFormat('9:16'));
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    const portrait = await cubeRatio(page);
+    assert.ok(Math.abs(portrait / landscape - 1) < 0.05, `${portrait} in 9:16 for ${landscape} in 16:9`);
+    await page.context().close();
+  });
+
+  it('turns a lost WebGL context into a translated scene error', async () => {
+    const page = await open({ scene: 'triangle' });
+    assert.deepEqual((await seek(page, 0.2)).errors, []);
+    await page.evaluate(() =>
+      document.querySelector('canvas')!.getContext('webgl2')!.getExtension('WEBGL_lose_context')!.loseContext(),
+    );
+    const { errors } = await seek(page, 0.3);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /Erreur d’exécution · scenes\/triangle\.tsx/);
+    assert.match(errors[0], /Le contexte WebGL a été perdu/);
+    await page.context().close();
+  });
+});
+
+describe('clip frames', () => {
+  const skip = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0 ? false : 'ffmpeg introuvable';
+
+  it('extracts the frames of a real video and GIF, and the project origin serves them', { skip, timeout: 60_000 }, async () => {
+    const dir = h.store.dir(id);
+    const lavfi = (source: string, file: string, ...args: string[]) =>
+      promisify(execFile)('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', source, ...args, path.join(dir, 'assets', file)]);
+    await mkdir(path.join(dir, 'assets', 'loops'), { recursive: true });
+    await lavfi(
+      'testsrc2=size=320x240:rate=30:duration=1',
+      'clip.mp4',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=duration=1',
+      '-pix_fmt',
+      'yuv420p',
+    );
+    await lavfi('testsrc=size=200x100:rate=10:duration=1', 'loops/spin.gif');
+    const clips = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+    try {
+      await clips.whenIdle(id);
+      const states = await clips.sync(id);
+      const expected = {
+        'clip.mp4': { fps: 30, frames: 30, width: 320, height: 240, audio: true },
+        'loops/spin.gif': { fps: 10, frames: 10, width: 200, height: 100, audio: false },
+      };
+      for (const [rel, want] of Object.entries(expected)) {
+        const state = states[rel];
+        assert.ok(state?.status === 'ready', `${rel}: ${JSON.stringify(state)}`);
+        const { fps, frames, width, height, audio, duration } = state;
+        assert.deepEqual({ fps, frames, width, height, audio }, want, rel);
+        assert.ok(Math.abs(duration - 1) < 0.1, `${rel}: ${duration}`);
+        const folder = path.join(dir, 'clips', state.key);
+        assert.deepEqual(JSON.parse(await readFile(path.join(folder, 'clip.json'), 'utf8')), {
+          fps,
+          frames,
+          width,
+          height,
+          duration,
+          audio,
+        });
+        const files = (await readdir(folder)).filter((name) => name.endsWith('.jpg')).sort();
+        assert.equal(files.length, want.frames);
+        assert.equal(files.at(-1), `${String(want.frames).padStart(6, '0')}.jpg`);
+        const served = await request(`/@fs${path.join(folder, '000001.jpg')}`);
+        assert.equal(served.status, 200);
+        assert.match(String(served.headers['content-type']), /^image\/jpeg/);
+      }
+    } finally {
+      await rm(path.join(dir, 'assets', 'clip.mp4'), { force: true });
+      await rm(path.join(dir, 'assets', 'loops'), { recursive: true, force: true });
+      await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+    }
+  });
+
+  it(
+    'shows the clip frame at the scene time, the same on every run, and reports a frame that does not load',
+    { skip, timeout: 90_000 },
+    async () => {
+      const dir = h.store.dir(id);
+      await mkdir(path.join(dir, 'assets', 'clips-e2e'), { recursive: true });
+      await promisify(execFile)('ffmpeg', [
+        ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=2', '-pix_fmt', 'yuv420p'],
+        path.join(dir, 'assets', 'clips-e2e', 'test src.mp4'),
+      ]);
+      const clips = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+      h.store.setClipsProvider((project) => clips.sync(project));
+      const style = "{{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}";
+      // A broken <img> that is no clip frame is not reported: only <Clip> frames are.
+      await addScene(
+        'clip-play',
+        `import { Clip } from 'cadence';\nexport default function Play({ t }) {\n  return <><img src="/nowhere.png" alt="" /><Clip src="clips-e2e/test src.mp4" time={t} style=${style} /></>;\n}\n`,
+      );
+      await addScene(
+        'clip-unknown',
+        `import { Clip } from 'cadence';\nexport default function Unknown({ t }) {\n  return <Clip src="clips-e2e/missing.mp4" time={t} />;\n}\n`,
+      );
+      try {
+        await clips.whenIdle(id);
+        await h.store.syncCode(id);
+        const shot = async (time: number) => {
+          const page = await open({ scene: 'clip-play' });
+          assert.deepEqual((await seek(page, time)).errors, []);
+          const png = await page.screenshot({ type: 'png' });
+          await page.context().close();
+          return createHash('sha256').update(png).digest('hex');
+        };
+        const [early, late] = [await shot(0.2), await shot(0.6)];
+        assert.notEqual(early, late, 'two times show two source frames');
+        assert.equal(await shot(0.2), early, 'a second run shows the same frame');
+        assert.equal(await shot(0.6), late, 'a second run shows the same frame');
+
+        const unknown = await open({ scene: 'clip-unknown' });
+        const { errors } = await seek(unknown, 0.2);
+        assert.ok(
+          errors.some((error) => error.includes('<Clip>') && error.includes('assets/clips-e2e/missing.mp4')),
+          JSON.stringify(errors),
+        );
+        await unknown.context().close();
+
+        // 0.5 s and 0.8 s show source frames 16 and 25 (files numbered from 1).
+        const { key } = (await clips.sync(id))['clips-e2e/test src.mp4'] as { key: string };
+        await rm(path.join(dir, 'clips', key, '000016.jpg'));
+        await writeFile(path.join(dir, 'clips', key, '000025.jpg'), 'not a jpeg');
+        for (const [time, frame] of [
+          [0.5, '000016.jpg'],
+          [0.8, '000025.jpg'],
+        ] as const) {
+          const page = await open({ scene: 'clip-play' });
+          const result = await seekFrame(page, time);
+          assert.ok(
+            result.errors.some(
+              (error) => error.includes('<Clip>') && error.includes('assets/clips-e2e/test src.mp4') && error.includes(frame),
+            ),
+            `${time} s: ${JSON.stringify(result.errors)}`,
+          );
+          assert.deepEqual(await page.evaluate(() => window.__cadence!.errors()), result.errors, 'the editor shows them too');
+          await page.context().close();
+        }
+      } finally {
+        h.store.setClipsProvider(async () => ({}));
+        await removeScenes('clip-play', 'clip-unknown');
+        await rm(path.join(dir, 'assets', 'clips-e2e'), { recursive: true, force: true });
+        await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
+    'a scene showing a preparing clip shows its frame after reload once the clip is ready',
+    { skip, timeout: 90_000 },
+    async () => {
+      const dir = h.store.dir(id);
+      await mkdir(path.join(dir, 'assets', 'clips-e2e'), { recursive: true });
+      await promisify(execFile)('ffmpeg', [
+        ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=1', '-pix_fmt', 'yuv420p'],
+        path.join(dir, 'assets', 'clips-e2e', 'ready.mp4'),
+      ]);
+      const clips = new LocalClipService({ config: h.config, store: h.store, hub: new RecordingHub() });
+      h.store.setClipsProvider(async () => ({ 'clips-e2e/ready.mp4': { status: 'preparing' } }));
+      await addScene(
+        'clip-ready',
+        `import { Clip } from 'cadence';\nexport default function Ready({ t }) {\n  return <Clip src="clips-e2e/ready.mp4" time={t} />;\n}\n`,
+      );
+      try {
+        await h.store.syncCode(id);
+        const page = await open({ scene: 'clip-ready' });
+        const preparing = (await seek(page, 0.2)).errors;
+        assert.ok(
+          preparing.some((error) => error.includes('assets/clips-e2e/ready.mp4') && /en cours d.extraction/.test(error)),
+          JSON.stringify(preparing),
+        );
+
+        await clips.whenIdle(id);
+        h.store.setClipsProvider((projectId) => clips.sync(projectId));
+        // What the editor does on project-changed, which a clip becoming ready sends.
+        await page.evaluate((g) => window.__cadence!.reload(g), h.store.generation(id));
+        assert.deepEqual((await seek(page, 0.2)).errors, []);
+        assert.equal(
+          await page.evaluate(() => document.querySelector<HTMLImageElement>('img[data-cadence-clip]')?.naturalWidth),
+          320,
+          'the frame is drawn',
+        );
+        await page.context().close();
+      } finally {
+        h.store.setClipsProvider(async () => ({}));
+        await removeScenes('clip-ready');
+        await rm(path.join(dir, 'assets', 'clips-e2e'), { recursive: true, force: true });
+        await rm(path.join(dir, 'clips'), { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe('Lottie', () => {
+  const SCENE = `import { Lottie } from 'cadence/lottie';
+import move from '../assets/lottie-e2e/move.json';
+export default ({ t, width, height }) => (
+  <div style={{ background: '#000', width, height }}>
+    <Lottie data={move} time={t} style={{ width, height }} />
+  </div>
+);
+`;
+
+  /** Whether the page fetched a module whose URL matches `pattern`. */
+  function loaded(page: Page, pattern: RegExp): Promise<boolean> {
+    return page.evaluate(
+      (source) => performance.getEntriesByType('resource').some((e) => new RegExp(source).test(e.name)),
+      pattern.source,
+    );
+  }
+
+  it('plays an imported Lottie file under the frame CSP, the same pixels for the same t', { timeout: 60_000 }, async () => {
+    const dir = path.join(h.store.dir(id), 'assets', 'lottie-e2e');
+    // The unit fixture (a red box whose x is the frame, on a 100 x 100 comp) with an embedded blue image at (80, 80).
+    const move = JSON.parse(await readFile(new URL('../fixtures/lottie/move.json', import.meta.url), 'utf8'));
+    const blue =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="#00f"/></svg>';
+    move.assets = [{ id: 'logo', w: 20, h: 20, u: '', p: `data:image/svg+xml,${encodeURIComponent(blue)}`, e: 1 }];
+    const still = (k: unknown) => ({ a: 0, k });
+    move.layers.push({
+      ...{ ddd: 0, ind: 3, ty: 2, nm: 'logo', refId: 'logo', sr: 1, ip: 0, op: 200, st: 0, bm: 0 },
+      ks: { o: still(100), r: still(0), p: still([80, 80, 0]), a: still([10, 10, 0]), s: still([100, 100, 100]) },
+    });
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'move.json'), JSON.stringify(move));
+    await addScene('lottie', SCENE);
+    try {
+      await h.store.syncCode(id);
+      const capture = new PlaywrightCapture({ config: h.config, store: h.store });
+      try {
+        const [first, other, again] = await capture.frames(id, {
+          sceneId: 'lottie',
+          times: [0.2, 0.6, 0.2],
+          format: '16:9',
+          imageFormat: 'png',
+        });
+        for (const frame of [first, other, again]) assert.deepEqual(frame.errors, []);
+        // The comp is 100 x 100 contained in 1920 x 1080: 10.8 canvas px a unit from x = 420, half that in the capture.
+        const at = (x: number, y: number) => pixel(first.image, (420 + x * 10.8) / 2, (y * 10.8) / 2);
+        assert.ok(near(at(20, 50), [255, 0, 0]), `the box at frame 20: ${at(20, 50)}`);
+        assert.ok(near(at(80, 80), [0, 0, 255]), `the embedded image, in the first capture: ${at(80, 80)}`);
+        assert.ok(near(pixel(first.image, 10, 10), [0, 0, 0]));
+        assert.notDeepEqual(other.image, first.image, 'the box moves with t');
+        assert.deepEqual(again.image, first.image);
+      } finally {
+        await capture.close();
+      }
+
+      const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 0.5 });
+      await context.addInitScript(() => {
+        const w = window as unknown as { violations: string[] };
+        w.violations = [];
+        document.addEventListener('securitypolicyviolation', (e) => w.violations.push(`${e.effectiveDirective} ${e.blockedURI}`));
+      });
+      for (const scene of ['lottie', 'green']) {
+        const page = await context.newPage();
+        await page.goto(`${projectOrigin}/frame.html?project=${id}&scene=${scene}&format=16:9&mode=capture`);
+        await page.evaluate(() => window.__cadence!.ready);
+        assert.deepEqual((await seek(page, 0.2)).errors, []);
+        assert.deepEqual(await page.evaluate(() => Reflect.get(window, 'violations')), [], `${scene}: no CSP violation`);
+        assert.equal(await loaded(page, /lottie/i), scene === 'lottie', `${scene}: lottie-web loaded`);
+        if (scene === 'lottie') assert.equal(await loaded(page, /\/deps\/lottie-web_build_player_lottie___light\.js/), true);
+      }
+      await context.close();
+    } finally {
+      await removeScenes('lottie');
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

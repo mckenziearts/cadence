@@ -16,15 +16,15 @@ interface SceneProps {
   format: '16:9' | '9:16' | '1:1' | '4:5';
   orientation: 'landscape' | 'portrait' | 'square';   // 4:5 is portrait
   fps: number;
-  music: Music;         // beat grid in scene seconds (see Music)
+  music: Music;         // beat grid and spectrum in scene seconds (see Music)
   voiceOver: VoiceOverInfo;  // { text, lines: { text, start, end, speaker, words, level, gesture? }[] } in scene seconds (see Voice-over)
   scene: SceneInfo;     // { id, name, index, count, start (video seconds) }
   brand: BrandKit;      // same object as useBrand()
 }
 ```
-Types exported: `SceneProps, SceneInfo, VoiceOverInfo, Music, MusicGrid, MusicSection, Easing, Point ({x, y}), BrandKit, FormatId,
-Orientation, FormatInfo, SafeArea, Anchor, CursorKey, Stage3DPose, RGBA, SoundProps, SoundCue, SoundName` and every
-component's `<Name>Props`.
+Types exported: `SceneProps, SceneInfo, VoiceOverInfo, Music, MusicGrid, MusicSection, MusicSpectrumData, Easing, Point ({x, y}),
+BrandKit, FormatId, Orientation, FormatInfo, SafeArea, Anchor, CursorKey, Stage3DPose, RGBA, SoundProps, SoundCue,
+SoundName` and every component's `<Name>Props`.
 
 ## Time & animation
 
@@ -131,9 +131,10 @@ background: withAlpha(brand.colors.accent, 0.12)
   `square` falls back to `portrait`). `safe` = `{ top, right, bottom, left }` margins kept clear of social-app UI:
   220 / 60 / 380 / 60 in 9:16, 60 in 1:1 and 4:5, 72 in 16:9.
 - `asset(path): string`: URL of the project's `assets/<path>`: `<img src={asset('screens/home.png')} />`. Animated
-  GIF/WebP/SVG images freeze on their first frame in frames and renders (the preview may still play them): drive
-  motion from `t` instead (an image sequence, transforms).
-- Frame internals (never use in scenes): `SceneContext`, `BrandContext`, `setAssetBase`, `createMusic`.
+  GIF/WebP/SVG images freeze on their first frame in frames and renders (the preview may still play them): show
+  animated GIFs and videos with `<Clip>` (see Video clips and GIFs), Lottie files with `<Lottie>` (see Lottie
+  animations), drive other motion from `t`.
+- Frame internals (never use in scenes): `SceneContext`, `BrandContext`, `ClipContext`, `setAssetBase`, `createMusic`.
 
 ```tsx
 const { ui, colors } = useBrand();
@@ -153,6 +154,21 @@ const L = f.pick({
 </ui.Card>
 ```
 
+## Transitions
+
+A scene can come in over the end of the scene before it instead of cutting hard. The project chat sets it with
+`set_transition` (`{ kind, direction?, duration }`, or null to cut hard again):
+
+- `kind`: `fade` (cross-fade), `slide` (the new scene pushes the old one out), `wipe` (a moving edge reveals the new
+  scene) or `flip` (a card turn). `direction` (`left`, `right`, `up`, `down`; `left` by default) is where the motion
+  goes, for slide, wipe and flip: `left` brings the new scene in from the right.
+- `duration`: 0.1 to 5 s. The incoming scene starts that much before the previous one ends, so the video gets shorter
+  by it. It is capped at half of either scene; `get_project` lists the declared and the effective duration.
+- The first scene takes none. Each scene keeps its own `t`: the incoming one plays from `t = 0` during the overlap,
+  the outgoing one plays its last seconds. Design both to look finished there; the runtime draws the transition.
+- `check_seams` reports a transition cut as a transition without comparing frames. `snap_cuts_to_music` lands every
+  scene start, overlaps included, on the grid.
+
 ## Music (scene seconds; key moments to the grid, never to hard-coded seconds)
 
 `music`: `hasTrack` (false = steady 4/4 grid at the project tempo from t = 0, phrases of 4 bars), `bpm`, `beatLength`,
@@ -167,6 +183,11 @@ const L = f.pick({
   has no beats). Without a track it pulses on the steady grid: gate it with `music.hasTrack` so a silent video stays
   still.
 - `music.beatPhase(t)`: 0 to 1 through the current beat.
+- `music.spectrum(t, bands = 24)`: loudness 0 to 1 of the track at t in 24 log-spaced bands from 40 Hz to 11 kHz
+  (lowest first), interpolated between the analysis rows (25 a second), or averaged into `bands` groups (an integer
+  from 1 to 24, else a RangeError). All zeros before and after the track, and without one. While the analysis runs
+  (or after it failed) it throws `MusicAnalysisPending`: the scene shows the error, a render waits for the analysis.
+  It follows the audio (music start and scene start), not the manual grid offset.
 
 ```tsx
 const hit = music.bar(1);                                              // second downbeat of the scene
@@ -174,6 +195,9 @@ const pop = spring(t - hit, { from: 0.85, to: 1, ...springs.bouncy });
 const thump = music.hasTrack ? 1 + 0.03 * music.pulse(t, { grid: 'beat', decay: 9 }) : 1;
 const click = music.snap(1.2, 'half');                                 // cursor click on a half-beat
 const cardIn = progress(t, music.beat(0), music.beat(2), ease.outExpo);
+const bars = music.spectrum(t, 12).map((level, i) => (               // equalizer: 12 bars, bass on the left
+  <div key={i} style={{ width: 40, height: 20 + level * 400, background: brand.colors.accent }} />
+));
 ```
 
 ## Voice-over (scene seconds)
@@ -231,6 +255,18 @@ export default function Save(props: SceneProps) {
 }
 ```
 
+A cue can also play the sound of a video of the project: `{ at, clip, from?, duration?, gain? }`. `clip` is its path
+under `assets/`, like `<Clip src>`; it starts on `at` (no peak offset), plays from `from` seconds into the video (0
+when left out) for `duration` seconds (to the video's end when left out), always cut at the scene's end. The video
+must be ready and have a sound track; its sound is mixed in mono. The clip cues of a scene are heard at most 8 times
+its length in all. A render hears the whole video, but the preview plays only its first 10 minutes: the editor cuts a cue
+there. Give it the same offset as its `<Clip>`:
+
+```tsx
+export const sounds = (): SoundCue[] => [{ at: 1.5, clip: 'demo/talk.mp4', gain: 0.8 }];
+// with <Clip src="demo/talk.mp4" time={t - 1.5} /> in the component
+```
+
 - A sound per meaningful contact, not per beat: two to four per scene is plenty, the music already carries the beat.
   When a moment does not deserve a sound, leave it silent.
 - `sounds()` is pure like the component and runs without rendering a frame: key it to `music` and `voiceOver.lines`,
@@ -265,6 +301,48 @@ const out = progress(t, 3.6, 3.9);                                     // labels
          label="Body" progress={progress(t, 1.6, 2.3) * (1 - out)} />
 ```
 
+## WebGL
+
+- `<GLCanvas t={t} width={width} height={height} draw={(gl, t) => void}>`: one WebGL2 canvas (canvas px). `draw` runs
+  at every render, synchronously, on a buffer cleared to transparent (`gl.clear` again for a background color) with
+  the viewport set to the whole buffer: a pure function of t, no `requestAnimationFrame`, no timers. The buffer
+  follows the pixel ratio and the size the canvas is shown at (smaller in the preview, scaled down to fit): size in
+  device px is `gl.drawingBufferWidth` x `gl.drawingBufferHeight`. Build programs
+  and buffers once per context (a `WeakMap` keyed by `gl`), not at every frame.
+- `import { THREE, ThreeCanvas } from 'cadence/three'`: three.js, loaded only by the scenes that import it.
+  `<ThreeCanvas t width height setup={(renderer) => state} render={(state, t, renderer) => void}>`: `setup` runs once,
+  when the renderer is created (scene, camera, meshes, lights); `render` sets them for t, sets the camera's aspect
+  from the current `width` / `height` (a format change re-renders without a new `setup`) and calls
+  `renderer.render(scene, camera)`. The renderer is disposed of when the scene unmounts. Create geometries, materials
+  and textures in `setup` only: one created in `render` stays on the GPU until the scene unmounts (a 1024 px texture
+  per frame adds 4 MB a frame). Never call `renderer.setAnimationLoop`, `setSize` or `setPixelRatio`.
+- Renders and thumbnails capture in a headless browser that renders in software: slower than the preview, and
+  pixels may differ slightly from the GPU preview. Keep shaders light: a light full-frame shader already adds about
+  15 ms to each captured frame.
+- 16 live WebGL contexts at most per page: one per canvas, so a few canvases per scene at most. A lost context or a
+  browser without WebGL2 makes the scene show an error.
+
+```tsx
+import { THREE, ThreeCanvas } from 'cadence/three';
+const setup = () => {
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+  camera.position.z = 5;
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), new THREE.MeshStandardMaterial({ color: brand.colors.accent }));
+  const light = new THREE.DirectionalLight('#ffffff', 3);
+  light.position.set(2, 3, 4);
+  scene.add(cube, light, new THREE.AmbientLight('#ffffff', 0.3));
+  return { scene, camera, cube };
+};
+<ThreeCanvas t={t} width={width} height={height} setup={setup}
+  render={({ scene, camera, cube }, t, renderer) => {
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    cube.rotation.y = t * 0.8;
+    renderer.render(scene, camera);
+  }} />
+```
+
 ## Camera
 
 - `<Camera x y zoom={1} rotate={0} style? className?>`: looks at content point (x, y) (default canvas center) and
@@ -293,7 +371,7 @@ const a = (s: number, e: number) => progress(t, s, e, ease.outCubic);
 
 ## Drawing
 
-- `rectPath(x, y, w, h, r = 0): string`: rounded-rect path data (clockwise from the top-left).
+- `rectPath(x, y, w, h, r = 0)` and the other shapes: see Paths & shapes.
 - `<DrawPath d progress color="currentColor" width={2} opacity? head? linecap="round" style? />`: SVG path drawn
   from its start by `progress` (nothing at 0, plain stroke at 1). `head`: `true | { length = 0.06, color = '#fff',
   width }`: a bright comet riding the tip. Renders SVG elements: put it inside an `<svg>` (or `<Glow>`). Its width
@@ -303,6 +381,9 @@ const a = (s: number, e: number) => progress(t, s, e, ease.outCubic);
   the screen: lines running far past the canvas (construction guides) cost about 1 s per frame. Keep long lines out
   of it: draw them before it, in the same `<svg>` (`GuideLine` in the wireframe-glow template gives them a cheap
   gradient halo).
+- SVG `<defs>` ids (gradients, clip paths, masks, filters) come from `useId()`, never a fixed string: two scenes share
+  the document during a transition, and `url(#id)` points to the first element with that id.
+  ``const id = `chart-${useId().replace(/[^\w-]/g, '')}` `` then ``fill={`url(#${id}-area)`}``.
 
 ```tsx
 // Glowing wireframe drawing itself on black, in perspective, then landing flat.
@@ -321,6 +402,67 @@ const land = progress(t, 2.2, 3.2, ease.smooth);
   <Vignette strength={0.7} />
   <Grain t={t} opacity={0.1} />
 </Fill>
+```
+
+## Paths & shapes
+
+Pure math on SVG path data, the same numbers in preview, render and every engine (never `getTotalLength()`).
+
+- `parsePath(d): Subpath[]`: reads `M L H V C S Q T A Z`, absolute and relative, implicit repeats and exponents,
+  into `{ segments: CubicSegment[], closed }` per subpath (`CubicSegment` = `{ from, c1, c2, to }`; lines,
+  quadratics and arcs become cubics). Invalid data throws `Invalid path data at position <i>`.
+- `getLength(d): number`: px, moves between subpaths add nothing.
+- `getPointAtLength(d, length): Point` and `getTangentAtLength(d, length): Point` (unit vector, drawing direction):
+  lengths outside `[0, getLength(d)]` clamp to the ends; a NaN length, or a path of length 0, throws. Ride an object
+  along a path, turned with `Math.atan2(tan.y, tan.x)`.
+- `evolvePath(progress, d): { strokeDasharray, strokeDashoffset }`: spread on a `<path d={d}>` to draw it from its
+  start (progress clamped 0 to 1, NaN throws). At 1 the stroke is plain (no dash), at 0 nothing shows, round caps
+  included. One subpath per `d` (several throw: browsers restart the dash on each subpath): split a logo or vectorised
+  text into one `<path>` per subpath, each with its own progress. `<DrawPath>` does the same with `pathLength`, plus
+  the comet head.
+- `interpolatePath(progress, from, to): string`: path data for a morph from `from` (progress 0) to `to` (1); at the
+  ends and beyond, the strings come back as passed. NaN, an empty path or one with no segment (moves only) throws. Subpaths
+  pair in order (an extra one grows from its centre), segment counts match by splitting the longest segments, and a
+  closed subpath starts where its points move the least; next to an open one it stays open until the end. Give both
+  paths their subpaths in the same order and drawn the same way round (the shapes all draw clockwise): a reversed
+  one turns inside out on the way.
+
+Shapes return path data. All are centred on `(x, y)` (default `0, 0`) and draw clockwise; angles in degrees start
+straight up and turn clockwise.
+
+- `rectPath(x, y, w, h, r = 0)`: rounded rect from its **top-left corner** (the one exception).
+- `roundedRect({ width, height, cornerRadius = 0, x, y })`: the radius is clamped to half the short side.
+- `circle({ radius, x, y })`, `ellipse({ rx, ry, x, y })`: start at the rightmost point.
+- `polygon({ sides, radius, rotation = 0, x, y })`: regular, inscribed in `radius`, first vertex up.
+- `star({ points = 5, outerRadius, innerRadius, rotation = 0, x, y })`: first tip up.
+- `triangle({ side, direction = 'up', x, y })`: equilateral, its bounding box centred on `(x, y)`, tip towards
+  `'up' | 'down' | 'left' | 'right'`.
+- `pie({ radius, progress, rotation = 0, x, y })`: slice from straight up, clockwise over `progress` of the turn,
+  starting at the centre; `progress >= 1`, or close enough that the slice would close up, is the whole circle; NaN
+  throws.
+
+```tsx
+// A dot travelling along a drawn curve, turned with it.
+const d = 'M200,800 C600,200 1300,1000 1720,300';
+const p = progress(t, 0.3, 2.2, ease.inOutCubic);
+const at = getPointAtLength(d, p * getLength(d));
+const tan = getTangentAtLength(d, p * getLength(d));
+<svg width={width} height={height} style={{ position: 'absolute', inset: 0 }}>
+  <path d={d} fill="none" stroke={brand.colors.accent} strokeWidth={4} {...evolvePath(p, d)} />
+  <path d={triangle({ side: 28, direction: 'right' })} fill={brand.colors.accent}
+        transform={`translate(${at.x} ${at.y}) rotate(${(Math.atan2(tan.y, tan.x) * 180) / Math.PI})`} />
+  <path d={star({ points: 5, outerRadius: 60, innerRadius: 26, x: 1720, y: 300 })} fill={brand.colors.accent}
+        opacity={progress(t, 2.1, 2.4)} />
+</svg>
+```
+
+```tsx
+// A logo mark morphing into a circle badge. Paste the mark's d from its SVG, one interpolatePath per <path>.
+const mark = 'M900,420 L1020,420 L1080,540 L1020,660 L900,660 L840,540 Z';
+const m = progress(t, 0.5, 1.4, ease.inOutCubic);
+<svg width={width} height={height} style={{ position: 'absolute', inset: 0 }}>
+  <path d={interpolatePath(m, mark, circle({ radius: 140, x: 960, y: 540 }))} fill={brand.colors.accent} />
+</svg>
 ```
 
 ## Annotations (positions in canvas px; constant screen size inside a Camera)
@@ -375,9 +517,84 @@ const onSave = progress(t, 1.6, 1.8);                                  // the cu
   against banding in dark gradients; static per seed, animated only when you pass `t`.
 - `<Vignette color="#000" strength={0.45} size={0.55} />`: darkens the edges.
 
+## Motion blur
+
+- `<MotionBlur t={t} fps={fps} samples={8} shutter={0.5}>{(t) => content}</MotionBlur>`: draws the content at
+  `samples` times (1 to 16) evenly spaced over `shutter` (0 to 1) of a frame before `t`, never before 0, and stacks
+  them into their mean. The render prop receives each sample time: drive the moving parts from it, never from the
+  scene's `t`. Every copy fills the nearest positioned ancestor (like `Fill`); copies past the first are `aria-hidden`
+  and the text checks of `render_frames` judge only the copy at `t`. Draw the opaque background inside it: opaque
+  copies average exactly and static parts stay pixel-identical, while translucent copies stack and look denser.
+- Each sample costs a full render of the content and a composite of the box it fills: 16 full-canvas copies take
+  about 2.5 times as long to capture. Wrap it in a positioned box around the path only, static content outside; pass
+  `samples={1}` outside the move (still copies cost as much as moving ones; 1 sample draws the content once,
+  unblurred); never nest a MotionBlur in another (16 x 16 copies).
+- An svg id in the content (`<defs>`, `url(#id)`) comes from a `useId()` called inside the render prop's own
+  component, which gives each copy its own: an id from the scene's `useId()` repeats in every copy, and they all draw
+  the defs of the copy at `t`.
+
+```tsx
+// A card whipping across the screen, blurred along its path: the copies fill only the band it crosses.
+<div style={{ position: 'absolute', left: 0, right: 0, top: 380, height: 320 }}>
+  <MotionBlur t={t} fps={fps} shutter={1} samples={t > 0.4 && t < 0.85 ? 8 : 1}>
+    {(time) => (
+      <Fill style={{ background: '#0b0b0d' }}>
+        <ui.Card style={{ position: 'absolute', top: 40, left: interpolate(time, [0.4, 0.8], [-600, 760], { easing: ease.inOutCubic }) }} />
+      </Fill>
+    )}
+  </MotionBlur>
+</div>
+```
+
+## Video clips and GIFs
+
+- `<Clip src="loops/spin.gif" time={t - 1.5} loop? fit? style? />`: a video or GIF of the project, never a `<video>`
+  (it plays by the wall clock). `src` is its path under `assets/`, like `asset()`. Shows the frame
+  `floor(time * fps)` of the frames Cadence extracted from it (the source's own rate, 60 fps at most), so it is a
+  pure function of `time`: offset it from the scene's `t` yourself. Before 0 it shows the first frame and past the
+  end it holds the last frame; `loop` wraps around instead. An `<img>` sized by `style` (its own pixel size
+  otherwise); `fit` (CSS `object-fit`, default 'contain') places the frame in that box.
+- Frames are opaque JPEG (no alpha) and `<Clip>` plays no sound: a clip cue in `sounds()` plays it (see Sound
+  effects).
+- An asset that is not a video or GIF, still being prepared (extracted after an upload: the preview updates when it
+  is ready, renders wait for it) or that failed to extract throws an error naming it; so does a frame that does not
+  load when the frame is captured.
+
+```tsx
+// A product demo recorded as a video, in a browser window, from 1.5 s into the scene.
+<BrowserFrame width={1280} height={800} url="acme.dev" style={{ position: 'absolute', left: 320, top: 140 }}>
+  <Clip src="demo/onboarding.mp4" time={t - 1.5} fit="cover" style={{ width: '100%', height: '100%' }} />
+</BrowserFrame>
+```
+
+## Lottie animations
+
+- `import { Lottie } from 'cadence/lottie'`: a Lottie (Bodymovin) JSON file of the project, imported by the scene
+  (`import intro from '../assets/intro.json'`) and loaded only by the scenes that import `cadence/lottie`.
+  `<Lottie data={intro} time={t - 1} loop? fit? style? />` shows frame `ip + time * fr` of the file, a pure function
+  of `time`: offset it from the scene's `t` yourself. Before 0 it shows the first frame and past the end it holds the
+  last one (`op - 1`); `loop` wraps around instead. An SVG in a `<div>` sized by `style` (the parent's width at the
+  file's aspect ratio otherwise); `fit` places the animation in that box: 'contain' (default), 'cover' or 'fill'.
+- One player per mount: the file is parsed when the component mounts or gets another `data` or `fit`, then each
+  render only seeks. Keep `data` stable (a module import, or `useMemo`): a new object at each render builds a new
+  player at each frame. The imported object is never modified.
+- The light player runs no expressions (the frame refuses `eval`): bake them into keyframes before export. Images must
+  be embedded in the file (`data:` URIs), text needs no font file (convert the text to shapes), and the file holds the
+  whole animation: no external data or footage file, no `segments`, no slot that points to a file or sets more than
+  an image's `id`, `nm`, `w`, `h`, `u`, `p` and `e`. An upload, or a scene, refuses a file that would load anything,
+  or whose `op` is not at least one frame after `ip`. Text animators with Randomize Order are not deterministic.
+
+```tsx
+import { Lottie } from 'cadence/lottie';
+import confetti from '../assets/confetti.json';
+// Plays once from 2 s into the scene, centred over the card.
+<Lottie data={confetti} time={t - 2} style={{ position: 'absolute', left: 660, top: 240, width: 600, height: 600 }} />
+```
+
 ## Seam checklist
 
-Consecutive scenes cut hard: when something continues across a cut, the last frame (t = duration) must equal the
+Consecutive scenes cut hard unless the next scene declares a transition (see Transitions; nothing has to match
+across one): when something continues across a hard cut, the last frame (t = duration) must equal the
 next scene's first frame (t = 0). Share positions/sizes/copy through `components/`; end 3D moves, camera moves and
 swaps exactly at rest (progress 0 or 1): Stage3D, Camera, SwapWords and TypeOn then render exactly what a plain
 flat layout renders; no leftover filters, transforms or opacity at the cut. `check_seams` measures the share of

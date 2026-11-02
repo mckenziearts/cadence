@@ -19,7 +19,14 @@ export {
 } from './animate';
 export { parseColor, toHex, mixColor, interpolateColor, withAlpha, type RGBA } from './color';
 export { random, randomRange, noise, noise2 } from './random';
-export { createMusic, type CreateMusicInput, type Music, type MusicGrid, type MusicSection } from './music';
+export {
+  createMusic,
+  type CreateMusicInput,
+  type Music,
+  type MusicGrid,
+  type MusicSection,
+  type MusicSpectrumData,
+} from './music';
 export { voiceLevel } from './voice';
 export {
   Fill,
@@ -57,7 +64,6 @@ export {
   type CameraProps,
 } from './stage';
 export {
-  rectPath,
   DrawPath,
   Glow,
   Tag,
@@ -76,6 +82,17 @@ export {
   type GuideProps,
   type HighlightProps,
 } from './annotate';
+export {
+  parsePath,
+  getLength,
+  getPointAtLength,
+  getTangentAtLength,
+  evolvePath,
+  interpolatePath,
+  type CubicSegment,
+  type Subpath,
+} from './paths';
+export { rectPath, roundedRect, circle, ellipse, polygon, star, triangle, pie } from './shapes';
 export { Cursor, cursorAt, cursorPress, ClickRipple, type CursorKey, type CursorProps, type ClickRippleProps } from './pointer';
 export {
   BrowserFrame,
@@ -87,5 +104,8 @@ export {
   type GrainProps,
   type VignetteProps,
 } from './chrome';
+export { MotionBlur, type MotionBlurProps } from './motionBlur';
+export { Clip, ClipContext, type ClipProps, type ClipSource } from './clip';
+export { GLCanvas, type GLCanvasProps } from './gl';
 export type { SceneProps, SceneInfo, VoiceOverInfo, Point, BrandKit, FormatId, Orientation } from './types';
 export type { SoundCue, SoundName, SoundProps } from '../shared/sounds';

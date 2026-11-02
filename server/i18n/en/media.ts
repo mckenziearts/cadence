@@ -47,10 +47,15 @@ export default {
     invalidScale: (scale: number) => `Invalid scale: ${scale} (0.5, 1 or 2)`,
     invalidQuality: (quality: string) => `Invalid quality: ${quality}`,
     invalidRange: 'Invalid render range',
+    invalidOutput: (output: string) => `Invalid render output: ${output}`,
+    noTransparency: (output: string) => `${output} has no transparency`,
+    missingEncoders: (names: string[]) => `The ffmpeg in use has no ${names.join(' or ')} encoder`,
+    publishMp4Only: (file: string) => `Only an MP4 video can be published: ${file}`,
     noScene: 'The project has no scene to render',
     noDetail: 'no detail',
     soundMissing: (file: string) => `Sound effect not found: ${file}`,
     soundFormat: (file: string, rate: number) => `Sound effect in the wrong format: ${file} (${rate} Hz expected)`,
+    clipSound: (file: string, error: string) => `Could not read the sound of assets/${file}: ${error}`,
     invalidSounds: (error: string) => `Invalid sounds in the video: ${error}`,
     soundsTimeout: (seconds: number) => `sounds() took more than ${seconds} s (infinite loop?)`,
   },
@@ -136,11 +141,45 @@ export default {
     cues: {
       notArray: 'sounds() must return an array of cues',
       tooMany: (max: number) => `sounds() returns more than ${max} cues`,
-      notObject: (index: number) => `sound cue ${index}: expected an object { at, sound, gain? }`,
+      notObject: (index: number) =>
+        `sound cue ${index}: expected an object { at, sound, gain? } or { at, clip, from?, duration?, gain? }`,
       at: (index: number, duration: number) => `sound cue ${index}: at must be a number of seconds from 0 to ${duration}`,
       sound: (index: number, received: string, known: string) => `sound cue ${index}: unknown sound ${received} (${known})`,
       gain: (index: number) => `sound cue ${index}: gain must be a number from 0 to 1`,
+      both: (index: number) => `sound cue ${index}: sound or clip, not both`,
+      clipUnknown: (index: number, received: string) =>
+        `sound cue ${index}: clip ${received} is not a video under assets/ of this project`,
+      clipPreparing: (index: number, file: string) =>
+        `sound cue ${index}: the video assets/${file} is being prepared; the preview updates when it is ready.`,
+      clipFailed: (index: number, file: string, error: string) =>
+        `sound cue ${index}: could not prepare the video assets/${file}: ${error}`,
+      clipSilent: (index: number, file: string) => `sound cue ${index}: the video assets/${file} has no sound`,
+      clipFrom: (index: number, file: string, duration: number) =>
+        `sound cue ${index}: from must be a number of seconds from 0 and below ${duration}, the length of assets/${file}`,
+      clipDuration: (index: number) => `sound cue ${index}: duration must be a number of seconds above 0`,
+      clipTotal: (seconds: number) => `sounds(): the clip cues are heard more than ${seconds} s in all`,
     },
+  },
+  clips: {
+    stalled: (name: string, seconds: number) => `"${name}": ffmpeg gave no frame for ${seconds} s, extraction stopped`,
+    tooLong: (name: string, minutes: number) =>
+      `"${name}" is too long to prepare: at most ${minutes} minutes at its frame rate and 2 GB of frames. Trim the video, then import it again`,
+    diskFull: (name: string) =>
+      `"${name}": the disk is almost full, extraction stopped. Free some space, then import the video again`,
+    notPrepared: (name: string, error: string) => `[cadence] frames of "${name}" not prepared: ${error}`,
+    noSound: (name: string) => `"${name}" is not a prepared video with sound`,
+    unreadable: (name: string) => `"${name}" is not a video ffmpeg can read`,
+    notJpeg: 'ffmpeg printed something other than JPEG frames',
+    noDuration: (name: string) =>
+      `"${name}" states no duration (a video recorded as a stream): rewrite it once, for example ffmpeg -i input.webm -c copy output.webm`,
+    notLottie: (name: string) =>
+      `"${name}" is not a Lottie animation (v, fr, ip, op, w, h and layers expected, op at least one frame after ip)`,
+    externalImage: (name: string, image: string) =>
+      `"${name}" loads an external image (${image}): embed the images in the file (data: URI), a scene loads nothing else`,
+    externalFont: (name: string, font: string) =>
+      `"${name}" loads an external font (${font}): convert the text to shapes, a scene loads nothing else`,
+    externalFile: (name: string, file: string) =>
+      `"${name}" loads another file (${file}): export the animation as one file, without external data or segments, a scene loads nothing else`,
   },
   brands: {
     build: {
@@ -217,6 +256,8 @@ export default {
     encoders: (version: string, missing: string[]) =>
       `ffmpeg ${version} without the ${missing.join(' and ')} encoder${missing.length > 1 ? 's' : ''}`,
     encodersFix: 'Install an ffmpeg build with libx264 and aac (for example `brew install ffmpeg`)',
+    outputs: (version: string, outputs: string[]) => `ffmpeg ${version} renders ${outputs.join(', ')}`,
+    outputMissing: (output: string, reason: string) => `${output}: ${reason}`,
     ffprobeMissing: (bin: string) => `ffprobe not found (${bin})`,
     ffprobeFix: 'It comes with ffmpeg, or set FFPROBE_PATH',
     chromiumMissing: 'Chromium (Playwright) is not installed',
@@ -251,7 +292,7 @@ Usage: npm run cadence -- <command> [options]
   start [--port 5310] [--frame-port 5311] [--dev]
                                                starts the editor (--dev: from Vite's dev server, to work on Cadence)
   render <project> [--formats 16:9,9:16] [--quality draft|standard|master]
-         [--scale 0.5|1|2] [--fps 24|30|60] [--supersample]
+         [--scale 0.5|1|2] [--fps 24|30|60] [--supersample] [--output mp4]
                                                renders the video to MP4 (every format of the project by default)
   analyze <audio> [--json]                     analyzes a music track (tempo, beats, bars, phrases)
   soundtracks [id...]                          recomposes the soundtracks of the Music panel (src/editor/soundtracks)
@@ -266,6 +307,7 @@ Usage: npm run cadence -- <command> [options]
     stopping: 'Stopping Cadence...',
     noProject: 'Specify the project to render: render <project>',
     unknownQuality: (quality: string) => `Unknown quality: ${quality}`,
+    unknownOutput: (output: string, known: string) => `Unknown output: ${output} (${known})`,
     progress: (jobs: { format: string; percent: number }[]) => jobs.map((job) => `${job.format} ${job.percent}%`).join(', '),
     exporting: (name: string, duration: string, formats: string, quality: string) =>
       `Rendering "${name}" (${duration}): ${formats}, ${quality} quality`,

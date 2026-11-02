@@ -28,25 +28,36 @@ import {
   type NetworkId,
   type VersionSource,
 } from '../../src/shared/types';
+import { outputSupport } from '../capture/encoders';
 import { LOCAL } from '../capture/policy';
+import { ACCEPTED_OUTPUTS } from '../capture/render';
+import { readClipAudio } from '../clips/service';
 import type { ApiDeps } from '../contracts';
 import { language, m } from '../i18n';
+import { SR } from '../music/synth';
 import { DEFAULT_BRAND } from '../store/brands';
-import { elevenLabsSpeakersSchema, piperSpeakersSchema, sceneVoiceOverInputSchema } from '../store/projects';
+import {
+  elevenLabsSpeakersSchema,
+  piperSpeakersSchema,
+  sceneTransitionSchema,
+  sceneVoiceOverInputSchema,
+} from '../store/projects';
 import { AGENT_FRAME_NAME, HttpError, KeyedMutex, pathExists, resolveInside } from '../util';
 import { ELEVENLABS_MODEL_PATTERN, ELEVENLABS_VOICE_PATTERN } from '../voiceover/elevenlabs';
 import { VOICES } from '../voiceover/voices';
+import { silentWav } from '../voiceover/wav';
 import { dataUrl, sendFile, sendImage } from './files';
 
 const MB = 1024 * 1024;
 const JSON_LIMIT = 2 * MB;
 const MUSIC_LIMIT = 201 * MB;
-const ASSET_LIMIT = 51 * MB;
 const ARCHIVE_LIMIT = 2048 * MB;
 /** POST routes that take a file with their own, larger body limit. */
 const UPLOAD_ROUTE = /^\/api\/(projects\/[^/]+\/(music|assets)|import)$/;
 /** Two lines of 42 characters, the usual limit of subtitle files. */
 const SUBTITLE_MAX_CHARS = 84;
+/** Seconds of a clip the editor plays, like the music's analysis: about 53 MB of WAV at most. */
+const CLIP_SOUND_SECONDS = 600;
 const ZOD_LOCALES = { fr: z.locales.fr(), en: z.locales.en() };
 
 const idSchema = z.string().regex(ID_PATTERN);
@@ -107,6 +118,7 @@ const schemas = {
     duration: z.number().positive().max(600).optional(),
     voiceOver: sceneVoiceOverInputSchema.nullable().optional(),
   }),
+  transition: z.object({ transition: sceneTransitionSchema.nullable() }),
   order: z.object({ ids: z.array(idSchema) }),
   checkSeams: z.object({ sceneId: idSchema.optional(), format: formatSchema.optional() }),
   selectMusic: z.object({ file: z.string().min(1).max(300) }),
@@ -138,6 +150,8 @@ const schemas = {
     scale: z.literal([0.5, 1, 2]).optional(),
     quality: z.enum(['draft', 'standard', 'master']),
     supersample: z.boolean().optional(),
+    output: z.enum(ACCEPTED_OUTPUTS).optional(),
+    transparent: z.boolean().optional(),
     range: z
       .object({ from: z.number().min(0), to: z.number().positive() })
       .refine((r) => r.to > r.from, { error: () => m().api.routes.rangeOrder })
@@ -318,6 +332,18 @@ export function createApi(deps: ApiDeps) {
       (p) => m().api.versions.sceneEdited(p.scenes.find((s) => s.id === sid)?.name ?? sid),
     );
     if (patch.duration !== undefined) seams.recheck(id);
+    return c.json(project);
+  });
+  app.put('/projects/:id/scenes/:sid/transition', async (c) => {
+    const id = c.req.param('id');
+    const sid = c.req.param('sid');
+    const { transition } = await body(c, schemas.transition);
+    const project = await step(
+      id,
+      () => store.setTransition(id, sid, transition),
+      (p) => m().api.versions.transitionSet(p.scenes.find((s) => s.id === sid)?.name ?? sid),
+    );
+    seams.recheck(id);
     return c.json(project);
   });
   app.post('/projects/:id/scenes/:sid/duplicate', async (c) => {
@@ -548,15 +574,16 @@ export function createApi(deps: ApiDeps) {
   app.get('/projects/:id/renders', async (c) => {
     const id = c.req.param('id');
     await existingProject(c);
-    return c.json({ jobs: renders.jobs(id), files: await renders.files(id) });
+    return c.json({ jobs: renders.jobs(id), files: await renders.files(id), outputs: await outputSupport(config.ffmpegPath) });
   });
   app.delete('/renders/:jobId', (c) => {
     renders.cancel(c.req.param('jobId'));
     return c.json({ ok: true });
   });
-  app.get('/projects/:id/renders/:name', async (c) =>
-    sendFile(c, renders.resolveFile(c.req.param('id'), c.req.param('name')), 'video/mp4'),
-  );
+  app.get('/projects/:id/renders/:name', async (c) => {
+    const id = c.req.param('id');
+    return sendFile(c, renders.resolveFile(id, c.req.param('name')), undefined, store.dir(id));
+  });
   app.delete('/projects/:id/renders/:name', async (c) => {
     const id = c.req.param('id');
     const name = c.req.param('name');
@@ -614,14 +641,35 @@ export function createApi(deps: ApiDeps) {
 
   // Assets
   app.get('/projects/:id/assets', async (c) => c.json(await assets.list(c.req.param('id'))));
-  app.post('/projects/:id/assets', uploadLimit(ASSET_LIMIT, 50), async (c) =>
-    c.json(await assets.upload(c.req.param('id'), await uploadedFile(c))),
-  );
+  // Like music: the file is the body, its name in the query; the store counts it against the limit of its type.
+  app.post('/projects/:id/assets', async (c) => {
+    const name = requiredQuery(c, 'name');
+    const body = c.req.raw.body ? Readable.fromWeb(c.req.raw.body as WebReadableStream<Uint8Array>) : [];
+    return c.json(await assets.upload(c.req.param('id'), { name, body }));
+  });
   app.delete('/projects/:id/assets', async (c) => {
     await assets.remove(c.req.param('id'), requiredQuery(c, 'path'));
     return c.json({ ok: true });
   });
   app.get('/projects/:id/assets/file', async (c) => sendFile(c, assets.resolve(c.req.param('id'), requiredQuery(c, 'path'))));
+  // What the editor plays for a clip cue: a WAV decodes in every browser, the AAC of an MP4 not in every Chromium build.
+  app.get('/projects/:id/clips/audio', async (c) => {
+    const id = await existingProject(c);
+    const file = requiredQuery(c, 'path');
+    const { clips } = await store.get(id);
+    const clip = Object.hasOwn(clips, file) ? clips[file] : undefined;
+    if (clip?.status !== 'ready' || !clip.audio) throw new HttpError(404, m().media.clips.noSound(file));
+    const seconds = Math.min(clip.duration, CLIP_SOUND_SECONDS);
+    const samples = await readClipAudio(config.ffmpegPath, store.dir(id), file, 0, seconds, c.req.raw.signal);
+    const wav = silentWav(SR, samples.length);
+    wav.samples.set(samples);
+    // node-server writes a Uint8Array body as is; an ArrayBuffer it would copy first.
+    return c.body(wav.data as Uint8Array<ArrayBuffer>, 200, {
+      'Content-Type': 'audio/wav',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+  });
   // The person asks for this capture: their dev servers and LAN are fine. The agent's go through MCP, to approved hosts only.
   app.post('/projects/:id/refs', async (c) =>
     c.json(await assets.captureReference(c.req.param('id'), await body(c, schemas.captureRef), LOCAL)),
@@ -744,18 +792,9 @@ async function body<T extends z.ZodType>(c: Context, schema: T): Promise<z.outpu
   return parsed.data;
 }
 
-/** `mb` is the limit people are told; `maxSize` leaves room for the multipart envelope. */
+/** `mb` is the limit people are told; the service checks it to the byte, `maxSize` only cuts off a body well past it. */
 function uploadLimit(maxSize: number, mb: number) {
   return bodyLimit({ maxSize, onError: (c) => c.json({ error: m().api.routes.fileTooLarge(mb) }, 413) });
-}
-
-async function uploadedFile(c: Context): Promise<{ name: string; data: Buffer }> {
-  const form = await c.req.parseBody().catch(() => {
-    throw new HttpError(400, m().api.routes.invalidUpload);
-  });
-  const file = form.file;
-  if (!(file instanceof File)) throw new HttpError(400, m().api.routes.noFile);
-  return { name: file.name, data: Buffer.from(await file.arrayBuffer()) };
 }
 
 function download(c: Context, archive: Readable, name: string): Response {

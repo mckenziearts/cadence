@@ -45,6 +45,18 @@ export interface Music {
   pulse(t: number, options?: { grid?: MusicGrid; decay?: number }): number;
   /** 0 to 1 progress through the current beat. */
   beatPhase(t: number): number;
+  /**
+   * Loudness 0 to 1 of the track at t in 24 log-spaced bands from 40 Hz to 11 kHz (lowest first), or averaged into
+   * `bands` groups (1 to 24). All zeros before and after the track, and without one.
+   */
+  spectrum(t: number, bands?: number): number[];
+}
+
+/** Band levels of the track: `bytes` holds rows of `bands` bytes (0..255), `rate` rows per second of TRACK time. */
+export interface MusicSpectrumData {
+  bands: number;
+  rate: number;
+  bytes: Uint8Array;
 }
 
 export interface CreateMusicInput {
@@ -57,12 +69,15 @@ export interface CreateMusicInput {
   /** Scene start in video seconds. */
   sceneStart: number;
   sceneDuration: number;
+  /** Band levels of the track; an Error while they are not available, thrown by `spectrum()`. Absent without a track. */
+  spectrum?: MusicSpectrumData | Error | null;
 }
 
 /** Grid points this close before the scene start count as "at the start" (cuts snapped to beats land within ms). */
 const EPS = 0.005;
 /** Bars per phrase when the grid has no phrases (no track). */
 const PHRASE_BARS = 4;
+const SPECTRUM_BANDS = 24;
 
 /**
  * Ascending grid times, extended in both directions at `spacing`. `bounded` lines come from the track: only their
@@ -132,6 +147,30 @@ function listIn(line: Line, duration: number): number[] {
     out.push(tidy(v));
   }
   return out;
+}
+
+/** Levels at TRACK time `at`, interpolated between rows, averaged into `groups` groups of neighbouring bands. */
+function spectrumAt(source: MusicSpectrumData | null, at: number, groups: number): number[] {
+  const total = source?.bands ?? SPECTRUM_BANDS;
+  if (!Number.isInteger(groups) || groups < 1 || groups > total) {
+    throw new RangeError(`music.spectrum(t, bands): bands must be an integer from 1 to ${total}, not ${groups}`);
+  }
+  const levels = new Array<number>(total).fill(0);
+  const rows = source ? Math.floor(source.bytes.length / total) : 0;
+  const row = source ? at * source.rate : -1;
+  if (source && row >= 0 && row <= rows - 1) {
+    const i = Math.floor(row);
+    const w = row - i;
+    const next = Math.min(i + 1, rows - 1);
+    for (let b = 0; b < total; b++) {
+      levels[b] = (source.bytes[i * total + b] * (1 - w) + source.bytes[next * total + b] * w) / 255;
+    }
+  }
+  return Array.from({ length: groups }, (_, g) => {
+    const from = Math.floor((g * total) / groups);
+    const to = Math.floor(((g + 1) * total) / groups);
+    return levels.slice(from, to).reduce((sum, v) => sum + v, 0) / (to - from);
+  });
 }
 
 export function createMusic(input: CreateMusicInput): Music {
@@ -210,6 +249,12 @@ export function createMusic(input: CreateMusicInput): Music {
     beatPhase: (t) => {
       const x = indexAt(beats, t);
       return x - Math.floor(x);
+    },
+    spectrum: (t, bands) => {
+      const source = input.spectrum ?? null;
+      if (source instanceof Error) throw source;
+      // The audio itself: musicStart and the scene start, never the grid's manual gridOffset.
+      return spectrumAt(source, t + musicStart + sceneStart, bands ?? source?.bands ?? SPECTRUM_BANDS);
     },
   };
 }

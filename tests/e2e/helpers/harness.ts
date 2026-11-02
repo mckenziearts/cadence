@@ -11,8 +11,10 @@ import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import type { ViteDevServer } from 'vite';
 import type {
+  AnalysedMusic,
   BrandStore,
   CadenceConfig,
+  ClipService,
   Hub,
   MusicService,
   ProjectStore,
@@ -21,8 +23,18 @@ import type {
 } from '../../../server/contracts';
 import { createFrameHandler } from '../../../server/frames/frameServer';
 import { createVite, invalidateDirs } from '../../../server/frames/vite';
-import { HttpError, KeyedMutex, pathExists, readJson, roundMs, sha256, shortHash } from '../../../server/util';
-import type { BrandFile, ProjectFile, ProjectState, SceneState, ServerEvent, VoiceOverLine } from '../../../src/shared/types';
+import { sceneTimeline } from '../../../server/store/projects';
+import { HttpError, KeyedMutex, pathExists, readJson, sha256, shortHash } from '../../../server/util';
+import type {
+  BrandFile,
+  ClipState,
+  MusicAnalysis,
+  ProjectFile,
+  ProjectState,
+  SceneState,
+  ServerEvent,
+  VoiceOverLine,
+} from '../../../src/shared/types';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const FIXTURES = path.join(ROOT, 'tests/fixtures');
@@ -36,6 +48,10 @@ export class FixtureProjectStore implements ProjectStore {
   readonly events = new EventEmitter();
   /** ProjectState.voiceOverLines, per project: the sentences generated so far. */
   readonly voiceOverLines = new Map<string, VoiceOverLine[]>();
+  /** ProjectState.musicGrid and music.spectrum, per project with music: none while its analysis runs. */
+  readonly analysedMusic = new Map<string, AnalysedMusic>();
+  /** ProjectState.clips: none unless a test sets a provider, like the real store's setClipsProvider. */
+  clipsOf: (id: string) => Promise<Record<string, ClipState>> = async () => ({});
   private hashes = new Map<string, string>();
   private generations = new Map<string, number>();
   private invalidate: (dirs: string[]) => void = () => undefined;
@@ -67,20 +83,22 @@ export class FixtureProjectStore implements ProjectStore {
     const file = await readJson<ProjectFile>(path.join(dir, 'project.json')).catch(() => {
       throw new HttpError(404, `Projet introuvable : ${id}`);
     });
-    let start = 0;
+    const timeline = sceneTimeline(file.scenes);
     const scenes: SceneState[] = [];
-    for (const [index, scene] of file.scenes.entries()) {
+    for (const [index, { transition: declared, ...scene }] of file.scenes.entries()) {
       const sceneFile = this.sceneFile(id, scene.id);
       const code = await readFile(sceneFile, 'utf8').catch(() => '');
+      const { start, transition } = timeline.scenes[index];
       scenes.push({
         ...scene,
         index,
-        start: roundMs(start),
+        start,
+        ...(transition ? { transition } : {}),
+        ...(declared ? { declaredTransition: declared } : {}),
         file: sceneFile,
         url: `/@fs${sceneFile}`,
         codeVersion: shortHash(code),
       });
-      start += scene.duration;
     }
     return {
       id,
@@ -92,16 +110,17 @@ export class FixtureProjectStore implements ProjectStore {
       tempo: file.tempo,
       language: null,
       scenes,
-      duration: roundMs(start),
-      music: file.music,
+      duration: timeline.duration,
+      music: file.music ? { ...file.music, spectrum: this.analysedMusic.get(id)?.spectrum ?? null } : null,
       musicUrl: null,
-      musicGrid: null,
+      musicGrid: file.music ? (this.analysedMusic.get(id)?.grid ?? null) : null,
       voiceOver: file.voiceOver ?? { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
       voiceOverUrl: null,
       voiceOverLines: this.voiceOverLines.get(id) ?? [],
       voiceOverPending: [],
       voiceOverError: null,
       captions: file.captions ?? false,
+      clips: await this.clipsOf(id),
       codeGeneration: this.generation(id),
       createdAt: file.createdAt,
       updatedAt: file.updatedAt,
@@ -147,11 +166,15 @@ export class FixtureProjectStore implements ProjectStore {
   deleteScene = unused;
   reorderScenes = unused;
   setDurations = unused;
+  setTransition = unused;
   setMusic = unused;
   readArtDirection = unused;
   writeArtDirection = unused;
   setMusicGridProvider = unused;
   setVoiceOverProvider = unused;
+  setClipsProvider(fn: (id: string) => Promise<Record<string, ClipState>>): void {
+    this.clipsOf = fn;
+  }
   adopt = unused;
 }
 
@@ -189,18 +212,32 @@ export class RecordingHub implements Hub {
 export class FixtureMusicService implements MusicService {
   /** Absolute path returned by audioPath(), per project. */
   audio = new Map<string, string>();
+  /** What analysis() gives: no analysis by default, or a pending one a test settles. */
+  analyses = new Map<string, Promise<MusicAnalysis | null>>();
   async audioPath(projectId: string): Promise<string | null> {
     return this.audio.get(projectId) ?? null;
+  }
+  async analysis(projectId: string): Promise<MusicAnalysis | null> {
+    return this.analyses.get(projectId) ?? null;
   }
   upload = unused;
   tracks = unused;
   select = unused;
   update = unused;
   remove = unused;
-  analysis = unused;
   grid = unused;
   snapCuts = unused;
   context = unused;
+}
+
+export class FixtureClipService implements ClipService {
+  /** What whenIdle() waits for, per project: nothing by default, or a pending extraction a test settles. */
+  idle = new Map<string, Promise<void>>();
+  async whenIdle(projectId: string): Promise<void> {
+    await this.idle.get(projectId);
+  }
+  sync = unused;
+  start = unused;
 }
 
 export class FixtureVoiceOverService implements VoiceOverService {
@@ -285,7 +322,8 @@ export async function startHarness(name: string): Promise<Harness> {
     overrides: {
       // Own dependency cache per suite: test files run in parallel and must not disturb a running Cadence.
       cacheDir: path.join(ROOT, 'node_modules/.vite-e2e', name),
-      resolve: { alias: { cadence: path.join(FIXTURES, 'runtime/index.ts') } },
+      // Put before the app's aliases: exact, so `cadence/three` still reaches the real src/runtime/three.tsx.
+      resolve: { alias: [{ find: /^cadence$/, replacement: path.join(FIXTURES, 'runtime/index.ts') }] },
       // Added to the app's list: the stub runtime lives under tests/.
       server: { fs: { allow: [path.join(FIXTURES, 'runtime')] } },
     },

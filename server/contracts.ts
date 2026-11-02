@@ -17,6 +17,7 @@ import type {
   CaptureRefInput,
   ChatKey,
   ChatState,
+  ClipState,
   CreateProjectInput,
   CreateSceneInput,
   ElevenLabsModel,
@@ -29,6 +30,7 @@ import type {
   MusicGridData,
   MusicSettings,
   MusicSettingsPatch,
+  MusicSpectrum,
   NetworkAccount,
   NetworkId,
   ProjectFile,
@@ -44,6 +46,7 @@ import type {
   RenderRequest,
   RepoListing,
   SceneState,
+  SceneTransition,
   SceneTemplateMeta,
   SceneVoiceOver,
   SceneVoiceOverInput,
@@ -121,7 +124,7 @@ export interface Hub {
 //   'changed'       (projectId)              project.json or art-direction.md changed
 //   'code-changed'  (projectId, generation)  a code file (scenes/**, components/**, brand files) changed; generation bumped
 //   'versions-changed' (projectId)           FileVersionStore recorded a version (hub event 'versions')
-//   'assets-changed'   (projectId)           assets/** changed on disk (hub event 'assets')
+//   'assets-changed'   (projectId)           assets/** changed on disk, or FileAssetStore wrote an upload (hub event 'assets')
 
 /** Vite's file watcher (chokidar `all` events: name, absolute path): it already watches the root, see server/frames/vite.ts. */
 export type FileEvents = Pick<EventEmitter, 'on' | 'off'>;
@@ -156,6 +159,8 @@ export interface ProjectStore {
   reorderScenes(id: string, sceneIds: string[]): Promise<ProjectState>;
   /** Set scene durations in one write (used by snap-to-music). */
   setDurations(id: string, durations: Record<string, number>): Promise<ProjectState>;
+  /** The cut into the scene; null removes it. Refused (400) on the first scene, whose transition draws nothing. */
+  setTransition(id: string, sceneId: string, transition: SceneTransition | null): Promise<ProjectState>;
   setMusic(id: string, music: MusicSettings | null): Promise<ProjectState>;
   readArtDirection(id: string): Promise<string>;
   writeArtDirection(id: string, text: string): Promise<void>;
@@ -169,10 +174,12 @@ export interface ProjectStore {
   withLock<T>(id: string, fn: () => Promise<T>): Promise<T>;
   /** Injected by server/index.ts: called with the project dir (and brand dir) before 'code-changed' is emitted. */
   setModuleInvalidator(fn: (dirs: string[]) => void): void;
-  /** Injected by server/index.ts: resolves the music grid for ProjectState.musicGrid. */
-  setMusicGridProvider(fn: (id: string) => Promise<MusicGridData | null>): void;
+  /** Injected by server/index.ts: resolves ProjectState.musicGrid and ProjectState.music.spectrum. */
+  setMusicGridProvider(fn: (id: string) => Promise<AnalysedMusic | null>): void;
   /** Injected by server/index.ts: resolves the voice-over fields of ProjectState from what is already generated. */
   setVoiceOverProvider(fn: VoiceOverProvider): void;
+  /** Injected by server/index.ts: resolves ProjectState.clips. */
+  setClipsProvider(fn: (id: string) => Promise<Record<string, ClipState>>): void;
   /**
    * Move a checked project folder (staged on the same volume) in under `id`, or `<id>-2`... when it is taken, and
    * emit 'list-changed'. Returns the id it got.
@@ -391,8 +398,11 @@ export interface VersionStore {
 
 export interface AssetStore {
   list(projectId: string): Promise<AssetInfo[]>;
-  /** Save an uploaded file under assets/ (images, SVG, fonts; 50 MB max). Name is sanitized. */
-  upload(projectId: string, file: { name: string; data: Buffer }): Promise<AssetInfo>;
+  /**
+   * Save an uploaded file under assets/: images, SVG and fonts (50 MiB max), videos ffmpeg reads (500 MiB) and Lottie
+   * JSON with embedded images (10 MiB). Name is sanitized.
+   */
+  upload(projectId: string, file: Upload): Promise<AssetInfo>;
   remove(projectId: string, assetPath: string): Promise<void>;
   /**
    * Screenshot a web page into assets/refs/<name>-<device>.png (reference material for the agent). `policy` is what the
@@ -496,7 +506,7 @@ export interface SeamService {
 
 // server/capture/render.ts: export class FfmpegRenderService implements RenderService
 //   constructor(deps: { config: CadenceConfig; store: ProjectStore; music: MusicService; voiceOver: VoiceOverService; hub: Hub;
-//     browserServer?: (options: ChromiumOptions) => Promise<BrowserServer> })
+//     clips: ClipService; browserServer?: (options: ChromiumOptions) => Promise<BrowserServer> })
 
 export interface RenderService {
   /** One job per format; jobs run one at a time, frames captured by up to 4 parallel pages. */
@@ -514,12 +524,20 @@ export interface RenderService {
 
 // server/music/service.ts: export class LocalMusicService implements MusicService
 //   constructor(deps: { config: CadenceConfig; store: ProjectStore; hub: Hub })
-// Tracks live in projects/<id>/music/; analysis cached next to them as <file>.analysis.json.
+// Tracks live in projects/<id>/music/; analysis cached next to them as <file>.analysis.json, band spectrum bytes as
+// <file>.spectrum.bin.
 
 /** An uploaded file: its bytes as they arrive, so a large one is written to disk without being held in memory. */
 export interface Upload {
   name: string;
   body: AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
+}
+
+/** What the analysis of the selected track gives the project state. */
+export interface AnalysedMusic {
+  grid: MusicGridData;
+  /** Null when the spectrum file could not be written. */
+  spectrum: MusicSpectrum | null;
 }
 
 export interface MusicService {
@@ -531,8 +549,8 @@ export interface MusicService {
   update(projectId: string, patch: MusicSettingsPatch): Promise<ProjectState>;
   remove(projectId: string): Promise<ProjectState>;
   analysis(projectId: string): Promise<MusicAnalysis | null>;
-  /** Analysis with the project's overrides applied (bpm, beatsPerBar, barOffset, gridOffset). */
-  grid(projectId: string): Promise<MusicGridData | null>;
+  /** Analysis with the project's overrides applied (bpm, beatsPerBar, barOffset, gridOffset), and its spectrum file. */
+  grid(projectId: string): Promise<AnalysedMusic | null>;
   /**
    * Move every cut to the nearest grid point (video time); each scene keeps >= 0.4 s.
    * keepBars: keep each scene's bar count (round(duration × tempo / 240), at least 1) and lay the cuts on the
@@ -544,6 +562,20 @@ export interface MusicService {
   context(projectId: string, sceneId?: string | null): Promise<string>;
   /** Absolute path of the selected track, or null. */
   audioPath(projectId: string): Promise<string | null>;
+}
+
+// server/clips/service.ts: export class LocalClipService implements ClipService
+//   constructor(deps: { config: CadenceConfig; store: ProjectStore; hub: Hub; ffmpeg?: FfmpegRunner })
+// Frames of each video and GIF asset in projects/<id>/clips/<key>/ (000001.jpg..., then clip.json), <key> from the
+// asset's path, size and mtime. One ffmpeg at a time for the whole server.
+
+export interface ClipService {
+  /** Removes stale folders, queues missing clips and returns their states; never waits for an extraction. */
+  sync(projectId: string): Promise<Record<string, ClipState>>;
+  /** Resolves once no clip of the project is queued or being prepared. */
+  whenIdle(projectId: string): Promise<void>;
+  /** Syncs every project now and each one on 'assets-changed'. */
+  start(): void;
 }
 
 // server/voiceover/piper.ts: export class PiperEngine implements SpeechEngine  (constructor(bin: string))

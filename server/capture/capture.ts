@@ -166,6 +166,8 @@ export async function openFramePage(
     format: FormatId;
     scale: number;
     captions?: boolean;
+    /** The stage drops the brand background, for outputs with alpha. */
+    transparent?: boolean;
     requestSecret?: string;
   },
 ): Promise<FramePage> {
@@ -181,6 +183,7 @@ export async function openFramePage(
     const params = new URLSearchParams({ project: opts.projectId, format: opts.format, mode: 'capture' });
     if (opts.sceneId) params.set('scene', opts.sceneId);
     if (opts.captions === false) params.set('captions', '0');
+    if (opts.transparent) params.set('transparent', '1');
     await page.goto(`${origin}/frame.html?${params}`, { timeout: LOAD_TIMEOUT_MS });
     if (!(await fromPage(page.evaluate(() => window.__cadence !== undefined)))) {
       throw new Error(m().media.capture.frameNotStarted(problems));
@@ -229,7 +232,7 @@ const auditFindings = z
   .array(
     z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('contrast'), ...auditFinding, ratio: z.number(), required: z.number() }),
-      z.object({ kind: z.enum(['clipped', 'offCanvas', 'outsideSafe', 'underCaptions']), ...auditFinding }),
+      z.object({ kind: z.enum(['clipped', 'offCanvas', 'outsideSafe', 'underCaptions', 'gif']), ...auditFinding }),
     ]),
   )
   .max(6);
@@ -250,8 +253,8 @@ export async function auditFrame(page: Page, timeoutMs = AUDIT_TIMEOUT_MS): Prom
 }
 
 /**
- * What a scene renders from besides shared code: its file, timing, position, fps, tempo, music, brand and language.
- * Components and brand files are only covered by the code generation.
+ * What a scene renders from besides shared code: its file, timing, position, fps, tempo, music, brand, language and the
+ * project's clips (a replaced asset gets a new key). Components and brand files are only covered by the code generation.
  */
 export function sceneSignature(project: ProjectState, scene: SceneState): string {
   return shortHash(
@@ -268,6 +271,8 @@ export function sceneSignature(project: ProjectState, scene: SceneState): string
       project.language,
       project.music?.start ?? null,
       project.musicGrid,
+      // ponytail: every clip of the project, not only the scene's: any clip change re-renders all thumbnails (rare).
+      Object.entries(project.clips).map(([file, clip]) => [file, clip.status === 'ready' ? clip.key : clip.status]),
     ]),
   );
 }

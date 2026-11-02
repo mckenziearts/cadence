@@ -20,6 +20,7 @@ import type {
   TemplateStore,
   VersionStore,
 } from '../../server/contracts';
+import { m } from '../../server/i18n';
 import { McpTokens } from '../../server/mcp/tokens';
 import { FileUsageLog } from '../../server/usage';
 import { HttpError } from '../../server/util';
@@ -83,6 +84,7 @@ function makeProject(dir: string, ids: string[]): ProjectState {
     voiceOverPending: [],
     voiceOverError: null,
     captions: false,
+    clips: {},
     codeGeneration: 1,
     createdAt: '2026-09-30T00:00:00.000Z',
     updatedAt: '2026-09-30T00:00:00.000Z',
@@ -857,4 +859,12 @@ test('rules and labels', () => {
   assert.equal(label('mcp__cadence__list_voices', {}), 'Liste des voix');
   assert.equal(label('mcp__cadence__set_speakers', { speakers: [] }), 'Locuteurs du projet réglés');
   for (const rule of ['mcp__cadence__list_voices', 'mcp__cadence__set_speakers']) assert.ok(project.includes(rule), rule);
+  const fade = { kind: 'fade' as const, duration: 0.5 };
+  assert.equal(label('mcp__cadence__set_transition', { sceneId: 'outro', transition: fade }), 'Transition vers outro');
+  assert.equal(label('mcp__cadence__set_transition', { sceneId: 'outro', transition: null }), 'Coupe franche avant outro');
+  assert.ok(project.includes('mcp__cadence__set_transition'));
+  assert.equal(
+    m().agent.chat.seam({ from: 'intro', to: 'outro', format: '9:16', diffPercent: 0, checkedAt: '', transition: fade }),
+    'intro \u2192 outro (9:16) : transition, non comparée',
+  );
 });

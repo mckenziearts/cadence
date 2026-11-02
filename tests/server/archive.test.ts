@@ -70,9 +70,11 @@ async function entries(archive: Readable): Promise<[string, Buffer][]> {
   return out;
 }
 
-test('project paths: renders, tsconfig.json, dotfiles and most of .cadence are left out; chats, versions and voice-over go', () => {
+test('project paths: renders, clips, tsconfig.json, dotfiles and most of .cadence are left out; chats, versions and voice-over go', () => {
   const dropped = [
     'renders/a.mp4',
+    'clips/intro-0123456789ab/000001.jpg',
+    'clips/intro-0123456789ab.part/clip.json',
     'tsconfig.json',
     '.cadence/thumbs/x.jpg',
     '.cadence/frames/a.jpg',
@@ -93,6 +95,7 @@ test('project paths: renders, tsconfig.json, dotfiles and most of .cadence are l
     'scenes/intro.tsx',
     'components/tsconfig.json',
     'assets/renders/a.png',
+    'assets/clips/a.png',
     '.cadence/chats/project.json',
     '.cadence/versions/index.json',
     '.cadence/voice-over/track.wav',
@@ -347,6 +350,18 @@ test('import round trip: two projects and their shared brand come back byte for 
   assert.deepEqual((await store.list()).map((p) => p.id).sort(), ids);
   assert.ok(await pathExists(path.join(store.dir('promo-orbit'), 'assets/refs')), 'the empty folders a project starts with');
   assert.deepEqual(await stagingLeft(), []);
+});
+
+test('export then import keeps the transitions of a project', async () => {
+  await store.createScene('libre', { name: 'Suite', duration: 2, code: 'export default () => null;\n' });
+  const flip = { kind: 'flip', direction: 'down', duration: 0.75 } as const;
+  await store.setTransition('libre', 'suite', flip);
+  const archive = await exported(['libre']);
+  await fs.rm(store.dir('libre'), { recursive: true });
+  await importBuffer(archive);
+  const [, suite] = (await store.get('libre')).scenes;
+  assert.deepEqual(suite.declaredTransition, flip);
+  assert.deepEqual(suite.transition, flip);
 });
 
 test('stylesheets importing their own files and the archive brand by path pass, and leave the frame build working', async () => {
@@ -901,6 +916,7 @@ test('import leaves out the paths an export never writes, in projects and in bra
   const dropped = [
     'tsconfig.json',
     'renders/a.mp4',
+    'clips/intro-0123456789ab/000001.jpg',
     'node_modules/x/index.js',
     'components/package.json',
     '.cadence/frames/a',

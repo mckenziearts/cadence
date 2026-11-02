@@ -1,7 +1,7 @@
 // Adapted from saeedvaziry/caleb-video-editor (MIT)
 // Low-level signal features used by the tempo, beat and structure stages.
 
-import { powerSpectrogram } from './fft';
+import { FFT, hann, powerSpectrogram } from './fft';
 
 export interface Features {
   sampleRate: number;
@@ -47,14 +47,19 @@ interface Filter {
 }
 
 function melFilterbank(bands: number, fftSize: number, sr: number, fMin: number, fMax: number): Filter[] {
-  const binHz = sr / fftSize;
-  const bins = fftSize / 2 + 1;
   const mMin = hzToMel(fMin);
   const mMax = hzToMel(fMax);
   const edges: number[] = [];
   for (let i = 0; i < bands + 2; i++) edges.push(melToHz(mMin + ((mMax - mMin) * i) / (bands + 1)));
+  return triangleFilters(edges, fftSize, sr);
+}
+
+/** Triangle filters over FFT bins: filter m rises from edges[m] to edges[m + 1] and falls to edges[m + 2]. */
+function triangleFilters(edges: number[], fftSize: number, sr: number): Filter[] {
+  const binHz = sr / fftSize;
+  const bins = fftSize / 2 + 1;
   const filters: Filter[] = [];
-  for (let m = 0; m < bands; m++) {
+  for (let m = 0; m < edges.length - 2; m++) {
     const left = edges[m];
     const center = edges[m + 1];
     const right = edges[m + 2];
@@ -79,6 +84,62 @@ function melFilterbank(bands: number, fftSize: number, sr: number, fMin: number,
     }
   }
   return filters;
+}
+
+export const SPECTRUM_BANDS = 24;
+export const SPECTRUM_RATE = 25;
+const SPECTRUM_FFT = 2048;
+const SPECTRUM_MIN_HZ = 40;
+const SPECTRUM_MAX_HZ = 11000;
+const SPECTRUM_FLOOR_DB = -80;
+
+/** Frames of `bandSpectrum` for a signal of `length` samples: frame i is centered on i / SPECTRUM_RATE seconds. */
+export function spectrumFrames(length: number, sr: number): number {
+  return 1 + Math.floor((length * SPECTRUM_RATE) / sr);
+}
+
+/**
+ * Level of SPECTRUM_BANDS log-spaced bands (SPECTRUM_MIN_HZ to SPECTRUM_MAX_HZ) at SPECTRUM_RATE frames per second,
+ * frame-major (`out[frame * SPECTRUM_BANDS + band]`). A byte maps -80 dB to 0 dB, where 0 dB is a full-scale sine.
+ * Frames are computed two at a time and reduced at once: a 600 s track never holds its full-rate spectrogram.
+ */
+export function bandSpectrum(signal: Float32Array, sr: number): Uint8Array {
+  const ratio = (SPECTRUM_MAX_HZ / SPECTRUM_MIN_HZ) ** (1 / SPECTRUM_BANDS);
+  // Band b covers SPECTRUM_MIN_HZ * ratio^b to ratio^(b + 1); its triangle peaks at the geometric middle.
+  const edges = Array.from({ length: SPECTRUM_BANDS + 2 }, (_, i) => SPECTRUM_MIN_HZ * ratio ** (i - 0.5));
+  const filters = triangleFilters(edges, SPECTRUM_FFT, sr);
+  const fft = new FFT(SPECTRUM_FFT);
+  const window = hann(SPECTRUM_FFT);
+  const half = SPECTRUM_FFT >> 1;
+  // A full-scale sine through a Hann window peaks at (size / 4)^2.
+  const fullScale = (SPECTRUM_FFT / 4) ** 2;
+  const count = spectrumFrames(signal.length, sr);
+  const out = new Uint8Array(count * SPECTRUM_BANDS);
+  const frames = [new Float64Array(SPECTRUM_FFT), new Float64Array(SPECTRUM_FFT)];
+  const powers = [new Float64Array(half + 1), new Float64Array(half + 1)];
+
+  for (let f = 0; f < count; f += 2) {
+    for (let k = 0; k < 2; k++) {
+      const start = Math.round(((f + k) * sr) / SPECTRUM_RATE) - half;
+      for (let j = 0; j < SPECTRUM_FFT; j++) {
+        const s = start + j;
+        frames[k][j] = s >= 0 && s < signal.length ? signal[s] * window[j] : 0;
+      }
+    }
+    fft.powerPair(frames[0], frames[1], powers[0], powers[1]);
+    for (let k = 0; k < 2 && f + k < count; k++) {
+      const p = powers[k];
+      for (let b = 0; b < SPECTRUM_BANDS; b++) {
+        const { lo, weights } = filters[b];
+        let acc = 0;
+        for (let j = 0; j < weights.length; j++) acc += weights[j] * p[lo + j];
+        const db = 10 * Math.log10(Math.max(acc / fullScale, 1e-10));
+        const level = Math.min(1, Math.max(0, (db - SPECTRUM_FLOOR_DB) / -SPECTRUM_FLOOR_DB));
+        out[(f + k) * SPECTRUM_BANDS + b] = Math.round(level * 255);
+      }
+    }
+  }
+  return out;
 }
 
 export function computeFeatures(signal: Float32Array, sr: number): Features {

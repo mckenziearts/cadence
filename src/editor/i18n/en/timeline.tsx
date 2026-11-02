@@ -38,6 +38,21 @@ export default {
     jump: 'small visible jump',
     cut: 'hard cut',
   },
+  transitions: {
+    control: (from: string, to: string, summary: string) => `Transition from ${from} to ${to}: ${summary}`,
+    dialog: (from: string, to: string) => `Transition from ${from} to ${to}`,
+    kind: 'Transition type',
+    none: 'None',
+    kinds: { fade: 'Fade', slide: 'Slide', wipe: 'Wipe', flip: 'Flip' },
+    direction: 'Direction',
+    directions: { left: 'To the left', right: 'To the right', up: 'Up', down: 'Down' },
+    duration: 'Length (0.1 to 5\u00a0s)',
+    summary: (kind: string, direction: string | null, duration: string) =>
+      `${kind}${direction ? ` ${direction}` : ''}, ${duration}`,
+    clamped: (played: string, declared: string) => `${played} instead of ${declared}`,
+    clampedNote: (played: string, declared: string) =>
+      `Plays over ${played} instead of ${declared}: a transition lasts at most half of each scene.`,
+  },
   seamModal: {
     title: (from: string, to: string) => `Cut from ${from} to ${to}`,
     subtitle: (from: string, to: string, format: string) =>

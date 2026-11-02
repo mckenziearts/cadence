@@ -1,12 +1,28 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { lottieProblem } from '../../src/shared/lottie';
 import type { AssetInfo, AssetKind, CaptureRefInput } from '../../src/shared/types';
 import type { Policy } from '../capture/policy';
-import type { AssetStore, CaptureService, ProjectStore } from '../contracts';
+import { probeVideo } from '../clips/probe';
+import type { AssetStore, CaptureService, ProjectStore, Upload } from '../contracts';
 import { m } from '../i18n';
-import { HttpError, KeyedMutex, pathExists, resolveInside, slugify, uniqueId, writeFileAtomic } from '../util';
+import {
+  HttpError,
+  KeyedMutex,
+  pathExists,
+  randomToken,
+  readFileNoFollow,
+  removeFileInside,
+  renameInside,
+  resolveInside,
+  slugify,
+  uniqueId,
+  writeFileAtomic,
+  writeFileInside,
+} from '../util';
 
-const MAX_ASSET_BYTES = 50 * 1024 * 1024;
+const MiB = 1024 * 1024;
+const VIDEOS = new Set(['mp4', 'mov', 'm4v', 'webm']);
 const KINDS: Record<string, AssetKind> = {
   png: 'image',
   jpg: 'image',
@@ -25,8 +41,16 @@ const KINDS: Record<string, AssetKind> = {
   aac: 'audio',
   flac: 'audio',
   ogg: 'audio',
+  mp4: 'video',
+  mov: 'video',
+  m4v: 'video',
+  webm: 'video',
+  json: 'lottie',
 };
-const UPLOADABLE = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'woff', 'woff2', 'ttf', 'otf']);
+const UPLOADABLE = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'woff', 'woff2', 'ttf', 'otf', 'json', ...VIDEOS]);
+const limitMiB = (ext: string) => (VIDEOS.has(ext) ? 500 : ext === 'json' ? 10 : 50);
+/** All of assets/ travels in an export, and an import takes 2048 MB at most: the rest is room for music and scenes. */
+const PROJECT_ASSETS_MiB = 1536;
 
 /** Files under projects/<id>/assets/ (assets/refs/ = reference screenshots for the agent). */
 export class FileAssetStore implements AssetStore {
@@ -35,6 +59,7 @@ export class FileAssetStore implements AssetStore {
   constructor(
     private store: ProjectStore,
     private capture: CaptureService,
+    private ffmpegPath: string,
   ) {}
 
   resolve(projectId: string, assetPath: string): string {
@@ -55,27 +80,66 @@ export class FileAssetStore implements AssetStore {
     return out.sort((a, b) => a.path.localeCompare(b.path));
   }
 
-  async upload(projectId: string, file: { name: string; data: Buffer }): Promise<AssetInfo> {
+  async upload(projectId: string, file: Upload): Promise<AssetInfo> {
     await this.requireProject(projectId);
     const original = path.basename(file.name.replaceAll('\\', '/'));
     const ext = path.extname(original).slice(1).toLowerCase();
     if (!UPLOADABLE.has(ext)) {
       throw new HttpError(415, m().api.assets.unsupported(original));
     }
-    if (file.data.length === 0) throw new HttpError(400, m().api.assets.empty(original));
-    if (file.data.length > MAX_ASSET_BYTES) throw new HttpError(413, m().api.assets.tooLarge(original));
     const stem = slugify(path.basename(original, path.extname(original)), 'fichier');
-    return this.mutex.run(projectId, async () => {
-      const base = this.base(projectId);
-      const names = await fs.readdir(base).catch(() => [] as string[]);
-      // Lowercased: macOS volumes are case-insensitive, so "Logo.png" and "logo.png" are the same file.
-      const taken = names
-        .filter((n) => n.toLowerCase().endsWith(`.${ext}`))
-        .map((n) => n.slice(0, -ext.length - 1).toLowerCase());
-      const name = `${uniqueId(stem, taken)}.${ext}`;
-      await writeFileAtomic(path.join(base, name), file.data);
-      return this.info(projectId, name, file.data.length);
-    });
+    const root = this.store.dir(projectId);
+    const base = this.base(projectId);
+    // Hidden from list() until checked: a clip is probed, a Lottie file parsed, before it takes its name.
+    const upload = path.join(base, `.upload-${randomToken(9)}.${ext}`);
+    try {
+      const size = await this.receive(root, upload, file.body, original, limitMiB(ext), await this.bytes(projectId));
+      if (size === 0) throw new HttpError(400, m().api.assets.empty(original));
+      if (VIDEOS.has(ext) || ext === 'gif') await probeVideo(upload, this.ffmpegPath, { name: original });
+      if (ext === 'json') checkLottie(await readFileNoFollow(root, upload, 'utf8'), original);
+      return await this.mutex.run(projectId, async () => {
+        // Again here: another upload may have taken its name since this one started.
+        if ((await this.bytes(projectId)) + size > PROJECT_ASSETS_MiB * MiB) throw projectFull(original);
+        const names = await fs.readdir(base).catch(() => [] as string[]);
+        // Lowercased: macOS volumes are case-insensitive, so "Logo.png" and "logo.png" are the same file.
+        const taken = names
+          .filter((n) => n.toLowerCase().endsWith(`.${ext}`))
+          .map((n) => n.slice(0, -ext.length - 1).toLowerCase());
+        const name = `${uniqueId(stem, taken)}.${ext}`;
+        await renameInside(root, upload, path.join(base, name));
+        // The watcher would say so too, later; the clip service starts preparing a video now.
+        this.store.events.emit('assets-changed', projectId);
+        return this.info(projectId, name, size);
+      });
+    } catch (e) {
+      await removeFileInside(root, upload).catch(() => undefined);
+      throw e;
+    }
+  }
+
+  /**
+   * Streams the body to `file` and returns its size; 413 as soon as it passes the file limit or the room `used` bytes
+   * leave in the project, never read further.
+   */
+  private async receive(
+    root: string,
+    file: string,
+    body: Upload['body'],
+    name: string,
+    mib: number,
+    used: number,
+  ): Promise<number> {
+    let size = 0;
+    async function* counted() {
+      for await (const chunk of body) {
+        size += chunk.byteLength;
+        if (size > mib * MiB) throw new HttpError(413, m().api.assets.tooLarge(name, mib));
+        if (used + size > PROJECT_ASSETS_MiB * MiB) throw projectFull(name);
+        yield chunk;
+      }
+    }
+    await writeFileInside(root, file, counted());
+    return size;
   }
 
   async remove(projectId: string, assetPath: string): Promise<void> {
@@ -136,6 +200,10 @@ export class FileAssetStore implements AssetStore {
     };
   }
 
+  private async bytes(projectId: string): Promise<number> {
+    return (await this.list(projectId)).reduce((sum, asset) => sum + asset.size, 0);
+  }
+
   private base(projectId: string): string {
     return path.join(this.store.dir(projectId), 'assets');
   }
@@ -143,4 +211,22 @@ export class FileAssetStore implements AssetStore {
   private async requireProject(projectId: string): Promise<void> {
     if (!(await this.store.exists(projectId))) throw new HttpError(404, m().api.projectNotFound(projectId));
   }
+}
+
+const projectFull = (name: string) => new HttpError(413, m().api.assets.projectFull(name, PROJECT_ASSETS_MiB));
+
+function checkLottie(text: string, name: string): void {
+  const problem = lottieProblem(
+    (() => {
+      try {
+        return JSON.parse(text) as unknown;
+      } catch {
+        return null;
+      }
+    })(),
+  );
+  if (problem?.kind === 'header') throw new HttpError(422, m().media.clips.notLottie(name));
+  if (problem?.kind === 'image') throw new HttpError(422, m().media.clips.externalImage(name, problem.path));
+  if (problem?.kind === 'font') throw new HttpError(422, m().media.clips.externalFont(name, problem.path));
+  if (problem?.kind === 'file') throw new HttpError(422, m().media.clips.externalFile(name, problem.path));
 }

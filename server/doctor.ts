@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import net from 'node:net';
 import { promisify } from 'node:util';
 import { ClaudeCodeProvider } from './agent/claudeCode';
+import { ffmpegEncoders, missingEncoders, outputSupport } from './capture/encoders';
 import { CHROMIUM_SANDBOX_FAILED, chromiumSandbox } from './config';
 import type { CadenceConfig } from './contracts';
 import { m } from './i18n';
@@ -68,19 +69,21 @@ function checkNode(): Check {
     : { level: 'fail', label: m().media.doctor.nodeOld(process.versions.node), fix: m().media.doctor.nodeFix };
 }
 
-async function checkFfmpeg(bin: string): Promise<Check> {
+export async function checkFfmpeg(bin: string): Promise<Check> {
   let version: string;
   try {
     version = (await run(bin, ['-version'])).stdout.match(/ffmpeg version (\S+)/)?.[1] ?? '';
   } catch {
     return { level: 'fail', label: m().media.doctor.ffmpegMissing(bin), fix: m().media.doctor.ffmpegFix };
   }
-  // Renders are H.264 + AAC.
-  const { stdout } = await run(bin, ['-hide_banner', '-encoders'], { maxBuffer: 8 * 1024 * 1024 });
-  const missing = ['libx264', 'aac'].filter((name) => !new RegExp(`\\s${name}\\s`).test(stdout));
-  return missing.length
-    ? { level: 'fail', label: m().media.doctor.encoders(version, missing), fix: m().media.doctor.encodersFix }
-    : { level: 'ok', label: `ffmpeg ${version} (libx264, aac)` };
+  // Only MP4 is a must: every project renders it, the other outputs are extras an ffmpeg build may lack.
+  const missing = missingEncoders('mp4', await ffmpegEncoders(bin));
+  if (missing.length)
+    return { level: 'fail', label: m().media.doctor.encoders(version, missing), fix: m().media.doctor.encodersFix };
+  const support = Object.entries(await outputSupport(bin));
+  const available = support.flatMap(([output, s]) => (s.available ? [output] : []));
+  const absent = support.flatMap(([output, s]) => (s.available ? [] : [m().media.doctor.outputMissing(output, s.reason)]));
+  return { level: absent.length ? 'warn' : 'ok', label: [m().media.doctor.outputs(version, available), ...absent].join('; ') };
 }
 
 async function checkFfprobe(bin: string): Promise<Check> {

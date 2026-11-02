@@ -1,9 +1,18 @@
-// Pure helpers of the editor: French formatting, music grid marks, seam tones, light markdown.
+// Pure helpers of the editor: French formatting, music grid marks, seam tones, cut transitions, light markdown.
 // node --import tsx --test tests/editor/helpers.test.tsx
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { MusicGridData, ProjectState, SceneState, ScriptLine, Speaker, VersionEntry } from '../../src/shared/types';
+import type {
+  MusicGridData,
+  OutputSupport,
+  ProjectState,
+  RenderOutput,
+  SceneState,
+  ScriptLine,
+  Speaker,
+  VersionEntry,
+} from '../../src/shared/types';
 import { frameErrors } from '../../src/editor/components/FrameView';
 import en from '../../src/editor/i18n/en/shell';
 import fr from '../../src/editor/i18n/fr/shell';
@@ -20,6 +29,7 @@ import {
   seamShare,
   seamTone,
   secs,
+  secsExact,
   secsLabel,
   setFormatLanguage,
   tokenCount,
@@ -28,8 +38,10 @@ import {
 import { allowedAsk, dismissedAsk, raisedAsk } from '../../src/editor/lib/captureAsk';
 import { Markdown } from '../../src/editor/lib/markdown';
 import { projectsPage } from '../../src/editor/lib/pages';
+import { fileAfterRemoval, fileView, hasAlpha, renderRequest, stillTime, unavailable } from '../../src/editor/lib/render';
+import { clampedTransition, editTransition } from '../../src/editor/lib/transitions';
 import { shownVersions } from '../../src/editor/lib/versions';
-import { barDrift, frameStart, playbackTime, rulerStep, sceneBars, timelineMarks } from '../../src/editor/lib/timeline';
+import { barDrift, frameStart, playbackTime, rulerStep, sceneAt, sceneBars, timelineMarks } from '../../src/editor/lib/timeline';
 import {
   editLine,
   lineTimes,
@@ -45,6 +57,9 @@ const S = ' ';
 test('French number formats', () => {
   assert.equal(secs(2.2222), '2,22');
   assert.equal(secsLabel(3.32), `3,32${S}s`);
+  assert.equal(secsExact(0.5), `0,5${S}s`);
+  assert.equal(secsExact(1.234), `1,234${S}s`);
+  assert.equal(secsExact(2), `2${S}s`);
   assert.equal(usd(0.48), `0,48${S}$`);
   assert.equal(usd(0), `0,00${S}$`);
   assert.equal(usd(0.004), `<${S}0,01${S}$`);
@@ -151,7 +166,7 @@ function project(durations: number[], musicGrid: MusicGridData | null = null, st
     language: null,
     scenes,
     duration: t,
-    music: musicGrid ? { file: 'music/a.mp3', start, volume: 1 } : null,
+    music: musicGrid ? { file: 'music/a.mp3', start, volume: 1, spectrum: null } : null,
     musicUrl: null,
     musicGrid,
     voiceOver: { voice: 'fr_FR-siwis-medium', speed: 1, musicLevel: 0.3 },
@@ -160,6 +175,7 @@ function project(durations: number[], musicGrid: MusicGridData | null = null, st
     voiceOverPending: [],
     voiceOverError: null,
     captions: false,
+    clips: {},
     codeGeneration: 0,
     createdAt: '',
     updatedAt: '',
@@ -180,6 +196,39 @@ test('grid marks without music: steady tempo restarting at every scene', () => {
     [2],
   );
   assert.equal(sceneBars(p, p.scenes[0]), 1);
+});
+
+test('a cut with a transition is marked where the incoming scene starts, its grid restarting there', () => {
+  const p = project([2, 2]);
+  p.scenes[1] = { ...p.scenes[1], start: 1.5, transition: { kind: 'fade', duration: 0.5 } };
+  p.duration = 3.5;
+  const whole = timelineMarks(p, null);
+  assert.deepEqual(
+    whole.cuts.map((c) => [c.t, c.scene.id]),
+    [[1.5, 's1']],
+  );
+  assert.deepEqual(whole.phrases, [0, 1.5]);
+});
+
+test('sceneAt follows the frame page: during an overlap the playhead is on the incoming scene', () => {
+  const p = project([2, 2]);
+  p.scenes[1] = { ...p.scenes[1], start: 1.5, transition: { kind: 'fade', duration: 0.5 } };
+  const at = (t: number) => sceneAt(p, t)?.id;
+  assert.equal(at(1.4), 's0');
+  assert.equal(at(1.5), 's1');
+  assert.equal(at(1.75), 's1');
+  assert.equal(at(2), 's1');
+  assert.equal(at(9), 's1');
+  const plain = project([0.1, 0.2, 1]);
+  assert.equal(sceneAt(plain, 0.3)?.id, 's2');
+  assert.equal(sceneAt({ ...plain, scenes: [] }, 1), null);
+});
+
+test('sceneAt: a first scene still carrying a transition (optimistic reorder) is drawn alone', () => {
+  const p = project([2, 2]);
+  p.scenes[0] = { ...p.scenes[0], transition: { kind: 'fade', duration: 0.5 } };
+  assert.equal(sceneAt(p, 0)?.id, 's0');
+  assert.equal(sceneAt(p, 0.25)?.id, 's0');
 });
 
 test('grid marks with a track follow the track grid, offset by music start and scene start', () => {
@@ -445,4 +494,127 @@ test('the versions panel hides editor steps, undos and redos, and keeps restore 
   );
   assert.deepEqual(shownVersions([entry('v1', 'edit')]), []);
   assert.deepEqual(shownVersions([]), []);
+});
+
+test('render outputs: transparency on WebM, ProRes and PNG only, and an output the server cannot make carries its reason', () => {
+  assert.deepEqual((['mp4', 'webm', 'mov', 'gif', 'png', 'png-sequence'] as RenderOutput[]).filter(hasAlpha), [
+    'webm',
+    'mov',
+    'png',
+    'png-sequence',
+  ]);
+  const outputs = {
+    mp4: { available: true },
+    webm: { available: false, reason: 'pas de libvpx-vp9' },
+  } as Record<RenderOutput, OutputSupport>;
+  assert.equal(unavailable('webm', outputs), 'pas de libvpx-vp9');
+  assert.equal(unavailable('mp4', outputs), null);
+  // Before the server answers, every output stays open: it checks again when the render starts.
+  assert.equal(unavailable('webm', undefined), null);
+});
+
+test('render request: the output named, transparency only where it applies, a PNG image is the frame at the playhead', () => {
+  const settings = {
+    formats: ['16:9' as const],
+    quality: 'standard' as const,
+    scale: 1,
+    fps: 30,
+    supersample: false,
+    transparent: true,
+    range: { from: 2, to: 5 },
+    playhead: 1.2,
+  };
+  assert.deepEqual(renderRequest({ ...settings, output: 'mp4' }), {
+    formats: ['16:9'],
+    quality: 'standard',
+    scale: 1,
+    fps: 30,
+    supersample: false,
+    output: 'mp4',
+    transparent: false,
+    range: { from: 2, to: 5 },
+  });
+  assert.equal(renderRequest({ ...settings, output: 'gif' }).transparent, false);
+  assert.equal(renderRequest({ ...settings, output: 'webm' }).transparent, true);
+  assert.equal(renderRequest({ ...settings, output: 'mov', transparent: false }).transparent, false);
+  assert.deepEqual(renderRequest({ ...settings, output: 'png-sequence' }).range, { from: 2, to: 5 });
+  assert.equal(renderRequest({ ...settings, output: 'mp4', range: null }).range, undefined);
+  // The scene range does not apply to a still: one frame long, from the playhead.
+  assert.deepEqual(renderRequest({ ...settings, output: 'png' }).range, { from: 1.2, to: 1.2 + 1 / 30 });
+  assert.deepEqual(renderRequest({ ...settings, output: 'png', range: null, playhead: 0 }).range, { from: 0, to: 1 / 30 });
+});
+
+test('a PNG image from the scene view stays on that scene in the whole video: not at its cut, not in its entry transition', () => {
+  const scene = { start: 4, duration: 2 };
+  assert.equal(stillTime(scene, 0.5, 30), 4.5);
+  assert.equal(stillTime(scene, 0, 30), 4);
+  // The end of the scene is the next scene's first frame in the whole video: the last frame of this one instead.
+  assert.equal(stillTime(scene, 2, 30), 4 + 2 - 1 / 30);
+  assert.equal(stillTime(scene, 2, 25), 4 + 2 - 1 / 25);
+  // The overlap with the previous scene shows that scene: the first frame after it.
+  const entered = { ...scene, transition: { kind: 'fade' as const, duration: 0.4 } };
+  assert.equal(stillTime(entered, 0, 30), 4.4);
+  assert.equal(stillTime(entered, 0.3, 30), 4.4);
+  assert.equal(stillTime(entered, 1, 30), 5);
+  assert.equal(stillTime(entered, 2, 30), 4 + 2 - 1 / 30);
+});
+
+test('rendered files: images for GIF and PNG, the player for videos, no download for a sequence, Publish on MP4 only', () => {
+  assert.deepEqual(
+    (['mp4', 'webm', 'mov', 'gif', 'png', 'png-sequence'] as RenderOutput[]).map((output) => [output, fileView(output)]),
+    [
+      ['mp4', { preview: 'video', download: true, publish: true }],
+      ['webm', { preview: 'video', download: true, publish: false }],
+      ['mov', { preview: 'video', download: true, publish: false }],
+      ['gif', { preview: 'image', download: true, publish: false }],
+      ['png', { preview: 'image', download: true, publish: false }],
+      ['png-sequence', { preview: 'frames', download: false, publish: false }],
+    ],
+  );
+});
+
+test('a deleted render hands the focus to the row now in its place, then the one before, then the empty state', () => {
+  assert.equal(fileAfterRemoval(['a', 'b', 'c'], 'a'), 'b');
+  assert.equal(fileAfterRemoval(['a', 'b', 'c'], 'b'), 'c');
+  assert.equal(fileAfterRemoval(['a', 'b', 'c'], 'c'), 'b');
+  assert.equal(fileAfterRemoval(['a'], 'a'), null);
+});
+
+test('a kind picked on a hard cut starts at 0.5 s, to the left except a fade, and "none" removes the transition', () => {
+  assert.deepEqual(editTransition(undefined, { kind: 'fade' }), { kind: 'fade', duration: 0.5 });
+  assert.deepEqual(editTransition(undefined, { kind: 'slide' }), { kind: 'slide', direction: 'left', duration: 0.5 });
+  assert.equal(editTransition({ kind: 'wipe', direction: 'up', duration: 1 }, { kind: null }), null);
+  assert.equal(editTransition(undefined, { direction: 'up' }), null);
+  assert.equal(editTransition(undefined, { duration: 2 }), null);
+});
+
+test('a new kind keeps the duration and the direction, and a fade drops the direction', () => {
+  const wipe = { kind: 'wipe' as const, direction: 'up' as const, duration: 1.2 };
+  assert.deepEqual(editTransition(wipe, { kind: 'flip' }), { kind: 'flip', direction: 'up', duration: 1.2 });
+  assert.deepEqual(editTransition(wipe, { kind: 'fade' }), { kind: 'fade', duration: 1.2 });
+  assert.deepEqual(editTransition({ kind: 'fade', duration: 1.2 }, { kind: 'slide' }), {
+    kind: 'slide',
+    direction: 'left',
+    duration: 1.2,
+  });
+  assert.deepEqual(editTransition(wipe, { direction: 'down' }), { kind: 'wipe', direction: 'down', duration: 1.2 });
+  assert.deepEqual(editTransition({ kind: 'fade', duration: 1 }, { direction: 'down' }), { kind: 'fade', duration: 1 });
+});
+
+test('a transition duration stays within 0.1 and 5 s, to the ms, and a typo changes nothing', () => {
+  const fade = { kind: 'fade' as const, duration: 1 };
+  assert.deepEqual(editTransition(fade, { duration: 0.01 }), { kind: 'fade', duration: 0.1 });
+  assert.deepEqual(editTransition(fade, { duration: 12 }), { kind: 'fade', duration: 5 });
+  assert.deepEqual(editTransition(fade, { duration: 0.12345 }), { kind: 'fade', duration: 0.123 });
+  assert.deepEqual(editTransition(fade, { duration: Number.NaN }), fade);
+});
+
+test('a cut whose scenes are too short for its transition shows the declared and the played durations', () => {
+  const declared = { kind: 'fade' as const, duration: 2 };
+  assert.deepEqual(clampedTransition({ declaredTransition: declared, transition: { kind: 'fade', duration: 0.75 } }), {
+    declared: 2,
+    played: 0.75,
+  });
+  assert.equal(clampedTransition({ declaredTransition: declared, transition: declared }), null);
+  assert.equal(clampedTransition({}), null);
 });

@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { analyzeMusic, analyzeSignal } from '../../server/music/analyze';
 import { median } from '../../server/music/beats';
+import { bandSpectrum, SPECTRUM_BANDS, spectrumFrames } from '../../server/music/features';
 import { distance, hasFfmpeg, synthTrack, writeTrack, type SynthTrack, type TrackSpec } from './synth';
 
 const skip = hasFfmpeg ? false : 'ffmpeg introuvable';
 
 async function analyse(spec: TrackSpec) {
   const track = synthTrack(spec);
-  return { track, a: await analyzeMusic(writeTrack(track), 'ffmpeg') };
+  const { analysis: a, spectrum } = await analyzeMusic(writeTrack(track), 'ffmpeg');
+  return { track, a, spectrum };
 }
 
 /** Detected times up to the last real beat (the grid may run on into the decay of the last hits). */
@@ -23,8 +25,19 @@ function assertBarOnes(a: { downbeats: number[] }, track: SynthTrack) {
 }
 
 test('128 BPM in 4/4 with a 4-bar intro without kick: tempo, beats to the millisecond, bar ones', { skip }, async () => {
-  const { track, a } = await analyse({ bpm: 128, beatsPerBar: 4, bars: 16, kick: [0], snare: [2], hat: 0.5, introBars: 4 });
-  assert.equal(a.version, 2);
+  const { track, a, spectrum } = await analyse({
+    bpm: 128,
+    beatsPerBar: 4,
+    bars: 16,
+    kick: [0],
+    snare: [2],
+    hat: 0.5,
+    introBars: 4,
+  });
+  assert.equal(a.version, 3);
+  assert.deepEqual([a.spectrum.bands, a.spectrum.rate], [24, 25]);
+  assert.ok(Math.abs(a.spectrum.frames - (1 + a.duration * 25)) < 1, `${a.spectrum.frames} frames for ${a.duration} s`);
+  assert.equal(spectrum.length, a.spectrum.frames * a.spectrum.bands);
   assert.ok(Math.abs(a.bpm - 128) <= 1, `read ${a.bpm} BPM`);
   assert.equal(a.beatsPerBar, 4);
   const beats = inMusic(a.beats, track);
@@ -85,6 +98,70 @@ test('silence gives an empty grid', () => {
   assert.deepEqual([a.beats, a.downbeats, a.phrases, a.accents], [[], [], [], []]);
   assert.equal(a.confidence, 0);
   assert.equal(a.sections[0].label, 'silence');
+  assert.deepEqual(a.spectrum, { bands: 24, rate: 25, frames: 76 });
+});
+
+/** `seconds` of a sine at `hz` and `amplitude`, 22.05 kHz. */
+function sine(hz: number, amplitude: number, seconds = 3): Float32Array {
+  const sr = 22050;
+  return Float32Array.from({ length: sr * seconds }, (_, i) => amplitude * Math.sin((2 * Math.PI * hz * i) / sr));
+}
+
+/** Loudest band of every frame away from the edges (frames centered within a window of the start or end see less). */
+function loudestBands(spectrum: Uint8Array): number[] {
+  const frames = spectrum.length / SPECTRUM_BANDS;
+  return Array.from({ length: frames - 6 }, (_, k) => {
+    const row = spectrum.subarray((k + 3) * SPECTRUM_BANDS, (k + 4) * SPECTRUM_BANDS);
+    return row.indexOf(Math.max(...row));
+  });
+}
+
+test('spectrum: 24 log bands from 40 Hz to 11 kHz at 25 frames per second, -80 to 0 dB in a byte', () => {
+  // Band b spans 40 * r^b to 40 * r^(b + 1) Hz, r = (11000 / 40)^(1 / 24): 100 Hz falls in band 3, 300 Hz in band 8, 5 kHz in band 20.
+  const low = bandSpectrum(sine(100, 0.5), 22050);
+  assert.equal(low.length, spectrumFrames(22050 * 3, 22050) * 24);
+  assert.equal(low.length, 76 * 24);
+  assert.deepEqual(new Set(loudestBands(low)), new Set([3]));
+  const high = bandSpectrum(sine(5000, 0.5), 22050);
+  assert.deepEqual(new Set(loudestBands(high)), new Set([20]));
+  assert.deepEqual(new Set(loudestBands(bandSpectrum(sine(300, 0.5), 22050))), new Set([8]));
+
+  // A sine at half scale is about -6 dB: (80 - 6) / 80 of 255. At 1% it is -40 dB, half way; far bands stay at 0.
+  const level = (spectrum: Uint8Array, band: number) => spectrum[40 * SPECTRUM_BANDS + band];
+  assert.ok(Math.abs(level(high, 20) - 236) <= 6, `half scale read ${level(high, 20)}`);
+  const quiet = bandSpectrum(sine(5000, 0.01), 22050);
+  assert.ok(Math.abs(level(quiet, 20) - 128) <= 6, `-40 dB read ${level(quiet, 20)}`);
+  assert.equal(level(quiet, 3), 0);
+  assert.equal(level(high, 3), 0);
+  // A full-scale sine sums a little above 0 dB over its band: it stays at the top instead of wrapping round.
+  assert.equal(level(bandSpectrum(sine(5000, 1), 22050), 20), 255);
+
+  assert.ok(
+    bandSpectrum(new Float32Array(22050 * 3), 22050).every((v) => v === 0),
+    'silence gives zeros',
+  );
+});
+
+test('spectrum: frame i is centered on i / 25 s', () => {
+  // A 1 kHz burst (band 13) from 1.00 s to 1.20 s: frames 25 and 30 are centered on its edges and see half of it.
+  const sr = 22050;
+  const signal = new Float32Array(sr * 2);
+  for (let i = sr; i < Math.round(sr * 1.2); i++) signal[i] = 0.5 * Math.sin((2 * Math.PI * 1000 * i) / sr);
+  const spectrum = bandSpectrum(signal, sr);
+  const burst = Array.from({ length: spectrum.length / SPECTRUM_BANDS }, (_, f) => spectrum[f * SPECTRUM_BANDS + 13]);
+  const peak = Math.max(...burst);
+  assert.ok(peak > 230, `burst peak ${peak}`);
+  const loud = burst.flatMap((v, f) => (v > peak / 2 ? [f] : []));
+  assert.deepEqual(loud, [25, 26, 27, 28, 29, 30]);
+  assert.equal(burst[24], burst[31], 'the window is symmetric around its center');
+  assert.ok(
+    burst.slice(0, 24).every((v) => v === 0),
+    'nothing before the window reaches the burst',
+  );
+  assert.ok(
+    burst.slice(32).every((v) => v === 0),
+    'nothing after the window leaves the burst',
+  );
 });
 
 test('hits at irregular times give a low confidence', () => {

@@ -24,6 +24,7 @@ export class Publisher implements PublishService {
   async start(projectId: string, req: PublishRequest): Promise<PublishJob> {
     const network = this.deps.networks[req.network];
     const file = this.deps.renders.resolveFile(projectId, req.file);
+    if (path.extname(file) !== '.mp4') throw new HttpError(422, m().media.render.publishMp4Only(req.file));
     const stat = await fs.stat(file).catch(() => null);
     if (!stat?.isFile() || stat.size === 0) throw new HttpError(404, m().accounts.publish.missingVideo(req.file));
     const twin = [...this.jobs.values()].some(

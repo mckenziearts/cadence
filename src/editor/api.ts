@@ -21,15 +21,18 @@ import type {
   MusicAnalysis,
   MusicSettingsPatch,
   NetworkId,
+  OutputSupport,
   ProjectState,
   Publications,
   PublishJob,
   PublishRequest,
   RenderFile,
   RenderJob,
+  RenderOutput,
   RenderRequest,
   RepoListing,
   SceneState,
+  SceneTransition,
   SceneVoiceOverInput,
   SeamResult,
   SendMessageInput,
@@ -69,7 +72,7 @@ async function request<T>(method: string, url: string, body?: unknown, options: 
   const headers: Record<string, string> = {};
   if (method !== 'GET' && method !== 'HEAD') headers['X-Cadence-Token'] = token;
   let payload: BodyInit | undefined;
-  if (body instanceof FormData || body instanceof Blob) payload = body;
+  if (body instanceof Blob) payload = body;
   else if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
@@ -114,12 +117,6 @@ const q = (params: Record<string, string | number | undefined | null>) => {
   return text ? `?${text}` : '';
 };
 
-function upload(file: File): FormData {
-  const form = new FormData();
-  form.append('file', file, file.name);
-  return form;
-}
-
 /** Swallows a rejection already reported by a toast. */
 export const ignore = (): void => undefined;
 
@@ -143,6 +140,8 @@ export const api = {
     input: { name?: string; duration?: number; voiceOver?: SceneVoiceOverInput | null },
     options?: Options,
   ) => patch<ProjectState>(`${p(id)}/scenes/${sceneId}`, input, options),
+  setTransition: (id: string, sceneId: string, transition: SceneTransition | null) =>
+    put<ProjectState>(`${p(id)}/scenes/${sceneId}/transition`, { transition }),
   duplicateScene: (id: string, sceneId: string) => post<SceneState>(`${p(id)}/scenes/${sceneId}/duplicate`),
   deleteScene: (id: string, sceneId: string) => del<ProjectState>(`${p(id)}/scenes/${sceneId}`),
   reorder: (id: string, ids: string[]) => put<ProjectState>(`${p(id)}/order`, { ids }),
@@ -190,7 +189,10 @@ export const api = {
   clearChat: (id: string, key: ChatKey) => del<ChatState>(`${p(id)}/chats/${key}`),
   cost: (id: string) => get<{ totalUsd: number }>(`${p(id)}/cost`, { quiet: true }),
 
-  renders: (id: string) => get<{ jobs: RenderJob[]; files: RenderFile[] }>(`${p(id)}/renders`, { quiet: true }),
+  renders: (id: string) =>
+    get<{ jobs: RenderJob[]; files: RenderFile[]; outputs: Record<RenderOutput, OutputSupport> }>(`${p(id)}/renders`, {
+      quiet: true,
+    }),
   startRender: (id: string, input: RenderRequest) => post<RenderJob[]>(`${p(id)}/renders`, input),
   cancelRender: (jobId: string) => del<{ ok: true }>(`/api/renders/${encodeURIComponent(jobId)}`),
   deleteRender: (id: string, name: string) => del<{ ok: true }>(`${p(id)}/renders/${encodeURIComponent(name)}`),
@@ -199,7 +201,8 @@ export const api = {
   cancelBrandBuild: (id: string) => del<{ ok: true }>(`/api/brand-builds/${encodeURIComponent(id)}`),
 
   assets: (id: string) => get<AssetInfo[]>(`${p(id)}/assets`),
-  uploadAsset: (id: string, file: File) => post<AssetInfo>(`${p(id)}/assets`, upload(file)),
+  uploadAsset: (id: string, file: File, options?: Options) =>
+    post<AssetInfo>(`${p(id)}/assets${q({ name: file.name })}`, file, options),
   deleteAsset: (id: string, assetPath: string) => del<{ ok: true }>(`${p(id)}/assets${q({ path: assetPath })}`),
   captureRef: (id: string, input: CaptureRefInput) => post<AssetInfo>(`${p(id)}/refs`, input),
   captureHosts: (id: string) => get<{ hosts: string[] }>(`${p(id)}/capture-hosts`),

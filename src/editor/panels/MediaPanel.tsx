@@ -1,54 +1,81 @@
-// Media: project assets (images, SVG, fonts) and reference captures the agent reads to rebuild interfaces.
+// Media: project assets (images, SVG, fonts, clips, Lottie files) and reference captures the agent reads to rebuild interfaces.
 import clsx from 'clsx';
-import { Camera, Code2, FileQuestion, ImagePlus, Monitor, Smartphone, Trash2, Upload, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Camera,
+  Code2,
+  FileQuestion,
+  Film,
+  ImagePlus,
+  Monitor,
+  Smartphone,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import type { AssetInfo } from '../../shared/types';
+import type { AssetInfo, ClipState } from '../../shared/types';
 import { api, ignore } from '../api';
-import { Button, Checkbox, ConfirmButton, EmptyState, IconButton, Segmented, SectionTitle, inputClass } from '../components/ui';
+import {
+  Button,
+  Checkbox,
+  ConfirmButton,
+  EmptyState,
+  IconButton,
+  Segmented,
+  SectionTitle,
+  Spinner,
+  inputClass,
+} from '../components/ui';
 import { useT } from '../i18n';
-import { bytes } from '../lib/format';
-import { useStore } from '../store';
+import { bytes, secsLabel } from '../lib/format';
+import { useStore, type AssetUpload } from '../store';
 import { isAudioFile, uploadMusic } from '../store/music';
+import { dismissUpload, uploadAssets } from '../store/project';
 import { copyText, toast } from '../store/ui';
 import { useAgentName } from '../components/agents';
 
-const ASSET_ACCEPT = 'image/*,.svg,.woff,.woff2,.ttf,.otf';
+const ASSET_ACCEPT = 'image/*,.svg,.woff,.woff2,.ttf,.otf,.mp4,.mov,.m4v,.webm,.json';
 
 export function MediaPanel() {
   const texts = useT().conversation.media;
   const project = useStore((s) => s.project)!;
   const tick = useStore((s) => s.assetsTick);
+  const uploads = useStore((s) => s.uploads).filter((row) => row.projectId === project.id);
   const [assets, setAssets] = useState<AssetInfo[] | null>(null);
-  const [uploading, setUploading] = useState(0);
+  const list = useRef<HTMLUListElement>(null);
+  const empty = useRef<HTMLParagraphElement>(null);
 
-  const load = () =>
-    api
+  // A list asked before a newer one, or before a card was deleted here, is out of date when it lands.
+  const generation = useRef(0);
+  const load = () => {
+    const asked = ++generation.current;
+    return api
       .assets(project.id)
-      .then(setAssets)
-      .catch(() => setAssets([]));
+      .catch(() => [])
+      .then((all) => asked === generation.current && setAssets(all));
+  };
 
   useEffect(() => {
     void load();
   }, [project.id, tick]);
 
-  const upload = async (files: FileList | File[]) => {
+  const upload = (files: FileList) => {
     // A soundtrack dropped here goes where it belongs.
     const audio = [...files].find(isAudioFile);
     if (audio) void uploadMusic(audio);
-    const list = [...files].filter((file) => !isAudioFile(file));
-    if (list.length === 0) return;
-    setUploading((n) => n + list.length);
-    for (const file of list) {
-      try {
-        await api.uploadAsset(project.id, file);
-      } catch {
-        // toast shown
-      } finally {
-        setUploading((n) => n - 1);
-      }
-    }
-    await load();
+    const others = [...files].filter((file) => !isAudioFile(file));
+    if (others.length) void uploadAssets(others);
+  };
+
+  // The focused control left with its row: the focus goes to the row now in its place, or to the text of the empty list.
+  const removeRow = (row: HTMLLIElement | null, drop: () => void) => {
+    const index = row ? [...(list.current?.children ?? [])].indexOf(row) : -1;
+    flushSync(drop);
+    if (index < 0 || document.activeElement !== document.body) return;
+    const rows = list.current?.children;
+    ((rows?.[Math.min(index, rows.length - 1)] as HTMLElement | undefined) ?? empty.current)?.focus();
   };
 
   const files = assets?.filter((a) => !a.isReference) ?? [];
@@ -58,21 +85,34 @@ export function MediaPanel() {
     <div className="min-h-0 flex-1 space-y-6 overflow-y-auto border-t border-rule px-4 py-4">
       <section className="space-y-2.5">
         <SectionTitle>{texts.files}</SectionTitle>
-        <UploadZone onFiles={upload} busy={uploading > 0} />
+        <UploadZone onFiles={upload} busy={uploads.some((row) => row.error === null)} />
         {assets === null ? (
           <div className="grid grid-cols-2 gap-2">
             {[0, 1].map((i) => (
               <div key={i} className="skeleton aspect-[4/3] rounded-xl" />
             ))}
           </div>
-        ) : files.length === 0 ? (
-          <p className="text-xs leading-relaxed text-ink-3">
+        ) : files.length === 0 && uploads.length === 0 ? (
+          <p ref={empty} tabIndex={-1} className="text-xs leading-relaxed text-ink-3 outline-none">
             {texts.filesHint(<code className="font-mono text-[11px]">asset('…')</code>)}
           </p>
         ) : (
-          <ul className="grid grid-cols-2 gap-2">
+          <ul ref={list} className="grid grid-cols-2 gap-2">
+            {uploads.map((row) => (
+              <UploadRow key={row.id} upload={row} onDismiss={(li) => removeRow(li, () => dismissUpload(row.id))} />
+            ))}
             {files.map((asset) => (
-              <AssetCard key={asset.path} asset={asset} onRemoved={load} />
+              <AssetCard
+                key={asset.path}
+                asset={asset}
+                clip={project.clips[asset.path]}
+                onRemoved={(li) =>
+                  removeRow(li, () => {
+                    generation.current++;
+                    setAssets((all) => all && all.filter((a) => a.path !== asset.path));
+                  })
+                }
+              />
             ))}
           </ul>
         )}
@@ -137,13 +177,79 @@ function UploadZone({ onFiles, busy }: { onFiles: (files: FileList) => void; bus
   );
 }
 
-function AssetCard({ asset, onRemoved }: { asset: AssetInfo; onRemoved: () => void }) {
+/**
+ * A live region that comes in empty and takes `text` a moment later: a region added along with its text is often not
+ * read. A `settled` text, a state reached before the row appeared, shows at once: it is not news.
+ */
+function LiveText({ text, settled = false, className }: { text: string; settled?: boolean; className?: string }) {
+  const [shown, setShown] = useState(settled);
+  useEffect(() => {
+    const timer = setTimeout(() => setShown(true), 100);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <p role="status" className={className}>
+      {shown && text}
+    </p>
+  );
+}
+
+function UploadRow({ upload, onDismiss }: { upload: AssetUpload; onDismiss: (row: HTMLLIElement | null) => void }) {
+  const texts = useT().conversation.media;
+  const row = useRef<HTMLLIElement>(null);
+  return (
+    <li
+      ref={row}
+      data-upload={upload.name}
+      tabIndex={-1}
+      className="focus-ring col-span-2 flex items-start gap-2 rounded-xl bg-white py-2 pr-1.5 pl-2.5 ring-1 ring-rule"
+    >
+      {upload.error ? (
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warn" aria-hidden />
+      ) : (
+        <Spinner className="mt-0.5 size-3.5" />
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[12px] font-medium text-ink-2">{upload.name}</p>
+        <LiveText
+          text={upload.error ?? texts.sending}
+          className={clsx('text-[11px] select-text', upload.error ? 'text-warn-ink' : 'text-ink-4')}
+        />
+      </div>
+      {upload.error !== null && (
+        <IconButton
+          size="xs"
+          variant="secondary"
+          label={texts.dismiss(upload.name)}
+          icon={<X className="size-3" />}
+          onClick={() => onDismiss(row.current)}
+        />
+      )}
+    </li>
+  );
+}
+
+function AssetCard({
+  asset,
+  clip,
+  onRemoved,
+}: {
+  asset: AssetInfo;
+  clip: ClipState | undefined;
+  onRemoved: (row: HTMLLIElement | null) => void;
+}) {
   const texts = useT().conversation.media;
   const project = useStore((s) => s.project)!;
+  const row = useRef<HTMLLIElement>(null);
   const name = asset.path.split('/').pop() ?? asset.path;
   const code = `asset('${asset.path}')`;
   return (
-    <li className="group overflow-hidden rounded-xl bg-white ring-1 ring-rule">
+    <li
+      ref={row}
+      data-asset={asset.path}
+      tabIndex={-1}
+      className="focus-ring group overflow-hidden rounded-xl bg-white ring-1 ring-rule"
+    >
       <div className="relative grid aspect-[4/3] place-items-center overflow-hidden bg-[conic-gradient(#f4f4f5_25%,#fff_0_50%,#f4f4f5_0_75%,#fff_0)] [background-size:14px_14px]">
         <Preview asset={asset} />
         <div className="absolute top-1.5 right-1.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
@@ -156,7 +262,7 @@ function AssetCard({ asset, onRemoved }: { asset: AssetInfo; onRemoved: () => vo
             icon={<Trash2 className="size-3" />}
             onConfirm={async () => {
               await api.deleteAsset(project.id, asset.path);
-              onRemoved();
+              onRemoved(row.current);
             }}
           />
         </div>
@@ -165,6 +271,21 @@ function AssetCard({ asset, onRemoved }: { asset: AssetInfo; onRemoved: () => vo
         <p className="truncate text-[12px] font-medium text-ink-2" title={asset.path}>
           {name}
         </p>
+        {(asset.kind === 'video' || clip) && (
+          <LiveText
+            text={
+              !clip
+                ? ''
+                : clip.status === 'preparing'
+                  ? texts.preparing
+                  : clip.status === 'ready'
+                    ? texts.ready(secsLabel(clip.duration, 1))
+                    : clip.error
+            }
+            settled={clip?.status !== 'preparing'}
+            className={clsx('mt-0.5 text-[11px] select-text', clip?.status === 'error' ? 'text-warn-ink' : 'text-ink-3')}
+          />
+        )}
         <div className="mt-1 flex items-center gap-1">
           <span className="text-[11px] text-ink-4">{bytes(asset.size)}</span>
           <button
@@ -185,6 +306,7 @@ function AssetCard({ asset, onRemoved }: { asset: AssetInfo; onRemoved: () => vo
 let fontSeq = 0;
 
 function Preview({ asset }: { asset: AssetInfo }) {
+  const texts = useT().conversation.media;
   const [family, setFamily] = useState<string | null>(null);
   useEffect(() => {
     if (asset.kind !== 'font') return;
@@ -211,6 +333,17 @@ function Preview({ asset }: { asset: AssetInfo }) {
     return (
       <span className="text-3xl text-ink-2" style={{ fontFamily: family ?? 'inherit' }}>
         Aa Gg
+      </span>
+    );
+  if (asset.kind === 'video')
+    return (
+      <video src={asset.url} preload="metadata" muted playsInline aria-hidden className="max-h-full max-w-full object-contain" />
+    );
+  if (asset.kind === 'lottie')
+    return (
+      <span className="flex flex-col items-center gap-1 text-[11px] text-ink-3">
+        <Film className="size-6 text-ink-4" aria-hidden />
+        {texts.lottie}
       </span>
     );
   return <FileQuestion className="size-6 text-ink-4" aria-hidden />;

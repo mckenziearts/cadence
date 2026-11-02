@@ -46,8 +46,6 @@ export default {
     invalidBody: (issues: string[]) => `Requête invalide \u2014 ${issues.join(' ; ')}`,
     rangeOrder: 'la fin doit suivre le début',
     fileTooLarge: (mb: number) => `Fichier trop volumineux (${mb} Mo max)`,
-    invalidUpload: 'Envoi de fichier invalide (multipart/form-data attendu)',
-    noFile: 'Aucun fichier reçu (champ « file »)',
     unknownChat: (key: string) => `Conversation inconnue : ${key}`,
     unknownNetwork: (id: string) => `Réseau inconnu : ${id}`,
     missingParam: (name: string) => `Paramètre « ${name} » manquant`,
@@ -61,6 +59,7 @@ export default {
     artDirectionEdited: 'Direction artistique modifiée',
     sceneAdded: (scene: string) => `Scène ajoutée : ${scene}`,
     sceneEdited: (scene: string) => `Scène modifiée : ${scene}`,
+    transitionSet: (scene: string) => `Transition modifiée : ${scene}`,
     sceneDeleted: 'Scène supprimée',
     scenesReordered: 'Scènes réordonnées',
     musicAdded: (file: string) => `Musique ajoutée : ${file}`,
@@ -104,6 +103,7 @@ export default {
     relativePath: 'chemin relatif au projet attendu',
     duplicateScene: (id: string) => `scène en double « ${id} »`,
     musicGrid: (id: string, error: string) => `[cadence] grille musicale indisponible (${id}) : ${error}`,
+    clips: (id: string, error: string) => `[cadence] images des clips indisponibles (${id}) : ${error}`,
     voiceOver: (id: string, error: string) => `[cadence] voix off indisponible (${id}) : ${error}`,
     voiceOverSettings: (issues: string) => `Réglages de voix off invalides : ${issues}`,
     sceneVoiceOver: (issues: string) => `Voix off invalide : ${issues}`,
@@ -121,6 +121,14 @@ export default {
     tempo: (value: unknown) => `Tempo invalide : ${value} (entre 30 et 300 BPM)`,
     captions: (value: unknown) => `Sous-titres invalides : ${String(value)} (true ou false)`,
     duration: (value: unknown) => `Durée invalide : ${value}`,
+    transition: (issues: string) => `Transition invalide : ${issues}`,
+    transitionObject: 'un objet { kind, direction?, duration }',
+    transitionKind: 'fade, slide, wipe ou flip',
+    transitionDirection: 'left, right, up ou down',
+    transitionDuration: (min: number, max: number) =>
+      `entre ${String(min).replace('.', ',')} et ${String(max).replace('.', ',')} s`,
+    fadeDirection: "un fondu n'a pas de direction",
+    firstSceneTransition: "La première scène n'a pas de transition : aucune scène ne la précède",
     /** Path of a validation issue on the whole file. */
     root: 'racine',
     /** art-direction.md of a new project whose brand has none. */
@@ -154,9 +162,11 @@ Ce document est relu avant chaque modification. Décrivez ici le style commun à
   },
   assets: {
     unsupported: (name: string) =>
-      `Type de fichier non pris en charge : ${name} (images PNG, JPEG, WebP, GIF, SVG ou polices WOFF, WOFF2, TTF, OTF)`,
+      `Type de fichier non pris en charge : ${name} (images PNG, JPEG, WebP, GIF, SVG, vidéos MP4, MOV, M4V, WebM, animations Lottie JSON ou polices WOFF, WOFF2, TTF, OTF)`,
     empty: (name: string) => `Fichier vide : ${name}`,
-    tooLarge: (name: string) => `Fichier trop volumineux : ${name} (50 Mo max)`,
+    tooLarge: (name: string, mb: number) => `Fichier trop volumineux : ${name} (${mb} Mo max)`,
+    projectFull: (name: string, mb: number) =>
+      `Plus de place pour ${name} : un projet garde ${mb} Mo de médias au plus, pour que son export puisse être réimporté`,
     invalidUrl: (url: string) => `Adresse invalide : ${url}`,
     httpOnly: (url: string) => `Seules les adresses http:// et https:// peuvent être capturées : ${url}`,
     unknownDevice: (device: string) => `Appareil inconnu : ${device}`,

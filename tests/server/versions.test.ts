@@ -126,6 +126,14 @@ test('whole restore: files back, deleted files restored, new files removed, reco
   );
 });
 
+test('a whole restore brings back the transitions of that version', async () => {
+  await store.setTransition(id, 'deux', { kind: 'fade', duration: 0.5 });
+  await baseline();
+  await store.setTransition(id, 'deux', null);
+  await versions.restore(id, 'v0001');
+  assert.deepEqual((await store.get(id)).scenes[1].transition, { kind: 'fade', duration: 0.5 });
+});
+
 test('restoring after unsaved edits first keeps them as an "external" version', async () => {
   await baseline();
   await write('scenes/titre.tsx', 'export default () => "edited in my editor";\n');
@@ -186,6 +194,58 @@ test('scene restore brings back the voice-over of that version, or removes it wh
   scenes = (await store.get(id)).scenes;
   assert.equal(scenes.find((s) => s.id === 'titre')!.voiceOver, undefined);
   assert.deepEqual(scenes.find((s) => s.id === 'deux')!.voiceOver, { text: 'Bonjour.', at: 0.5 });
+});
+
+test('scene restore brings back the cut into that scene, or removes it when it had none', async () => {
+  await baseline();
+  await write('scenes/deux.tsx', 'export default () => "deux v2";\n');
+  await store.setTransition(id, 'deux', { kind: 'slide', direction: 'right', duration: 0.8 });
+  await versions.snapshot(id, { label: 'Coupe', source: 'manual' });
+
+  await versions.restore(id, 'v0001', { sceneId: 'deux' });
+  assert.equal((await store.get(id)).scenes[1].declaredTransition, undefined);
+  await versions.restore(id, 'v0002', { sceneId: 'deux' });
+  assert.deepEqual((await store.get(id)).scenes[1].declaredTransition, { kind: 'slide', direction: 'right', duration: 0.8 });
+});
+
+test('a scene restore leaves the cut alone when the scene is now the first one', async () => {
+  await store.setTransition(id, 'deux', { kind: 'fade', duration: 0.5 });
+  await baseline();
+  await store.setTransition(id, 'deux', null);
+  await store.reorderScenes(id, ['deux', 'titre']);
+  await write('scenes/deux.tsx', 'export default () => "deux v2";\n');
+
+  await versions.restore(id, 'v0001', { sceneId: 'deux' });
+  const first = (await store.get(id)).scenes[0];
+  assert.equal(first.id, 'deux');
+  assert.equal(first.declaredTransition, undefined);
+  assert.equal(await read('scenes/deux.tsx'), 'export default () => "deux v1";\n');
+});
+
+test('a scene restore keeps the current cut when the version holds one the store refuses today', async () => {
+  const valid = await read('project.json');
+  const data = JSON.parse(valid);
+  data.scenes.find((s: { id: string }) => s.id === 'deux').transition = { kind: 'spin', duration: 1 };
+  await write('project.json', JSON.stringify(data));
+  await baseline();
+  await write('project.json', valid);
+  await store.setTransition(id, 'deux', { kind: 'fade', duration: 0.5 });
+  await write('scenes/deux.tsx', 'export default () => "deux v2";\n');
+
+  await versions.restore(id, 'v0001', { sceneId: 'deux' });
+  assert.equal(await read('scenes/deux.tsx'), 'export default () => "deux v1";\n');
+  assert.deepEqual((await store.get(id)).scenes[1].declaredTransition, { kind: 'fade', duration: 0.5 });
+});
+
+test('a version that only changes a cut is listed under that scene', async () => {
+  await baseline();
+  await store.setTransition(id, 'deux', { kind: 'wipe', duration: 1 });
+  const v2 = await versions.snapshot(id, { label: 'Coupe', source: 'manual' });
+  assert.deepEqual(v2?.scenes, ['deux']);
+  assert.deepEqual(
+    (await versions.list(id, { sceneId: 'deux' })).map((v) => v.id),
+    ['v0002', 'v0001'],
+  );
 });
 
 test('a scene restore keeps the current voice-over when the version cannot say what it was', async () => {

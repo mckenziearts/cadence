@@ -21,7 +21,7 @@
     "doctor": "tsx bin/cadence.ts doctor",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test \"tests/**/*.test.ts\" \"tests/**/*.test.tsx\"",
-    "test:unit": "node --import tsx --test \"tests/runtime/**/*.test.ts\" \"tests/runtime/**/*.test.tsx\" \"tests/music/**/*.test.ts\" \"tests/server/**/*.test.ts\" \"tests/brands/**/*.test.tsx\" \"tests/templates/**/*.test.tsx\" \"tests/frame/**/*.test.tsx\" tests/editor/agents.test.tsx tests/editor/helpers.test.tsx tests/editor/history.test.ts tests/editor/routing.test.ts tests/editor/shortcuts.test.ts tests/editor/sounds.test.ts",
+    "test:unit": "node --import tsx --test \"tests/runtime/**/*.test.ts\" \"tests/runtime/**/*.test.tsx\" \"tests/music/**/*.test.ts\" \"tests/server/**/*.test.ts\" \"tests/brands/**/*.test.tsx\" \"tests/templates/**/*.test.tsx\" \"tests/frame/**/*.test.tsx\" tests/editor/agents.test.tsx tests/editor/api.test.ts tests/editor/helpers.test.tsx tests/editor/history.test.ts tests/editor/routing.test.ts tests/editor/shortcuts.test.ts tests/editor/sounds.test.ts tests/editor/uploads.test.ts",
     "test:e2e": "node --import tsx --test \"tests/e2e/**/*.test.ts\"",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
@@ -46,6 +46,7 @@
     "@vitejs/plugin-react": "6.1.1",
     "clsx": "2.1.1",
     "hono": "4.13.12",
+    "lottie-web": "5.13.0",
     "lucide-react": "1.49.0",
     "pixelmatch": "7.2.0",
     "playwright": "1.63.0",
@@ -53,6 +54,7 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "tailwindcss": "4.3.3",
+    "three": "0.186.1",
     "tsx": "4.23.15",
     "vite": "8.3.1",
     "zod": "4.6.5",
@@ -63,6 +65,7 @@
     "@types/pngjs": "6.0.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@types/three": "0.186.0",
     "prettier": "3.9.9",
     "typescript": "7.0.2"
   }

@@ -7,10 +7,12 @@ import type {
   Effort,
   FormatId,
   Language,
+  OutputSupport,
   ProjectState,
   Publications,
   RenderFile,
   RenderJob,
+  RenderOutput,
   SceneState,
   SeamResult,
 } from '../../shared/types';
@@ -38,6 +40,13 @@ export interface Toast {
   id: number;
   text: string;
   tone: 'info' | 'success' | 'error';
+}
+
+export interface AssetUpload {
+  id: number;
+  projectId: string;
+  name: string;
+  error: string | null;
 }
 
 export interface CaptureHostAsk {
@@ -98,13 +107,15 @@ export interface EditorState {
   picks: Partial<Record<ChatKind, { model: string; effort: Effort }>>;
   seams: SeamResult[];
   seamsChecking: boolean;
-  renders: { jobs: RenderJob[]; files: RenderFile[] };
+  /** `outputs` comes with the first listing: which outputs the ffmpeg in use can make, and why not. */
+  renders: { jobs: RenderJob[]; files: RenderFile[]; outputs?: Record<RenderOutput, OutputSupport> };
   publishing: Publications;
   music: { status: MusicStatus; error: string | null };
   /** Piper's latest run on the open project. */
   voiceOver: { status: VoiceOverStatus };
   versionsTick: number;
   assetsTick: number;
+  uploads: AssetUpload[];
   /** The host the agent asked to capture, until the person answers. */
   captureAsk: CaptureHostAsk | null;
   /** The hosts the person dismissed while the project is open: not asked again. */
@@ -189,6 +200,7 @@ export const useStore = create<EditorState>()(() => ({
   voiceOver: { status: 'idle' },
   versionsTick: 0,
   assetsTick: 0,
+  uploads: [],
   captureAsk: null,
   captureIgnored: [],
   cost: null,
@@ -220,12 +232,6 @@ export function currentScene(s: EditorState = get()): SceneState | null {
 /** Length of what the preview shows. */
 export function previewDuration(s: EditorState = get()): number {
   return s.mode === 'whole' ? (s.project?.duration ?? 0) : (currentScene(s)?.duration ?? 0);
-}
-
-/** Scene playing at video time t (a frame exactly on a cut belongs to the next scene, like the frame page). */
-export function sceneAt(project: ProjectState, t: number): SceneState | null {
-  for (const scene of project.scenes) if (t < scene.start + scene.duration - 1e-9) return scene;
-  return project.scenes.at(-1) ?? null;
 }
 
 export const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
