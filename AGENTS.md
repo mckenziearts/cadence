@@ -50,8 +50,11 @@ npm run doctor
   (gitignored) and are removed at the end, and servers started by tests get their own temp `stateDir`.
 - CI runs `npm run test:unit` only, on Linux. A security or consent rule needs a test in a file `test:unit` lists
   (editor logic goes in a pure function under `src/editor/lib/`); `tests/e2e/` and `tests/editor/ui.test.ts` add the
-  browser proof. macOS temp folders sit behind a link (`/var` to `/private/var`), Linux ones do not: a path test
-  builds the link it relies on.
+  browser proof. Frame code that only a browser runs (image decode before capture, WebGL, the frame audit) gets a CI
+  test too: build its module as an iife with Vite and drive it with `launchChromium()` from a `tests/server/` file that
+  skips without Chromium except under `CI` (see `tests/server/frame-clips.test.ts`). A render bug proven only in
+  `tests/e2e/` reaches main unseen. macOS temp folders sit behind a link (`/var` to `/private/var`), Linux ones do
+  not: a path test builds the link it relies on.
 - Editor UI: a control that removes or disables the focused element moves the focus to where the person goes next
   (the composer, the row now in its place, an empty-state text with `tabIndex={-1}`); a live region is mounted before
   the text it announces.
