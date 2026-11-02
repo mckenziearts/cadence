@@ -11,7 +11,7 @@ const texts = {
 };
 const ready: ClipState = {
   status: 'ready',
-  key: 'my-loop-1a2b3c4d',
+  key: 'my-loop-000000000000',
   fps: 25,
   frames: 50,
   width: 320,
@@ -31,8 +31,8 @@ test('clipSources: a ready clip gives its fps, its frame count and the URL of ea
   assert.ok(!(clip instanceof Error));
   assert.equal(clip.fps, 25);
   assert.equal(clip.frames, 50);
-  assert.equal(clip.url(0), '/@fs/home/a/projects/demo/clips/my-loop-1a2b3c4d/000001.jpg');
-  assert.equal(clip.url(49), '/@fs/home/a/projects/demo/clips/my-loop-1a2b3c4d/000050.jpg');
+  assert.equal(clip.url(0), '/@fs/home/a/projects/demo/clips/my-loop-000000000000/000001.jpg');
+  assert.equal(clip.url(49), '/@fs/home/a/projects/demo/clips/my-loop-000000000000/000050.jpg');
 });
 
 test('clipSources: an unknown, preparing or failed asset is an error naming it, the failed one with its error line', () => {

@@ -12,7 +12,7 @@ const TALK = { duration: 10 } as unknown as AudioBuffer;
 const READY = { status: 'ready', fps: 30, frames: 300, width: 320, height: 240, duration: 10, audio: true } as const;
 const CLIPS: Record<string, ClipState> = {
   'demo/talk.mp4': { ...READY, key: 'demo-talk-mp4-0123456789ab' },
-  'mute.mp4': { ...READY, key: 'mute-mp4-0123456789ab', audio: false },
+  'mute.mp4': { ...READY, key: 'mute-mp4-000000000000', audio: false },
 };
 const TALK_URL = '/api/projects/p1/clips/audio?path=demo%2Ftalk.mp4';
 

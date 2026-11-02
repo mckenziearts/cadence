@@ -177,7 +177,7 @@ const CLIPS: Record<string, ClipState> = {
   'broken.mov': { status: 'error', error: 'moov atom not found' },
   'mute.gif': {
     status: 'ready',
-    key: 'mute-0123456789ab',
+    key: 'mute-000000000000',
     fps: 10,
     frames: 20,
     width: 32,

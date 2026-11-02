@@ -1,0 +1,4 @@
+# Fake clip cache keys that tests used before they switched to low-entropy ones.
+bac27950d6dec243126a55e270f8a4decb0e98b5:tests/frame/clips.test.tsx:generic-api-key:14
+3013e92a56dec0aee686f54b5fac6c8db3dddf82:tests/editor/sounds.test.ts:generic-api-key:15
+3013e92a56dec0aee686f54b5fac6c8db3dddf82:tests/music/sound-library.test.ts:generic-api-key:180
