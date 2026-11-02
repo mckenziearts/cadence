@@ -346,6 +346,45 @@ test('.json is accepted only as a Lottie animation whose images are embedded', a
   );
   await rejectsWithStatus(upload({ ...LOTTIE, assets: [{ id: 'img_0', u: 'https://cdn.test/', p: dataUri }] }), 422, /cdn\.test/);
   await rejectsWithStatus(upload({ ...LOTTIE, assets: [{ id: 'img_0', u: '', p: 5 }] }), 422, /\(5\)/);
+  // An image asset without p still loads u + p.
+  await rejectsWithStatus(upload({ ...LOTTIE, assets: [{ id: 'img_0', w: 10, h: 10, u: 'https://x.test/' }] }), 422, /x\.test/);
+  // Footage is a data file lottie-web fetches, embedded or not.
+  for (const footage of [
+    { u: '', p: 'data.json' },
+    { u: '', p: dataUri, e: 1 },
+  ]) {
+    await rejectsWithStatus(upload({ ...LOTTIE, assets: [{ id: 'data_0', t: 3, ...footage }] }), 422, /\(data/);
+  }
+  const slotted = { ...LOTTIE, assets: [{ id: 'img_0', u: '', p: dataUri, e: 1, sid: 'logo' }] };
+  await rejectsWithStatus(
+    upload({ ...slotted, slots: { logo: { p: { p: 'https://x.test/slot.png', e: 1 } } } }),
+    422,
+    /slot\.png/,
+  );
+  assert.equal((await upload({ ...slotted, slots: { logo: { p: { p: dataUri, e: 1 } } } }, 'slot.json')).path, 'slot.json');
+  // lottie-web assigns the slot onto the asset: one that sets a sid or a prototype changes what the next layer loads.
+  await rejectsWithStatus(
+    upload({ ...slotted, slots: { logo: { p: { sid: 'next' } }, next: { p: { p: 'https://x.test/chain.png', e: 1 } } } }),
+    422,
+    /slots\.logo/,
+  );
+  const inherited = JSON.stringify({
+    ...LOTTIE,
+    assets: [{ id: 'img_0', p: dataUri, sid: 'logo' }],
+    slots: { logo: { p: 'SLOT' } },
+  });
+  await rejectsWithStatus(upload(inherited.replace('"SLOT"', '{"__proto__":{"u":"https://x.test/"}}')), 422, /slots\.logo/);
+  // A layer that shows a precomp as an image loads its p.
+  await rejectsWithStatus(
+    upload({ ...LOTTIE, assets: [{ id: 'comp_0', layers: [], p: 'https://x.test/precomp.png', e: 1 }] }),
+    422,
+    /precomp\.png/,
+  );
+  await rejectsWithStatus(upload({ ...LOTTIE, segments: [{ time: 1 }] }), 422, /\(segments\)/);
+  for (const op of [LOTTIE.ip, LOTTIE.ip + 0.5]) {
+    await rejectsWithStatus(upload({ ...LOTTIE, op }), 422, /Lottie/);
+  }
+  assert.equal((await upload({ ...LOTTIE, segments: [], op: LOTTIE.ip + 1 }, 'bounds.json')).path, 'bounds.json');
   assert.equal((await upload({ ...LOTTIE, assets: [{ id: 'img_0', u: 'images/', p: dataUri, e: 1 }] }, 'e.json')).path, 'e.json');
   assert.equal((await upload({ ...LOTTIE, assets: [{ id: 'img_0', u: '', p: dataUri }] }, 'no-e.json')).path, 'no-e.json');
   const font = { fName: 'Inter', fFamily: 'Inter', fStyle: 'Regular', ascent: 72 };
@@ -358,11 +397,13 @@ test('.json is accepted only as a Lottie animation whose images are embedded', a
   await rejectsWithStatus(upload({ ...LOTTIE, fonts: { list: { length: 1, 0: { ...font, fPath: 'x' } } } }), 422, /Lottie/);
   assert.deepEqual((await fs.readdir(path.join(dir, 'assets'))).sort(), [
     'anim.json',
+    'bounds.json',
     'e.json',
     'font.json',
     'intro-logo.json',
     'no-e.json',
     'refs',
+    'slot.json',
   ]);
 });
 

@@ -172,11 +172,14 @@ export default {
     notJpeg: 'ffmpeg printed something other than JPEG frames',
     noDuration: (name: string) =>
       `"${name}" states no duration (a video recorded as a stream): rewrite it once, for example ffmpeg -i input.webm -c copy output.webm`,
-    notLottie: (name: string) => `"${name}" is not a Lottie animation (v, fr, ip, op, w, h and layers expected)`,
+    notLottie: (name: string) =>
+      `"${name}" is not a Lottie animation (v, fr, ip, op, w, h and layers expected, op at least one frame after ip)`,
     externalImage: (name: string, image: string) =>
       `"${name}" loads an external image (${image}): embed the images in the file (data: URI), a scene loads nothing else`,
     externalFont: (name: string, font: string) =>
       `"${name}" loads an external font (${font}): convert the text to shapes, a scene loads nothing else`,
+    externalFile: (name: string, file: string) =>
+      `"${name}" loads another file (${file}): export the animation as one file, without external data or segments, a scene loads nothing else`,
   },
   brands: {
     build: {

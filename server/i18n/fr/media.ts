@@ -173,11 +173,14 @@ export default {
     notJpeg: 'ffmpeg a sorti autre chose que des images JPEG',
     noDuration: (name: string) =>
       `« ${name} » n'indique pas sa durée (vidéo enregistrée en flux) : réécrivez-la une fois, par exemple ffmpeg -i entree.webm -c copy sortie.webm`,
-    notLottie: (name: string) => `« ${name} » n'est pas une animation Lottie (v, fr, ip, op, w, h et layers attendus)`,
+    notLottie: (name: string) =>
+      `« ${name} » n'est pas une animation Lottie (v, fr, ip, op, w, h et layers attendus, op au moins une frame après ip)`,
     externalImage: (name: string, image: string) =>
       `« ${name} » charge une image externe (${image}) : intégrez les images au fichier (data: URI), la scène ne charge rien d'autre`,
     externalFont: (name: string, font: string) =>
       `« ${name} » charge une police externe (${font}) : convertissez le texte en formes, la scène ne charge rien d'autre`,
+    externalFile: (name: string, file: string) =>
+      `« ${name} » charge un autre fichier (${file}) : exportez l'animation en un seul fichier, sans données externes ni segments, la scène ne charge rien d'autre`,
   },
   brands: {
     build: {

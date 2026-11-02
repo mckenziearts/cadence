@@ -111,8 +111,8 @@ let lastPosted: string | null = null;
 let lastPostedSounds: string | null = null;
 /** Per scene, so a scene that throws during a cut does not remount the one that draws. */
 const boundaryEpochs = new Map<string, number>();
-/** src last decoded per <img>: scenes may swap the src of the same element over time. */
-const decodedSrc = new WeakMap<HTMLImageElement, string>();
+/** Source last decoded per image: scenes may swap the src of the same element over time. */
+const decodedSrc = new WeakMap<Element, string>();
 
 const root = createRoot(document.getElementById('root')!);
 
@@ -575,7 +575,7 @@ const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() 
 async function settle(): Promise<string[]> {
   void document.body.offsetHeight; // style + layout now, so the fonts this frame needs start loading
   await document.fonts.ready;
-  const failed = await decodeImages(document.images, decodedSrc, texts);
+  const failed = await decodeImages(document, decodedSrc, texts);
   await nextFrame();
   await nextFrame();
   return failed;

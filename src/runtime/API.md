@@ -132,7 +132,8 @@ background: withAlpha(brand.colors.accent, 0.12)
   220 / 60 / 380 / 60 in 9:16, 60 in 1:1 and 4:5, 72 in 16:9.
 - `asset(path): string`: URL of the project's `assets/<path>`: `<img src={asset('screens/home.png')} />`. Animated
   GIF/WebP/SVG images freeze on their first frame in frames and renders (the preview may still play them): show
-  animated GIFs and videos with `<Clip>` (see Video clips and GIFs), drive other motion from `t`.
+  animated GIFs and videos with `<Clip>` (see Video clips and GIFs), Lottie files with `<Lottie>` (see Lottie
+  animations), drive other motion from `t`.
 - Frame internals (never use in scenes): `SceneContext`, `BrandContext`, `ClipContext`, `setAssetBase`, `createMusic`.
 
 ```tsx
@@ -564,6 +565,30 @@ const onSave = progress(t, 1.6, 1.8);                                  // the cu
 <BrowserFrame width={1280} height={800} url="acme.dev" style={{ position: 'absolute', left: 320, top: 140 }}>
   <Clip src="demo/onboarding.mp4" time={t - 1.5} fit="cover" style={{ width: '100%', height: '100%' }} />
 </BrowserFrame>
+```
+
+## Lottie animations
+
+- `import { Lottie } from 'cadence/lottie'`: a Lottie (Bodymovin) JSON file of the project, imported by the scene
+  (`import intro from '../assets/intro.json'`) and loaded only by the scenes that import `cadence/lottie`.
+  `<Lottie data={intro} time={t - 1} loop? fit? style? />` shows frame `ip + time * fr` of the file, a pure function
+  of `time`: offset it from the scene's `t` yourself. Before 0 it shows the first frame and past the end it holds the
+  last one (`op - 1`); `loop` wraps around instead. An SVG in a `<div>` sized by `style` (the parent's width at the
+  file's aspect ratio otherwise); `fit` places the animation in that box: 'contain' (default), 'cover' or 'fill'.
+- One player per mount: the file is parsed when the component mounts or gets another `data` or `fit`, then each
+  render only seeks. Keep `data` stable (a module import, or `useMemo`): a new object at each render builds a new
+  player at each frame. The imported object is never modified.
+- The light player runs no expressions (the frame refuses `eval`): bake them into keyframes before export. Images must
+  be embedded in the file (`data:` URIs), text needs no font file (convert the text to shapes), and the file holds the
+  whole animation: no external data or footage file, no `segments`, no slot that points to a file or sets more than
+  an image's `id`, `nm`, `w`, `h`, `u`, `p` and `e`. An upload, or a scene, refuses a file that would load anything,
+  or whose `op` is not at least one frame after `ip`. Text animators with Randomize Order are not deterministic.
+
+```tsx
+import { Lottie } from 'cadence/lottie';
+import confetti from '../assets/confetti.json';
+// Plays once from 2 s into the scene, centred over the card.
+<Lottie data={confetti} time={t - 2} style={{ position: 'absolute', left: 660, top: 240, width: 600, height: 600 }} />
 ```
 
 ## Seam checklist

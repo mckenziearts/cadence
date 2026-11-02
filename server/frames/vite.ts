@@ -82,6 +82,7 @@ export async function createVite({
       alias: [
         { find: /^cadence$/, replacement: path.join(config.root, 'src/runtime/index.ts') },
         { find: /^cadence\/three$/, replacement: path.join(config.root, 'src/runtime/three.tsx') },
+        { find: /^cadence\/lottie$/, replacement: path.join(config.root, 'src/runtime/lottie.tsx') },
         { find: '@brands', replacement: config.brandsDir },
       ],
       // Vite resolves a bare import from the importer's folder, and managed dirs may live outside the core (a host app's
@@ -107,8 +108,9 @@ export async function createVite({
         'react/jsx-dev-runtime',
         'lucide-react',
         'clsx',
-        // Else the first scene that imports `cadence/three` waits for a new bundle and reloads the frame.
+        // Else the first scene that imports `cadence/three` or `cadence/lottie` waits for a new bundle and reloads the frame.
         'three',
+        'lottie-web/build/player/lottie_light',
         ...(await brandIconSets(config.brandsDir)),
       ],
     },

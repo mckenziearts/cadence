@@ -18,27 +18,29 @@ export function clipSources(dir: string, clips: Record<string, ClipState>, t: Cl
 }
 
 /**
- * Decodes the images whose src changed since their last decode. Returns the errors of the clip frames (marked
+ * Decodes the images under `root` whose source changed since their last decode: the <img> elements and the SVG <image>
+ * elements a <Lottie> draws, which document.images leaves out. Returns the errors of the clip frames (marked
  * data-cadence-clip) that did not decode; a failed image is tried again at the next call.
  */
 export async function decodeImages(
-  images: Iterable<HTMLImageElement>,
-  decoded: WeakMap<HTMLImageElement, string>,
+  root: ParentNode,
+  decoded: WeakMap<Element, string>,
   t: Pick<typeof texts, 'clipFrameFailed'>,
 ): Promise<string[]> {
   const failed: string[] = [];
   await Promise.all(
-    Array.from(images)
-      .filter((img) => decoded.get(img) !== img.src)
-      .map((img) =>
-        img.decode().then(
-          () => decoded.set(img, img.src),
-          () => {
-            const file = img.dataset.cadenceClip;
-            if (file !== undefined) failed.push(t.clipFrameFailed(file, img.src.slice(img.src.lastIndexOf('/') + 1)));
-          },
-        ),
-      ),
+    Array.from(root.querySelectorAll<HTMLImageElement | SVGImageElement>('img, image'), (img) => {
+      const src = img instanceof SVGImageElement ? img.href.baseVal : img.src;
+      if (decoded.get(img) === src) return;
+      // TypeScript's DOM types leave out SVGImageElement.decode, which Chromium has.
+      return (img as { decode(): Promise<void> }).decode().then(
+        () => decoded.set(img, src),
+        () => {
+          const file = img.dataset.cadenceClip;
+          if (file !== undefined) failed.push(t.clipFrameFailed(file, src.slice(src.lastIndexOf('/') + 1)));
+        },
+      );
+    }),
   );
   return failed;
 }

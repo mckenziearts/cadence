@@ -81,6 +81,7 @@ cadence/
   src/
     shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks),
                             subtitles.ts (subtitle cues from the voice-over sentences, SRT and WebVTT)
+                            lottie.ts (the Lottie files an upload and `<Lottie>` refuse: header, outside images, fonts, other files)
     runtime/                the `cadence` module scenes import (+ API.md, the reference the agent reads)
     frame/main.tsx          frame page app
     frame/captions.tsx      burned-in captions over the scene
@@ -259,8 +260,9 @@ Vite (`server/frames/vite.ts`): `root = <root>`, `appType: 'custom'`, `server.mi
 by), `node_modules/` (+ `CADENCE_VITE_CACHE_DIR`), so the
 server code and root files are never served; `server.fs.deny` adds `**/.cadence/**`, `**/.git/**`, `.env*`. `CADENCE_VITE_CACHE_DIR`
 gives a server its own dependency cache.
-Aliases: `cadence` for `src/runtime/index.ts` and `cadence/three` for `src/runtime/three.tsx` (exact matches, so three
-loads only in scenes that import it; it is pre-bundled with React), `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
+Aliases: `cadence` for `src/runtime/index.ts`, `cadence/three` for `src/runtime/three.tsx` and `cadence/lottie` for
+`src/runtime/lottie.tsx` (exact matches, so three and lottie-web load only in scenes that import them; both are
+pre-bundled with React), `@brands` for `brands/`. Plugins: `@vitejs/plugin-react`,
 `@tailwindcss/vite` (its `transform` skips every file under projects/, brands/, templates/), and a Cadence plugin whose
 `hotUpdate` returns `[]` for files under those dirs (Cadence reloads frames itself). Its `transform` compiles a
 stylesheet under those dirs itself (`compileStylesheet()`, with `compile()` from `tailwindcss`), so Tailwind opens no
@@ -1077,9 +1079,9 @@ Scenes show clips with `<Clip src time loop? fit? style?>` (`src/runtime/clip.ts
 provides `ClipContext` around each scene, built from `ProjectState.clips` (`src/frame/clips.ts`): a ready clip's
 frame `floor(time * fps)` (clamped, or wrapped with `loop`) is `<img src="/@fs<projectDir>/clips/<key>/<n>.jpg">`,
 served by `serveManagedFile` on the project's frame origin; an unknown, preparing or failed asset throws a translated
-error naming it, caught by the scene's boundary like any runtime error. `seek()` waits for the frames to decode
-(`decodeImages`, same file): an `<img data-cadence-clip>` that does not (missing or damaged file) adds an error naming
-the asset to the seek result, so render_frames shows it, the render job fails and no blank frame is captured. A clip becoming ready sends
+error naming it, caught by the scene's boundary like any runtime error. `seek()` waits for the frames, and the SVG
+`<image>` elements a `<Lottie>` draws, to decode (`decodeImages`, same file): an `<img data-cadence-clip>` that does not
+(missing or damaged file) adds an error naming the asset to the seek result, so render_frames shows it, the render job fails and no blank frame is captured. A clip becoming ready sends
 `project-changed`, which reloads the preview's frame. A GIF shown with `<img>` plays by the wall clock in the preview
 and freezes in renders: the text checks report it (`gif`) with the `<Clip>` fix.
 

@@ -55,7 +55,7 @@ const base = 'http://127.0.0.1:9/@fs/home/a/demo/clips';
 async function decode(): Promise<string[]> {
   return page.evaluate(() =>
     (Reflect.get(window, 'cadenceClips') as typeof import('../../src/frame/clips')).decodeImages(
-      document.images,
+      document,
       new WeakMap(),
       Reflect.get(window, 'clipTexts') as { clipFrameFailed: (file: string, frame: string) => string },
     ),
@@ -99,7 +99,7 @@ test('reports a failed frame again at the next call, decoding it again', { timeo
   const runs = await page.evaluate(async () => {
     const { decodeImages } = Reflect.get(window, 'cadenceClips') as typeof import('../../src/frame/clips');
     const clipTexts = Reflect.get(window, 'clipTexts') as { clipFrameFailed: (file: string, frame: string) => string };
-    const decoded = new WeakMap<HTMLImageElement, string>();
+    const decoded = new WeakMap<Element, string>();
     const img = document.images[0];
     let count = 0;
     const decodeOnce = img.decode.bind(img);
@@ -110,7 +110,7 @@ test('reports a failed frame again at the next call, decoding it again', { timeo
     const runs = [];
     for (let run = 0; run < 2; run++) {
       const before = count;
-      const failed = await decodeImages(document.images, decoded, clipTexts);
+      const failed = await decodeImages(document, decoded, clipTexts);
       runs.push({ decodes: count - before, failed });
     }
     return runs;
@@ -127,7 +127,7 @@ test('does not decode a frame again while its src stays the same', { timeout: 30
   const counted = await page.evaluate(async () => {
     const { decodeImages } = Reflect.get(window, 'cadenceClips') as typeof import('../../src/frame/clips');
     const clipTexts = Reflect.get(window, 'clipTexts') as { clipFrameFailed: (file: string, frame: string) => string };
-    const decoded = new WeakMap<HTMLImageElement, string>();
+    const decoded = new WeakMap<Element, string>();
     const img = document.images[0];
     img.src = document.createElement('canvas').toDataURL('image/jpeg');
     let count = 0;
@@ -140,7 +140,7 @@ test('does not decode a frame again while its src stays the same', { timeout: 30
     for (const src of [img.src, img.src, document.createElement('canvas').toDataURL('image/png')]) {
       img.src = src;
       const before = count;
-      const failed = await decodeImages(document.images, decoded, clipTexts);
+      const failed = await decodeImages(document, decoded, clipTexts);
       runs.push({ decodes: count - before, failed });
     }
     return runs;
@@ -150,4 +150,28 @@ test('does not decode a frame again while its src stays the same', { timeout: 30
     { decodes: 0, failed: [] },
     { decodes: 1, failed: [] },
   ]);
+});
+
+test('waits for the SVG <image> a Lottie draws, which document.images leaves out', { timeout: 30_000 }, async (t) => {
+  if (!needsChromium(t)) return;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/held.svg', async (route) => {
+    await held;
+    await route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>' });
+  });
+  t.after(() => (release(), page.unroute('**/held.svg')));
+  await show('');
+  // Added after the page loads: setContent would wait for the held image.
+  await page.evaluate(() => {
+    document.body.innerHTML = '<svg><image href="http://127.0.0.1:9/held.svg" width="1" height="1"/></svg>';
+    const { decodeImages } = Reflect.get(window, 'cadenceClips') as typeof import('../../src/frame/clips');
+    const clipTexts = Reflect.get(window, 'clipTexts') as { clipFrameFailed: (file: string, frame: string) => string };
+    Reflect.set(window, 'decoding', 'pending');
+    void decodeImages(document, new WeakMap(), clipTexts).then(() => Reflect.set(window, 'decoding', 'done'));
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.evaluate(() => Reflect.get(window, 'decoding')), 'pending');
+  release();
+  await page.waitForFunction(() => Reflect.get(window, 'decoding') === 'done');
 });

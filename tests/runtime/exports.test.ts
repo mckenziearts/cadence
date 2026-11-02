@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 import * as cadence from '../../src/runtime/index';
+import * as cadenceLottie from '../../src/runtime/lottie';
 import * as cadenceThree from '../../src/runtime/three';
 import type { SoundCue, SoundName, SoundProps } from '../../src/runtime/index';
 import { SOUND_NAMES } from '../../src/shared/sounds';
@@ -163,4 +165,50 @@ test('API.md documents GLCanvas and cadence/three, software capture and the cont
   ]) {
     assert.ok(section.includes(rule), rule);
   }
+});
+
+test('the Lottie player lives in cadence/lottie only, so a scene without it never loads lottie-web', () => {
+  assert.equal(typeof cadenceLottie.Lottie, 'function');
+  assert.equal('Lottie' in cadence, false);
+  const dir = new URL('../../src/', import.meta.url);
+  const importers = fs
+    .readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((file) => /\.tsx?$/.test(file))
+    .flatMap((file) =>
+      [...fs.readFileSync(new URL(file, dir), 'utf8').matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)]
+        .map((match) => match[1])
+        .filter(
+          (spec) =>
+            /^(lottie-web|cadence\/lottie$)/.test(spec) ||
+            (spec.startsWith('.') && path.posix.join(path.posix.dirname(file), spec).replace(/\.tsx?$/, '') === 'runtime/lottie'),
+        )
+        .map((spec) => `${file}: ${spec}`),
+    );
+  // The full player evaluates expressions with eval, which the frame CSP refuses. A module that imports the component,
+  // by any path, would load lottie-web in every scene that imports that module.
+  assert.deepEqual(importers, ['runtime/lottie.tsx: lottie-web/build/player/lottie_light']);
+});
+
+test('API.md documents cadence/lottie and what a Lottie file may not use', () => {
+  const api = fs.readFileSync(new URL('../../src/runtime/API.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const section = api.slice(api.indexOf('## Lottie animations'));
+  assert.ok(api.includes('## Lottie animations'));
+  for (const rule of [
+    "import { Lottie } from 'cadence/lottie'",
+    '<Lottie data={',
+    'ip + time * fr',
+    '`loop`',
+    '`fit`',
+    'expressions',
+    'embedded',
+    'convert the text to shapes',
+    'Randomize Order',
+    'One player per mount',
+    'Keep `data` stable',
+    '`segments`',
+    'at least one frame after `ip`',
+  ]) {
+    assert.ok(section.includes(rule), rule);
+  }
+  assert.ok(api.includes('Lottie files with `<Lottie>`'));
 });

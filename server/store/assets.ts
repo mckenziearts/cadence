@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { lottieProblem } from '../../src/shared/lottie';
 import type { AssetInfo, AssetKind, CaptureRefInput } from '../../src/shared/types';
 import type { Policy } from '../capture/policy';
 import { probeVideo } from '../clips/probe';
@@ -214,39 +215,18 @@ export class FileAssetStore implements AssetStore {
 
 const projectFull = (name: string) => new HttpError(413, m().api.assets.projectFull(name, PROJECT_ASSETS_MiB));
 
-const isNumber = (value: unknown) => typeof value === 'number' && Number.isFinite(value);
-
-/**
- * The Lottie header the player needs, and no image it would fetch: a scene loads nothing from the network, and a path
- * would reach files the project does not hold.
- */
 function checkLottie(text: string, name: string): void {
-  const doc = (() => {
-    try {
-      return JSON.parse(text) as Record<string, unknown> | null;
-    } catch {
-      return null;
-    }
-  })();
-  const assets = doc?.assets ?? [];
-  const fonts = (doc?.fonts as { list?: unknown } | null | undefined)?.list ?? [];
-  const objects = (list: unknown) => Array.isArray(list) && list.every((entry) => typeof entry === 'object' && entry !== null);
-  const header =
-    doc !== null &&
-    typeof doc.v === 'string' &&
-    ['fr', 'ip', 'op', 'w', 'h'].every((key) => isNumber(doc[key])) &&
-    Array.isArray(doc.layers) &&
-    objects(assets) &&
-    objects(fonts);
-  if (!header) throw new HttpError(422, m().media.clips.notLottie(name));
-  // lottie-web keeps p as it is only with e set or no u; otherwise it loads u + p, a data: p included.
-  for (const { p, u, e } of assets as { p?: unknown; u?: unknown; e?: unknown }[]) {
-    if (p === undefined) continue;
-    const embedded = typeof p === 'string' && p.startsWith('data:');
-    if (!embedded || (e !== 1 && u)) throw new HttpError(422, m().media.clips.externalImage(name, String(embedded ? u : p)));
-  }
-  // A font path is a stylesheet, a script or a font file lottie-web adds to the page.
-  for (const { fPath } of fonts as { fPath?: unknown }[]) {
-    if (fPath) throw new HttpError(422, m().media.clips.externalFont(name, String(fPath)));
-  }
+  const problem = lottieProblem(
+    (() => {
+      try {
+        return JSON.parse(text) as unknown;
+      } catch {
+        return null;
+      }
+    })(),
+  );
+  if (problem?.kind === 'header') throw new HttpError(422, m().media.clips.notLottie(name));
+  if (problem?.kind === 'image') throw new HttpError(422, m().media.clips.externalImage(name, problem.path));
+  if (problem?.kind === 'font') throw new HttpError(422, m().media.clips.externalFont(name, problem.path));
+  if (problem?.kind === 'file') throw new HttpError(422, m().media.clips.externalFile(name, problem.path));
 }

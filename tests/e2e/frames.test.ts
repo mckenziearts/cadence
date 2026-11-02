@@ -2652,3 +2652,81 @@ describe('clip frames', () => {
     },
   );
 });
+
+describe('Lottie', () => {
+  const SCENE = `import { Lottie } from 'cadence/lottie';
+import move from '../assets/lottie-e2e/move.json';
+export default ({ t, width, height }) => (
+  <div style={{ background: '#000', width, height }}>
+    <Lottie data={move} time={t} style={{ width, height }} />
+  </div>
+);
+`;
+
+  /** Whether the page fetched a module whose URL matches `pattern`. */
+  function loaded(page: Page, pattern: RegExp): Promise<boolean> {
+    return page.evaluate(
+      (source) => performance.getEntriesByType('resource').some((e) => new RegExp(source).test(e.name)),
+      pattern.source,
+    );
+  }
+
+  it('plays an imported Lottie file under the frame CSP, the same pixels for the same t', { timeout: 60_000 }, async () => {
+    const dir = path.join(h.store.dir(id), 'assets', 'lottie-e2e');
+    // The unit fixture (a red box whose x is the frame, on a 100 x 100 comp) with an embedded blue image at (80, 80).
+    const move = JSON.parse(await readFile(new URL('../fixtures/lottie/move.json', import.meta.url), 'utf8'));
+    const blue =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="#00f"/></svg>';
+    move.assets = [{ id: 'logo', w: 20, h: 20, u: '', p: `data:image/svg+xml,${encodeURIComponent(blue)}`, e: 1 }];
+    const still = (k: unknown) => ({ a: 0, k });
+    move.layers.push({
+      ...{ ddd: 0, ind: 3, ty: 2, nm: 'logo', refId: 'logo', sr: 1, ip: 0, op: 200, st: 0, bm: 0 },
+      ks: { o: still(100), r: still(0), p: still([80, 80, 0]), a: still([10, 10, 0]), s: still([100, 100, 100]) },
+    });
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'move.json'), JSON.stringify(move));
+    await addScene('lottie', SCENE);
+    try {
+      await h.store.syncCode(id);
+      const capture = new PlaywrightCapture({ config: h.config, store: h.store });
+      try {
+        const [first, other, again] = await capture.frames(id, {
+          sceneId: 'lottie',
+          times: [0.2, 0.6, 0.2],
+          format: '16:9',
+          imageFormat: 'png',
+        });
+        for (const frame of [first, other, again]) assert.deepEqual(frame.errors, []);
+        // The comp is 100 x 100 contained in 1920 x 1080: 10.8 canvas px a unit from x = 420, half that in the capture.
+        const at = (x: number, y: number) => pixel(first.image, (420 + x * 10.8) / 2, (y * 10.8) / 2);
+        assert.ok(near(at(20, 50), [255, 0, 0]), `the box at frame 20: ${at(20, 50)}`);
+        assert.ok(near(at(80, 80), [0, 0, 255]), `the embedded image, in the first capture: ${at(80, 80)}`);
+        assert.ok(near(pixel(first.image, 10, 10), [0, 0, 0]));
+        assert.notDeepEqual(other.image, first.image, 'the box moves with t');
+        assert.deepEqual(again.image, first.image);
+      } finally {
+        await capture.close();
+      }
+
+      const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 0.5 });
+      await context.addInitScript(() => {
+        const w = window as unknown as { violations: string[] };
+        w.violations = [];
+        document.addEventListener('securitypolicyviolation', (e) => w.violations.push(`${e.effectiveDirective} ${e.blockedURI}`));
+      });
+      for (const scene of ['lottie', 'green']) {
+        const page = await context.newPage();
+        await page.goto(`${projectOrigin}/frame.html?project=${id}&scene=${scene}&format=16:9&mode=capture`);
+        await page.evaluate(() => window.__cadence!.ready);
+        assert.deepEqual((await seek(page, 0.2)).errors, []);
+        assert.deepEqual(await page.evaluate(() => Reflect.get(window, 'violations')), [], `${scene}: no CSP violation`);
+        assert.equal(await loaded(page, /lottie/i), scene === 'lottie', `${scene}: lottie-web loaded`);
+        if (scene === 'lottie') assert.equal(await loaded(page, /\/deps\/lottie-web_build_player_lottie___light\.js/), true);
+      }
+      await context.close();
+    } finally {
+      await removeScenes('lottie');
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

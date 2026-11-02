@@ -15,6 +15,7 @@
     "paths": {
       "cadence": ["./src/runtime/index.ts"],
       "cadence/three": ["./src/runtime/three.tsx"],
+      "cadence/lottie": ["./src/runtime/lottie.tsx"],
       "@brands/*": ["./brands/*"]
     }
   },
