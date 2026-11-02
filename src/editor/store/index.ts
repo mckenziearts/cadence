@@ -42,6 +42,13 @@ export interface Toast {
   tone: 'info' | 'success' | 'error';
 }
 
+export interface AssetUpload {
+  id: number;
+  projectId: string;
+  name: string;
+  error: string | null;
+}
+
 export interface CaptureHostAsk {
   projectId: string;
   host: string;
@@ -108,6 +115,7 @@ export interface EditorState {
   voiceOver: { status: VoiceOverStatus };
   versionsTick: number;
   assetsTick: number;
+  uploads: AssetUpload[];
   /** The host the agent asked to capture, until the person answers. */
   captureAsk: CaptureHostAsk | null;
   /** The hosts the person dismissed while the project is open: not asked again. */
@@ -192,6 +200,7 @@ export const useStore = create<EditorState>()(() => ({
   voiceOver: { status: 'idle' },
   versionsTick: 0,
   assetsTick: 0,
+  uploads: [],
   captureAsk: null,
   captureIgnored: [],
   cost: null,

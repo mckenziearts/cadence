@@ -913,7 +913,7 @@ export interface RenderFile {
   frames?: number;
 }
 
-export type AssetKind = 'image' | 'svg' | 'font' | 'audio' | 'other';
+export type AssetKind = 'image' | 'svg' | 'font' | 'audio' | 'video' | 'lottie' | 'other';
 
 export interface AssetInfo {
   /** Path relative to the project's assets/ folder, e.g. `refs/dashboard-desktop.png`. */

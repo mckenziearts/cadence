@@ -201,7 +201,8 @@ export const api = {
   cancelBrandBuild: (id: string) => del<{ ok: true }>(`/api/brand-builds/${encodeURIComponent(id)}`),
 
   assets: (id: string) => get<AssetInfo[]>(`${p(id)}/assets`),
-  uploadAsset: (id: string, file: File) => post<AssetInfo>(`${p(id)}/assets${q({ name: file.name })}`, file),
+  uploadAsset: (id: string, file: File, options?: Options) =>
+    post<AssetInfo>(`${p(id)}/assets${q({ name: file.name })}`, file, options),
   deleteAsset: (id: string, assetPath: string) => del<{ ok: true }>(`${p(id)}/assets${q({ path: assetPath })}`),
   captureRef: (id: string, input: CaptureRefInput) => post<AssetInfo>(`${p(id)}/refs`, input),
   captureHosts: (id: string) => get<{ hosts: string[] }>(`${p(id)}/capture-hosts`),

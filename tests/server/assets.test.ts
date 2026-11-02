@@ -90,13 +90,24 @@ test('list, resolve, remove (to the project trash)', async () => {
   await assets.upload('medias', { name: 'photo.jpg', body: [PNG] });
   await fs.writeFile(path.join(dir, 'assets', 'refs', 'site-desktop.png'), PNG);
   await fs.writeFile(path.join(dir, 'assets', '.DS_Store'), 'x');
+  for (const name of ['clip.mp4', 'export.m4v', 'iphone.MOV', 'web.webm', 'intro.json']) {
+    await fs.writeFile(path.join(dir, 'assets', name), 'x');
+  }
   assert.deepEqual(
     (await assets.list('medias')).map((a) => [a.path, a.kind, a.isReference]),
     [
+      ['clip.mp4', 'video', false],
+      ['export.m4v', 'video', false],
+      ['intro.json', 'lottie', false],
+      ['iphone.MOV', 'video', false],
       ['photo.jpg', 'image', false],
       ['refs/site-desktop.png', 'image', true],
+      ['web.webm', 'video', false],
     ],
   );
+  for (const name of ['clip.mp4', 'export.m4v', 'iphone.MOV', 'web.webm', 'intro.json']) {
+    await fs.rm(path.join(dir, 'assets', name));
+  }
   assert.equal(assets.resolve('medias', 'refs/site-desktop.png'), path.join(dir, 'assets', 'refs', 'site-desktop.png'));
   assert.throws(() => assets.resolve('medias', '../project.json'), /Chemin invalide/);
   await rejectsWithStatus(assets.remove('medias', '../project.json'), 400);

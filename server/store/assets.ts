@@ -40,6 +40,11 @@ const KINDS: Record<string, AssetKind> = {
   aac: 'audio',
   flac: 'audio',
   ogg: 'audio',
+  mp4: 'video',
+  mov: 'video',
+  m4v: 'video',
+  webm: 'video',
+  json: 'lottie',
 };
 const UPLOADABLE = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'woff', 'woff2', 'ttf', 'otf', 'json', ...VIDEOS]);
 const limitMiB = (ext: string) => (VIDEOS.has(ext) ? 500 : ext === 'json' ? 10 : 50);

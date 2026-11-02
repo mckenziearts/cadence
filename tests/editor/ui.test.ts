@@ -25,6 +25,7 @@ import {
   type AppState,
   type BrandBuild,
   type ChatState,
+  type ClipState,
   type Features,
   type MusicAnalysis,
   type MusicGridData,
@@ -1358,6 +1359,143 @@ describe('editor', () => {
     assert.equal(await focused(card(second).locator('button:not(:disabled)').first()), true, 'a control of the remaining card');
     await page.context().close();
   });
+
+  it(
+    'takes videos and Lottie files in Médias, says how each clip is doing and why an upload failed',
+    { timeout: 90_000 },
+    async () => {
+      const id = `${PREFIX}-medias`;
+      await api('POST', '/api/projects', { name: 'Médias', id, brand: 'cadence', formats: ['16:9'], fps: 30 });
+      const talk = path.join(stateDir, 'talk.mp4');
+      await promisify(execFile)(server.config.ffmpegPath, [
+        ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=64x36:r=10:d=1', '-f', 'lavfi', '-i', 'sine=d=1'],
+        ...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-shortest', talk],
+      ]);
+      const page = await newPage();
+      // The clip state the page sees, until null hands it the server's own.
+      let clip: ClipState | null = { status: 'preparing' };
+      await rewriteProject(
+        page,
+        (project) => (clip ? { ...project, clips: { ...project.clips, 'talk.mp4': clip } } : project),
+        id,
+      );
+      const changed = async (next: ClipState | null) => {
+        clip = next;
+        const fetched = page.waitForResponse((r) => r.url().endsWith(`/api/projects/${id}`));
+        server.services.hub.send({ type: 'project-changed', projectId: id });
+        await fetched;
+      };
+      await open(id, page);
+      await panel(page, 'Médias');
+      const input = page.locator('input[type="file"]');
+      const accept = (await input.getAttribute('accept'))!.split(',');
+      for (const ext of ['.mp4', '.mov', '.m4v', '.webm', '.json']) assert.ok(accept.includes(ext), `accepts ${ext}`);
+
+      // Each live region added to the page keeps the text it came with: a region added along with its text is often not read.
+      await page.evaluate(() =>
+        new MutationObserver((records) => {
+          for (const node of records.flatMap((record) => [...record.addedNodes])) {
+            if (!(node instanceof HTMLElement)) continue;
+            for (const region of [node, ...node.querySelectorAll<HTMLElement>('*')].filter((el) => el.matches('[role="status"]')))
+              region.dataset.born ??= region.textContent ?? '';
+          }
+        }).observe(document.body, { childList: true, subtree: true }),
+      );
+      await input.setInputFiles(talk);
+      const card = (name: string) => page.locator(`li[data-asset="${name}"]`);
+      const status = card('talk.mp4').getByRole('status');
+      await status.getByText('Préparation des images...').waitFor();
+      assert.equal(await status.getAttribute('data-born'), '', 'mounted before its text');
+      const video = card('talk.mp4').locator('video');
+      assert.equal(await video.getAttribute('preload'), 'metadata');
+      assert.equal(await video.getAttribute('src'), `/api/projects/${id}/assets/file?path=talk.mp4`);
+      assert.equal(await video.evaluate((el: HTMLVideoElement) => el.muted), true);
+      await page.waitForFunction(
+        (el) => (el as HTMLVideoElement).readyState >= 1 && (el as HTMLVideoElement).videoWidth === 64,
+        await video.elementHandle(),
+      );
+
+      await server.services.clips.whenIdle(id);
+      await changed(null);
+      await status.getByText(`Prête, 1,0${NBSP}s`).waitFor();
+      assert.equal(await status.getAttribute('data-born'), '', 'the same live region');
+      await changed({ status: 'error', error: 'ffmpeg a planté' });
+      await status.getByText('ffmpeg a planté').waitFor();
+      assert.equal(await status.getAttribute('data-born'), '', 'the same live region');
+      await changed(null);
+
+      const lottie = { v: '5.12.2', fr: 30, ip: 0, op: 60, w: 512, h: 512, layers: [] };
+      await input.setInputFiles([
+        { name: 'faux.mp4', mimeType: 'video/mp4', buffer: Buffer.from('pas une vidéo') },
+        {
+          name: 'externe.json',
+          mimeType: 'application/json',
+          buffer: Buffer.from(JSON.stringify({ ...lottie, assets: [{ id: 'img_0', u: 'images/', p: 'a.png' }] })),
+        },
+        { name: 'gros.json', mimeType: 'application/json', buffer: Buffer.alloc(11 * 1024 * 1024, 32) },
+        { name: 'anim.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(lottie)) },
+      ]);
+      const upload = (name: string) => page.locator(`li[data-upload="${name}"]`);
+      const errors = {
+        'faux.mp4': "« faux.mp4 » n'est pas une vidéo que ffmpeg sait lire",
+        'externe.json': '« externe.json » charge une image externe (a.png)',
+        'gros.json': 'Fichier trop volumineux : gros.json (10 Mo max)',
+      };
+      for (const [name, error] of Object.entries(errors)) {
+        await upload(name).getByRole('status').getByText(error).waitFor({ timeout: 30_000 });
+        assert.equal(await upload(name).getByRole('status').getAttribute('data-born'), '', `${name}: mounted before its text`);
+        assert.equal(await page.getByText(error).count(), 1, `${name}: said on its row, not in a toast too`);
+      }
+      await card('anim.json').getByText('Animation Lottie').waitFor();
+      assert.equal(await upload('anim.json').count(), 0, 'a file that went through leaves no upload row');
+
+      // Removing a row hands the focus to the row now in its place, then to the text that says the list is empty.
+      await upload('externe.json').getByRole('button', { name: 'Retirer externe.json' }).focus();
+      await page.keyboard.press('Enter');
+      await upload('externe.json').waitFor({ state: 'detached' });
+      assert.equal(await focused(upload('gros.json')), true, 'the row now in its place');
+      await upload('gros.json').getByRole('button', { name: 'Retirer gros.json' }).click();
+      assert.equal(await focused(card('anim.json')), true, 'the first file once the uploads are gone');
+      await upload('faux.mp4').getByRole('button', { name: 'Retirer faux.mp4' }).click();
+      assert.equal(await focused(card('anim.json')), true);
+      const remove = async (name: string) => {
+        await card(name)
+          .getByRole('button', { name: `Supprimer ${name}` })
+          .focus();
+        await page.keyboard.press('Enter');
+        await card(name).getByRole('button', { name: 'Supprimer ?' }).waitFor();
+        await page.keyboard.press('Enter');
+        await card(name).waitFor({ state: 'detached' });
+      };
+      // The asset lists the page asks for wait here, each read when it was asked.
+      const isList = (url: URL) => url.pathname === `/api/projects/${id}/assets`;
+      const held: (() => void)[] = [];
+      let asked!: () => void;
+      const listed = new Promise<void>((resolve) => (asked = resolve));
+      await page.route(isList, async (route) => {
+        if (route.request().method() !== 'GET') return route.continue();
+        const response = await route.fetch();
+        asked();
+        await new Promise<void>((resolve) => held.push(resolve));
+        await route.fulfill({ response });
+      });
+      await remove('talk.mp4');
+      assert.equal(await focused(card('anim.json')), true, 'the last card hands the focus to the one before it');
+      await listed;
+      await remove('anim.json');
+      assert.equal(await focused(page.getByText(/^Logos, photos, illustrations et polices/)), true, 'the empty list text');
+      // A list asked before the deletion and answered after it does not bring the card back.
+      const landed = page.waitForResponse((r) => r.request().method() === 'GET' && isList(new URL(r.url())));
+      for (const release of held.splice(0)) release();
+      await landed;
+      await page.waitForTimeout(200);
+      assert.equal(await card('anim.json').count(), 0, 'a deleted card stays gone');
+      assert.equal(await focused(page.getByText(/^Logos, photos, illustrations et polices/)), true);
+      await page.unroute(isList);
+      for (const release of held.splice(0)) release();
+      await page.context().close();
+    },
+  );
 
   it(
     'writes a scene voice-over in Voix: spoken once the field is left, heard in the preview, moved, removed',
