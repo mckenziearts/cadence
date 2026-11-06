@@ -836,6 +836,7 @@ export interface ApiDeps {
   publisher: PublishService;
   archives: ProjectArchives;
   agentStatus: () => Promise<import('../src/shared/types').AgentStatus>;
+  usageAgent: () => Promise<string>;
   /** CLI status on this computer for the other agents, for the Profile's cards (the running agent stays Claude for now). */
   codexStatus: () => Promise<import('../src/shared/types').AgentStatus>;
   grokStatus: () => Promise<import('../src/shared/types').AgentStatus>;

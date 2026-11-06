@@ -1,5 +1,6 @@
 // StartOptions.api: a host app's Hono routes mounted under /api/<name>, behind the same guards as the built-in routes.
 // StartOptions.hostBrandSources: a host app's brand sources next to GitHub and GitLab.
+// StartOptions.provider: a host app's provider, whose runs the usage route reads.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -10,7 +11,7 @@ import type { BrandSource, HostBrandSource } from '../../server/contracts';
 import { m } from '../../server/i18n';
 import { startServer, type RunningServer, type StartOptions } from '../../server/index';
 import { HttpError } from '../../server/util';
-import type { AppState } from '../../src/shared/types';
+import type { AppState, UsageSummary } from '../../src/shared/types';
 import { makeRoot, type TestRoot } from './helpers';
 
 let t: TestRoot;
@@ -82,6 +83,35 @@ async function start(extra: StartOptions) {
   await started.close();
   return started;
 }
+
+function logRun(agent: string) {
+  const tokens = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 };
+  const line = { at: '2026-10-01T10:00:00.000Z', agent, kind: 'chat', projectId: 'demo', chat: 'project', costUsd: 0.5, tokens };
+  return fs.appendFile(path.join(t.config.stateDir, 'usage.jsonl'), `${JSON.stringify(line)}\n`);
+}
+
+async function usageRuns(running: RunningServer) {
+  const res = await fetch(`${running.config.editorOrigin}/api/usage`);
+  return ((await res.json()) as UsageSummary).chats.runs;
+}
+
+test('GET /api/usage without agent shows the provider that serves the turns when a host provider is injected', async () => {
+  await logRun('fake');
+  assert.equal(await usageRuns(server), 1);
+});
+
+test('GET /api/usage without agent follows the settings when no host provider is injected', async () => {
+  await logRun('codex');
+  const running = await startServer({ ...options, provider: undefined });
+  try {
+    const headers = { 'content-type': 'application/json', 'x-cadence-token': running.editorToken };
+    const body = JSON.stringify({ agent: 'codex' });
+    await fetch(`${running.config.editorOrigin}/api/settings`, { method: 'PUT', headers, body });
+    assert.equal(await usageRuns(running), 1);
+  } finally {
+    await running.close();
+  }
+});
 
 test('a host route needs the editor token to mutate', async () => {
   assert.equal((await post('/ping')).status, 403);

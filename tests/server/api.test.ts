@@ -288,6 +288,7 @@ beforeEach(async () => {
     publisher: new Publisher({ store, renders, accounts, networks, hub }),
     archives: new ProjectArchiver({ config: t.config, store, brands }),
     agentStatus: async () => ({ ok: true, label: 'Claude Code', version: '2.1.285' }),
+    usageAgent: async () => 'claude-code',
     codexStatus: async () => ({ ok: false, label: 'Codex', reason: 'missing' as const }),
     grokStatus: async () => ({ ok: false, label: 'Grok', reason: 'missing' as const }),
     geminiStatus: async () => ({ ok: false, label: 'Gemini', reason: 'missing' as const }),
@@ -2270,6 +2271,20 @@ test('usage: every recorded Claude Code run, summed per kind', async () => {
   });
   // Another agent's usage is separate: Codex counted none of these runs.
   assert.deepEqual((await json('GET', '/api/usage?agent=codex')).body, { since: null, chats: none, brands: none });
+});
+
+test('GET /api/usage returns the runs of a host provider', async () => {
+  const none = { runs: 0, costUsd: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+  const tokens = { input: 10, output: 200, cacheRead: 3000, cacheWrite: 400 };
+  const at = '2026-10-01T10:00:00.000Z';
+  await usage.record({ at, agent: 'host-loop', kind: 'chat', projectId: 'demo', chat: 'project', costUsd: 0.5, tokens });
+
+  assert.deepEqual((await json('GET', '/api/usage?agent=host-loop')).body, {
+    since: at,
+    chats: { runs: 1, costUsd: 0.5, tokens },
+    brands: none,
+  });
+  assert.deepEqual((await json('GET', '/api/usage')).body, { since: null, chats: none, brands: none });
 });
 
 test('brands: deleted into .cadence/trash, never the neutral kit, one in use or one being built', async () => {

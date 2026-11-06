@@ -958,7 +958,8 @@ POST   /api/brand-builds                           StartBrandBuildInput, answers
 DELETE /api/brand-builds/:id                       cancel
 GET    /api/settings | PUT /api/settings           Settings (a new language: SSE `language-changed`; defaultVoice
                                                    checked like a project's ElevenLabs voice, null removes it)
-GET    /api/usage                                  UsageSummary (chats and brand builds since the first run counted)
+GET    /api/usage                                  UsageSummary (chats and brand builds since the first run counted) of ?agent=,
+                                                   else of the injected provider, else of settings.agent
 GET    /api/git-accounts                           { github: GitAccount, gitlab: GitAccount }
 PUT    /api/networks/:network/app                  { clientId, clientSecret }
 POST   /api/networks/:network/connect              { url }: the consent page, bound to a new state
