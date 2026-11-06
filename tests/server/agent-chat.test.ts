@@ -1112,6 +1112,31 @@ test('clear deletes the session file of the cleared chat and no other', async (t
   await fs.access(sibling);
 });
 
+test('clear refused during a turn keeps the session file of that turn', async (t) => {
+  const release = gate();
+  const env = await setup(async function* (turn, index) {
+    if (index === 0) {
+      await fs.mkdir(path.dirname(turn.sessionFile), { recursive: true });
+      await fs.writeFile(turn.sessionFile, '{}');
+    } else {
+      await release.opened;
+    }
+    yield { type: 'init', sessionId: turn.sessionId };
+    yield { type: 'done', text: 'OK', isError: false, durationMs: 1, sessionId: turn.sessionId };
+  });
+  t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+  await env.manager.send('demo', 'scene:intro', { text: 'Un' });
+  await env.idle('scene:intro');
+  await env.manager.send('demo', 'scene:intro', { text: 'Deux' });
+
+  await assert.rejects(env.manager.clear('demo', 'scene:intro'), { status: 409 });
+  await fs.access(env.turns[0].sessionFile);
+
+  release.open();
+  await env.idle('scene:intro');
+  assert.deepEqual([env.turns[1].resume, env.turns[1].sessionFile], [true, env.turns[0].sessionFile]);
+});
+
 test('clear never deletes through a link: it refuses, the conversation stays, nothing is archived', async (t) => {
   const env = await setup(async function* (turn) {
     yield { type: 'init', sessionId: turn.sessionId };

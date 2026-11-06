@@ -333,7 +333,7 @@ export class ChatManager implements ChatService {
     return this.files.run(id, async () => {
       if (this.turns.has(id) || this.reserved.has(id)) throw new HttpError(409, m().agent.chat.stopFirst);
       const chat = await this.load(projectId, key);
-      // First: a refused delete must leave no archive, the project cost adds the archive to the chat still in place.
+      // Before the archive: a refused delete must leave none, the project cost adds the archive to the chat still in place.
       if (chat.sessionId) await removeFileInside(this.deps.store.dir(projectId), this.sessionFile(projectId, chat.sessionId));
       if (chat.messages.length) {
         const name = `${this.fileName(key)}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
