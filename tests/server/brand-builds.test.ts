@@ -21,6 +21,7 @@ import { McpTokens } from '../../server/mcp/tokens';
 import { FileSettingsStore } from '../../server/settings';
 import { BUILDING_MARKER, FileBrandStore } from '../../server/store/brands';
 import { FileUsageLog } from '../../server/usage';
+import { isInside } from '../../server/util';
 import { DEFAULT_FEATURES, type BrandBuild, type Features, type GitHost, type ServerEvent } from '../../src/shared/types';
 import { makeRoot, rejectsWithStatus, type TestRoot } from './helpers';
 
@@ -371,6 +372,25 @@ test('a build adapts the neutral kit in brands/<id>/ from the clone, checks it, 
   }
   assert.doesNotMatch(turn.systemPrompt, /other kits|brands\/cadence/, 'the guide points at the starter in the brand folder');
   assert.deepEqual(turn.deny, [`Read(/${t.config.stateDir}/accounts.json)`, `Read(/${t.config.stateDir}/elevenlabs.json)`]);
+  assert.deepEqual(turn.allow, [
+    ...reads,
+    'Glob',
+    'Grep',
+    ...writes,
+    'mcp__cadence__copy_from_repo',
+    'mcp__cadence__add_google_font',
+    'mcp__cadence__preview_brand',
+    'mcp__cadence__check_brand',
+  ]);
+  assert.deepEqual(turn.files, {
+    read: [`${repo}/**`, `${dir}/**`, `${shared}/**`],
+    write: [`${dir}/**`],
+    deny: [path.join(t.config.stateDir, 'accounts.json'), path.join(t.config.stateDir, 'elevenlabs.json')],
+  });
+  assert.equal(turn.scope, 'brand');
+  assert.equal(turn.sessionFile, path.join(t.config.stateDir, 'brand-sessions', `${turn.sessionId}.json`));
+  assert.ok(!isInside(dir, turn.sessionFile) && !isInside(repo, turn.sessionFile), 'the agent cannot reach its session');
+  assert.ok(!turn.files.write.some((entry) => isInside(entry.replace(/\/\*\*$/, ''), turn.sessionFile)));
   assert.deepEqual(fx.scopes, [{ kind: 'brand', brandId: 'acme-studio', repoDir: turn.addDirs[0] }]);
   assert.equal(fx.tokens.resolve(/Bearer (\S+)/.exec(JSON.stringify(turn.mcpServers))![1]), null, 'the token is revoked');
   const statuses = fx.events.map((e) => (e as { build: BrandBuild }).build.status);
@@ -436,6 +456,7 @@ test('the fix turn resumes the session: the build and the usage log count only w
   const started = await fx.builder.start({ repo: 'acme/site', name: 'Acme' });
   const build = await fx.builder.wait(started.id);
   assert.equal(fx.turns[1].resume, true);
+  assert.equal(fx.turns[1].sessionFile, fx.turns[0].sessionFile);
   assert.equal(build.costUsd, 0.65);
   const usage = await fx.usage.summary();
   assert.deepEqual(usage.brands, { runs: 2, ...totals[1] }, 'a failed build still counts what it used');

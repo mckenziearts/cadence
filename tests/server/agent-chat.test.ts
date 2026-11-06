@@ -20,10 +20,11 @@ import type {
   TemplateStore,
   VersionStore,
 } from '../../server/contracts';
+import { claudeRules } from '../../server/agent/policy';
 import { m } from '../../server/i18n';
 import { McpTokens } from '../../server/mcp/tokens';
 import { FileUsageLog } from '../../server/usage';
-import { HttpError } from '../../server/util';
+import { HttpError, isInside } from '../../server/util';
 import type {
   ChatKey,
   ChatState,
@@ -224,6 +225,7 @@ async function setup(script: Script, opts: { settings?: Settings; features?: Fea
 }
 
 const isBusy = (state: ChatState) => state.running || state.queued;
+const covers = (entry: string, file: string) => (entry.endsWith('/**') ? isInside(entry.slice(0, -3), file) : entry === file);
 
 async function waitFor(check: () => Promise<boolean> | boolean, timeoutMs = 3000): Promise<void> {
   const end = Date.now() + timeoutMs;
@@ -635,6 +637,62 @@ test('a lost session is restarted once, with the full context', async (t) => {
   const state = await env.manager.get('demo', 'project');
   assert.equal(state.messages[1].status, 'done');
   assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).sessionId, env.turns[1].sessionId);
+});
+
+test('a chat turn says which files it may touch, its scope and where its session lives', async (t) => {
+  const env = await setup(async function* (turn) {
+    yield { type: 'done', text: 'OK', isError: false, durationMs: 1, sessionId: turn.sessionId };
+  });
+  t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+  await env.manager.send('demo', 'scene:intro', { text: 'Scène' });
+  await env.idle('scene:intro');
+  await env.manager.send('demo', 'project', { text: 'Projet' });
+  await env.idle('project');
+
+  const [scene, project] = env.turns;
+  const reads = [env.projectDir, ...['brands/cadence', 'templates', 'src/runtime'].map((rel) => path.join(env.root, rel))].map(
+    (dir) => path.join(dir, '**'),
+  );
+  const deny = ['accounts.json', 'elevenlabs.json'].map((file) => path.join(env.root, '.cadence', file));
+  assert.deepEqual(scene.files, { read: reads, write: [path.join(env.projectDir, 'scenes', 'intro.tsx')], deny });
+  assert.deepEqual(project.files, {
+    read: reads,
+    write: ['scenes/**', 'components/**', 'art-direction.md'].map((rel) => path.join(env.projectDir, rel)),
+    deny,
+  });
+  assert.deepEqual([scene.scope, project.scope], ['scene', 'project']);
+
+  for (const turn of env.turns) {
+    const rules = claudeRules(turn.files);
+    assert.deepEqual(turn.allow.slice(0, rules.allow.length), rules.allow);
+    assert.ok(turn.allow.slice(rules.allow.length).every((rule) => rule.startsWith('mcp__cadence__')));
+    assert.deepEqual(turn.deny, rules.deny);
+    const sessions = path.join(env.projectDir, '.cadence', 'chats', 'sessions');
+    assert.equal(turn.sessionFile, path.join(sessions, `${turn.sessionId}.json`));
+    assert.ok(!turn.files.write.some((entry) => entry.includes('.cadence')), 'nothing under .cadence is writable');
+    assert.ok(!turn.files.write.some((entry) => covers(entry, turn.sessionFile)), 'the session file is not writable');
+  }
+});
+
+test('the attempt after a lost session names the session file of its new session', async (t) => {
+  const env = await setup(async function* (turn) {
+    if (turn.resume) {
+      yield { type: 'done', text: 'perdue', isError: true, durationMs: 1, subtype: 'session_lost' };
+      return;
+    }
+    yield { type: 'done', text: 'OK', isError: false, durationMs: 1, sessionId: turn.sessionId };
+  });
+  t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+  const file = path.join(env.projectDir, '.cadence', 'chats', 'project.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify({ key: 'project', sessionId: OLD_SESSION, briefHash: 'x', messages: [] }));
+
+  await env.manager.send('demo', 'project', { text: 'Bonjour' });
+  await env.idle('project');
+  const sessions = path.join(env.projectDir, '.cadence', 'chats', 'sessions');
+  assert.equal(env.turns[0].sessionFile, path.join(sessions, `${OLD_SESSION}.json`));
+  assert.notEqual(env.turns[1].sessionId, OLD_SESSION);
+  assert.equal(env.turns[1].sessionFile, path.join(sessions, `${env.turns[1].sessionId}.json`));
 });
 
 test('a resumed turn that ends as session_lost restarts the session whatever its text says', async (t) => {

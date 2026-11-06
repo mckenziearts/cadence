@@ -715,6 +715,12 @@ export interface McpTokenIssuer {
 // Agent provider, server/agent/claudeCode.ts: export class ClaudeCodeProvider implements AgentProvider (constructor(config, agent name))
 // Tests inject fake providers through startServer({ provider }).
 
+export interface FilePolicy {
+  read: string[];
+  write: string[];
+  deny: string[];
+}
+
 export interface AgentTurn {
   /** Working directory (the project folder). */
   cwd: string;
@@ -732,9 +738,12 @@ export interface AgentTurn {
   deny: string[];
   /** Extra readable directories (--add-dir). */
   addDirs: string[];
+  files: FilePolicy;
+  scope: 'scene' | 'project' | 'brand';
   /** --mcp-config mcpServers object. */
   mcpServers: Record<string, unknown>;
   sessionId: string;
+  sessionFile: string;
   /** Resume `sessionId` instead of starting it. */
   resume: boolean;
   signal: AbortSignal;

@@ -30,6 +30,7 @@ import type {
   CadenceConfig,
   CaptureService,
   ChatService,
+  FilePolicy,
   Hub,
   McpActivity,
   McpTokenIssuer,
@@ -57,6 +58,7 @@ import {
   writeJsonAtomic,
 } from '../util';
 import { buildSystemPrompt } from './guide';
+import { claudeRules } from './policy';
 import { buildTurnPrompt } from './prompts';
 import type { ChatFile } from './types';
 
@@ -117,23 +119,31 @@ function validPlayhead(value: unknown): Playhead | undefined {
   return { sceneId, t, format };
 }
 
-/** Permission rules of a turn. `//` marks an absolute path in Claude Code rules. */
+export function chatFiles(projectDir: string, sceneId: string | null, dirs: Dirs, deny: string[]): FilePolicy {
+  return {
+    read: [projectDir, dirs.brand, dirs.templates, dirs.runtime].map((dir) => path.join(dir, '**')),
+    write: sceneId
+      ? [path.join(projectDir, 'scenes', `${sceneId}.tsx`)]
+      : ['scenes/**', 'components/**', 'art-direction.md'].map((rel) => path.join(projectDir, rel)),
+    deny,
+  };
+}
+
 export function allowRules(projectDir: string, sceneId: string | null, dirs: Dirs): string[] {
-  const rule = (tool: string, file: string) => `${tool}(//${file.replace(/^\/+/, '')})`;
-  const reads = [projectDir, dirs.brand, dirs.templates, dirs.runtime].map((dir) => rule('Read', path.join(dir, '**')));
-  const writable = sceneId
-    ? [path.join(projectDir, 'scenes', `${sceneId}.tsx`)]
-    : ['scenes/**', 'components/**', 'art-direction.md'].map((rel) => path.join(projectDir, rel));
   const tools = (sceneId ? SCENE_TOOLS : PROJECT_TOOLS).map((name) => `${MCP_PREFIX}${name}`);
-  return [...reads, 'Glob', 'Grep', ...writable.flatMap((file) => [rule('Edit', file), rule('Write', file)]), ...tools];
+  return [...claudeRules(chatFiles(projectDir, sceneId, dirs, [])).allow, ...tools];
 }
 
 /**
  * Files no turn may read: the network and ElevenLabs keys. --restricted already keeps the file tools to a turn's folders;
  * this still holds if one of them ever contains the state folder, where the brand build keeps its clones.
  */
+export function deniedFiles(stateDir: string): string[] {
+  return ['accounts.json', 'elevenlabs.json'].map((file) => path.join(stateDir, file));
+}
+
 export function denyRules(stateDir: string): string[] {
-  return ['accounts.json', 'elevenlabs.json'].map((file) => `Read(//${path.join(stateDir, file).replace(/^\/+/, '')})`);
+  return claudeRules({ read: [], write: [], deny: deniedFiles(stateDir) }).deny;
 }
 
 function displayPath(file: unknown, projectDir: string, root: string): string {
@@ -487,15 +497,18 @@ export class ChatManager implements ChatService {
         templates: config.templatesDir,
         runtime: path.join(config.root, 'src', 'runtime'),
       };
+      const scope: 'scene' | 'project' = scene ? 'scene' : 'project';
       const base = {
         cwd: project.dir,
-        systemPrompt: buildSystemPrompt({ scope: scene ? 'scene' : 'project' }),
+        systemPrompt: buildSystemPrompt({ scope }),
         model,
         effort,
         tools: TOOLS,
         allow: allowRules(project.dir, scene?.id ?? null, dirs),
         deny: denyRules(config.stateDir),
         addDirs: [dirs.brand, dirs.templates, dirs.runtime],
+        files: chatFiles(project.dir, scene?.id ?? null, dirs, deniedFiles(config.stateDir)),
+        scope,
         mcpServers: { cadence: { type: 'http', url: config.mcpUrl, headers: { Authorization: `Bearer ${token}` } } },
         signal: turn.abort.signal,
       };
@@ -504,7 +517,9 @@ export class ChatManager implements ChatService {
         const resume = chat.sessionId !== null;
         const { prompt, briefHash } = await this.prompt(turn, project, scene, brandId, dirs, resume);
         if (turn.abort.signal.aborted) break; // stopped while the context was being gathered
-        const agentTurn = { ...base, prompt, sessionId: chat.sessionId ?? randomUUID(), resume };
+        const sessionId = chat.sessionId ?? randomUUID();
+        const sessionFile = path.join(this.chatsDir(projectId), 'sessions', `${sessionId}.json`);
+        const agentTurn = { ...base, prompt, sessionId, sessionFile, resume };
         const outcome = await this.stream(turn, agentTurn, started, briefHash, settings.agent);
         if (outcome !== 'session-lost') break;
         chat.sessionId = null;

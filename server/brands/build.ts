@@ -16,8 +16,9 @@ import {
   type StartBrandBuildInput,
   type UsageCount,
 } from '../../src/shared/types';
-import { activityLabel, denyRules } from '../agent/chat';
+import { activityLabel, deniedFiles } from '../agent/chat';
 import { buildBrandGuide } from '../agent/guide';
+import { claudeRules } from '../agent/policy';
 import type {
   AgentProvider,
   AgentTurn,
@@ -26,6 +27,7 @@ import type {
   BrandStore,
   CadenceConfig,
   CaptureService,
+  FilePolicy,
   HostBrandSource,
   Hub,
   McpTokenIssuer,
@@ -295,7 +297,13 @@ export class BrandBuilder implements BrandBuildService {
     const model = picks.model;
     const effort = MODELS.find((m) => m.id === model)?.supportsEffort === false ? null : picks.effort;
     const shared = path.join(config.root, 'src', 'shared');
-    const rule = (tool: string, target: string) => `${tool}(//${target.replace(/^\/+/, '')})`;
+    const files: FilePolicy = {
+      read: [repoDir, brandDir, shared].map((dir) => `${dir}/**`),
+      write: [`${brandDir}/**`],
+      deny: deniedFiles(config.stateDir),
+    };
+    const rules = claudeRules(files);
+    const sessionId = randomUUID();
     const pkg = JSON.parse(await fs.readFile(path.join(config.root, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
     };
@@ -317,20 +325,14 @@ export class BrandBuilder implements BrandBuildService {
       model,
       effort,
       tools: TOOLS,
-      allow: [
-        rule('Read', `${repoDir}/**`),
-        rule('Read', `${brandDir}/**`),
-        rule('Read', `${shared}/**`),
-        'Glob',
-        'Grep',
-        rule('Edit', `${brandDir}/**`),
-        rule('Write', `${brandDir}/**`),
-        ...BRAND_TOOLS.map((tool) => `${MCP_PREFIX}${tool}`),
-      ],
-      deny: denyRules(config.stateDir),
+      allow: [...rules.allow, ...BRAND_TOOLS.map((tool) => `${MCP_PREFIX}${tool}`)],
+      deny: rules.deny,
       addDirs: [repoDir, brandDir, shared],
+      files,
+      scope: 'brand',
       mcpServers: { cadence: { type: 'http', url: config.mcpUrl, headers: { Authorization: `Bearer ${token}` } } },
-      sessionId: randomUUID(),
+      sessionId,
+      sessionFile: path.join(config.stateDir, 'brand-sessions', `${sessionId}.json`),
       signal: state.abort.signal,
     };
   }
