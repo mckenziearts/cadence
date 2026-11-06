@@ -763,9 +763,11 @@ export type AgentEvent =
       text: string;
       isError: boolean;
       durationMs: number;
-      /** Running totals of the session: Claude Code starts a resumed session from the totals it saved. */
+      /** With `tokens`: the session's running totals under `usage: 'session'`, this turn's alone otherwise. */
       costUsd?: number;
       tokens?: UsageTokens;
+      usage?: 'session' | 'turn';
+      provider?: string;
       sessionId?: string;
       /** success, error_max_turns, aborted, crashed... */
       subtype?: string;
@@ -783,7 +785,7 @@ export interface AgentProvider {
 export interface UsageLog {
   /** Append the run to <root>/.cadence/usage.jsonl. Never rejects: a lost line must not fail the run. */
   record(entry: UsageEntry): Promise<void>;
-  summary(agent?: import('../src/shared/types').AgentId): Promise<UsageSummary>;
+  summary(agent?: string): Promise<UsageSummary>;
 }
 
 // server/settings.ts: export class FileSettingsStore implements SettingsStore  (constructor(config: CadenceConfig))

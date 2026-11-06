@@ -73,3 +73,16 @@ test('FileUsageLog.summary(agent) keeps that agent only; lines written before pe
     brands: empty,
   });
 });
+
+test("FileUsageLog keeps a host provider's id: its runs are neither Claude Code's nor lost", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cadence-usage-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const log = new FileUsageLog({ stateDir: path.join(root, '.cadence') } as CadenceConfig);
+  const empty = { runs: 0, costUsd: 0, tokens: NO_TOKENS };
+  const at = '2026-10-01T10:00:00.000Z';
+
+  await log.record({ at, agent: 'host-loop', kind: 'chat', projectId: 'demo', chat: 'project', ...FIRST });
+
+  assert.deepEqual(await log.summary('host-loop'), { since: at, chats: { runs: 1, ...FIRST }, brands: empty });
+  assert.deepEqual(await log.summary('claude-code'), { since: null, chats: empty, brands: empty });
+});

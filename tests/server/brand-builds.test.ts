@@ -22,7 +22,14 @@ import { FileSettingsStore } from '../../server/settings';
 import { BUILDING_MARKER, FileBrandStore } from '../../server/store/brands';
 import { FileUsageLog } from '../../server/usage';
 import { isInside } from '../../server/util';
-import { DEFAULT_FEATURES, type BrandBuild, type Features, type GitHost, type ServerEvent } from '../../src/shared/types';
+import {
+  DEFAULT_FEATURES,
+  type BrandBuild,
+  type Features,
+  type GitHost,
+  type ServerEvent,
+  type UsageEntry,
+} from '../../src/shared/types';
 import { makeRoot, rejectsWithStatus, type TestRoot } from './helpers';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -451,7 +458,7 @@ test('the fix turn resumes the session: the build and the usage log count only w
       json.colors.accent = '#FF0000';
       await fs.writeFile(file, JSON.stringify(json));
     }
-    yield done(index === 0 ? 'Fini.' : 'Corrigé.', totals[index]);
+    yield done(index === 0 ? 'Fini.' : 'Corrigé.', { ...totals[index], usage: 'session' });
   });
   const started = await fx.builder.start({ repo: 'acme/site', name: 'Acme' });
   const build = await fx.builder.wait(started.id);
@@ -461,6 +468,118 @@ test('the fix turn resumes the session: the build and the usage log count only w
   const usage = await fx.usage.summary();
   assert.deepEqual(usage.brands, { runs: 2, ...totals[1] }, 'a failed build still counts what it used');
   assert.equal(usage.chats.runs, 0);
+});
+
+for (const usage of ['turn', undefined] as const) {
+  test(`a provider declaring usage ${usage}: the build and the usage log add its turns up`, async () => {
+    const costs = [0.4, 0.25];
+    const tokens = { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 };
+    const fx = await builder(async function* (turn, index) {
+      if (index === 0) {
+        const file = path.join(turn.cwd, 'brand.json');
+        const json = JSON.parse(await fs.readFile(file, 'utf8')) as { colors: Record<string, string> };
+        json.colors.accent = '#FF0000';
+        await fs.writeFile(file, JSON.stringify(json));
+      }
+      yield done(index === 0 ? 'Fini.' : 'Corrigé.', { costUsd: costs[index], tokens, usage });
+    });
+    const started = await fx.builder.start({ repo: 'acme/site', name: 'Acme' });
+    const build = await fx.builder.wait(started.id);
+    assert.equal(fx.turns.length, 2);
+    assert.equal(build.costUsd, 0.65);
+    assert.deepEqual((await fx.usage.summary()).brands, {
+      runs: 2,
+      costUsd: 0.65,
+      tokens: { input: 20, output: 40, cacheRead: 60, cacheWrite: 80 },
+    });
+  });
+}
+
+test('a provider that reports tokens and no cost leaves the build without a cost', async () => {
+  const fx = await builder(async function* () {
+    yield done('Fini.', { tokens: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }, usage: 'turn' });
+  });
+  const started = await fx.builder.start({ repo: 'acme/site', name: 'Acme' });
+  const build = await fx.builder.wait(started.id);
+  assert.equal(build.costUsd, null);
+  assert.equal((await fx.usage.summary()).brands.runs, 1);
+});
+
+test('a failed build keeps its cost and logs it', async () => {
+  const tokens = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 };
+  const fx = await builder(async function* () {
+    yield done('Plantage', { isError: true, costUsd: 0.3, tokens, usage: 'turn' });
+  });
+  const build = await fx.builder.wait((await fx.builder.start({ repo: 'acme/site', name: 'Acme' })).id);
+  assert.deepEqual([build.status, build.costUsd], ['error', 0.3]);
+  assert.deepEqual((await fx.usage.summary()).brands, { runs: 1, costUsd: 0.3, tokens });
+});
+
+test('a cancelled build logs what it spent', async () => {
+  const tokens = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 };
+  const fx = await builder(async function* (turn) {
+    const aborted = new Promise((resolve) => turn.signal.addEventListener('abort', resolve, { once: true }));
+    yield { type: 'tool-start', id: '1', name: 'Glob', input: { pattern: '**/*.css' } };
+    await aborted;
+    yield done('Arrêté.', { subtype: 'aborted', costUsd: 0.2, tokens, usage: 'turn' });
+  });
+  const started = await fx.builder.start({ repo: 'acme/site', name: 'Acme' });
+  for (let i = 0; i < 200 && fx.builder.list()[0].status !== 'building'; i++) await new Promise((r) => setTimeout(r, 10));
+  fx.builder.cancel(started.id);
+  const build = await fx.builder.wait(started.id);
+  assert.deepEqual([build.status, build.costUsd], ['cancelled', 0.2]);
+  assert.deepEqual((await fx.usage.summary()).brands, { runs: 1, costUsd: 0.2, tokens });
+});
+
+test('the usage log names the provider that ran the build, never the router', async () => {
+  const lines = async () => {
+    const text = await fs.readFile(path.join(t.config.stateDir, 'usage.jsonl'), 'utf8');
+    return text
+      .trim()
+      .split('\n')
+      .map((line) => (JSON.parse(line) as UsageEntry).agent);
+  };
+  const fx = await builder(async function* (_turn, index) {
+    yield done('Fini.', { costUsd: 0.1, ...(index > 0 && { provider: 'codex' }) });
+  });
+  await fx.builder.wait((await fx.builder.start({ repo: 'acme/site', name: 'Acme' })).id);
+  assert.deepEqual(await lines(), ['fake']);
+  await fx.builder.wait((await fx.builder.start({ repo: 'acme/site', name: 'Acme 2' })).id);
+  assert.deepEqual(await lines(), ['fake', 'codex']);
+});
+
+test('a build deletes its session file when it ends: done, failed or cancelled', async () => {
+  const session = async (turn: AgentTurn) => {
+    await fs.mkdir(path.dirname(turn.sessionFile), { recursive: true });
+    await fs.writeFile(turn.sessionFile, '{}');
+  };
+  const fx = await builder(async function* (turn, index) {
+    const aborted = new Promise((resolve) => turn.signal.addEventListener('abort', resolve, { once: true }));
+    await session(turn);
+    if (index === 2) {
+      yield { type: 'tool-start', id: '1', name: 'Glob', input: { pattern: '**/*.css' } };
+      await aborted;
+      yield done('Arrêté.', { subtype: 'aborted' });
+      return;
+    }
+    yield done('Fini.', { isError: index === 1 });
+  });
+  const other = path.join(t.config.stateDir, 'brand-sessions', 'other.json');
+  await fs.mkdir(path.dirname(other), { recursive: true });
+  await fs.writeFile(other, '{}');
+
+  const succeeded = await fx.builder.start({ repo: 'acme/site', name: 'Réussie' });
+  assert.equal((await fx.builder.wait(succeeded.id)).status, 'done');
+  const failed = await fx.builder.start({ repo: 'acme/site', name: 'Ratée' });
+  assert.equal((await fx.builder.wait(failed.id)).status, 'error');
+  const cancelled = await fx.builder.start({ repo: 'acme/site', name: 'Annulée' });
+  for (let i = 0; i < 200 && fx.builder.list()[0].status !== 'building'; i++) await new Promise((r) => setTimeout(r, 10));
+  fx.builder.cancel(cancelled.id);
+  assert.equal((await fx.builder.wait(cancelled.id)).status, 'cancelled');
+
+  assert.equal(fx.turns.length, 3);
+  for (const turn of fx.turns) await assert.rejects(fs.access(turn.sessionFile), turn.sessionFile);
+  await fs.access(other);
 });
 
 test('cancelling a build stops Claude and removes the brand folder and the clone', async () => {

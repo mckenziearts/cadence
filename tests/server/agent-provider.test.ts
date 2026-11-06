@@ -168,6 +168,7 @@ const EXPECTED: AgentEvent[] = [
     durationMs: 1179,
     costUsd: 0.046667,
     tokens: { input: 15, output: 360, cacheRead: 9000, cacheWrite: 1900 },
+    usage: 'session',
     sessionId: SESSION,
     subtype: 'success',
   },
@@ -239,6 +240,7 @@ describe('StreamJsonParser', () => {
       durationMs: 3,
       costUsd: undefined,
       tokens: undefined,
+      usage: 'session',
       sessionId: undefined,
       subtype: 'error_max_turns',
     });

@@ -340,6 +340,7 @@ export class StreamJsonParser {
       durationMs: Number(msg.duration_ms) || 0,
       costUsd: typeof msg.total_cost_usd === 'number' ? msg.total_cost_usd : undefined,
       tokens: tokenTotals(msg.modelUsage),
+      usage: 'session',
       sessionId: typeof msg.session_id === 'string' ? msg.session_id : undefined,
       subtype,
     });

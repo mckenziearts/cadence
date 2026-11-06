@@ -70,6 +70,7 @@ const EVENTS: AgentEvent[] = [
     isError: false,
     durationMs: 0,
     tokens: { input: 25527, output: 5, cacheRead: 12288, cacheWrite: 0 },
+    usage: 'turn',
     subtype: 'success',
   },
 ];
@@ -153,7 +154,7 @@ describe('CodexStreamParser', () => {
 
   test('turn.failed becomes an error done event', () => {
     assert.deepEqual(parse([JSON.stringify({ type: 'turn.failed', error: { message: 'stream error' } })]), [
-      { type: 'done', text: 'stream error', isError: true, durationMs: 0, tokens: undefined, subtype: 'error' },
+      { type: 'done', text: 'stream error', isError: true, durationMs: 0, tokens: undefined, usage: 'turn', subtype: 'error' },
     ]);
   });
 });

@@ -54,6 +54,7 @@ import {
   isInside,
   nowIso,
   readJsonOr,
+  removeFileInside,
   shortHash,
   writeJsonAtomic,
 } from '../util';
@@ -332,6 +333,8 @@ export class ChatManager implements ChatService {
     return this.files.run(id, async () => {
       if (this.turns.has(id) || this.reserved.has(id)) throw new HttpError(409, m().agent.chat.stopFirst);
       const chat = await this.load(projectId, key);
+      // First: a refused delete must leave no archive, the project cost adds the archive to the chat still in place.
+      if (chat.sessionId) await removeFileInside(this.deps.store.dir(projectId), this.sessionFile(projectId, chat.sessionId));
       if (chat.messages.length) {
         const name = `${this.fileName(key)}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
         await writeJsonAtomic(path.join(this.chatsDir(projectId), 'archive', name), chat);
@@ -364,6 +367,10 @@ export class ChatManager implements ChatService {
     assertKey(key);
     assertId(projectId, m().api.ids.project);
     if (!(await this.deps.store.exists(projectId))) throw new HttpError(404, m().agent.chat.projectNotFound(projectId));
+  }
+
+  private sessionFile(projectId: string, sessionId: string): string {
+    return path.join(this.chatsDir(projectId), 'sessions', `${sessionId}.json`);
   }
 
   private chatsDir(projectId: string): string {
@@ -515,11 +522,13 @@ export class ChatManager implements ChatService {
       // A second attempt only happens when the saved session is gone (moved folder, cleared Claude Code history).
       for (let attempt = 0; attempt < 2; attempt++) {
         const resume = chat.sessionId !== null;
-        const { prompt, briefHash } = await this.prompt(turn, project, scene, brandId, dirs, resume);
+        // Everything before the turn's own pair, which send() already pushed. On the state, not the attempt: a second
+        // attempt that fails before `init` leaves the chat without a session, and the next turn needs the exchanges.
+        const earlier = resume ? [] : chat.messages.slice(0, -2);
+        const { prompt, briefHash } = await this.prompt(turn, project, scene, brandId, dirs, resume, earlier);
         if (turn.abort.signal.aborted) break; // stopped while the context was being gathered
         const sessionId = chat.sessionId ?? randomUUID();
-        const sessionFile = path.join(this.chatsDir(projectId), 'sessions', `${sessionId}.json`);
-        const agentTurn = { ...base, prompt, sessionId, sessionFile, resume };
+        const agentTurn = { ...base, prompt, sessionId, sessionFile: this.sessionFile(projectId, sessionId), resume };
         const outcome = await this.stream(turn, agentTurn, started, briefHash, settings.agent);
         if (outcome !== 'session-lost') break;
         chat.sessionId = null;
@@ -551,6 +560,7 @@ export class ChatManager implements ChatService {
     brandId: string,
     dirs: Dirs,
     resume: boolean,
+    earlier: ChatMessage[],
   ): Promise<{ prompt: string; briefHash: string }> {
     const { brands, store, music, seams, assets } = this.deps;
     const [brand, brandLanguage, artDirection, musicText, errors, references] = await Promise.all([
@@ -581,6 +591,7 @@ export class ChatManager implements ChatService {
       errors,
       references,
       dirs,
+      earlier,
     });
     return { prompt, briefHash };
   }
@@ -656,18 +667,22 @@ export class ChatManager implements ChatService {
         case 'done':
           // Claude Code says "No conversation found"; Codex reports a missing thread as the session_lost subtype.
           const sessionLost = ev.subtype === 'session_lost' || /no conversation found/i.test(ev.text);
-          if (agentTurn.resume && ev.isError && sessionLost) return 'session-lost';
+          const lost = agentTurn.resume && ev.isError && sessionLost;
+          // Claude Code refuses the resume before spending anything: no run to count. A host's session may die mid-turn.
+          if (lost && !ev.costUsd) return 'session-lost';
+          // A `session` provider reports a running total (subtract the previous run); any other reports this turn alone.
+          if (ev.costUsd !== undefined || ev.tokens) {
+            const session = ev.usage === 'session';
+            const totals = { costUsd: ev.costUsd ?? 0, tokens: ev.tokens ?? NO_TOKENS };
+            const spent = session ? addedSince(totals, agentTurn.resume ? chat.sessionUsage : undefined) : totals;
+            if (session) chat.sessionUsage = totals;
+            if (ev.costUsd !== undefined) reply.costUsd = (reply.costUsd ?? 0) + spent.costUsd;
+            const provider = ev.provider ?? this.deps.provider.id;
+            await this.deps.usage.record({ at: nowIso(), agent: provider, kind: 'chat', projectId, chat: key, ...spent });
+          }
+          if (lost) return 'session-lost';
           if (ev.sessionId) chat.sessionId = ev.sessionId;
           reply.durationMs = ev.durationMs || Date.now() - started;
-          // Claude Code reports a running session total (subtract the previous run); Codex reports this turn's tokens, no cost.
-          if (ev.costUsd !== undefined || ev.tokens) {
-            const claude = agent === 'claude-code';
-            const totals = { costUsd: ev.costUsd ?? 0, tokens: ev.tokens ?? NO_TOKENS };
-            const spent = claude ? addedSince(totals, agentTurn.resume ? chat.sessionUsage : undefined) : totals;
-            if (claude) chat.sessionUsage = totals;
-            if (ev.costUsd !== undefined) reply.costUsd = spent.costUsd;
-            await this.deps.usage.record({ at: nowIso(), agent, kind: 'chat', projectId, chat: key, ...spent });
-          }
           if (turn.abort.signal.aborted) {
             reply.status = 'stopped';
           } else if (ev.isError) {
