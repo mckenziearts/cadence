@@ -570,6 +570,7 @@ export class CodexStreamParser {
       isError,
       durationMs: 0,
       tokens: tokensFrom(usage),
+      usage: 'turn',
       subtype: isError ? 'error' : 'success',
     };
   }

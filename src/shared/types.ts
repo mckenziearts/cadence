@@ -787,7 +787,7 @@ export interface ChatMessage {
   /** Reasoning notes the model shared (collapsed in the UI). */
   notes?: string[];
   durationMs?: number;
-  /** API-equivalent cost reported by Claude Code for this turn. */
+  /** API-equivalent cost reported by the provider for this turn. */
   costUsd?: number;
   /** Version created by this turn, if it changed files. */
   versionId?: string;
@@ -826,7 +826,7 @@ export interface UsageCount {
 }
 
 /** One agent run Cadence started: a line of .cadence/usage.jsonl. Lines written before per-agent tracking are Claude Code's. */
-export type UsageEntry = UsageCount & { at: string; agent: AgentId } & (
+export type UsageEntry = UsageCount & { at: string; agent: string } & (
     { kind: 'chat'; projectId: string; chat: ChatKey } | { kind: 'brand'; brandId: string }
   );
 

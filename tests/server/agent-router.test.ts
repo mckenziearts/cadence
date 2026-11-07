@@ -41,3 +41,32 @@ test('falls back to the default when the selected agent has no running provider'
   assert.equal((await router.status()).version, 'claude-code');
   assert.equal(await ran(router), 'claude-code');
 });
+
+test('the done event names the provider picked for the turn, the fallback included', async () => {
+  const providers = { 'claude-code': fakeProvider('claude-code'), codex: fakeProvider('codex') };
+  const provider = async (router: RoutingProvider) => {
+    for await (const event of router.run({} as AgentTurn)) if (event.type === 'done') return event.provider;
+  };
+  assert.equal(await provider(new RoutingProvider(providers, settingsWith('codex'), 'claude-code')), 'codex');
+  assert.equal(await provider(new RoutingProvider(providers, settingsWith('grok'), 'claude-code')), 'claude-code');
+});
+
+test('forwards every event of the picked provider in order, only done gains the provider', async () => {
+  const stream: AgentEvent[] = [
+    { type: 'init', sessionId: 's1' },
+    { type: 'text-delta', text: 'Je regarde' },
+    { type: 'tool-start', id: '1', name: 'Read', input: { file_path: 'a.tsx' } },
+    { type: 'tool-end', id: '1', output: 'ok', isError: false },
+    { type: 'done', text: 'Fini', isError: false, durationMs: 1 },
+  ];
+  const codex: AgentProvider = {
+    ...fakeProvider('codex'),
+    async *run() {
+      yield* stream;
+    },
+  };
+  const router = new RoutingProvider({ codex }, settingsWith('codex'), 'codex');
+  const forwarded: AgentEvent[] = [];
+  for await (const event of router.run({} as AgentTurn)) forwarded.push(event);
+  assert.deepEqual(forwarded, [...stream.slice(0, -1), { ...stream[4], provider: 'codex' }]);
+});

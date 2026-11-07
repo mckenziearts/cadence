@@ -129,8 +129,8 @@ export async function removeFileInside(root: string, file: string): Promise<void
 
 /** fs.readdir for a folder an agent turn can write: refused when it, or a folder on the way, is a link. */
 export async function listInside(root: string, dir: string): Promise<string[]> {
-  if (!isInside(root, dir)) throw outsideError(root, dir);
-  const names = path.relative(root, dir).split(path.sep);
+  if (dir !== root && !isInside(root, dir)) throw outsideError(root, dir);
+  const names = path.relative(root, dir).split(path.sep).filter(Boolean);
   if (process.platform === 'darwin') {
     // find prints "./<name>" and a NUL after each.
     return (await walk(root, dir, 'ls', names))
@@ -448,10 +448,22 @@ export function cssRunsCode(css: string): boolean {
 
 /**
  * A file name as a case-insensitive disk compares it: APFS takes `Node_Modules` and even `node_module\u017f` (long s)
- * for `node_modules`, so the name is upper- then lower-cased, which folds both.
+ * for `node_modules`, and `se\u1E9Eions` (capital sharp s) for `sessions`. Upper-casing folds the first two; that capital
+ * has no upper case of its own, so the name is lower-cased before.
  */
 export function foldName(name: string): string {
-  return name.normalize('NFD').toUpperCase().toLowerCase();
+  return name.normalize('NFD').toLowerCase().toUpperCase().toLowerCase();
+}
+
+/**
+ * A name a disk may open as another one, refused where names decide access. HFS+ and exFAT skip format and private use
+ * characters (`sess\u200Cions` opens `sessions`), exFAT reads some as a dot or as the end of the name (`\uFEFF..` is the
+ * parent folder), Linux casefold folders skip every default ignorable code point, the Linux exFAT and vfat drivers drop
+ * trailing dots, and vfat opens a name by its 8.3 alias (`CADENC~1` for `.cadence`). Dropping such characters in
+ * foldName would make `..` of a name that is not one everywhere else.
+ */
+export function isAmbiguousName(name: string): boolean {
+  return /[\p{Cf}\p{Co}\p{Default_Ignorable_Code_Point}]|\.$|~\d/u.test(name);
 }
 
 /** A frame the agent looked at, as saved under `.cadence/frames`: JPEG normally, PNG from the MCP tool. */
@@ -460,10 +472,13 @@ export const AGENT_FRAME_NAME = /^[\w.-]+\.(jpe?g|png)$/;
 // `tailwindcss`, `@fontsource-variable/inter/standard.css`: no scheme, query, fragment or dot segment.
 export const PACKAGE = /^(@[\w-][\w.-]*\/)?[\w-][\w.-]*(\/[\w-][\w.-]*)*$/;
 
-/** A `node_modules` folder or a `package.json`, through which a bare or `#` import resolves to a file of any kind. */
+/**
+ * A `node_modules` folder or a `package.json`, through which a bare or `#` import resolves to a file of any kind, or a
+ * name that a disk may open as one of them.
+ */
 export function isResolverInput(name: string): boolean {
   const folded = foldName(name);
-  return folded === 'node_modules' || folded === 'package.json';
+  return folded === 'node_modules' || folded === 'package.json' || isAmbiguousName(name);
 }
 
 /** "Mon super Projet !" becomes "mon-super-projet" (ASCII, kebab-case, max 64 chars, valid ID_PATTERN). */

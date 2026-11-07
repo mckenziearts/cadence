@@ -1,14 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {
-  AGENT_IDS,
-  type AgentId,
-  type UsageCount,
-  type UsageEntry,
-  type UsageSummary,
-  type UsageTokens,
-  type UsageTotals,
-} from '../src/shared/types';
+import type { UsageCount, UsageEntry, UsageSummary, UsageTokens, UsageTotals } from '../src/shared/types';
 import type { CadenceConfig, UsageLog } from './contracts';
 import { m } from './i18n';
 
@@ -27,7 +19,7 @@ export function addedSince(totals: UsageCount, before: UsageCount | undefined): 
   return { costUsd: roundUsd(Math.max(0, totals.costUsd - before.costUsd)), tokens };
 }
 
-/** Every Claude Code run Cadence starts, one JSON line each in <root>/.cadence/usage.jsonl (append only). */
+/** Every agent run Cadence starts, one JSON line each in <root>/.cadence/usage.jsonl (append only). */
 export class FileUsageLog implements UsageLog {
   private file: string;
 
@@ -45,7 +37,7 @@ export class FileUsageLog implements UsageLog {
     }
   }
 
-  async summary(agent?: AgentId): Promise<UsageSummary> {
+  async summary(agent?: string): Promise<UsageSummary> {
     const text = await fs.readFile(this.file, 'utf8').catch(() => '');
     const totals = { chat: emptyTotals(), brand: emptyTotals() };
     let since: string | null = null;
@@ -76,7 +68,7 @@ function parseLine(line: string): UsageEntry | null {
       return null;
     }
     // Lines written before usage was tracked per agent are Claude Code's.
-    if (!AGENT_IDS.includes(entry.agent)) entry.agent = 'claude-code';
+    if (typeof entry.agent !== 'string') entry.agent = 'claude-code';
     return entry;
   } catch {
     return null;

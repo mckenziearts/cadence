@@ -76,7 +76,9 @@ cadence/
                             user's own ElevenLabs key), voices.ts (the Piper voices offered, pinned files), wav.ts,
                             service.ts (LocalVoiceOverService)
     sounds/                 library.ts (the sound effects, written by `sounds`), track.ts (the sounds track of an MP4)
-    agent/                  types.ts, claudeCode.ts (provider), guide.ts, prompts.ts, chat.ts (ChatManager)
+    agent/                  types.ts, claudeCode.ts (provider), guide.ts, prompts.ts, chat.ts (ChatManager),
+                            policy.ts (a turn's Claude Code file rules, the session folder), localTools.ts
+                            (read_file, list_files, grep, edit_file and write_file for a host app's own agent loop)
     mcp/                    tokens.ts (McpTokens), server.ts (createMcpHandler), tools.ts, brandTools.ts
   src/
     shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks),
@@ -474,8 +476,10 @@ token.
   clone, its own brand folder and `src/shared/` (no other brand), Write and Edit on the brand folder only, MCP scope
   `brand`. The same scope binds a Codex build turn through its permission profile (see "Codex"). Then
   `checkBrand()`; problems left get one resumed fix turn, then the build fails. Each turn adds what it used to
-  `BrandBuild.costUsd` (the fix turn: its session totals minus the first turn's) and to the usage log. Success
-  removes the marker; failure and cancel remove the folder. `sweep()` at start removes folders whose marker names a dead process.
+  `BrandBuild.costUsd` (the fix turn: its session totals minus the first turn's) and to the usage log. A provider
+  that keeps its session writes it to `<root>/.cadence/brand-sessions/<id>.json`, removed when the build ends (done,
+  failed or cancelled). Success removes the marker; failure and cancel remove the folder. `sweep()` at start removes
+  folders whose marker names a dead process.
 - **Checks** (`check.ts`): `brandProblems()` (brand.json, theme.css mirroring it, every named font loaded, SVG logos,
   notes) never runs the kit; the brand tests use it for the presets. `checkBrand()` adds the kit sheet: `kit.html`
   on the brand's frame origin renders logos, colors, fonts, every UI sample (`src/shared/kitSamples.tsx`) and extras, and
@@ -601,6 +605,8 @@ ends (`chat`) over SSE; persists chats in `.cadence/chats/project.json` and
 (`total_cost_usd`, tokens in `modelUsage`) and starts a resumed session from the totals it saved: the chat file keeps
 the last totals of its session (`sessionUsage`), each reply stores what its turn added, and the project figure
 (`GET /api/projects/:id/cost`) sums the replies, archives included. Each turn also goes to the usage log.
+A provider that keeps its session itself writes it to `AgentTurn.sessionFile`, `.cadence/chats/sessions/<id>.json`: the
+file goes when the chat is cleared or the session is lost, stays out of an archive, and no tool of `localTools` reaches it.
 
 System prompt (static, `agent/guide.ts`): role, scene contract, `src/runtime/API.md`, brand kit usage, formats,
 music, seams, craft rules, scope rules. Per-turn context (prepended to the user text): project, brand description
@@ -748,10 +754,11 @@ lists the Git hosts (`GET /api/git-accounts`, through `BrandSource.account()`), 
 with and **Remove the key**; see "Voice-over") and the networks Cadence publishes to (`AppState.networks`, refreshed on
 `accounts-changed`). A project's Voice tab keeps its own engine and voice; without a key it links to the Profile.
 
-- **Usage** (`server/usage.ts`, `FileUsageLog`): one JSON line per Claude Code run Cadence starts, appended to
-  `<root>/.cadence/usage.jsonl`: chat turns (project, chat key) and brand build turns (brand), each with what it added
-  (API-equivalent cost, tokens read and written). `summary()` sums them per kind from the first line; unreadable
-  lines are skipped. Sessions started in a terminal never reach it.
+- **Usage** (`server/usage.ts`, `FileUsageLog`): one JSON line per agent run Cadence starts, appended to
+  `<root>/.cadence/usage.jsonl`: chat turns (project, chat key) and brand build turns (brand), each with the provider
+  that ran it (`agent`) and what it added (API-equivalent cost, tokens read and written). `summary(agent)` sums that
+  provider's lines per kind from its first line; unreadable lines are skipped. Sessions started in a terminal never
+  reach it.
 
 - **Networks** (`Network`, one per `NetworkId`: YouTube, LinkedIn, Instagram, TikTok): the team creates one
   developer app per network and every member pastes its keys in the Profile page. OAuth 2 with a loopback redirect to
@@ -794,10 +801,12 @@ written and read by `server/archive/tar.ts` with no dependency. Entries, in orde
 What is left out, by `exportableProjectPath` and `exportableBrandPath` (the same rule decides what an import keeps):
 `renders/` (videos are made again from the code), `clips/` (frames are extracted again from the assets), a project's `tsconfig.json` (its `extends` points into this
 installation and breaks Vite on another one), `node_modules/` and `package.json` under any case (the frame server
-refuses them above a stylesheet), dotfiles (`.building` included), and in `.cadence/`
-everything but `chats/`, `versions/` and `voice-over/` (thumbnails, frames, seams, sounds, trash and publications are
-cache or tied to this machine). Only regular files and folders are walked, from `lstat` types: a symlink is skipped,
-never followed, and `writeTar` opens each file with `O_NOFOLLOW`.
+refuses them above a stylesheet), dotfiles (`.building` included), any name a disk may open as another one
+(`isAmbiguousName`: a format, private use or default ignorable character, a trailing dot, an 8.3 alias like
+`CADENC~1`), in `.cadence/` everything but `chats/`, `versions/` and `voice-over/` (thumbnails, frames, seams, sounds,
+trash and publications are cache or tied to this machine), and `.cadence/chats/sessions` under any case (a whole
+conversation). Only regular files and folders are walked, from `lstat` types: a symlink is skipped, never followed, and
+`writeTar` opens each file with `O_NOFOLLOW`.
 
 Export is a GET (`<a download>`): the same-origin guard lets it through without the editor token, and the archive
 streams to disk instead of sitting in the page's memory. Unknown projects (404), a project whose `project.json` cannot
@@ -958,7 +967,8 @@ POST   /api/brand-builds                           StartBrandBuildInput, answers
 DELETE /api/brand-builds/:id                       cancel
 GET    /api/settings | PUT /api/settings           Settings (a new language: SSE `language-changed`; defaultVoice
                                                    checked like a project's ElevenLabs voice, null removes it)
-GET    /api/usage                                  UsageSummary (chats and brand builds since the first run counted)
+GET    /api/usage                                  UsageSummary (chats and brand builds since the first run counted) of a non-empty ?agent=,
+                                                   else of the injected provider, else of settings.agent
 GET    /api/git-accounts                           { github: GitAccount, gitlab: GitAccount }
 PUT    /api/networks/:network/app                  { clientId, clientSecret }
 POST   /api/networks/:network/connect              { url }: the consent page, bound to a new state

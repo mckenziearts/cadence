@@ -9,13 +9,14 @@ import { pipeline as pipe } from 'node:stream/promises';
 import { createGunzip, createGzip } from 'node:zlib';
 import { z } from 'zod';
 import { ID_PATTERN, type ArchiveManifest, type ImportReport } from '../../src/shared/types';
+import { SESSION_FOLDER } from '../agent/policy';
 import { brandProblems } from '../brands/check';
 import type { BrandStore, CadenceConfig, ProjectArchives, ProjectStore } from '../contracts';
 import { m } from '../i18n';
 import { BUILDING_MARKER, DEFAULT_BRAND } from '../store/brands';
 import { formatIssues, projectFileSchema } from '../store/projects';
 import { cssCodeOffenders } from '../frames/vite';
-import { CssCodeScan, HttpError, KeyedMutex, isInside, isResolverInput, pathExists } from '../util';
+import { CssCodeScan, HttpError, KeyedMutex, foldName, isInside, isResolverInput, pathExists } from '../util';
 import { readTar, writeTar, type TarEntry, type TarFile } from './tar';
 
 /** The .cadence/ folders that are the project's history; the rest of .cadence/ is cache or tied to this machine. */
@@ -31,7 +32,10 @@ const local = (segment: string) => segment.startsWith('.') || isResolverInput(se
 export function exportableProjectPath(rel: string): boolean {
   const segments = rel.split('/');
   if (segments[0] === '.cadence') {
-    return segments.length > 2 && TRAVELLING_STATE.has(segments[1]) && !segments.slice(1).some(local);
+    // Folded: a case-insensitive disk puts `Sessions/` in the folder the host reads. The slash catches a file of that name.
+    const travels =
+      segments.length > 2 && TRAVELLING_STATE.has(segments[1]) && !`${foldName(rel)}/`.startsWith(`${SESSION_FOLDER}/`);
+    return travels && !segments.slice(1).some(local);
   }
   return segments[0] !== 'renders' && segments[0] !== 'clips' && rel !== 'tsconfig.json' && !segments.some(local);
 }

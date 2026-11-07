@@ -715,6 +715,12 @@ export interface McpTokenIssuer {
 // Agent provider, server/agent/claudeCode.ts: export class ClaudeCodeProvider implements AgentProvider (constructor(config, agent name))
 // Tests inject fake providers through startServer({ provider }).
 
+export interface FilePolicy {
+  read: string[];
+  write: string[];
+  deny: string[];
+}
+
 export interface AgentTurn {
   /** Working directory (the project folder). */
   cwd: string;
@@ -732,9 +738,16 @@ export interface AgentTurn {
   deny: string[];
   /** Extra readable directories (--add-dir). */
   addDirs: string[];
+  files: FilePolicy;
+  scope: 'scene' | 'project' | 'brand';
   /** --mcp-config mcpServers object. */
   mcpServers: Record<string, unknown>;
   sessionId: string;
+  /**
+   * Where a provider that keeps its session itself writes it. Cadence deletes this file and later names the next one
+   * from the session id the turn reports, so such a provider reports `sessionId` unchanged.
+   */
+  sessionFile: string;
   /** Resume `sessionId` instead of starting it. */
   resume: boolean;
   signal: AbortSignal;
@@ -754,9 +767,11 @@ export type AgentEvent =
       text: string;
       isError: boolean;
       durationMs: number;
-      /** Running totals of the session: Claude Code starts a resumed session from the totals it saved. */
+      /** With `tokens`: the session's running totals under `usage: 'session'`, this turn's alone otherwise. */
       costUsd?: number;
       tokens?: UsageTokens;
+      usage?: 'session' | 'turn';
+      provider?: string;
       sessionId?: string;
       /** success, error_max_turns, aborted, crashed... */
       subtype?: string;
@@ -774,7 +789,7 @@ export interface AgentProvider {
 export interface UsageLog {
   /** Append the run to <root>/.cadence/usage.jsonl. Never rejects: a lost line must not fail the run. */
   record(entry: UsageEntry): Promise<void>;
-  summary(agent?: import('../src/shared/types').AgentId): Promise<UsageSummary>;
+  summary(agent?: string): Promise<UsageSummary>;
 }
 
 // server/settings.ts: export class FileSettingsStore implements SettingsStore  (constructor(config: CadenceConfig))
@@ -825,6 +840,7 @@ export interface ApiDeps {
   publisher: PublishService;
   archives: ProjectArchives;
   agentStatus: () => Promise<import('../src/shared/types').AgentStatus>;
+  usageAgent: () => Promise<string>;
   /** CLI status on this computer for the other agents, for the Profile's cards (the running agent stays Claude for now). */
   codexStatus: () => Promise<import('../src/shared/types').AgentStatus>;
   grokStatus: () => Promise<import('../src/shared/types').AgentStatus>;

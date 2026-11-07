@@ -187,7 +187,10 @@ process.exit(run.status ?? 1);
     effort: null,
     tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep'],
     mcpServers: { cadence: { type: 'http', url: config.mcpUrl, headers: { Authorization: 'Bearer sk-test-mcp' } } },
+    files: { read: [], write: [], deny: [] },
+    scope: 'project',
     sessionId: resume ?? 'unused',
+    sessionFile: 'unused',
     resume: resume !== undefined,
     signal: new AbortController().signal,
   }))

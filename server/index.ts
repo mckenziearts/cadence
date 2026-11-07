@@ -310,6 +310,7 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       publisher,
       archives,
       agentStatus: () => provider.status(),
+      usageAgent: async () => customProvider?.id ?? (await settings.get()).agent,
       codexStatus: () => codex.status(),
       grokStatus: () => grokStatus(config),
       geminiStatus: () => geminiStatus(config),

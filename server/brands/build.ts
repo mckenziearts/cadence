@@ -16,8 +16,9 @@ import {
   type StartBrandBuildInput,
   type UsageCount,
 } from '../../src/shared/types';
-import { activityLabel, denyRules } from '../agent/chat';
+import { activityLabel, deniedFiles } from '../agent/chat';
 import { buildBrandGuide } from '../agent/guide';
+import { claudeRules } from '../agent/policy';
 import type {
   AgentProvider,
   AgentTurn,
@@ -26,6 +27,7 @@ import type {
   BrandStore,
   CadenceConfig,
   CaptureService,
+  FilePolicy,
   HostBrandSource,
   Hub,
   McpTokenIssuer,
@@ -63,9 +65,9 @@ interface State {
   done: Promise<BrandBuild>;
   settle: (build: BrandBuild) => void;
   lastEmit: number;
-  /** The agent that runs this build (set when its turn is built); its usage is recorded under it. */
+  /** The agent that runs this build (set when its turn is built); the build's steps name it. */
   agent: AgentId;
-  /** Running totals of the build's Claude Code session, as its last run reported them. */
+  /** Running totals of the build's session, as its last run reported them. */
   sessionUsage?: UsageCount;
 }
 
@@ -209,6 +211,7 @@ export class BrandBuilder implements BrandBuildService {
     const brandDir = brands.dir(build.brandId);
     const repoDir = path.join(config.stateDir, 'brand-sources', build.id);
     let token: string | null = null;
+    let sessionFile: string | null = null;
     let outcome: Partial<BrandBuild>;
     try {
       this.patch(state, { status: 'cloning', activity: m().media.brands.build.cloning(build.repo) });
@@ -235,6 +238,7 @@ export class BrandBuilder implements BrandBuildService {
 
       token = tokens.issue({ kind: 'brand', brandId: build.brandId, repoDir }, { ttlMs: TOKEN_TTL_MS });
       const turn = await this.turn(state, brandDir, repoDir, token, guide);
+      sessionFile = turn.sessionFile;
       this.patch(state, { status: 'building', activity: m().media.brands.build.reading(this.agentName(state)) });
       await this.stream(state, brandDir, repoDir, {
         ...turn,
@@ -271,6 +275,7 @@ export class BrandBuilder implements BrandBuildService {
     } finally {
       if (token) tokens.revoke(token);
       await fs.rm(repoDir, { recursive: true, force: true });
+      if (sessionFile) await fs.rm(sessionFile, { recursive: true, force: true });
     }
     // Only once everything is cleaned up: whoever waits for the build may look at the folders.
     this.end(state, outcome);
@@ -295,7 +300,13 @@ export class BrandBuilder implements BrandBuildService {
     const model = picks.model;
     const effort = MODELS.find((m) => m.id === model)?.supportsEffort === false ? null : picks.effort;
     const shared = path.join(config.root, 'src', 'shared');
-    const rule = (tool: string, target: string) => `${tool}(//${target.replace(/^\/+/, '')})`;
+    const files: FilePolicy = {
+      read: [repoDir, brandDir, shared].map((dir) => `${dir}/**`),
+      write: [`${brandDir}/**`],
+      deny: deniedFiles(config.stateDir),
+    };
+    const rules = claudeRules(files);
+    const sessionId = randomUUID();
     const pkg = JSON.parse(await fs.readFile(path.join(config.root, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
     };
@@ -317,20 +328,14 @@ export class BrandBuilder implements BrandBuildService {
       model,
       effort,
       tools: TOOLS,
-      allow: [
-        rule('Read', `${repoDir}/**`),
-        rule('Read', `${brandDir}/**`),
-        rule('Read', `${shared}/**`),
-        'Glob',
-        'Grep',
-        rule('Edit', `${brandDir}/**`),
-        rule('Write', `${brandDir}/**`),
-        ...BRAND_TOOLS.map((tool) => `${MCP_PREFIX}${tool}`),
-      ],
-      deny: denyRules(config.stateDir),
+      allow: [...rules.allow, ...BRAND_TOOLS.map((tool) => `${MCP_PREFIX}${tool}`)],
+      deny: rules.deny,
       addDirs: [repoDir, brandDir, shared],
+      files,
+      scope: 'brand',
       mcpServers: { cadence: { type: 'http', url: config.mcpUrl, headers: { Authorization: `Bearer ${token}` } } },
-      sessionId: randomUUID(),
+      sessionId,
+      sessionFile: path.join(config.stateDir, 'brand-sessions', `${sessionId}.json`),
       signal: state.abort.signal,
     };
   }
@@ -352,18 +357,16 @@ export class BrandBuilder implements BrandBuildService {
         }
         this.patch(state, { activity: label });
       } else if (event.type === 'done') {
-        // Claude Code reports a running session total (subtract the previous run); Codex reports this run's tokens, no cost.
+        // A `session` provider reports a running total (subtract the previous run); any other reports this run alone.
         if (event.costUsd !== undefined || event.tokens) {
-          const claude = state.agent === 'claude-code';
+          const session = event.usage === 'session';
           const totals = { costUsd: event.costUsd ?? 0, tokens: event.tokens ?? NO_TOKENS };
-          const spent = claude ? addedSince(totals, turn.resume ? state.sessionUsage : undefined) : totals;
-          if (claude) {
-            state.sessionUsage = totals;
-            state.build.costUsd = (state.build.costUsd ?? 0) + spent.costUsd;
-          }
+          const spent = session ? addedSince(totals, turn.resume ? state.sessionUsage : undefined) : totals;
+          state.sessionUsage = totals;
+          if (event.costUsd !== undefined) state.build.costUsd = (state.build.costUsd ?? 0) + spent.costUsd;
           await this.deps.usage.record({
             at: nowIso(),
-            agent: state.agent,
+            agent: event.provider ?? this.deps.provider.id,
             kind: 'brand',
             brandId: state.build.brandId,
             ...spent,

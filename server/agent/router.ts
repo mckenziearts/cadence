@@ -26,6 +26,8 @@ export class RoutingProvider implements AgentProvider {
   }
 
   async *run(turn: AgentTurn): AsyncGenerator<AgentEvent> {
-    yield* (await this.pick()).run(turn);
+    const provider = await this.pick();
+    // The usage log wants who ran the turn: the router's id names no one, and the settings may change during the turn.
+    for await (const event of provider.run(turn)) yield event.type === 'done' ? { ...event, provider: provider.id } : event;
   }
 }

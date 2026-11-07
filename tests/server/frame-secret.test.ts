@@ -628,3 +628,18 @@ test('a managed folder named in another case is still managed: no plugin of its 
     await fs.rm(outside, { force: true });
   }
 });
+
+test('a folder named with invisible characters around its dots stays managed: no plugin of its stylesheets runs', async () => {
+  for (const name of ['\uF029\uF029', '..\u200C', '.\u200C.', '\uFEFF..', '.\u00AD.']) {
+    const first = path.join(config.projectsDir, 'p', 'scenes', name);
+    const deep = path.join(first, name, name);
+    await write(path.join(deep, 'plugin.mjs'), 'globalThis.cadenceDotsPlugin = true;\nexport default function () {}\n');
+    await write(path.join(deep, 'dots.css'), '@import "tailwindcss";\n@plugin "./plugin.mjs";\n');
+    try {
+      await request(port, encodeURI(`/@fs${deep}/dots.css`), { headers: secret });
+      assert.equal('cadenceDotsPlugin' in globalThis, false, encodeURI(name));
+    } finally {
+      await fs.rm(first, { recursive: true, force: true });
+    }
+  }
+});

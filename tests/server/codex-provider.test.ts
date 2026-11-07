@@ -70,6 +70,7 @@ const EVENTS: AgentEvent[] = [
     isError: false,
     durationMs: 0,
     tokens: { input: 25527, output: 5, cacheRead: 12288, cacheWrite: 0 },
+    usage: 'turn',
     subtype: 'success',
   },
 ];
@@ -93,7 +94,10 @@ function turn(overrides: Partial<AgentTurn> = {}): AgentTurn {
     deny: [],
     addDirs: [],
     mcpServers: { cadence: { type: 'http', url: 'http://127.0.0.1:5299/mcp', headers: { Authorization: 'Bearer sk-cdx-9f' } } },
+    files: { read: [], write: [], deny: [] },
+    scope: 'project',
     sessionId: THREAD,
+    sessionFile: '/p/session.json',
     resume: false,
     signal: new AbortController().signal,
     ...overrides,
@@ -150,7 +154,7 @@ describe('CodexStreamParser', () => {
 
   test('turn.failed becomes an error done event', () => {
     assert.deepEqual(parse([JSON.stringify({ type: 'turn.failed', error: { message: 'stream error' } })]), [
-      { type: 'done', text: 'stream error', isError: true, durationMs: 0, tokens: undefined, subtype: 'error' },
+      { type: 'done', text: 'stream error', isError: true, durationMs: 0, tokens: undefined, usage: 'turn', subtype: 'error' },
     ]);
   });
 });

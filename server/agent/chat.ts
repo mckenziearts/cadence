@@ -30,6 +30,7 @@ import type {
   CadenceConfig,
   CaptureService,
   ChatService,
+  FilePolicy,
   Hub,
   McpActivity,
   McpTokenIssuer,
@@ -53,10 +54,12 @@ import {
   isInside,
   nowIso,
   readJsonOr,
+  removeFileInside,
   shortHash,
   writeJsonAtomic,
 } from '../util';
 import { buildSystemPrompt } from './guide';
+import { SESSION_FOLDER, claudeRules } from './policy';
 import { buildTurnPrompt } from './prompts';
 import type { ChatFile } from './types';
 
@@ -117,23 +120,31 @@ function validPlayhead(value: unknown): Playhead | undefined {
   return { sceneId, t, format };
 }
 
-/** Permission rules of a turn. `//` marks an absolute path in Claude Code rules. */
+export function chatFiles(projectDir: string, sceneId: string | null, dirs: Dirs, deny: string[]): FilePolicy {
+  return {
+    read: [projectDir, dirs.brand, dirs.templates, dirs.runtime].map((dir) => path.join(dir, '**')),
+    write: sceneId
+      ? [path.join(projectDir, 'scenes', `${sceneId}.tsx`)]
+      : ['scenes/**', 'components/**', 'art-direction.md'].map((rel) => path.join(projectDir, rel)),
+    deny,
+  };
+}
+
 export function allowRules(projectDir: string, sceneId: string | null, dirs: Dirs): string[] {
-  const rule = (tool: string, file: string) => `${tool}(//${file.replace(/^\/+/, '')})`;
-  const reads = [projectDir, dirs.brand, dirs.templates, dirs.runtime].map((dir) => rule('Read', path.join(dir, '**')));
-  const writable = sceneId
-    ? [path.join(projectDir, 'scenes', `${sceneId}.tsx`)]
-    : ['scenes/**', 'components/**', 'art-direction.md'].map((rel) => path.join(projectDir, rel));
   const tools = (sceneId ? SCENE_TOOLS : PROJECT_TOOLS).map((name) => `${MCP_PREFIX}${name}`);
-  return [...reads, 'Glob', 'Grep', ...writable.flatMap((file) => [rule('Edit', file), rule('Write', file)]), ...tools];
+  return [...claudeRules(chatFiles(projectDir, sceneId, dirs, [])).allow, ...tools];
 }
 
 /**
  * Files no turn may read: the network and ElevenLabs keys. --restricted already keeps the file tools to a turn's folders;
  * this still holds if one of them ever contains the state folder, where the brand build keeps its clones.
  */
+export function deniedFiles(stateDir: string): string[] {
+  return ['accounts.json', 'elevenlabs.json'].map((file) => path.join(stateDir, file));
+}
+
 export function denyRules(stateDir: string): string[] {
-  return ['accounts.json', 'elevenlabs.json'].map((file) => `Read(//${path.join(stateDir, file).replace(/^\/+/, '')})`);
+  return claudeRules({ read: [], write: [], deny: deniedFiles(stateDir) }).deny;
 }
 
 function displayPath(file: unknown, projectDir: string, root: string): string {
@@ -322,6 +333,8 @@ export class ChatManager implements ChatService {
     return this.files.run(id, async () => {
       if (this.turns.has(id) || this.reserved.has(id)) throw new HttpError(409, m().agent.chat.stopFirst);
       const chat = await this.load(projectId, key);
+      // Before the archive: a refused delete must leave none, the project cost adds the archive to the chat still in place.
+      if (chat.sessionId) await removeFileInside(this.deps.store.dir(projectId), this.sessionFile(projectId, chat.sessionId));
       if (chat.messages.length) {
         const name = `${this.fileName(key)}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
         await writeJsonAtomic(path.join(this.chatsDir(projectId), 'archive', name), chat);
@@ -354,6 +367,10 @@ export class ChatManager implements ChatService {
     assertKey(key);
     assertId(projectId, m().api.ids.project);
     if (!(await this.deps.store.exists(projectId))) throw new HttpError(404, m().agent.chat.projectNotFound(projectId));
+  }
+
+  private sessionFile(projectId: string, sessionId: string): string {
+    return path.join(this.deps.store.dir(projectId), SESSION_FOLDER, `${sessionId}.json`);
   }
 
   private chatsDir(projectId: string): string {
@@ -487,26 +504,34 @@ export class ChatManager implements ChatService {
         templates: config.templatesDir,
         runtime: path.join(config.root, 'src', 'runtime'),
       };
+      const scope: 'scene' | 'project' = scene ? 'scene' : 'project';
       const base = {
         cwd: project.dir,
-        systemPrompt: buildSystemPrompt({ scope: scene ? 'scene' : 'project' }),
+        systemPrompt: buildSystemPrompt({ scope }),
         model,
         effort,
         tools: TOOLS,
         allow: allowRules(project.dir, scene?.id ?? null, dirs),
         deny: denyRules(config.stateDir),
         addDirs: [dirs.brand, dirs.templates, dirs.runtime],
+        files: chatFiles(project.dir, scene?.id ?? null, dirs, deniedFiles(config.stateDir)),
+        scope,
         mcpServers: { cadence: { type: 'http', url: config.mcpUrl, headers: { Authorization: `Bearer ${token}` } } },
         signal: turn.abort.signal,
       };
       // A second attempt only happens when the saved session is gone (moved folder, cleared Claude Code history).
       for (let attempt = 0; attempt < 2; attempt++) {
         const resume = chat.sessionId !== null;
-        const { prompt, briefHash } = await this.prompt(turn, project, scene, brandId, dirs, resume);
+        // Everything before the turn's own pair, which send() already pushed. On the state, not the attempt: a second
+        // attempt that fails before `init` leaves the chat without a session, and the next turn needs the exchanges.
+        const earlier = resume ? [] : chat.messages.slice(0, -2);
+        const { prompt, briefHash } = await this.prompt(turn, project, scene, brandId, dirs, resume, earlier);
         if (turn.abort.signal.aborted) break; // stopped while the context was being gathered
-        const agentTurn = { ...base, prompt, sessionId: chat.sessionId ?? randomUUID(), resume };
+        const sessionId = chat.sessionId ?? randomUUID();
+        const agentTurn = { ...base, prompt, sessionId, sessionFile: this.sessionFile(projectId, sessionId), resume };
         const outcome = await this.stream(turn, agentTurn, started, briefHash, settings.agent);
         if (outcome !== 'session-lost') break;
+        await removeFileInside(project.dir, agentTurn.sessionFile);
         chat.sessionId = null;
         chat.briefHash = null;
       }
@@ -536,6 +561,7 @@ export class ChatManager implements ChatService {
     brandId: string,
     dirs: Dirs,
     resume: boolean,
+    earlier: ChatMessage[],
   ): Promise<{ prompt: string; briefHash: string }> {
     const { brands, store, music, seams, assets } = this.deps;
     const [brand, brandLanguage, artDirection, musicText, errors, references] = await Promise.all([
@@ -566,6 +592,7 @@ export class ChatManager implements ChatService {
       errors,
       references,
       dirs,
+      earlier,
     });
     return { prompt, briefHash };
   }
@@ -641,18 +668,22 @@ export class ChatManager implements ChatService {
         case 'done':
           // Claude Code says "No conversation found"; Codex reports a missing thread as the session_lost subtype.
           const sessionLost = ev.subtype === 'session_lost' || /no conversation found/i.test(ev.text);
-          if (agentTurn.resume && ev.isError && sessionLost) return 'session-lost';
+          const lost = agentTurn.resume && ev.isError && sessionLost;
+          // Claude Code refuses the resume before spending anything: no run to count. A host's session may die mid-turn.
+          if (lost && !ev.costUsd) return 'session-lost';
+          // A `session` provider reports a running total (subtract the previous run); any other reports this turn alone.
+          if (ev.costUsd !== undefined || ev.tokens) {
+            const session = ev.usage === 'session';
+            const totals = { costUsd: ev.costUsd ?? 0, tokens: ev.tokens ?? NO_TOKENS };
+            const spent = session ? addedSince(totals, agentTurn.resume ? chat.sessionUsage : undefined) : totals;
+            if (session) chat.sessionUsage = totals;
+            if (ev.costUsd !== undefined) reply.costUsd = (reply.costUsd ?? 0) + spent.costUsd;
+            const provider = ev.provider ?? this.deps.provider.id;
+            await this.deps.usage.record({ at: nowIso(), agent: provider, kind: 'chat', projectId, chat: key, ...spent });
+          }
+          if (lost) return 'session-lost';
           if (ev.sessionId) chat.sessionId = ev.sessionId;
           reply.durationMs = ev.durationMs || Date.now() - started;
-          // Claude Code reports a running session total (subtract the previous run); Codex reports this turn's tokens, no cost.
-          if (ev.costUsd !== undefined || ev.tokens) {
-            const claude = agent === 'claude-code';
-            const totals = { costUsd: ev.costUsd ?? 0, tokens: ev.tokens ?? NO_TOKENS };
-            const spent = claude ? addedSince(totals, agentTurn.resume ? chat.sessionUsage : undefined) : totals;
-            if (claude) chat.sessionUsage = totals;
-            if (ev.costUsd !== undefined) reply.costUsd = spent.costUsd;
-            await this.deps.usage.record({ at: nowIso(), agent, kind: 'chat', projectId, chat: key, ...spent });
-          }
           if (turn.abort.signal.aborted) {
             reply.status = 'stopped';
           } else if (ev.isError) {
