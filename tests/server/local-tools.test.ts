@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readdirSync, renameSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, readdirSync, renameSync, rmSync, symlinkSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +22,7 @@ let brand: string;
 let state: string;
 let outside: string;
 let files: FilePolicy;
+let dirs: { brand: string; templates: string; runtime: string };
 /** Reads everything under `root`, the state folder included: only `deny` stands between a turn and the keys. */
 let wide: FilePolicy;
 
@@ -100,7 +101,7 @@ before(async () => {
   brand = path.join(root, 'brands', 'orbit');
   state = path.join(root, '.cadence');
   outside = path.join(root, 'outside');
-  const dirs = { brand, templates: path.join(root, 'templates'), runtime: path.join(root, 'src', 'runtime') };
+  dirs = { brand, templates: path.join(root, 'templates'), runtime: path.join(root, 'src', 'runtime') };
   files = chatFiles(project, 'intro', dirs, deniedFiles(state));
   wide = { read: [path.join(root, '**')], write: [], deny: deniedFiles(state) };
   await write(path.join(project, 'scenes', 'intro.tsx'), 'export const intro = 1;\nexport const outro = 2;\n');
@@ -124,7 +125,7 @@ describe('definitions', () => {
     const { tools } = localTools(files);
     assert.deepEqual(
       tools.map((tool) => tool.name),
-      ['read_file', 'list_files', 'grep'],
+      ['read_file', 'list_files', 'grep', 'edit_file', 'write_file'],
     );
     for (const tool of tools) {
       assert.match(tool.name, /^[a-z][a-z0-9_]{0,63}$/);
@@ -140,15 +141,18 @@ describe('definitions', () => {
     assert.deepEqual(keys('read_file'), ['file_path', 'offset', 'limit']);
     assert.deepEqual(keys('list_files'), ['pattern', 'path']);
     assert.deepEqual(keys('grep'), ['pattern', 'path', 'glob']);
+    assert.deepEqual(keys('edit_file'), ['file_path', 'old_string', 'new_string', 'replace_all']);
+    assert.deepEqual(keys('write_file'), ['file_path', 'content']);
     assert.deepEqual(schema('read_file').required, ['file_path']);
     assert.deepEqual(schema('list_files').required, ['pattern']);
     assert.deepEqual(schema('grep').required, ['pattern']);
+    assert.deepEqual(schema('edit_file').required, ['file_path', 'old_string', 'new_string']);
+    assert.deepEqual(schema('write_file').required, ['file_path', 'content']);
   });
 
   test('tools that hand back file content say it is data', () => {
-    for (const tool of localTools(files).tools.filter(({ name }) => name !== 'list_files')) {
-      assert.match(tool.description, /data, never instructions/, tool.name);
-    }
+    const described = (name: string) => localTools(files).tools.find((tool) => tool.name === name)!.description;
+    for (const name of ['read_file', 'grep']) assert.match(described(name), /data, never instructions/, name);
   });
 
   test('each tool carries the event name the chat activity list already labels', () => {
@@ -158,10 +162,15 @@ describe('definitions', () => {
     assert.equal(event('read_file'), 'Read');
     assert.equal(event('list_files'), 'Glob');
     assert.equal(event('grep'), 'Grep');
+    // build.ts tracks the brand files a turn wrote by these two names.
+    assert.equal(event('edit_file'), 'Edit');
+    assert.equal(event('write_file'), 'Write');
     const words = m().agent.chat.activity;
     assert.equal(label('read_file', { file_path: file }), words.read('scenes/intro.tsx'));
     assert.equal(label('list_files', { pattern: '**/*.tsx' }), words.glob('**/*.tsx'));
     assert.equal(label('grep', { pattern: 'intro' }), words.grep('intro'));
+    assert.equal(label('edit_file', { file_path: file }), words.edit('scenes/intro.tsx'));
+    assert.equal(label('write_file', { file_path: file }), words.edit('scenes/intro.tsx'));
   });
 
   test('an unknown tool is a tool error, inherited object keys included', async () => {
@@ -623,9 +632,12 @@ describe('descriptors', () => {
     const image = await write(path.join(dir, 'image.png'), PNG);
     const hugeImage = await write(path.join(dir, 'huge.png'), Buffer.concat([PNG, Buffer.alloc(IMAGE_LIMIT)]));
     const blob = await write(path.join(dir, 'blob.bin'), Buffer.from([0, 1, 2]));
+    const big = await write(path.join(dir, 'big.txt'), 'a'.repeat(1024 * 1024 + 1));
     const fifo = path.join(dir, 'fifo');
     execFileSync('mkfifo', [fifo]);
-    const policy = { read: [path.join(dir, '**')], write: [], deny: [] };
+    const taken = path.join(dir, 'taken');
+    await fs.mkdir(taken);
+    const policy = { read: [], write: [path.join(dir, '**')], deny: [] };
     for (const [tool, input] of [
       ['read_file', { file_path: scene }],
       ['read_file', { file_path: image }],
@@ -637,6 +649,13 @@ describe('descriptors', () => {
       ['grep', { pattern: 'needle', path: dir }],
       ['grep', { pattern: 'needle', path: scene }],
       ['list_files', { pattern: '*', path: scene }],
+      ['edit_file', { file_path: scene, old_string: 'needle', new_string: 'needle' }],
+      ['edit_file', { file_path: scene, old_string: 'absent', new_string: 'x' }],
+      ['edit_file', { file_path: blob, old_string: 'a', new_string: 'b' }],
+      ['edit_file', { file_path: big, old_string: 'a', new_string: 'b' }],
+      ['edit_file', { file_path: fifo, old_string: 'a', new_string: 'b' }],
+      ['write_file', { file_path: path.join(dir, 'written.txt'), content: 'x' }],
+      ['write_file', { file_path: taken, content: 'x' }],
     ] as const) {
       await run(tool, input, policy);
       const before = open();
@@ -1094,5 +1113,308 @@ describe('grep', () => {
   test('refuses input of the wrong type', async () => {
     assert.match(await refused('grep', {}), /pattern/);
     assert.match(await refused('grep', { pattern: 'x', glob: 3 }), /glob/);
+  });
+});
+
+describe('edit_file', () => {
+  let own: string;
+  let policy: FilePolicy;
+
+  before(() => {
+    own = path.join(root, 'projects', 'edits');
+    policy = chatFiles(own, null, dirs, deniedFiles(state));
+  });
+
+  const scene = (name: string, content: string | Buffer) => write(path.join(own, 'scenes', name), content);
+
+  test('replaces the one occurrence of old_string, a relative path starts at the project', async () => {
+    const file = await scene('one.tsx', 'const a = 1;\nconst b = 2;\n');
+    const input = { file_path: file, old_string: 'b = 2', new_string: 'b = 3' };
+    assert.equal(await ok('edit_file', input, policy), `Edited ${file}: 1 occurrence replaced.`);
+    await ok('edit_file', { file_path: 'scenes/one.tsx', old_string: 'a = 1', new_string: 'a = 0' }, policy);
+    assert.equal(await fs.readFile(file, 'utf8'), 'const a = 0;\nconst b = 3;\n');
+  });
+
+  test('an absent or repeated old_string is an error that gives the count, and the file stays as it was', async () => {
+    const file = await scene('twice.tsx', 'x = 1;\nx = 1;\n');
+    const absent = await refused('edit_file', { file_path: file, old_string: 'y = 1', new_string: 'z' }, policy);
+    assert.match(absent, /old_string occurs 0 times/);
+    const repeated = await refused('edit_file', { file_path: file, old_string: 'x = 1', new_string: 'z' }, policy);
+    assert.match(repeated, /old_string occurs 2 times[^\n]*replace_all/);
+    const input = { file_path: file, old_string: 'y', new_string: 'z', replace_all: true };
+    assert.match(await refused('edit_file', input, policy), /old_string occurs 0 times/);
+    assert.equal(await fs.readFile(file, 'utf8'), 'x = 1;\nx = 1;\n');
+  });
+
+  test('replace_all replaces every occurrence, a single one too, and says how many', async () => {
+    const file = await scene('all.tsx', 'x = 1;\nx = 1;\ny = 1;\n');
+    const input = { file_path: file, old_string: 'x = 1', new_string: 'x = 2', replace_all: true };
+    assert.equal(await ok('edit_file', input, policy), `Edited ${file}: 2 occurrences replaced.`);
+    await ok('edit_file', { file_path: file, old_string: 'y = 1', new_string: 'y = 2', replace_all: false }, policy);
+    const single = { file_path: file, old_string: 'y = 2', new_string: 'y = 3', replace_all: true };
+    assert.equal(await ok('edit_file', single, policy), `Edited ${file}: 1 occurrence replaced.`);
+    assert.equal(await fs.readFile(file, 'utf8'), 'x = 2;\nx = 2;\ny = 3;\n');
+  });
+
+  test('new_string is written as it is, never as a replacement pattern, and an empty one deletes', async () => {
+    const file = await scene('dollars.tsx', 'a: 10\nb: 10\nc: 20\n');
+    const patterns = "$& $1 $$ $` $'";
+    await ok('edit_file', { file_path: file, old_string: '20', new_string: patterns }, policy);
+    await ok('edit_file', { file_path: file, old_string: '10', new_string: patterns, replace_all: true }, policy);
+    await ok('edit_file', { file_path: file, old_string: 'a: ', new_string: '' }, policy);
+    assert.equal(await fs.readFile(file, 'utf8'), `${patterns}\nb: ${patterns}\nc: ${patterns}\n`);
+  });
+
+  test('only UTF-8 text up to 1 MB, before and after the edit, is edited; the file stays as it was', async () => {
+    const limit = 1024 * 1024;
+    const binary = Buffer.from([0x61, 0, 0x62, 0x0a]);
+    const latin = Buffer.concat([Buffer.from('caf'), Buffer.from([0xe9]), Buffer.from(' au lait\n')]);
+    const blob = await scene('blob.bin', binary);
+    const accented = await scene('latin.txt', latin);
+    const big = await scene('big.txt', `${'a'.repeat(limit)}b`);
+    const full = await scene('full.txt', `${'a'.repeat(limit - 1)}b`);
+    const many = await scene('many.txt', 'x\n'.repeat(1000));
+    assert.match(await refused('edit_file', { file_path: blob, old_string: 'a', new_string: 'c' }, policy), /binary/);
+    assert.match(await refused('edit_file', { file_path: accented, old_string: 'au', new_string: 'with' }, policy), /UTF-8/);
+    assert.match(
+      await refused('edit_file', { file_path: big, old_string: 'b', new_string: '' }, policy),
+      /big\.txt is over 1 MB/,
+    );
+    const blowUp = { file_path: many, old_string: 'x', new_string: 'y'.repeat(2000), replace_all: true };
+    assert.match(await refused('edit_file', blowUp, policy), /would make .*many\.txt over 1 MB/);
+    assert.deepEqual(await fs.readFile(blob), binary);
+    assert.deepEqual(await fs.readFile(accented), latin);
+    assert.equal((await fs.stat(big)).size, limit + 1);
+    assert.equal(await fs.readFile(many, 'utf8'), 'x\n'.repeat(1000));
+    await ok('edit_file', { file_path: full, old_string: 'b', new_string: 'c' }, policy);
+    assert.equal((await fs.readFile(full, 'utf8')).at(-1), 'c');
+  });
+
+  test('the 1 MB cap after an edit counts UTF-8 bytes, not characters', async () => {
+    // 400 000 euro signs or accented letters stay under a million characters and pass 1 MB in UTF-8.
+    const short = await scene('short.txt', 'x\n');
+    const accented = await scene('accented.txt', `${'\u00E9'.repeat(400_000)}x\n`);
+    const euros = { file_path: short, old_string: 'x', new_string: '\u20AC'.repeat(400_000) };
+    assert.match(await refused('edit_file', euros, policy), /would make .*short\.txt over 1 MB/);
+    const longer = { file_path: accented, old_string: 'x', new_string: 'y'.repeat(300_000) };
+    assert.match(await refused('edit_file', longer, policy), /would make .*accented\.txt over 1 MB/);
+    assert.equal(await fs.readFile(short, 'utf8'), 'x\n');
+    assert.equal((await fs.stat(accented)).size, 800_002);
+  });
+
+  test('refuses a missing file, a folder and input of the wrong type', async () => {
+    const file = await scene('typed.tsx', 'a\n');
+    await fs.mkdir(path.join(own, 'scenes', 'nested.tsx'));
+    const missing = { file_path: path.join(own, 'scenes', 'missing.tsx'), old_string: 'a', new_string: 'b' };
+    assert.match(await refused('edit_file', missing, policy), /ENOENT/);
+    const folder = { file_path: path.join(own, 'scenes', 'nested.tsx'), old_string: 'a', new_string: 'b' };
+    assert.match(await refused('edit_file', folder, policy), /nested\.tsx is not a regular file/);
+    for (const [input, error] of [
+      [{ old_string: 'a', new_string: 'b' }, /file_path must be a non-empty string/],
+      [{ file_path: file, old_string: '', new_string: 'b' }, /old_string must be a non-empty string/],
+      [{ file_path: file, old_string: 'a' }, /new_string must be a string/],
+      [{ file_path: file, old_string: 'a', new_string: 1 }, /new_string must be a string/],
+      [{ file_path: file, old_string: 'a', new_string: 'b', replace_all: 'yes' }, /replace_all must be true or false/],
+    ] as const) {
+      assert.match(await refused('edit_file', input, policy), error);
+    }
+    assert.equal(await fs.readFile(file, 'utf8'), 'a\n');
+  });
+});
+
+describe('write_file', () => {
+  let own: string;
+  let policy: FilePolicy;
+
+  before(async () => {
+    own = path.join(root, 'projects', 'writes');
+    policy = chatFiles(own, null, dirs, deniedFiles(state));
+    await fs.mkdir(own, { recursive: true });
+  });
+
+  test('creates a file and its missing folders, and replaces a file whole', async () => {
+    const file = path.join(own, 'components', 'deep', 'card.tsx');
+    assert.equal(await ok('write_file', { file_path: file, content: 'export const card = 1;\n' }, policy), `Wrote ${file}.`);
+    assert.equal(await fs.readFile(file, 'utf8'), 'export const card = 1;\n');
+    await ok('write_file', { file_path: 'components/deep/card.tsx', content: '' }, policy);
+    assert.equal(await fs.readFile(file, 'utf8'), '');
+  });
+
+  test('refuses a folder and input of the wrong type, and leaves no temp file behind', async () => {
+    const folder = path.join(own, 'scenes', 'folder.tsx');
+    await fs.mkdir(folder, { recursive: true });
+    await refused('write_file', { file_path: folder, content: 'x' }, policy);
+    assert.ok((await fs.stat(folder)).isDirectory());
+    assert.deepEqual(readdirSync(path.dirname(folder)), ['folder.tsx']);
+    for (const [input, error] of [
+      [{ content: 'x' }, /file_path must be a non-empty string/],
+      [{ file_path: path.join(own, 'scenes', 'a.tsx') }, /content must be a string/],
+      [{ file_path: path.join(own, 'scenes', 'a.tsx'), content: 1 }, /content must be a string/],
+    ] as const) {
+      assert.match(await refused('write_file', input, policy), error);
+    }
+  });
+});
+
+describe('write policy', () => {
+  const unchanged = async (file: string, content: string) => assert.equal(await fs.readFile(file, 'utf8'), content);
+
+  test('a scene turn writes its scene file and nothing else', async () => {
+    const own = path.join(root, 'projects', 'scene-writes');
+    const scene = await write(path.join(own, 'scenes', 'intro.tsx'), 'export const intro = 1;\n');
+    const art = await write(path.join(own, 'art-direction.md'), 'Calm.\n');
+    const policy = chatFiles(own, 'intro', dirs, deniedFiles(state));
+    await ok('write_file', { file_path: 'scenes/intro.tsx', content: 'export const intro = 2;\n' }, policy);
+    await ok('edit_file', { file_path: scene, old_string: '2', new_string: '3' }, policy);
+    await unchanged(scene, 'export const intro = 3;\n');
+    const others = [
+      path.join(own, 'scenes', 'other.tsx'),
+      path.join(own, 'scenes', 'INTRO.tsx'),
+      path.join(own, 'components', 'card.tsx'),
+      path.join(own, 'project.json'),
+      art,
+      path.join(brand, 'KIT.md'),
+    ];
+    for (const file_path of others) {
+      const text = await refused('write_file', { file_path, content: SECRET }, policy);
+      assert.equal(text, `Refused: this turn may not write ${file_path}.`);
+    }
+    assert.match(await refused('edit_file', { file_path: art, old_string: 'Calm', new_string: 'Loud' }, policy), /^Refused/);
+    await unchanged(art, 'Calm.\n');
+    await unchanged(path.join(brand, 'KIT.md'), '# Orbit kit\n');
+    await unchanged(scene, 'export const intro = 3;\n');
+    assert.deepEqual(readdirSync(own).sort(), ['art-direction.md', 'scenes']);
+    assert.deepEqual(readdirSync(path.join(own, 'scenes')), ['intro.tsx']);
+  });
+
+  test('a folder a write rule opens is never replaced by a file', async () => {
+    const own = path.join(root, 'projects', 'folder-writes');
+    await fs.mkdir(own, { recursive: true });
+    const policy = chatFiles(own, null, dirs, deniedFiles(state));
+    for (const file_path of ['components', 'components/', path.join(own, 'scenes')]) {
+      const text = await refused('write_file', { file_path, content: 'flat' }, policy);
+      assert.equal(text, `Refused: this turn may not write ${path.resolve(own, file_path)}.`);
+    }
+    assert.deepEqual(readdirSync(own), []);
+    await ok('write_file', { file_path: 'components/card.tsx', content: 'x' }, policy);
+    assert.ok((await fs.stat(path.join(own, 'components'))).isDirectory());
+  });
+
+  test('a session file is refused in every scope, however it is spelled', async () => {
+    const own = path.join(root, 'projects', 'session-writes');
+    const built = path.join(root, 'brands', 'session-writes');
+    const sessions = [own, built].map((dir) => path.join(dir, '.cadence', 'chats', 'sessions'));
+    for (const folder of sessions) await write(path.join(folder, 'x.json'), '{}\n');
+    const scopes = [
+      chatFiles(own, 'intro', dirs, deniedFiles(state)),
+      chatFiles(own, null, dirs, deniedFiles(state)),
+      { read: [], write: [path.join(own, '**')], deny: [] },
+      { read: [path.join(root, 'src', 'shared', '**')], write: [path.join(built, '**')], deny: deniedFiles(state) },
+    ];
+    const spellings = [
+      '.cadence/chats/sessions/x.json',
+      '.cadence/chats/archive/../sessions/x.json',
+      '.CADENCE/Chats/SESSIONS/x.json',
+      '.cadence/chats/se\u1E9Eions/x.json',
+      '.cadence/chats/sess\u200Cions/x.json',
+      '.cadence/chats/sessions/new.json',
+    ];
+    for (const policy of scopes) {
+      for (const file_path of [...spellings, ...sessions.map((folder) => path.join(folder, 'x.json'))]) {
+        assert.match(await refused('write_file', { file_path, content: SECRET }, policy), /^Refused/);
+        assert.match(await refused('edit_file', { file_path, old_string: '{}', new_string: SECRET }, policy), /^Refused/);
+      }
+    }
+    for (const folder of sessions) {
+      await unchanged(path.join(folder, 'x.json'), '{}\n');
+      assert.deepEqual(readdirSync(path.dirname(folder)), ['sessions']);
+      assert.deepEqual(readdirSync(folder), ['x.json']);
+    }
+  });
+
+  test('a brand build writes only under its brand folder', async () => {
+    const repo = path.join(root, 'brand-sources', 'w1');
+    const built = path.join(root, 'brands', 'w1');
+    const shared = path.join(root, 'src', 'shared');
+    const readme = await write(path.join(repo, 'README.md'), 'REPO readme\n');
+    await write(path.join(built, 'KIT.md'), '# Starter kit\n');
+    const build = {
+      read: [repo, built, shared].map((dir) => path.join(dir, '**')),
+      write: [path.join(built, '**')],
+      deny: deniedFiles(state),
+    };
+    await ok('write_file', { file_path: 'KIT.md', content: '# W1 kit\n' }, build);
+    await ok('write_file', { file_path: 'components/Logo.tsx', content: 'export const Logo = 1;\n' }, build);
+    await ok('edit_file', { file_path: path.join(built, 'KIT.md'), old_string: 'W1', new_string: 'Wave' }, build);
+    await unchanged(path.join(built, 'KIT.md'), '# Wave kit\n');
+    await unchanged(path.join(built, 'components', 'Logo.tsx'), 'export const Logo = 1;\n');
+    for (const file_path of [
+      readme,
+      path.join(repo, 'new.md'),
+      path.join(shared, 'brandKit.ts'),
+      path.join(root, 'brands', 'w2', 'KIT.md'),
+      '../w2/KIT.md',
+      `${built}-evil/KIT.md`,
+      path.join(state, 'accounts.json'),
+    ]) {
+      assert.match(await refused('write_file', { file_path, content: SECRET }, build), /^Refused/);
+    }
+    assert.match(await refused('edit_file', { file_path: readme, old_string: 'REPO', new_string: SECRET }, build), /^Refused/);
+    await unchanged(readme, 'REPO readme\n');
+    assert.deepEqual(readdirSync(repo), ['README.md']);
+    assert.deepEqual(
+      readdirSync(path.join(root, 'brands')).filter((name) => name.startsWith('w')),
+      ['w1'],
+    );
+  });
+
+  test('writes refuse what reads refuse: a denied file and a name a disk may read another way', async () => {
+    const policy = { read: [], write: [path.join(root, '**')], deny: deniedFiles(state) };
+    const keys = `{"token":"${SECRET}"}\n`;
+    for (const name of ['accounts.json', 'ACCOUNTS.json', 'account\u017F.json', 'acc\u200Counts.json']) {
+      const file_path = path.join(state, name);
+      assert.match(await refused('write_file', { file_path, content: '{}' }, policy), /^Refused/);
+      assert.match(await refused('edit_file', { file_path, old_string: SECRET, new_string: 'x' }, policy), /^Refused/);
+    }
+    await unchanged(path.join(state, 'accounts.json'), keys);
+    const own = path.join(root, 'projects', 'ambiguous-writes');
+    for (const name of ['mar\u00ADked.tsx', 'trailing.', 'PLAIN~1.TSX', 'pla\u034Fin.tsx', path.join('\uFEFF..', 'x.tsx')]) {
+      const file_path = path.join(own, 'scenes', name);
+      assert.match(await refused('write_file', { file_path, content: 'x' }, policy), /^Refused/);
+    }
+    assert.equal(existsSync(own), false);
+  });
+
+  test('a link is never written through: the write lands inside the root, the target stays as it was', async () => {
+    const own = path.join(root, 'projects', 'linked-writes');
+    await fs.mkdir(own, { recursive: true });
+    const leak = path.join(own, 'leak.txt');
+    await fs.symlink(path.join(outside, 'secret.txt'), leak);
+    await fs.symlink(outside, path.join(own, 'elsewhere'));
+    const policy = { read: [], write: [path.join(own, '**')], deny: [] };
+    assert.match(await refused('edit_file', { file_path: leak, old_string: 'hunter', new_string: 'x' }, policy), /leak/);
+    for (const name of ['secret.txt', 'new.txt']) {
+      const file_path = path.join(own, 'elsewhere', name);
+      await refused('write_file', { file_path, content: 'x' }, policy);
+      await refused('edit_file', { file_path, old_string: 'hunter', new_string: 'x' }, policy);
+    }
+    await ok('write_file', { file_path: leak, content: 'mine\n' }, policy);
+    assert.ok((await fs.lstat(leak)).isFile());
+    await unchanged(leak, 'mine\n');
+    await unchanged(path.join(outside, 'secret.txt'), `${SECRET}\n`);
+    assert.equal(existsSync(path.join(outside, 'new.txt')), false);
+  });
+
+  test('a folder swapped for a link above an exact write entry stays refused', async () => {
+    const own = path.join(root, 'projects', 'swapped-writes');
+    const away = path.join(root, 'away-writes');
+    await write(path.join(away, 'intro.tsx'), 'away\n');
+    await fs.mkdir(own);
+    await fs.symlink(away, path.join(own, 'scenes'));
+    const policy = chatFiles(own, 'intro', dirs, []);
+    await refused('write_file', { file_path: 'scenes/intro.tsx', content: SECRET }, policy);
+    await refused('edit_file', { file_path: 'scenes/intro.tsx', old_string: 'away', new_string: SECRET }, policy);
+    await unchanged(path.join(away, 'intro.tsx'), 'away\n');
+    assert.deepEqual(readdirSync(away), ['intro.tsx']);
   });
 });

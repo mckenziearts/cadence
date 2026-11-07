@@ -199,7 +199,7 @@ export function buildTurnPrompt(c: TurnContext): string {
   }
   if (c.playhead) lines.push(playheadLine(c.playhead, p, scene));
   lines.push(`Read-only folders: brand ${c.dirs.brand}, templates ${c.dirs.templates}, runtime ${c.dirs.runtime}.`);
-  if (c.references.length) lines.push(`Reference screenshots (Read them to look at them): ${c.references.join(', ')}`);
+  if (c.references.length) lines.push(`Reference screenshots (read them to look at them): ${c.references.join(', ')}`);
   lines.push(scene ? seamLine(c.seams.filter((r) => r.from === scene.id || r.to === scene.id)) : seamLine(c.seams));
   if (c.errors) lines.push(c.errors.length ? `Render errors at t = 0:\n${c.errors.join('\n')}` : 'Render errors at t = 0: none.');
   if (!c.brief) {

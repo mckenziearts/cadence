@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { buildSystemPrompt, writeProjectsGuide } from '../../server/agent/guide';
+import { type BrandGuideVars, buildBrandGuide, buildSystemPrompt, writeProjectsGuide } from '../../server/agent/guide';
 import { barSeconds, buildTurnPrompt, projectOverview } from '../../server/agent/prompts';
 import type { CadenceConfig } from '../../server/contracts';
 import type { ProjectState } from '../../src/shared/types';
@@ -37,6 +37,16 @@ test('the system prompt carries the guide, the runtime reference and one scope',
   assert.doesNotMatch(scene, /## Scope: project chat/);
   assert.match(project, /## Scope: project chat/);
   assert.doesNotMatch(project, /## Scope: scene chat/);
+});
+
+test('the prompts name the file tools by what they do and the Cadence tools without a client prefix', () => {
+  const vars = ['REPO_DIR', 'REPO', 'SOURCE', 'BRAND_DIR', 'BRAND_ID', 'BRAND_NAME', 'SHARED_DIR', 'FONTSOURCE', 'LANGUAGE'];
+  const brand = buildBrandGuide(Object.fromEntries(vars.map((key) => [key, key.toLowerCase()])) as BrandGuideVars);
+  for (const prompt of [buildSystemPrompt({ scope: 'scene' }), buildSystemPrompt({ scope: 'project' }), brand]) {
+    assert.doesNotMatch(prompt, /mcp__|\bMCP\b|\b(Glob|Grep)\b/);
+    // Read, Edit and Write stay verbs: one starts a sentence or a list item, a tool name sits anywhere.
+    assert.doesNotMatch(prompt, /[^\n.:*-] (Read|Edit|Write)\b|\((Read|Edit|Write)\b/);
+  }
 });
 
 test('projects/CLAUDE.md is written for terminal sessions and left alone once the user owns it', async (t) => {
@@ -132,6 +142,8 @@ test('the turn context: timing in bars, playhead in video time, brief only when 
   assert.match(prompt, /unchanged since earlier in this conversation/);
   assert.doesNotMatch(prompt, /<brand>|<art_direction>|Render errors|Music:/);
   assert.ok(prompt.endsWith('</cadence_context>\n\nResserre le rythme'));
+  const references = buildTurnPrompt({ ...context, references: ['/p/demo/assets/refs/home.png'] });
+  assert.match(references, /\nReference screenshots \(read them to look at them\): \/p\/demo\/assets\/refs\/home\.png\n/);
 
   // A new brief comes framed as data, in blocks its own text cannot close.
   const briefed = buildTurnPrompt({

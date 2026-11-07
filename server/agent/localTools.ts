@@ -3,7 +3,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import vm from 'node:vm';
 import type { FilePolicy } from '../contracts';
-import { foldName, isAmbiguousName, isInside, listInside, openFileNoFollow, pathExists } from '../util';
+import { foldName, isAmbiguousName, isInside, listInside, openFileNoFollow, pathExists, writeFileInside } from '../util';
 import { SESSION_FOLDER } from './policy';
 
 export type Part = { type: 'text'; text: string } | { type: 'image'; media_type: string; data: string };
@@ -47,6 +47,8 @@ const REGEX_TIMEOUT_MS = 1000;
 /** What a pattern may hold the server for over one grep: a slow one can stay under REGEX_TIMEOUT_MS on every file. */
 const REGEX_BUDGET_MS = 3000;
 const SCAN_CHUNK = 64 * 1024;
+/** Also bounds what replace_all builds in memory from a short old_string and a long new_string. */
+const MAX_EDIT_BYTES = 1024 * 1024;
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JPEG = Buffer.from([0xff, 0xd8, 0xff]);
@@ -102,6 +104,38 @@ const TOOLS: LocalTool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'edit_file',
+    event: 'Edit',
+    description:
+      'Replace text in a file. old_string must occur exactly once, or set replace_all to replace every occurrence; copy it from the file exactly, indentation included. Only UTF-8 text files up to 1 MB, before and after the edit, can be edited. A relative path starts at the main folder of this turn.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'The file to edit.' },
+        old_string: { type: 'string', description: 'The text to replace.' },
+        new_string: { type: 'string', description: 'The text to put in its place; empty deletes it.' },
+        replace_all: { type: 'boolean', description: 'Replace every occurrence. Default false.' },
+      },
+      required: ['file_path', 'old_string', 'new_string'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'write_file',
+    event: 'Write',
+    description:
+      'Create a file, or replace its whole content; missing folders are created. A relative path starts at the main folder of this turn.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'The file to write.' },
+        content: { type: 'string', description: 'The whole content of the file.' },
+      },
+      required: ['file_path', 'content'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 function covers(entry: string, file: string): boolean {
@@ -120,15 +154,20 @@ function isDenied(files: FilePolicy, file: string): boolean {
 }
 
 /**
- * The folder of the entry that lets a turn read `file`: the no-follow helpers refuse any link below it. Ambiguous names
- * count only below it, where the turn chose them.
+ * The folder of the first entry that covers `file`, when the turn may `action` it: the no-follow helpers refuse any link
+ * below it. A read entry comes first, so an exact write entry still has its folders checked. Ambiguous names count only
+ * below it, where the turn chose them.
  */
-function readRoot(files: FilePolicy, file: string): string {
+function policyRoot(files: FilePolicy, file: string, action: 'read' | 'write'): string {
   if (file.length > MAX_PATH_CHARS) throw new Error('Refused: this path is too long.');
-  const entry = isDenied(files, file) ? undefined : [...files.read, ...files.write].find((rule) => covers(rule, file));
+  const rules = [...files.read, ...files.write];
+  // A subtree entry opens its folder to writes, never lets a file take the folder's place.
+  const writable = files.write.filter((rule) => rule !== `${file}${SUBTREE}`);
+  const allowed = !isDenied(files, file) && (action === 'read' ? rules : writable).some((rule) => covers(rule, file));
+  const entry = allowed ? rules.find((rule) => covers(rule, file)) : undefined;
   const root = entry && (entry.endsWith(SUBTREE) ? entry.slice(0, -SUBTREE.length) : path.dirname(entry));
   if (!root || path.relative(root, file).split(path.sep).some(isAmbiguousName))
-    throw new Error(`Refused: this turn may not read ${file}.`);
+    throw new Error(`Refused: this turn may not ${action} ${file}.`);
   return root;
 }
 
@@ -147,6 +186,18 @@ function text(input: Input, key: string): string {
 }
 
 const optionalText = (input: Input, key: string) => (input[key] === undefined ? undefined : text(input, key));
+
+function anyText(input: Input, key: string): string {
+  const value = input[key];
+  if (typeof value !== 'string') throw new Error(`${key} must be a string.`);
+  return value;
+}
+
+function optionalFlag(input: Input, key: string): boolean {
+  const value = input[key];
+  if (value !== undefined && typeof value !== 'boolean') throw new Error(`${key} must be true or false.`);
+  return value === true;
+}
 
 function optionalCount(input: Input, key: string): number | undefined {
   const value = input[key];
@@ -210,7 +261,7 @@ async function numberedLines(handle: FileHandle, file: string, offset: number, l
 
 async function readFile(files: FilePolicy, input: Input): Promise<Part[]> {
   const file = path.resolve(readableFolders(files)[0], text(input, 'file_path'));
-  const root = readRoot(files, file);
+  const root = policyRoot(files, file, 'read');
   const offset = optionalCount(input, 'offset') ?? 1;
   const limit = Math.min(optionalCount(input, 'limit') ?? MAX_LINES, MAX_LINES);
   const handle = await openFileNoFollow(root, file);
@@ -226,6 +277,45 @@ async function readFile(files: FilePolicy, input: Input): Promise<Part[]> {
   } finally {
     await handle.close();
   }
+}
+
+async function editFile(files: FilePolicy, input: Input): Promise<Part[]> {
+  const file = path.resolve(readableFolders(files)[0], text(input, 'file_path'));
+  const root = policyRoot(files, file, 'write');
+  const oldString = text(input, 'old_string');
+  const newString = anyText(input, 'new_string');
+  const replaceAll = optionalFlag(input, 'replace_all');
+  const handle = await openFileNoFollow(root, file);
+  let bytes: Buffer;
+  try {
+    const { size } = await handle.stat();
+    if (size > MAX_EDIT_BYTES) throw new Error(`${file} is over 1 MB: write_file replaces it whole.`);
+    bytes = await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+  if (bytes.includes(0)) throw new Error(`${file} is a binary file: write_file replaces it whole.`);
+  const content = bytes.toString('utf8');
+  // A byte that is not UTF-8 decodes to U+FFFD: writing the text back would change it.
+  if (!Buffer.from(content).equals(bytes)) throw new Error(`${file} is not UTF-8 text: write_file replaces it whole.`);
+  const pieces = content.split(oldString);
+  const count = pieces.length - 1;
+  if (count !== 1 && !(count > 1 && replaceAll)) {
+    const hint = count ? 'add the lines around it to make it unique, or set replace_all' : 'copy it from the file exactly';
+    throw new Error(`old_string occurs ${count} times in ${file}: ${hint}.`);
+  }
+  if (bytes.length + count * (Buffer.byteLength(newString) - Buffer.byteLength(oldString)) > MAX_EDIT_BYTES)
+    throw new Error(`This edit would make ${file} over 1 MB: write_file replaces it whole.`);
+  // join, not replace: `$&` or `$1` in new_string stays as it is.
+  await writeFileInside(root, file, pieces.join(newString));
+  return [{ type: 'text', text: `Edited ${file}: ${count} ${count === 1 ? 'occurrence' : 'occurrences'} replaced.` }];
+}
+
+async function writeFile(files: FilePolicy, input: Input): Promise<Part[]> {
+  const file = path.resolve(readableFolders(files)[0], text(input, 'file_path'));
+  const root = policyRoot(files, file, 'write');
+  await writeFileInside(root, file, anyText(input, 'content'));
+  return [{ type: 'text', text: `Wrote ${file}.` }];
 }
 
 function globRegExp(glob: string): RegExp {
@@ -303,7 +393,7 @@ async function walk(
     }
   } else {
     const start = path.resolve(folders[0], folder);
-    const root = readRoot(files, start);
+    const root = policyRoot(files, start, 'read');
     const names = await listInside(root, start).catch((e: Error) => {
       if (start === root) throw e;
       return null;
@@ -420,6 +510,10 @@ export function localTools(files: FilePolicy) {
         return listFiles(files, input, signal);
       case 'grep':
         return grep(files, input, signal);
+      case 'edit_file':
+        return editFile(files, input);
+      case 'write_file':
+        return writeFile(files, input);
       default:
         throw new Error(`Unknown tool: ${name}`);
     }

@@ -78,7 +78,7 @@ cadence/
     sounds/                 library.ts (the sound effects, written by `sounds`), track.ts (the sounds track of an MP4)
     agent/                  types.ts, claudeCode.ts (provider), guide.ts, prompts.ts, chat.ts (ChatManager),
                             policy.ts (a turn's Claude Code file rules, the session folder), localTools.ts
-                            (read_file, list_files and grep for a host app's own agent loop)
+                            (read_file, list_files, grep, edit_file and write_file for a host app's own agent loop)
     mcp/                    tokens.ts (McpTokens), server.ts (createMcpHandler), tools.ts, brandTools.ts
   src/
     shared/                 contracts (types, brandKit, frameProtocol), voiceOver.ts (when the music ducks),
