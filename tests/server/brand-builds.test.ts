@@ -582,6 +582,18 @@ test('a build deletes its session file when it ends: done, failed or cancelled',
   await fs.access(other);
 });
 
+test('a build whose provider kept its session as a folder still ends, the folder removed', { timeout: 20_000 }, async () => {
+  const fx = await builder(async function* (turn) {
+    await fs.mkdir(turn.sessionFile, { recursive: true });
+    await fs.writeFile(path.join(turn.sessionFile, 'part.json'), '{}');
+    yield done('Fini.');
+  });
+
+  const build = await fx.builder.start({ repo: 'acme/site', name: 'Dossier' });
+  assert.equal((await fx.builder.wait(build.id)).status, 'done');
+  await assert.rejects(fs.access(fx.turns[0].sessionFile));
+});
+
 test('cancelling a build stops Claude and removes the brand folder and the clone', async () => {
   const fx = await builder(async function* (turn) {
     yield { type: 'tool-start', id: '1', name: 'Glob', input: { pattern: '**/*.css' } };

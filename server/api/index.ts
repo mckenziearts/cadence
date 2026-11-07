@@ -706,7 +706,7 @@ export function createApi(deps: ApiDeps) {
     return c.json({ ok: true });
   });
   app.get('/settings', async (c) => c.json(await settings.get()));
-  app.get('/usage', async (c) => c.json(await deps.usage.summary(c.req.query('agent') ?? (await deps.usageAgent()))));
+  app.get('/usage', async (c) => c.json(await deps.usage.summary(c.req.query('agent') || (await deps.usageAgent()))));
   app.put('/settings', async (c) => {
     const before = (await settings.get()).language;
     const next = await settings.update(await body(c, schemas.settings));

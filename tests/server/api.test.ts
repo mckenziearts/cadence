@@ -2285,6 +2285,7 @@ test('GET /api/usage returns the runs of a host provider', async () => {
     brands: none,
   });
   assert.deepEqual((await json('GET', '/api/usage')).body, { since: null, chats: none, brands: none });
+  assert.deepEqual((await json('GET', '/api/usage?agent=')).body, { since: null, chats: none, brands: none }, 'never a sum');
 });
 
 test('brands: deleted into .cadence/trash, never the neutral kit, one in use or one being built', async () => {

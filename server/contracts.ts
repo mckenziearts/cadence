@@ -743,6 +743,10 @@ export interface AgentTurn {
   /** --mcp-config mcpServers object. */
   mcpServers: Record<string, unknown>;
   sessionId: string;
+  /**
+   * Where a provider that keeps its session itself writes it. Cadence deletes this file and later names the next one
+   * from the session id the turn reports, so such a provider reports `sessionId` unchanged.
+   */
   sessionFile: string;
   /** Resume `sessionId` instead of starting it. */
   resume: boolean;

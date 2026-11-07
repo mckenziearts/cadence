@@ -275,7 +275,7 @@ export class BrandBuilder implements BrandBuildService {
     } finally {
       if (token) tokens.revoke(token);
       await fs.rm(repoDir, { recursive: true, force: true });
-      if (sessionFile) await fs.rm(sessionFile, { force: true });
+      if (sessionFile) await fs.rm(sessionFile, { recursive: true, force: true });
     }
     // Only once everything is cleaned up: whoever waits for the build may look at the folders.
     this.end(state, outcome);
