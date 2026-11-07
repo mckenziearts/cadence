@@ -46,6 +46,9 @@ npm run doctor
   `Date.now()`, `Math.random()`, CSS transitions/animations or network.
 - Services depend on the interfaces in `server/contracts.ts`, wired in `server/index.ts`.
 - Project files change on disk only through `ProjectStore` (locks + atomic writes); versions through `VersionStore`.
+- A TypeScript type on data that crosses a boundary (a frame message, a chat or project file read back, an imported
+  archive, a provider event) is not a check: test the fields a path uses before using them, drop a malformed entry
+  and keep the rest working, and add a test that feeds it.
 - Tests: `node:test` + `node:assert/strict`, deterministic and offline; e2e projects live under `projects/e2e-*`
   (gitignored) and are removed at the end, and servers started by tests get their own temp `stateDir`.
 - CI runs `npm run test:unit` only, on Linux. A security or consent rule needs a test in a file `test:unit` lists
