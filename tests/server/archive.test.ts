@@ -83,6 +83,28 @@ test('project paths: renders, clips, tsconfig.json, dotfiles and most of .cadenc
     '.cadence/trash/a.tsx',
     '.cadence/publications.json',
     '.cadence/chats/.DS_Store',
+    '.cadence/chats/sessions/0123.json',
+    '.cadence/chats/Sessions/0123.json',
+    '.cadence/chats/\u017Fessions/0123.json',
+    '.cadence/chats/se\u1E9Eions/0123.json',
+    '.cadence/chats/sess\u200Cions/0123.json',
+    '.cadence/chats/\uFEFFsessions/0123.json',
+    '.cadence/chats/sessions\uF000/0123.json',
+    '\uFEFF.cadence/chats/sessions/0123.json',
+    '\uF029cadence/chats/sessions/0123.json',
+    'node_module\u200Cs/x/index.js',
+    'components/package\uF029json',
+    '.cadence/chats/sessions\uF000x/0123.json',
+    'node_modules\uF000x/x/index.js',
+    'package.json\uF000x',
+    'scenes/\uFEFF../a.tsx',
+    'scenes/mar\u00ADked.tsx',
+    '.cadence/chats/sessions./0123.json',
+    '.cadence/chats/sess\u034Fions/0123.json',
+    'CADENC~1/chats/sessions/0123.json',
+    'NODE_M~1/x/index.js',
+    'package.json.',
+    '.cadence/chats/sessions',
     '.DS_Store',
     'scenes/.DS_Store',
     'node_modules/x/index.js',
@@ -97,6 +119,9 @@ test('project paths: renders, clips, tsconfig.json, dotfiles and most of .cadenc
     'assets/renders/a.png',
     'assets/clips/a.png',
     '.cadence/chats/project.json',
+    '.cadence/chats/sessions.json',
+    '.cadence/chats/sessions-old/a.json',
+    '.cadence/chats/archive/project-2026.json',
     '.cadence/versions/index.json',
     '.cadence/voice-over/track.wav',
     'music/a.mp3.analysis.json',
@@ -106,7 +131,17 @@ test('project paths: renders, clips, tsconfig.json, dotfiles and most of .cadenc
 });
 
 test('brand paths: everything but node_modules, package.json, dotfiles and the build marker', () => {
-  for (const rel of ['node_modules/x/index.js', '.building', '.git/HEAD', 'assets/.DS_Store', 'package.json'])
+  for (const rel of [
+    'node_modules/x/index.js',
+    '.building',
+    '.git/HEAD',
+    'assets/.DS_Store',
+    'package.json',
+    'node_modules\uF000x/x/index.js',
+    'package.json\uF000x',
+    'NODE_M~1/x/index.js',
+    'package.json.',
+  ])
     assert.equal(exportableBrandPath(rel), false, rel);
   for (const rel of ['brand.json', 'theme.css', 'assets/logo-mark.svg', 'KIT.md', 'renders/a.png'])
     assert.equal(exportableBrandPath(rel), true, rel);
@@ -218,6 +253,14 @@ test('a project whose project.json cannot be read is refused by name, alone or w
   await rejectsWithStatus(archiver.export(['libre']), 409, /libre/);
   await rejectsWithStatus(archiver.export(), 409, /libre/);
   await entries(await archiver.export(['neutre']));
+});
+
+test('an export leaves the session files out and keeps the chat next to them', async () => {
+  await write('projects/libre/.cadence/chats/project.json', '{}');
+  await write('projects/libre/.cadence/chats/sessions/0123.json', '{}');
+  const files = (await entries(await archiver.export(['libre']))).map(([rel]) => rel);
+  assert.ok(files.includes('projects/libre/.cadence/chats/project.json'));
+  assert.ok(!files.some((rel) => rel.includes('sessions')));
 });
 
 test('a folder with no project.json, such as an import being staged, neither blocks every-project export nor travels', async () => {
@@ -920,6 +963,19 @@ test('import leaves out the paths an export never writes, in projects and in bra
     'node_modules/x/index.js',
     'components/package.json',
     '.cadence/frames/a',
+    '.cadence/chats/sessions/0123.json',
+    '.cadence/chats/Sessions/0124.json',
+    '.cadence/chats/\u017Fessions/0125.json',
+    '.cadence/chats/se\u1E9Eions/0126.json',
+    '.cadence/chats/sess\u200Cions/0127.json',
+    '\uFEFF.cadence/chats/sessions/0128.json',
+    '.cadence/chats/sessions\uF000x/0129.json',
+    'node_modules\uF000x/planted.js',
+    'package.json\uF000x',
+    '.cadence/chats/sessions./0130.json',
+    'CADENC~1/chats/sessions/0131.json',
+    'NODE_M~1/planted.js',
+    '.cadence/chats/sessions',
     '.DS_Store',
   ];
   const archive = await gzipTar([

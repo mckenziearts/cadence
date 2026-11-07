@@ -59,7 +59,7 @@ import {
   writeJsonAtomic,
 } from '../util';
 import { buildSystemPrompt } from './guide';
-import { claudeRules } from './policy';
+import { SESSION_FOLDER, claudeRules } from './policy';
 import { buildTurnPrompt } from './prompts';
 import type { ChatFile } from './types';
 
@@ -370,7 +370,7 @@ export class ChatManager implements ChatService {
   }
 
   private sessionFile(projectId: string, sessionId: string): string {
-    return path.join(this.chatsDir(projectId), 'sessions', `${sessionId}.json`);
+    return path.join(this.deps.store.dir(projectId), SESSION_FOLDER, `${sessionId}.json`);
   }
 
   private chatsDir(projectId: string): string {
@@ -531,6 +531,7 @@ export class ChatManager implements ChatService {
         const agentTurn = { ...base, prompt, sessionId, sessionFile: this.sessionFile(projectId, sessionId), resume };
         const outcome = await this.stream(turn, agentTurn, started, briefHash, settings.agent);
         if (outcome !== 'session-lost') break;
+        await removeFileInside(project.dir, agentTurn.sessionFile);
         chat.sessionId = null;
         chat.briefHash = null;
       }

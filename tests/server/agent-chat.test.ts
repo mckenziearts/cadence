@@ -20,6 +20,7 @@ import type {
   TemplateStore,
   VersionStore,
 } from '../../server/contracts';
+import { localTools } from '../../server/agent/localTools';
 import { claudeRules } from '../../server/agent/policy';
 import { RoutingProvider } from '../../server/agent/router';
 import { m } from '../../server/i18n';
@@ -995,6 +996,9 @@ test('a chat turn says which files it may touch, its scope and where its session
     assert.equal(turn.sessionFile, path.join(sessions, `${turn.sessionId}.json`));
     assert.ok(!turn.files.write.some((entry) => entry.includes('.cadence')), 'nothing under .cadence is writable');
     assert.ok(!turn.files.write.some((entry) => covers(entry, turn.sessionFile)), 'the session file is not writable');
+    const read = await localTools(turn.files).call('read_file', { file_path: turn.sessionFile }, new AbortController().signal);
+    assert.equal(read.isError, true, 'the session file is not readable');
+    assert.match(JSON.stringify(read.content), /Refused/);
   }
 });
 
@@ -1017,6 +1021,69 @@ test('the attempt after a lost session names the session file of its new session
   assert.equal(env.turns[0].sessionFile, path.join(sessions, `${OLD_SESSION}.json`));
   assert.notEqual(env.turns[1].sessionId, OLD_SESSION);
   assert.equal(env.turns[1].sessionFile, path.join(sessions, `${env.turns[1].sessionId}.json`));
+});
+
+for (const [when, spent] of [
+  ['before spending', {}],
+  ['mid-turn', { costUsd: 0.2 }],
+] as const) {
+  test(`a session lost ${when} takes its session file with it, the new session keeps its own`, async (t) => {
+    const env = await setup(async function* (turn) {
+      await fs.mkdir(path.dirname(turn.sessionFile), { recursive: true });
+      await fs.writeFile(turn.sessionFile, '{}');
+      if (turn.resume) {
+        yield { type: 'done', text: 'perdue', isError: true, durationMs: 1, subtype: 'session_lost', ...spent };
+        return;
+      }
+      yield { type: 'init', sessionId: turn.sessionId };
+      yield { type: 'done', text: 'OK', isError: false, durationMs: 1, sessionId: turn.sessionId };
+    });
+    t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+    const file = path.join(env.projectDir, '.cadence', 'chats', 'project.json');
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify({ key: 'project', sessionId: OLD_SESSION, briefHash: 'x', messages: [] }));
+
+    await env.manager.send('demo', 'project', { text: 'Bonjour' });
+    await env.idle('project');
+    const [lost, fresh] = env.turns;
+    await assert.rejects(fs.access(lost.sessionFile));
+    await fs.access(fresh.sessionFile);
+    assert.equal((await env.manager.get('demo', 'project')).messages.at(-1)?.status, 'done');
+  });
+}
+
+test('a lost session never deletes through a link: the turn fails, the file out there stays, the id stays for the next turn', async (t) => {
+  const env = await setup(async function* () {
+    yield { type: 'done', text: 'perdue', isError: true, durationMs: 1, subtype: 'session_lost' };
+  });
+  t.after(() => fs.rm(env.root, { recursive: true, force: true }));
+  const chats = path.join(env.projectDir, '.cadence', 'chats');
+  const outside = path.join(env.root, 'outside');
+  const target = path.join(outside, `${OLD_SESSION}.json`);
+  await fs.mkdir(chats, { recursive: true });
+  await fs.mkdir(outside);
+  await fs.writeFile(target, '{}');
+  await fs.symlink(outside, path.join(chats, 'sessions'));
+  await fs.writeFile(
+    path.join(chats, 'project.json'),
+    JSON.stringify({ key: 'project', sessionId: OLD_SESSION, briefHash: 'x', messages: [] }),
+  );
+
+  await env.manager.send('demo', 'project', { text: 'Bonjour' });
+  await env.idle('project');
+  await fs.access(target);
+  assert.equal(env.turns.length, 1);
+  assert.equal((await env.manager.get('demo', 'project')).messages.at(-1)?.status, 'error');
+
+  await env.manager.send('demo', 'project', { text: 'Encore' });
+  await env.idle('project');
+  assert.deepEqual(
+    env.turns.map((turn) => [turn.resume, turn.sessionId]),
+    [
+      [true, OLD_SESSION],
+      [true, OLD_SESSION],
+    ],
+  );
 });
 
 test('a resumed turn that ends as session_lost restarts the session whatever its text says', async (t) => {
